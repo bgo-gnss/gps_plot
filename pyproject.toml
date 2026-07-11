@@ -9,12 +9,20 @@ authors = [
 ]
 maintainers = [{ name = "Benedikt Gunnar Ófeigsson", email = "bgo@vedur.is" }]
 requires-python = ">=3.13"
-dependencies = ["highlight-text>=0.2", "matplotlib>=3.10.3", "tornado>=6.5.1"]
+dependencies = [
+    "highlight-text>=0.2",
+    "matplotlib>=3.10.3",
+    "tornado>=6.5.1",
+    "gtimes@git+https://github.com/bennigo/gtimes.git",
+]
 
 [project.scripts]
 gps_plot = "gps_plot:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
 gps-analysis-devviz = "gps_plot.dev_viz:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
