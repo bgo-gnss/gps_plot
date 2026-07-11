@@ -16,6 +16,12 @@ dependencies = [
     "gtimes@git+https://github.com/bennigo/gtimes.git",
 ]
 
+# Optional map lane (src/gps_plot/maps.py): PyGMT needs a system GMT >= 6
+# C library underneath (OS package, conda-forge gmt, or a from-source build
+# via GMT_LIBRARY_PATH). The matplotlib time-series lane never needs this.
+[project.optional-dependencies]
+maps = ["pygmt>=0.19"]
+
 [project.scripts]
 gps_plot = "gps_plot:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
@@ -35,11 +41,28 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "gps_analysis",
+    "gps_parser",
     "pytest>=8.0",
+    "ruff>=0.8",
 ]
 
 [tool.uv.sources]
 gps_analysis = { path = "../gps_analysis", editable = true }
+gps_parser = { path = "../gps_parser", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Lint/format scope: the modern lane (maps, dev_viz, timesmatplt, tests).
+# Legacy maintenance modules and historical snapshots are excluded — the
+# dated gasmatplt snapshots do not even parse as Python 3 (kept as
+# historical reference per CLAUDE.md, DO NOT delete).
+[tool.ruff]
+extend-exclude = [
+    "src/gps_plot/gasmatplt.py",
+    "src/gps_plot/gasmatplt_bgo_15May17.py",
+    "src/gps_plot/gasmatplt_workingon15May17.py",
+    "src/gps_plot/gmtplot.py",
+    "src/gps_plot/plot_gps_timeseries.py",
+    "bin/timesmatplt-test.py",
+]
