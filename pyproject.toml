@@ -14,7 +14,24 @@ dependencies = ["highlight-text>=0.2", "matplotlib>=3.10.3", "tornado>=6.5.1"]
 [project.scripts]
 gps_plot = "gps_plot:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
+gps-analysis-devviz = "gps_plot.dev_viz:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Dev-viz surface (gps_plot.dev_viz) needs the sibling gps_analysis leaf
+# library. Wired as an editable local path in the dev group so `uv sync`
+# picks up sibling edits immediately (see gpslibrary/CLAUDE.md, "Editing
+# Across Packages"); production installs of gps_plot are unaffected.
+[dependency-groups]
+dev = [
+    "gps_analysis",
+    "pytest>=8.0",
+]
+
+[tool.uv.sources]
+gps_analysis = { path = "../gps_analysis", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
