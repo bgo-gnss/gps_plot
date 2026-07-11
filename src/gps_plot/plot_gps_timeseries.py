@@ -86,7 +86,6 @@ def main():
     start = end = None
     eventDict = {}
     Type_allow = ["TOT", "08h", "JOIN"]
-    save_allow = ["eps", "pdf"]
     ref_allow = ["all", "plate", "detrend", "itrf2008"]
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
 
@@ -121,8 +120,9 @@ def main():
         nargs="?",
         default=None,
         const="eps",
-        choices=save_allow,
-        help="save figure to a file defaults to postscript (eps)",
+        help="save figure to file(s): a format suffix or comma-separated "
+        "formats, each written natively by matplotlib "
+        "(e.g. 'png', 'pdf' or 'eps,pdf,png'); defaults to eps",
     )
     parser.add_argument(
         "--fix",
