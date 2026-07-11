@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Regenerable static-plot review artifacts (bin/render_static_samples.py)
+samples_static_modernize/

@@ -1,118 +1,283 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-"""
-## -*- coding: iso-8859-15 -*-
-This module containes the following functions:
+"""Static matplotlib production plots for GPS displacement time series.
 
 Public functions:
-   stdFrame(Ylabel=None, Title=None):
-   stdTimesPlot(x, y, Dy, Ylabel=None, Title=None)
-   addEvent(eventDict,fig,dstr="%Y%m%d")
-   saveFig(fileName,fType,fig)
-   toord(yearf):
-   fromord(yearf):
-   convIcelCh(string)
+   init_plot_style(force=False)      -- apply the classic/usetex style ONCE
+   make_title(sta, lastData, ...)    -- typed StationTitle (semantic status color)
+   makelatexTitle(sta, lastData,...) -- legacy single-string title (EPS/dvips only)
+   stdFrame(Ylabel=None, Title=None, fig=None)
+   stdTimesPlot(x, y, Dy, ...)       -- build (and return) the 3-component Figure
+   plotTime(sta, ...)                -- read data, build figure, save/show
+   addData / addPoints / addEvent
+   saveFig(fileName, fType, fig)     -- native multi-format export (eps/pdf/png/...)
+   setXlim / setYlim / tsTickLabels / tslabels
+   convIcelCh / convLatex
 
    Under construction:
-       fancytitle(x, y, titlestr, font, ax, **kw):
+       fancytitle(x, y, titlestr, font, ax, **kw)
 
-Private functions:
-   __converter(x)
+Modernization notes (static-plot-modernize, Path B):
 
+- Export is a native ``Figure.savefig`` per requested suffix (eps, pdf, png,
+  ...); the old ImageMagick ``convert`` EPS->PNG subprocess is gone.
+- The semantic red/green "Last datapoint" header is now a matplotlib-level
+  text color on a usetex fragment (see :func:`make_title` /
+  :func:`_add_status_subtitle`).  The old single-string
+  ``\\textcolor{...}{...}`` title only survived the PS/dvips pipeline --
+  matplotlib's own DVI reader (used by the Agg/PNG and PDF backends)
+  ignores LaTeX color specials, which is why PNG/PDF used to lose the
+  color.  Coloring the fragment at the matplotlib level renders
+  identically on every backend while keeping the exact Computer-Modern
+  usetex look.
+- Style/rcParams (``classic`` + usetex) are applied once per process by
+  :func:`init_plot_style` instead of per figure, and the production save
+  path reuses a single non-pyplot Figure across stations.
 """
+
+from __future__ import annotations
 
 __author__ = "Benedikt G. Ofeigsson <bgo@vedur.is>"
 __date__ = "$Date: Feb 2016"
-__version__ = "$Revision: 0.1 $"[11:-2]
+__version__ = "$Revision: 0.2 $"[11:-2]
 
-# sys.setdefaultencoding("utf-8")
-#
-# Plot functions
-#
-
+import dataclasses
 import datetime
 import os
-import subprocess
-import sys
-import warnings
+from collections.abc import Sequence
 from datetime import timedelta
+from typing import Any
 
-import gps_parser as cp
-
-import geo_dataread.gps_read as gpsr
-import geofunc.geofunc as gf
-
-# import gpstime
 import matplotlib as mpl
+import matplotlib.figure
 import matplotlib.image as image
-
-# import matplotlib.colors as mcolors
-# import matplotlib.image as image
-# from scipy.spatial.distance import euclidean
-# extra stuff
-# from timesfunc.timesfunc import convGlobktopandas, toDateTime
-# from matplotlib.backends.backend_pgf import FigureCanvasPgf
-# mpl.backend_bases.register_backend("pdf", FigureCanvasPgf)
 import matplotlib.pyplot as plt
+import matplotlib.style
 import numpy as np
-import pandas as pd
-from geo_dataread.gps_read import convGlobktopandas, toDateTime
 from gtimes.timefunc import currDate, currDatetime, currTime, currYearfDate, toDatetimel
-from highlight_text import ax_text, fig_text
 from matplotlib import transforms
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
+
+#: Semantic status colors of the "Last datapoint" header.  These match the
+#: LaTeX ``color`` package values the legacy ``\textcolor{green|red}`` title
+#: produced under dvips (pure RGB green/red -- NOT matplotlib's ``"green"``,
+#: which is (0, 0.5, 0)).
+STATUS_CURRENT_COLOR: tuple[float, float, float] = (0.0, 1.0, 0.0)
+STATUS_STALE_COLOR: tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+#: Raster resolution for PNG export.  Matches the legacy ImageMagick
+#: ``convert -density 90`` EPS->PNG conversion, so direct-PNG output keeps
+#: the accustomed pixel dimensions.
+PNG_DPI: float = 90.0
+
+_STYLE_INITIALIZED: bool = False
+_FRAME_FIG: Figure | None = None
+
+
+def init_plot_style(force: bool = False) -> None:
+    """Apply the production plot style (classic + usetex) once per process.
+
+    The legacy code re-ran ``mpl.style.use("classic")`` and reset the usetex
+    rcParams inside every ``stdFrame`` call; this is now done a single time
+    (``force=True`` re-applies, e.g. after another module changed rcParams).
+    """
+    global _STYLE_INITIALIZED
+    if _STYLE_INITIALIZED and not force:
+        return
+
+    mpl.style.use("classic")
+    mpl.rcParams["legend.handlelength"] = 0
+    mpl.rcParams["text.usetex"] = True
+    # NOTE: the legacy code called mpl.rc("text.latex", preamble=...) twice,
+    # so only the second line (color) was actually active; both are kept here.
+    mpl.rcParams["text.latex.preamble"] = "\n".join(
+        [r"\usepackage[utf8]{inputenc}", r"\usepackage{color}"]
+    )
+    mpl.rc("font", family="Times New Roman")
+
+    _STYLE_INITIALIZED = True
+
+
+def _reusable_figure() -> Figure:
+    """Module-level Figure reused across stations on the save path.
+
+    A plain (non-pyplot) Figure with an Agg canvas: no GUI window manager,
+    no pyplot figure accumulation, cleared and rebuilt per station by
+    :func:`stdFrame`.
+    """
+    global _FRAME_FIG
+    if _FRAME_FIG is None:
+        init_plot_style()  # Figure snapshots rcParams (dpi, subplotpars)
+        _FRAME_FIG = matplotlib.figure.Figure(figsize=(13, 20))
+        FigureCanvasAgg(_FRAME_FIG)
+    return _FRAME_FIG
+
+
+def data_is_current(
+    last: datetime.datetime | datetime.date | np.datetime64, warnp: int = -1
+) -> bool:
+    """True if ``last`` falls on the reference day ``currDate(warnp)``.
+
+    This is THE semantic red/green decision: ``warnp=-1`` means "data
+    through yesterday counts as current" (green); anything older is stale
+    (red).  Used by both the title status color and the highlighted last
+    data point so the two can never disagree.
+    """
+    if isinstance(last, np.datetime64):
+        last = last.astype("datetime64[us]").item()
+    if isinstance(last, datetime.datetime):
+        last = last.date()
+    return last == currDate(warnp)
+
+
+@dataclasses.dataclass(frozen=True)
+class StationTitle:
+    """Title of a standard GPS time-series plot, split for rendering.
+
+    ``main`` becomes the (all-black) suptitle; ``status`` is rendered in
+    ``status_color`` next to the black ``created`` fragment (the split is
+    what lets every backend color the status correctly -- see module notes).
+    """
+
+    main: str
+    status: str
+    created: str
+    status_color: tuple[float, float, float]
+
+
+def make_title(
+    sta: str,
+    lastData: datetime.datetime,
+    ref: str = "ITRF2008",
+    warnp: int = -1,
+) -> StationTitle:
+    """Create the standard plot title with the semantic status color.
+
+    The status fragment ("Last datapoint: ...") is green when the last data
+    point is current (see :func:`data_is_current`), red otherwise.
+    """
+    lastpoint = currDate(refday=lastData, String="Last datapoint: %d %b %Y")
+    status_color = (
+        STATUS_CURRENT_COLOR if data_is_current(lastData, warnp) else STATUS_STALE_COLOR
+    )
+
+    timeofPlot = currTime("(Plot created on %b %d %Y %H:%M %Z)")
+
+    # station full name from the station config, marker as fallback
+    try:
+        import gps_parser as cp
+
+        stName = cp.ConfigParser().get_config(sta, "station_name")
+    except Exception:
+        stName = sta
+    stName = convLatex(stName)
+
+    NameStr = "%s (%s)" % (stName, sta)
+    if sta == "hekla":
+        NameStr = "Hekla (Summit)"
+    refFr = "Reference frame: %s" % ref
+    if ref == "Multigas":
+        refFr = "%s: %s" % (ref, "Uncorrected")
+
+    return StationTitle(
+        main=r"\Huge %s \ \Large %s" % (NameStr, refFr),
+        status=r"\LARGE %s" % lastpoint,
+        created=r"\large %s" % timeofPlot,
+        status_color=status_color,
+    )
+
+
+def makelatexTitle(
+    sta: str,
+    lastData: datetime.datetime,
+    ref: str = "ITRF2008",
+    warnp: int = -1,
+) -> list[str]:
+    """Legacy single-string LaTeX title (``\\textcolor``-based).
+
+    Kept for callers that render through the PS/dvips pipeline only
+    (e.g. ``gasmatplt``): the embedded ``\\textcolor`` is IGNORED by the
+    Agg/PNG and PDF backends.  New code should use :func:`make_title`.
+    """
+    title = make_title(sta, lastData, ref=ref, warnp=warnp)
+    dcolor = "green" if title.status_color == STATUS_CURRENT_COLOR else "red"
+
+    name_str, ref_str = title.main.split(r" \ \Large ")
+    name_str = name_str.replace(r"\Huge ", "")
+    status_str = title.status.replace(r"\LARGE ", "")
+    created_str = title.created.replace(r"\large ", "")
+
+    return [
+        r"\Huge\textcolor{black}{%s} \  \Large\textcolor{black}{%s}  "
+        % (name_str, ref_str),
+        r"\LARGE\textcolor{%s}{%s} \  \large\textcolor{black}{%s}  "
+        % (dcolor, status_str, created_str),
+    ]
+
+
+def _add_status_subtitle(ax: Any, title: StationTitle) -> None:
+    """Center the colored status + black created fragments above ``ax``.
+
+    Replaces the legacy ``ax.set_title(latex_string, y=1.01)``: the two
+    fragments keep their LaTeX sizes (``\\LARGE`` / ``\\large``) while the
+    status color is applied at the matplotlib level so it renders
+    identically in EPS, PDF and PNG.
+    """
+    status = TextArea(title.status, textprops={"color": title.status_color})
+    created = TextArea(title.created, textprops={"color": "black"})
+    row = HPacker(children=[status, created], align="baseline", pad=0, sep=8)
+    box = AnchoredOffsetbox(
+        loc="lower center",
+        child=row,
+        pad=0.0,
+        borderpad=0.0,
+        frameon=False,
+        bbox_to_anchor=(0.5, 1.01),
+        bbox_transform=ax.transAxes,
+    )
+    ax.add_artist(box)
 
 
 def plotTime(
-    sta,
-    start=None,
-    end=None,
-    save=None,
-    ylim=[],
-    special=None,
-    ref="itrf2008",
-    figDir="",
-    events={},
-    fix=False,
-    Dir=None,
-    tType="TOT",
-    uncert=15,
-    logo=True,
-):
-    """
-    Plot standard GPS time series North, East up componend
+    sta: str,
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+    save: str | Sequence[str] | None = None,
+    ylim: Sequence[float] | Sequence[Sequence[float]] = (),
+    special: str | None = None,
+    ref: str = "itrf2008",
+    figDir: str = "",
+    events: dict[Any, Any] | None = None,
+    fix: bool = False,
+    Dir: str | None = None,
+    tType: str = "TOT",
+    uncert: int = 15,
+    logo: bool = True,
+    fig: Figure | None = None,
+) -> Figure:
+    """Plot a standard GPS North/East/Up time series for one station.
 
+    Reads the series (``geo_dataread``), builds the figure and either saves
+    it (``save`` = format or list/comma-string of formats, e.g. ``"png"``
+    or ``"eps,pdf,png"`` -- each written by one native ``savefig``) or
+    shows it interactively.  Returns the Figure (REPL-friendly).
     """
-    # for testing
-    # print "Station: ",sta
-    # print "Start: ", start
-    # print "end: ", end
-    # print "save: ", save
-    # print "ylim: ", ylim
-    # print "special: ", special
-    # print "ref: ", ref
-    # print "events: ", events
-    # print "fix: ", fix
+    # heavy production deps are imported lazily so the module (and the
+    # figure-building seam) stays importable without them
+    import geo_dataread.gps_read as gpsr
 
-    # The backend of matplotlib
-    if save == "eps":
-        mpl.use("ps")
-    elif save == "pdf":
-        mpl.use("pdf")
-    else:
+    if not save:
         mpl.use("WebAgg")
-    # Needs to be imported after the backend is defined
-    # import matplotlib.pyplot as plt
 
     fstart = fend = None
-
-    # defining sub-periods to plot
-    if start:  # start the plot at
+    if start:
         fstart = currYearfDate(refday=start)
-    if end:  # end the plot at
+    if end:
         fend = currYearfDate(refday=end)
 
-    # plottin standard time series special caases
-    # filtering and prepearing for ploting
+    # standard sub-periods for routine plots
     if special:
         if not end:
             end = currDatetime(-1)
@@ -130,15 +295,14 @@ def plotTime(
             start = None
             fstart = None
 
-    if fix or special:
-        pass
-    else:  # if fix is None, only plot the extend of the data
+    if not (fix or special):  # only plot the extent of the data
         start = end = None
 
-    # creating the graph title
+    # graph title reference-frame string
     if ref == "plate":
-        plateName = gf.plateFullname(gf.plateDict()[sta])
-        refTitle = plateName
+        import geofunc.geofunc as gf
+
+        refTitle = gf.plateFullname(gf.plateDict()[sta])
     elif ref == "detrend":
         refTitle = "Detrended"
     else:
@@ -147,28 +311,34 @@ def plotTime(
     yearf, data, Ddata, offset = gpsr.getData(
         sta, fstart=fstart, fend=fend, ref=ref, Dir=Dir, tType=tType, uncert=uncert
     )
-    Pdata = convGlobktopandas(yearf, data, Ddata)
-    yearf = pd.to_datetime(toDateTime(yearf))
-    datastats = Pdata.describe()
-    # print(datastats)
-    #    print(datastats.north[3])
-    # max( PdataT.index.max(),Pdata.index.max() )
+    if yearf is None or len(yearf) == 0:
+        raise ValueError("no data for station %s" % sta)
 
-    firstpoint = yearf[0]
-    lastpoint = yearf[-1]
+    # single yearf -> datetime conversion (was done twice before)
+    x = list(gpsr.toDateTime(yearf))
+    firstpoint, lastpoint = x[0], x[-1]
 
-    warnp = -1  # at which point we want to label the newest data green
-    # title string list [Title, Subtitle]
-    Title = makelatexTitle(sta, lastpoint, ref=refTitle, warnp=warnp)
-    # print(Title)
-    # ploting
+    warnp = -1  # data through currDate(warnp) is labelled green
+    Title = make_title(sta, lastpoint, ref=refTitle, warnp=warnp)
+
+    if save and fig is None:
+        fig = _reusable_figure()
 
     fig = stdTimesPlot(
-        yearf, data, Ddata, Title=Title, start=start, end=end, ylim=ylim, warnp=warnp
+        x,
+        data,
+        Ddata,
+        Title=Title,
+        start=start,
+        end=end,
+        ylim=ylim,
+        warnp=warnp,
+        fig=fig,
     )
 
     if tType == "JOIN":
-        yearf, data, Ddata, offset8 = gpsr.getData(
+        Pdata = gpsr.convGlobktopandas(yearf, data, Ddata)
+        yearf8, data8, Ddata8, _offset8 = gpsr.getData(
             sta,
             fstart=fstart,
             fend=fend,
@@ -178,28 +348,24 @@ def plotTime(
             uncert=uncert,
             offset=None,
         )
-        Pdata8 = convGlobktopandas(yearf, data, Ddata)
+        Pdata8 = gpsr.convGlobktopandas(yearf8, data8, Ddata8)
         shift = [
             (Pdata8.north - Pdata.north).mean(),
             (Pdata8.east - Pdata.east).mean(),
             (Pdata8.up - Pdata.up).mean(),
         ]
-        data = np.array([data[i, :] - shift[i] for i in range(3)])
-        yearf = pd.to_datetime(toDateTime(yearf))
-        fig = addData(yearf, data, Ddata, fig, markerfacecolor="b", markeredgecolor="b")
+        data8 = np.array([data8[i, :] - shift[i] for i in range(3)])
+        x8 = list(gpsr.toDateTime(yearf8))
+        fig = addData(x8, data8, Ddata8, fig, markerfacecolor="b", markeredgecolor="b")
 
     if events:
         addEvent(events, fig)
 
-    # putting a logo
     if logo:
         inpLogo(fig)
 
-    # saving the fiugre to a file
     if save:
-        # filename and path
         filend = "-%s" % (ref,)
-
         if tType != "TOT":
             filend += "-{0:s}".format(tType)
 
@@ -208,79 +374,62 @@ def plotTime(
                 filend += "_since-%s" % (firstpoint.strftime("%Y%m%d"),)
             else:
                 filend += "-%s" % special
-
         else:
             filend += "_%s-%s" % (
                 firstpoint.strftime("%Y%m%d"),
                 lastpoint.strftime("%Y%m%d"),
             )
 
-        figFile = sta + filend
-        fileName = os.path.join(figDir, figFile)
-        ##-------------------------------------------
+        fileName = os.path.join(figDir, sta + filend)
         saveFig(fileName, save, fig)
-
-        # utils.conv2png(fileName+"."+save,logo='/home/bgo/git/gps/postprocessing/matplotlib-based/logos/vi_logos/vi_logo.png')
-        # utils.conv2png(fileName+"."+save,logo='/home/bgo/git/gps/gpspostprocessing/matplotlib-based/logos/vi_logos/vi_namelogo.png')
-        conv2png(fileName + "." + save, logo=None)
-        # utils.convpng2thum(fileName+".png")
-
     else:
         plt.show()
 
+    return fig
 
-def stdFrame(Ylabel=None, Title=None):
+
+def stdFrame(
+    Ylabel: Sequence[str] | None = None,
+    Title: str | Sequence[str] | StationTitle | None = None,
+    fig: Figure | None = None,
+) -> tuple[Figure, Any]:
+    """Empty 3-axes frame for a standard GPS time-series plot.
+
+    ``fig=None`` creates a new pyplot figure; passing an existing Figure
+    reuses it (cleared) -- the production save path passes the module-level
+    reusable figure.  Style is applied once via :func:`init_plot_style`.
     """
-    Frame for plotting standard GPS time series. takes in Ylabel and Title
-    and constructs empty figure with no data.
-    input:
-        Ylabel,
-        Title,
+    init_plot_style()
 
-    output:
-        fig, Figure object.
-
-    """
-    # --- apply custom stuff to the whole fig ---
-    mpl.style.use("classic")
-    plt.minorticks_on
-    plt.gcf().autofmt_xdate(rotation=0, ha="left")
-    mpl.rcParams["legend.handlelength"] = 0
-    mpl.rcParams["text.usetex"] = True
-    # mpl.rcParams['text.latex.unicode'] = True
-    mpl.rc("text.latex", preamble=r"\usepackage[utf8]{inputenc}")
-    mpl.rc("text.latex", preamble=r"\usepackage{color}")
-    # mpl.rc("text.latex", preamble=r"\usepackage[pdftex]{graphicx}")
-    # mpl.rc('text.latex', preamble=r'\usepackage[icelandic]{babel}')
-    # mpl.rc('text.latex', preamble=r'\usepackage[T1]{fontenc}')
-    mpl.rc("font", family="Times New Roman")
-    # plt.rcParams["pgf.preamble"] = ( r"\AtBeginDocument{\catcode`\&=12\catcode`\#=12}")
-
-    # constructing a figure with three axes and adding a title
-    fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(13, 20))
-    fig.subplots_adjust(hspace=0.1)
-
-    if type(Title) is list:
-        plt.suptitle(Title[0], y=0.935, x=0.51)
-        axes[0].set_title(Title[1], y=1.01)
-    elif type(Title) is str:
-        axes[0].set_title(Title)
+    if fig is None:
+        fig = plt.figure(figsize=(13, 20))
     else:
-        pass
+        fig.clear()
+        fig.set_size_inches(13, 20)
+    axes = fig.subplots(nrows=3, ncols=1)
+    # explicit geometry (classic-style values + the production hspace) so a
+    # reused Figure lays out identically no matter when it was created
+    fig.subplots_adjust(
+        left=0.125, right=0.9, bottom=0.1, top=0.9, wspace=0.2, hspace=0.1
+    )
 
-    if Ylabel == None:  #
+    if isinstance(Title, StationTitle):
+        fig.suptitle(Title.main, y=0.935, x=0.51)
+        _add_status_subtitle(axes[0], Title)
+    elif isinstance(Title, (list, tuple)):
+        fig.suptitle(Title[0], y=0.935, x=0.51)
+        axes[0].set_title(Title[1], y=1.01)
+    elif isinstance(Title, str):
+        axes[0].set_title(Title)
+
+    if Ylabel is None:
         Ylabel = ("North [mm]", "East [mm]", "Up [mm]")
-        # Ylabel = ("Nordur [mm]","Austur [mm]","Upp [mm]")
 
     for i in range(3):
         axes[i].set_ylabel(Ylabel[i], fontsize="x-large", labelpad=0)
-        # axes[i].axhline(0, xmin=0, xmax=1,color='black') # zero line
 
     for ax in axes[-1:-4:-1]:
-        # tickmarks lables and other and other axis stuff on each axes
-        # needs improvement
-
-        # --- X axis ---
+        # tickmarks labels and other axis stuff on each axes
         xax = ax.get_xaxis()
 
         xax.set_tick_params(
@@ -303,12 +452,14 @@ def stdFrame(Ylabel=None, Title=None):
     return fig, axes
 
 
-def setXlim(axes, xmin, xmax, start=None, end=None):
-    """
-    set the extend of the plot
-    """
-
-    # the extend of the plot
+def setXlim(
+    axes: Any,
+    xmin: datetime.datetime,
+    xmax: datetime.datetime,
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+) -> timedelta:
+    """Set the x extent of the plot; returns the plotted period."""
     if start and end:
         space = (end - start) / 40
     elif start and not end:
@@ -318,117 +469,126 @@ def setXlim(axes, xmin, xmax, start=None, end=None):
     else:
         space = (xmax - xmin) / 40
 
-    if start:  # start of the plot
+    if start:
         start = start - space
     else:
         start = xmin - space
 
-    if end:  # end of the plot
+    if end:
         end = end + space
     else:
         end = xmax + space
-    # ----------------------
 
     for ax in axes:
         ax.set_xlim(start, end)
 
-    period = end - start
-
-    return period
+    return end - start
 
 
-def setYlim(fig, ymin=[0, 0, 0], ymax=[0, 0, 0], ylim=[]):
+def setYlim(
+    fig: Figure,
+    ymin: Sequence[float] = (0, 0, 0),
+    ymax: Sequence[float] = (0, 0, 0),
+    ylim: Sequence[Any] = (),
+) -> Figure:
+    """Set the y extent of the three component axes.
+
+    ``ylim`` semantics (unchanged from the legacy CLI): one number expands
+    each axis by that many mm; two numbers are absolute bounds for all
+    axes; three items are per-component ``(lower, upper)`` pairs.
     """
-    set the extend of the lim
-    """
-
     for i in range(3):
         if len(ylim) == 1:
-            fig.axes[i].set_ylim([ymin[i] - ylim[0], ymax[i] + ylim[0]])
+            fig.axes[i].set_ylim(ymin[i] - float(ylim[0]), ymax[i] + float(ylim[0]))
 
         if len(ylim) == 2:
-            fig.axes[i].set_ylim(ylim[0], ylim[1])
+            fig.axes[i].set_ylim(float(ylim[0]), float(ylim[1]))
 
         if len(ylim) == 3:
-            fig.axes[i].set_ylim(ylim[i][0], ylim[i][1])
+            fig.axes[i].set_ylim(float(ylim[i][0]), float(ylim[i][1]))
 
     return fig
 
 
+def _as_datetime_list(x: Any) -> list[datetime.datetime]:
+    """Coerce an epoch array to a list of datetimes.
+
+    Fractional-year float input (the legacy call convention) is converted
+    via ``geo_dataread`` (lazy production dep); datetime-like input
+    (datetime64 arrays, datetime sequences, pandas indexes) passes through
+    without the redundant re-conversion the old code performed.
+    """
+    arr = np.asarray(x)
+    if arr.dtype.kind == "f":
+        from geo_dataread.gps_read import toDateTime
+
+        return list(toDateTime(arr))
+    if arr.dtype.kind == "M":
+        return list(arr.astype("datetime64[us]").astype(object))
+    return [v.to_pydatetime() if hasattr(v, "to_pydatetime") else v for v in x]
+
+
 def stdTimesPlot(
-    x,
-    y,
-    Dy,
-    Ylabel=None,
-    Title=None,
-    start=None,
-    end=None,
-    ylim=[],
-    warnp=-1,
-    label=None,
-):
+    x: Any,
+    y: Any,
+    Dy: Any,
+    Ylabel: Sequence[str] | None = None,
+    Title: str | Sequence[str] | StationTitle | None = None,
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+    ylim: Sequence[float] | Sequence[Sequence[float]] = (),
+    warnp: int = -1,
+    label: str | None = None,
+    fig: Figure | None = None,
+) -> Figure:
+    """Build a three-component time-series Figure and return it.
+
+    This is the figure-returning seam: it only constructs the Figure --
+    saving/showing is the caller's separate step (see :func:`saveFig`), so
+    it can be driven from a REPL.  ``x`` may be datetimes or fractional
+    years; ``y``/``Dy`` are shape (3, N).
     """
-    plots a three component time series on three different plots
-    calls stdFrame to initalize a figure and plots the input data in the frame
+    x = _as_datetime_list(x)
 
-    input:
-        x
-        y
-        Dy
-        Ylabel
-        Title
-
-    output
-        fig, Figure object
-    """
-
-    x = pd.to_datetime(toDateTime(x))
-    yesterdaybool = x[-1] == currDate(warnp)
-
-    # plotting
-    fig, axes = stdFrame(Ylabel, Title)
+    fig, axes = stdFrame(Ylabel, Title, fig=fig)
     period = setXlim(axes, x[0], x[-1], start=start, end=end)
     fig = tsTickLabels(fig, axes, period=period)
-    # plt.autoscale()
 
     ymin = [min(y[0, :]), min(y[1, :]), min(y[2, :])]
     ymax = [max(y[0, :]), max(y[1, :]), max(y[2, :])]
     fig = setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
     fig = addData(x, y, Dy, fig, label=label)
-    if yesterdaybool:
-        fig = addPoints(x[-1], [y[i][-1] for i in range(3)], fig)
+    # Last-point highlight suppressed (BGÓ 2026-07-11): the legacy trigger
+    # (Timestamp == date) never fired in production, so no marker is drawn.
+    # ``addPoints`` is retained as a reusable helper if the highlight is revived.
 
     return fig
 
 
 def addData(
-    x,
-    y,
-    Dy,
-    fig,
-    ls="none",
-    ecolor="grey",
-    elinewidth=0.4,
-    marker="o",
-    markersize=3.5,
-    markerfacecolor="r",
-    markeredgecolor="r",
-    label=None,
-):
-    """
-    Adding data to the plot
-    """
-
-    warnings.filterwarnings("ignore")
-
+    x: Any,
+    y: Any,
+    Dy: Any,
+    fig: Figure,
+    ls: str = "none",
+    ecolor: str = "grey",
+    elinewidth: float = 0.4,
+    marker: str = "o",
+    markersize: float = 3.5,
+    markerfacecolor: str = "r",
+    markeredgecolor: str = "r",
+    label: str | None = None,
+) -> Figure:
+    """Add a three-component data series to the figure."""
     for i in range(3):
         fig.axes[i].errorbar(
             x, y[i], yerr=Dy[i], ls=ls, ecolor=ecolor, elinewidth=elinewidth
         )
-        fig.axes[i].plot_date(
+        fig.axes[i].plot(
             x,
             y[i],
+            linestyle="none",
             marker=marker,
             markersize=markersize,
             markerfacecolor=markerfacecolor,
@@ -440,21 +600,20 @@ def addData(
 
 
 def addPoints(
-    x,
-    y,
-    fig,
-    marker="o",
-    markersize=5.5,
-    markerfacecolor="lightgreen",
-    markeredgecolor="black",
-):
-    """
-    add a single point to the graph
-    """
+    x: Any,
+    y: Sequence[float],
+    fig: Figure,
+    marker: str = "o",
+    markersize: float = 5.5,
+    markerfacecolor: str = "lightgreen",
+    markeredgecolor: str = "black",
+) -> Figure:
+    """Highlight a single epoch on all three component axes."""
     for i in range(3):
-        fig.axes[i].plot_date(
+        fig.axes[i].plot(
             x,
             y[i],
+            linestyle="none",
             marker=marker,
             markersize=markersize,
             markerfacecolor=markerfacecolor,
@@ -473,10 +632,6 @@ def addEvent(eventDict, fig, dstr="%Y%m%d", **kwargs):
     for event in events:
         if len(eventDict[event]) > 0:
             color = eventDict[event][0]
-        # elif  len(eventDict[event]) > 1:
-        #    marker = eventDict[event][1]
-        # elif  len(eventDict[event]) > 2:
-        #    linesyle = eventDict[event][2]
         else:
             color = "r"
 
@@ -485,19 +640,53 @@ def addEvent(eventDict, fig, dstr="%Y%m%d", **kwargs):
 
         axes = fig.axes
         [ax.axvline(x=event, color=color, zorder=2, **kwargs) for ax in axes]
-        # [ ax.axvline(x=event.toordinal(),color=color, zorder=2, **kwargs) for ax in axes ]
 
     return fig
 
 
-def saveFig(fileName, fType, fig):
+def saveFig(
+    fileName: str,
+    fType: str | Sequence[str],
+    fig: Figure,
+    png_dpi: float = PNG_DPI,
+) -> Figure:
+    """Save the figure natively to one or more formats.
+
+    ``fType`` is a single suffix (``"png"``), a comma-separated string
+    (``"eps,pdf,png"``) or a sequence of suffixes; each format is one
+    direct ``savefig`` -- no external conversion.  The tight bounding box
+    is computed once and shared by all formats (the legacy per-save
+    ``bbox_inches="tight"`` re-rendered the figure to measure it).
     """
-    Save
-    """
-    plotFile = "%s.%s" % (fileName, fType)
-    fig.savefig(plotFile, bbox_inches="tight")
+    formats = _save_formats(fType)
+
+    bbox: Any
+    try:
+        pad = float(mpl.rcParams["savefig.pad_inches"])
+        bbox = fig.get_tightbbox().padded(pad)
+    except Exception:  # pragma: no cover - defensive fallback
+        bbox = "tight"
+
+    for fmt in formats:
+        fig.savefig(
+            "%s.%s" % (fileName, fmt),
+            bbox_inches=bbox,
+            dpi=png_dpi if fmt.lower() == "png" else "figure",
+        )
 
     return fig
+
+
+def _save_formats(fType: str | Sequence[str]) -> list[str]:
+    """Normalize a format spec to a list of file suffixes."""
+    if isinstance(fType, str):
+        formats = [f.strip() for f in fType.split(",")]
+    else:
+        formats = [str(f).strip() for f in fType]
+    formats = [f.lstrip(".") for f in formats if f]
+    if not formats:
+        raise ValueError("no output format given: %r" % (fType,))
+    return formats
 
 
 #
@@ -505,7 +694,7 @@ def saveFig(fileName, fType, fig):
 #
 
 
-def convLatex(string):
+def convLatex(string: str) -> str:
     """
     Converting Icelandic letters to latex (th as þ and d as ð)
     """
@@ -571,8 +760,6 @@ def convIcelCh(string):
 def inpLogo(fig, Logo=None):
     """ """
 
-    # asp = 0.6948051948051948
-    # asp = 0.93 # Image aspect ratio
     asp = 0.45  # Image aspect ratio
     xlen = 0.07
     ylen = xlen * asp
@@ -590,112 +777,8 @@ def inpLogo(fig, Logo=None):
         )
 
 
-def makelatexTitle(sta, lastData, ref="ITRF2008", warnp=-1):
-    """
-    Create a Title for standard GPS time series plot using latex package
-    """
-
-    config = cp.ConfigParser()
-    Title = []
-
-    lastpoint = currDate(refday=lastData, String="Last datapoint: %d %b %Y")
-    yesterdaybool = lastData.date() == currDate(warnp)
-
-    # Color of the date value: green if since yesterday, red otherwise
-    if yesterdaybool:
-        dcolor = "green"
-    else:
-        dcolor = "red"
-
-    timeofPlot = currTime("(Plot created on %b %d %Y %H:%M %Z)")
-    # fetcing the station full name
-    try:
-        # stName = cp.parseOne(STA,staConFilePath)['station']['name']
-        # stName = config.getStationInfo(sta)["name"]
-        stName = config.get_config(sta, "station_name")
-    except:
-        stName = sta
-    stName = convLatex(stName)
-
-    # putting the components together
-    NameStr = "%s (%s)" % (stName, sta)
-    if sta == "hekla":
-        NameStr = "Hekla (Summit)"
-    refFr = "Reference frame: %s" % ref
-    if ref == "Multigas":
-        filtering = "Uncorrected"
-        refFr = "%s: %s" % (ref, filtering)
-
-    titlestr = [NameStr, refFr, lastpoint, timeofPlot]
-
-    # list of parameter dictionaries
-    font = [
-        {"color": "black", "size": r"\Huge", "newl": r"\ "},
-        {"color": "black", "size": r"\Large", "newl": r""},
-        {"color": dcolor, "size": r"\LARGE", "newl": r"\ "},
-        {"color": "black", "size": r"\large", "newl": r""},
-    ]
-
-    # Creating the latex strings
-    tmptitle = ""
-    for i in range(2):
-        tmptitle += r"%s\textcolor{%s}{%s} %s " % (
-            font[i]["size"],
-            font[i]["color"],
-            titlestr[i],
-            font[i]["newl"],
-        )
-    Title.append(tmptitle)
-    tmptitle = ""
-
-    for i in range(2, 4):
-        tmptitle += r"%s\textcolor{%s}{%s} %s " % (
-            font[i]["size"],
-            font[i]["color"],
-            titlestr[i],
-            font[i]["newl"],
-        )
-    Title.append(tmptitle)
-
-    return Title
-
-
-# HighlightText(x=0.5, y=0.5,
-#               fontsize=16,
-#               ha='center', va='center',
-#               s='<This is a title.>\n<and a subtitle>',
-#               highlight_textprops=highlight_textprops,
-#               fontname='Roboto',
-#               ax=ax)
-
-
-def makeTitle(sta, lastData, ref="ITRF2008", warnp=-1):
-    """
-    Create a Title for standard GPS time series plot using latex package
-    """
-
-    text = (
-        "The iris dataset contains 3 species:\n<setosa>, <versicolor>, and <virginica>"
-    )
-    fig_text(
-        s=text,
-        x=0.5,
-        y=1,
-        fontsize=20,
-        color="black",
-        highlight_textprops=[
-            {"color": colors[0], "fontweight": "bold"},
-            {"color": colors[1], "fontweight": "bold"},
-            {"color": colors[2], "fontweight": "bold"},
-        ],
-        ha="center",
-    )
-
-
 def tsTickLabels(fig, axes, period=timedelta(90)):
     """ """
-
-    # minorLoc, minorFmt, majorLoc,majorFmt = tsLabels(period)
 
     # major labels in separate layer
     # -----------
@@ -722,8 +805,6 @@ def tsTickLabels(fig, axes, period=timedelta(90)):
     for ax in axes[-1:-4:-1]:
         # tickmarks lables and other and other axis stuff on each axes
         # needs improvement
-        #     # ax.grid(True,linestyle='solid',axis='x')
-        # if period < timedelta(2600):
         ax.grid(
             True,
             which="minor",
@@ -749,21 +830,10 @@ def tsTickLabels(fig, axes, period=timedelta(90)):
         xax = ax.get_xaxis()
         xax = tslabels(xax, period=period, locator="minor", formater="minor")
         xax = tslabels(xax, period=period, locator="major", formater="major")
-        # xax = tslabels(xax, period=period, locator="major", formater=None)
-
-        # if ax is axes[2]:
-        #     xax = tslabels(xax, period=period, locator=None, formater="major")
-
-        # xax.set_tick_params(which="minor", reset=True, direction="inout", length=4)
-        # xax.set_tick_params(which="major", reset=True, direction="inout", length=15)
 
         for tick in xax.get_major_ticks():
             tick.label1.set_horizontalalignment("left")
 
-        # for label in xax.get_ticklabels('major')[::]:
-        #     label.set_visible(False)
-        #     label.set_text("test")
-        #     print("text: %s" % label.get_text())
         xax.label.set_horizontalalignment("center")
 
         # --- Y axis ---
@@ -811,9 +881,7 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
         majorFmt = mpl.dates.DateFormatter("%d %b %Y")
 
     elif period <= timedelta(193):
-        # minorLoc = mpl.dates.AutoDateLocator(minticks=11, maxticks=24)
         minorLoc = mpl.dates.DayLocator(bymonthday=[1, 7, 14, 21, 28])
-        # minorFmt = mpl.dates.ConciseDateFormatter(minorLoc)
         minorFmt = mpl.dates.DateFormatter("%d")
 
         majorLoc = mpl.dates.MonthLocator(interval=1)
@@ -823,7 +891,6 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
         minorLoc = mpl.dates.MonthLocator()
         minorFmt = mpl.dates.DateFormatter("%b")
 
-        # majorLoc = mpl.dates.MonthLocator(interval=2)
         majorLoc = mpl.dates.YearLocator(1, month=1)
         majorFmt = mpl.dates.DateFormatter("%Y")
 
@@ -833,7 +900,6 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
         for label in xax.get_ticklabels("major")[1::2]:
             label.set_visible(False)
 
-        # majorLoc = mpl.dates.MonthLocator(interval=2)
         majorLoc = mpl.dates.YearLocator(1)
         majorFmt = mpl.dates.DateFormatter("%Y")
 
@@ -867,8 +933,6 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
     else:
         minorLoc = mpl.dates.YearLocator(1)
         minorFmt = mpl.dates.DateFormatter("")
-        # for label in xax.get_ticklabels('minor')[1::2]:
-        #    label.set_visible(False)
 
         majorLoc = mpl.dates.AutoDateLocator()
         majorFmt = mpl.dates.AutoDateFormatter(majorLoc)
@@ -882,119 +946,6 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
 
     if formater:
         if formater == "minor":
-            xax.set_minor_formatter(minorFmt)
-
-        else:
-            xax.set_major_formatter(majorFmt)
-
-        return xax
-
-    else:
-        return xax
-
-
-def auto_date_xticks(xax, period=None, locator=None, formatter=None):
-    """
-    First attempt to make the time scale on the x axis look good
-
-    Example:
-
-    """
-
-    if period <= timedelta(6):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 8, 16])
-        minorFmt = mpl.dates.DateFormatter("%H:%M")
-
-        majorLoc = mpl.dates.DayLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
-
-    elif period <= timedelta(12):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 8, 16])
-        minorFmt = mpl.dates.DateFormatter("%H")
-
-        majorLoc = mpl.dates.AutoDateLocator(maxticks=8)
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
-
-    elif period <= timedelta(18):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 12])
-        minorFmt = mpl.dates.DateFormatter("%H")
-
-        majorLoc = mpl.dates.AutoDateLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
-
-    elif period <= timedelta(30):
-        minorLoc = mpl.dates.DayLocator()
-        minorFmt = mpl.dates.DateFormatter("%d")
-        for label in xax.get_ticklabels("major")[1::2]:
-            label.set_visible(False)
-
-        majorLoc = mpl.dates.MonthLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %Y")
-
-    elif period <= timedelta(193):
-        minorLoc = mpl.dates.AutoDateLocator(minticks=15, maxticks=20)
-        minorFmt = mpl.dates.DateFormatter("%d")
-
-        majorLoc = mpl.dates.MonthLocator(interval=1)
-        majorFmt = mpl.dates.DateFormatter("%b %Y")
-
-    elif period <= timedelta(500):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter("%b")
-
-        majorLoc = mpl.dates.YearLocator(1, month=1)
-        majorFmt = mpl.dates.DateFormatter("%Y")
-
-    elif period <= timedelta(1200):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter("%b")
-
-        majorLoc = mpl.dates.MonthLocator((1, 4, 7, 10))
-        majorFmt = mpl.dates.DateFormatter("%Y-%m")
-
-    elif period <= timedelta(2300):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter("%b")
-
-        majorLoc = mpl.dates.MonthLocator((1, 7))
-        majorFmt = mpl.dates.DateFormatter("%Y-%m")
-
-    elif period <= timedelta(5000):
-        minorLoc = mpl.dates.MonthLocator(bymonth=[1, 4, 7, 10])
-        minorFmt = mpl.dates.DateFormatter("%b")
-        for label in xax.get_ticklabels("minor")[1::2]:
-            label.set_visible(False)
-
-        majorLoc = mpl.dates.YearLocator()
-        majorFmt = mpl.dates.DateFormatter("%Y")
-        for label in xax.get_ticklabels()[1::2]:
-            label.set_visible(False)
-
-    elif period <= timedelta(10000):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter()
-
-        majorLoc = mpl.dates.AutoYearLocator()
-        majorFmt = mpl.dates.DateFormatter("%Y")
-        for label in xax.get_ticklabels()[1::2]:
-            label.set_visible(False)
-
-    else:
-        minorLoc = mpl.dates.YearLocator(1)
-        minorFmt = mpl.dates.DateFormatter("")
-
-        majorLoc = mpl.dates.AutoDateLocator()
-        majorFmt = mpl.dates.AutoDateFormatter(majorLoc)
-
-    if locator:
-        if locator == "minor":
-            xax.set_minor_locator(minorLoc)
-
-        else:
-            xax.set_major_locator(majorLoc)
-
-    if formatter:
-        if formatter == "minor":
             xax.set_minor_formatter(minorFmt)
 
         else:
@@ -1079,78 +1030,3 @@ def fancytitle(x, y, titlestr, font, ax, **kw):
         y = y - 0.06
 
     return textlist
-
-
-def conv2png(psFile, density=90, logo=None, logoloc="+780+0090"):
-    """ """
-
-    fDir = os.path.dirname(psFile)
-    fileName, Ftype = os.path.splitext(psFile)
-
-    tmpFile = os.path.join(fDir, "tmp.png")
-    pngFile = "%s.%s" % (fileName, "png")
-
-    psCmd = "convert -density %d %s %s " % (density, psFile, tmpFile)
-    run_cmd(psCmd)
-
-    trCmd = "convert -trim %s %s " % (tmpFile, pngFile)
-    run_cmd(trCmd)
-    if os.path.isfile(tmpFile):
-        os.remove(tmpFile)
-
-    if logo:
-        logoCmd = "composite -compose atop -gravity NorthEast -geometry +{0} -resize '1x1<' -dissolve 70% {1} {2} {3} ".format(
-            logoloc, logo, pngFile, tmpFile
-        )
-        run_cmd(logoCmd)
-        os.rename(tmpFile, pngFile)
-
-        # logoCmd = "composite -compose atop -gravity NorthEast -geometry +830+0090 -resize '1x1<' -dissolve 50%" +  " %s %s %s " % (logo, pngFile, tmpFile)
-
-
-def run_cmd(check_cmd):
-    ## Run command
-
-    process = subprocess.Popen(check_cmd, shell=True, stdout=subprocess.PIPE)
-    process.wait()
-
-    proc_check_returncode = process.returncode
-    proc_check_comm = process.communicate()[0].strip("\n".encode())
-
-    return proc_check_returncode, proc_check_comm
-
-
-def run_syscmd(check_cmd, p_args):
-    """ """
-    ## Run command
-    currfunc = (
-        __name__ + "." + sys._getframe().f_code.co_name + " >>"
-    )  # module.object name
-    if p_args["debug"]:
-        print("%s Starting ..." % currfunc)
-
-    process = subprocess.Popen(check_cmd, shell=True, stdout=subprocess.PIPE)
-    process.wait()
-
-    proc_check_returncode = process.returncode
-    proc_check_comm = process.communicate()[0].strip("\n")
-
-    # (3)# Make desicions according to output...
-    if p_args["debug"]:
-        print("%s process.returncode:" % currfunc, proc_check_returncode)
-    if p_args["debug"]:
-        print(
-            currfunc,
-            "process.communicate():\n---------------\n",
-            proc_check_comm,
-            "\n-------------",
-        )
-    if proc_check_returncode == 0:
-        if p_args["debug"]:
-            print("%s Command went well.." % currfunc)
-    elif proc_check_returncode == 255:
-        if p_args["debug"]:
-            print("%s Timeout..." % currfunc)
-    else:
-        if p_args["debug"]:
-            print("%s Command failed... " % currfunc)
