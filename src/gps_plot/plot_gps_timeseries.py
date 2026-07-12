@@ -41,7 +41,7 @@ def tryTimes(sta, **kwargs):
         )
         print(">> {}, {}".format(sys.stderr, errorstr))
 
-    except:
+    except Exception:
         traceback.print_exc()
         # print >>sys.stderr, top
         print(
@@ -121,14 +121,12 @@ def _expand_variants(kwargs, refs, specials):
 def exit_gracefully(signum, frame):
     """Exit gracefully on Ctrl-C"""
 
-    current_func = sys._getframe().f_code.co_name + "() >> "
-
     # restore the original signal handler as otherwise evil things will happen
-    # in raw_input when CTRL+C is pressed, and our signal handler is not re-entrant
+    # in input() when CTRL+C is pressed, and our signal handler is not re-entrant
     signal.signal(signal.SIGINT, original_sigint)
 
     try:
-        if raw_input("\nReally quit? (y/n)> ").lower().startswith("y"):
+        if input("\nReally quit? (y/n)> ").lower().startswith("y"):
             sys.exit(1)
 
     except KeyboardInterrupt:
@@ -315,8 +313,9 @@ def main():
     # ------------------------
 
     if args.t:  # join GPS time series
-        for sta in statlist:
-            tp.compGlobkTimes(sta)
+        raise NotImplementedError(
+            "--t (join GPS time series) is not implemented in this driver"
+        )
 
     del kwargs["t"]
 
