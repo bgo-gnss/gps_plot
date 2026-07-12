@@ -8,6 +8,11 @@ companion to the ``gps_api`` real-data reconciliation (Pearson r = 0.993);
 the near-identical red/blue fields despite different (depth, ΔV) illustrate
 the classic depth-volume trade-off.
 
+The map itself is :func:`gps_plot.maps.deformation_vectors` — this script
+only assembles the inputs: observed (dE, dN) from the fixture ``.NEU``
+series, and the two model fields via :func:`gps_plot.maps.mogi_model_field`
+(``gps_analysis.mogi_forward`` under the hood).
+
 Data provenance
 ---------------
 Reads the ``gps_api`` real-data validation fixture (gitignored; regenerate with
@@ -70,113 +75,92 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("mogi_vector_comparison.png"))
     args = ap.parse_args()
 
-    import pygmt  # noqa: PLC0415 — optional 'maps' extra; import lazily
-    from gps_analysis import MogiSource, local_coordinates, mogi_forward  # noqa: PLC0415
-    from gps_parser import ConfigParser  # noqa: PLC0415
+    from gps_parser import ConfigParser  # noqa: PLC0415 — dev-group sibling
+
+    from gps_plot.maps import (  # noqa: PLC0415
+        StationCoordinate,
+        deformation_vectors,
+        mogi_model_field,
+    )
 
     rec = json.loads((args.fixture / "reconciliation.json").read_text())
     man = json.loads((args.fixture / "manifest.json").read_text())
     start = dt.date.fromisoformat(rec["window_start"])
     end = dt.date.fromisoformat(rec["window_end"])
-    ours = dict(
-        lon=rec["source_lon_mean"],
-        lat=rec["source_lat_mean"],
-        depth=rec["depth_mean_km"] * 1e3,
-        dv=rec["final_ours_m3"],
-    )
-    v = man["vincent_source"]
-    vinc = dict(lon=v["lon"], lat=v["lat"], depth=v["depth_m"], dv=v["dv_m3_final"])
+    vinc = man["vincent_source"]
 
     cp = ConfigParser()
-    lon, lat, names = [], [], []
+    stations: list[StationCoordinate] = []
     for s in rec["stations_used"]:
         try:
             info = cp.getStationInfo(s)["station"]
         except Exception:  # noqa: BLE001 — station absent from config
             continue
-        lon.append(float(info["longitude"]))
-        lat.append(float(info["latitude"]))
-        names.append(s)
-    lon, lat = np.array(lon), np.array(lat)
-
-    def model(src: dict) -> tuple[np.ndarray, np.ndarray]:
-        e, n = local_coordinates(lon, lat, src["lon"], src["lat"])
-        enu = mogi_forward(
-            e, n, MogiSource(x=0.0, y=0.0, depth=src["depth"], dv=src["dv"])
+        stations.append(
+            StationCoordinate(
+                marker=s, lon=float(info["longitude"]), lat=float(info["latitude"])
+            )
         )
-        return enu[0] * 1e3, enu[1] * 1e3  # E, N in mm
+    lon = np.array([c.lon for c in stations])
+    lat = np.array([c.lat for c in stations])
 
-    obsE = np.full(len(names), np.nan)
-    obsN = np.full(len(names), np.nan)
-    for i, s in enumerate(names):
-        d = _neu_window(args.fixture / "neu" / f"{s}.NEU", start, end)
+    obsE = np.full(len(stations), np.nan)
+    obsN = np.full(len(stations), np.nan)
+    for i, c in enumerate(stations):
+        d = _neu_window(args.fixture / "neu" / f"{c.marker}.NEU", start, end)
         if d:
             obsE[i], obsN[i] = d
-    ourE, ourN = model(ours)
-    vinE, vinN = model(vinc)
 
-    region = [lon.min() - 0.06, lon.max() + 0.06, lat.min() - 0.03, lat.max() + 0.03]
-    fig = pygmt.Figure()
-    fig.basemap(
+    models = [
+        mogi_model_field(
+            lon,
+            lat,
+            source_lon=vinc["lon"],
+            source_lat=vinc["lat"],
+            depth=vinc["depth_m"],
+            dv=vinc["dv_m3_final"],
+            name=f"Vincent ({vinc['depth_m'] / 1e3:g} km)",
+            color="blue",
+        ),
+        mogi_model_field(
+            lon,
+            lat,
+            source_lon=rec["source_lon_mean"],
+            source_lat=rec["source_lat_mean"],
+            depth=rec["depth_mean_km"] * 1e3,
+            dv=rec["final_ours_m3"],
+            name=f"ours ({rec['depth_mean_km']:.1f} km)",
+            color="red",
+        ),
+    ]
+
+    region = (
+        float(lon.min()) - 0.06,
+        float(lon.max()) + 0.06,
+        float(lat.min()) - 0.03,
+        float(lat.max()) + 0.03,
+    )
+    deformation_vectors(
+        stations,
+        obsE,
+        obsN,
+        models,
         region=region,
         projection="M18c",
-        frame=[
-            "af",
-            f"+tSvartsengi {rec['cycle']} ({rec['window_start']} to "
-            f"{rec['window_end']}): observed GNSS vs Mogi models",
-        ],
-    )
-    fig.coast(
+        resolution="f",
         land="240/240/235",
         water="200/220/240",
         shorelines="0.4p,gray50",
-        resolution="f",
+        title=(
+            f"Svartsengi {rec['cycle']} ({rec['window_start']} to "
+            f"{rec['window_end']}): observed GNSS vs Mogi models"
+        ),
+        scale=0.012,  # cm(map) per mm(displacement)
+        scale_ref=50.0,
+        outfile=args.out,
     )
-
-    scale = 0.012  # cm(map) per mm(displacement)
-
-    def velo(ve, vn, mask, color):
-        z = np.zeros(int(mask.sum()))
-        data = np.column_stack([lon[mask], lat[mask], ve[mask], vn[mask], z, z, z])
-        fig.velo(
-            data=data,
-            spec=f"e{scale}/0.39/0",
-            pen=f"1.4p,{color}",
-            vector=f"0.4c+p1.4p,{color}+e+g{color}",
-        )
-
-    allm = np.ones(len(names), dtype=bool)
-    velo(vinE, vinN, allm, "blue")
-    velo(ourE, ourN, allm, "red")
-    velo(obsE, obsN, np.isfinite(obsE), "black")
-
-    fig.plot(x=lon, y=lat, style="c0.12c", fill="white", pen="0.6p,black")
-    fig.plot(
-        x=[vinc["lon"]], y=[vinc["lat"]], style="a0.5c", fill="blue", pen="0.6p,black"
-    )
-    fig.plot(
-        x=[ours["lon"]], y=[ours["lat"]], style="a0.5c", fill="red", pen="0.6p,black"
-    )
-
-    rlon, rlat = region[0] + 0.02, region[2] + 0.02
-    fig.velo(
-        data=np.array([[rlon, rlat + 0.015, 50.0, 0.0, 0, 0, 0]]),
-        spec=f"e{scale}/0.39/0",
-        pen="1.4p,black",
-        vector="0.4c+p1.4p,black+e+gblack",
-    )
-    fig.text(x=rlon, y=rlat + 0.028, text="50 mm", font="9p,Helvetica", justify="LM")
-    fig.text(
-        x=rlon,
-        y=rlat + 0.004,
-        text="black=observed  red=ours(3.7km)  blue=Vincent(4km)",
-        font="9p,Helvetica-Bold",
-        justify="LM",
-    )
-
-    fig.savefig(str(args.out), dpi=150)
     print(
-        f"saved {args.out}  ({len(names)} stations, "
+        f"saved {args.out}  ({len(stations)} stations, "
         f"peak |obs| = {np.nanmax(np.hypot(obsE, obsN)):.0f} mm)"
     )
 

@@ -83,27 +83,43 @@ posterior is indicative only). Pre-H3 cost warning: each noise-parameter
 step factorizes the dense N×N covariance (~10 ms at N=365, ~0.3 s at N=730),
 so long series make detection slow until the Toeplitz/Cholesky speedup lands.
 
-## Map lane (PyGMT, PLAN Phase 3 — slice 1)
+## Map lane (PyGMT, PLAN Phase 3 — deformation lane live)
 
-`maps.py::station_map(stations, *, region=None, projection="M12c", ...)` —
-GSHHG coastline base map + station markers + labels. Coordinates come from
-`stations.cfg` via `gps_parser` (`station_coordinates()`, same access path as
-`gps_api.precompute`); pre-resolved `StationCoordinate` objects can be passed
-instead (no config needed). Region defaults to the station bounding box +
-margin. Zero hardcoding: style/region/output are parameters (`DEFAULT_*`
-constants). Returns the `pygmt.Figure`; `outfile=` saves (format from suffix).
+`maps.py` — four map functions sharing the slice-1 conventions (coords from
+`stations.cfg` via `gps_parser` or pre-resolved `StationCoordinate`s, zero
+hardcoding — `DEFAULT_*` params, lazy pygmt guard, returns `pygmt.Figure`,
+`outfile=` saves). All take `dem_grid=` for a hillshade background (slice 3).
+
+- `station_map(stations, ...)` — coastline base + station markers/labels.
+- `velocity_map(vectors, ...)` — `fig.velo` arrows + 1-σ error ellipses.
+  Input: `VelocityVector` records from `velocity_vectors(stations, e, n, σe,
+  σn)` (arrays, mm/yr) or `velocity_vectors_from_geojson()` (the `gps_api`
+  `GET /velocities` product). WLS formal σ vs MLE honest σ flow through as-is
+  (bigger ellipses); mixed `method` tags become color-coded layers
+  (`DEFAULT_METHOD_COLORS`) + legend.
+- `deformation_vectors(stations, obs_e, obs_n, models, ...)` — observed
+  displacement field (mm, NaN = missing) vs N model `VectorField`s, with
+  source stars, scale-reference arrow + color-keyed legend. Model fields via
+  `mogi_model_field()` / `okada_model_field()` (lazy `gps_analysis` forwards;
+  Mogi params match the `gps_api` `DeformationResult` product) or pass
+  pre-computed mm arrays. `examples/mogi_vector_comparison.py` (Svartsengi
+  observed vs two Mogi models + sample PNG) is now a thin caller of this.
+- `slip_map(slip, ...)` — Okada distributed slip as colored fault patches +
+  colorbar. Consumes the `gps_api` `SlipDistributionResult` mapping
+  (`models/<region>_slip.json`; corners from per-patch lon/lat + plane
+  geometry via `slip_patches_from_product()`, metric from
+  `gps_analysis.local_coordinates`) or pre-built `SlipPatch` polygons.
+  `view="map"` (surface projection) or `view="plane"` (along-strike ×
+  down-dip km cross-section — the readable view for near-vertical dikes).
 
 ```python
 from gps_plot.maps import station_map
 station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 ```
 
-Next slices (seams documented in the module docstring): slice 2 =
-`velocity_map` (adds `fig.velo` layers in the GMT velo schema from
-`gps_analysis` velocity output, on top of `station_map`'s figure); slice 3 =
-DEM/hillshade background. The dormant `gmtplot.py::velomap` is the recipe
-reference for both until absorbed (note: its `fig.text` had lon/lat swapped —
-fixed in `maps.py`).
+The dormant `gmtplot.py::velomap` recipe is now fully absorbed (velo layers,
+DEM hillshade; its `fig.text` lon/lat swap fixed). Render tests are env-gated
+on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ## Cross-References
 
@@ -115,5 +131,5 @@ fixed in `maps.py`).
 
 ---
 
-*Last reviewed: 2026-07-11 (map lane slice 1: `maps.py::station_map`, optional
+*Last reviewed: 2026-07-12 (map lane deformation slices: velocity_map / deformation_vectors / slip_map + dem_grid, optional
 `maps` extra, ruff scope for the modern lane)*
