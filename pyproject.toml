@@ -54,15 +54,18 @@ gps_parser = { path = "../gps_parser", editable = true }
 testpaths = ["tests"]
 
 # Lint/format scope: the modern lane (maps, dev_viz, timesmatplt, tests).
-# Legacy maintenance modules and historical snapshots are excluded — the
-# dated gasmatplt snapshots do not even parse as Python 3 (kept as
-# historical reference per CLAUDE.md, DO NOT delete).
+# Ruff scope = the modern Python-3 lane (maps.py, dev_viz.py, timesmatplt.py,
+# tests). The legacy "maintenance only" plotting modules — Python-2-era code we
+# are not modernizing now (BGÓ: ignore all Python-2 code) — are excluded; the two
+# dated snapshots do not even parse as Python 3 (DO NOT delete, per CLAUDE.md).
 [tool.ruff]
 extend-exclude = [
-    "src/gps_plot/gasmatplt.py",
-    "src/gps_plot/gasmatplt_bgo_15May17.py",
-    "src/gps_plot/gasmatplt_workingon15May17.py",
-    "src/gps_plot/gmtplot.py",
+    "src/gps_plot/gasmatplt.py",                   # legacy GAS plots (maintenance only)
+    "src/gps_plot/gasmatplt_bgo_15May17.py",       # Python-2 snapshot (unparseable)
+    "src/gps_plot/gasmatplt_workingon15May17.py",  # Python-2 snapshot (unparseable)
+    "src/gps_plot/gmtplot.py",                     # legacy velomap recipe (maintenance)
+    "bin/timesmatplt-test.py",                     # legacy smoke script
+    # TEMPORARY: plot_gps_timeseries.py is lint-cleaned on the perf-plot-parallel
+    # branch; drop this line at that merge so the active driver is linted.
     "src/gps_plot/plot_gps_timeseries.py",
-    "bin/timesmatplt-test.py",
 ]
