@@ -2,17 +2,20 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import concurrent.futures
 import datetime as dt
+import functools
 import os
 import sys
 import traceback
-
-import gps_parser as cp
 
 # from gtimes.timefunc import TimefromYearf, currTime, TimetoYearf
 from gtimes.timefunc import currDatetime
 
 import gps_plot.timesmatplt as tplt
+
+# gps_parser is imported lazily inside main() (it needs a deployed
+# gpsconfig dir), so the module stays importable without it.
 
 
 # functions
@@ -38,7 +41,7 @@ def tryTimes(sta, **kwargs):
         )
         print(">> {}, {}".format(sys.stderr, errorstr))
 
-    except:
+    except Exception:
         traceback.print_exc()
         # print >>sys.stderr, top
         print(
@@ -47,17 +50,83 @@ def tryTimes(sta, **kwargs):
         )
 
 
+def _install_raw_read_cache(maxsize=4):
+    """Cache raw GLOBK file reads per ``(sta, Dir, tType)`` in this process.
+
+    ``getData`` re-reads and re-parses the same three ``mb_*.dat{1,2,3}``
+    files once per sub-period (90d/year/full/fixedstart) although only the
+    date window differs.  Only the deterministic disk read
+    (``openGlobkTimes``) is cached: the window-DEPENDENT math downstream
+    (``dPeriod`` windowing, ``iprep`` zero-referencing at the window start,
+    plate-velocity removal accumulating from the window's first epoch) must
+    still run per call, so every plot gets bit-identical data to an
+    uncached read.  Each cache hit returns fresh copies because ``getData``
+    mutates the arrays in place (``iprep``'s m->mm conversion, plate
+    removal).
+    """
+    import geo_dataread.gps_read as gpsr
+
+    if getattr(gpsr.openGlobkTimes, "_gps_plot_raw_read_cache", False):
+        return
+
+    raw_read = functools.lru_cache(maxsize=maxsize)(gpsr.openGlobkTimes)
+
+    @functools.wraps(gpsr.openGlobkTimes)
+    def cached_openGlobkTimes(sta, Dir=None, tType="TOT"):
+        yearf, data, ddata = raw_read(sta, Dir, tType)
+        return yearf.copy(), data.copy(), ddata.copy()
+
+    cached_openGlobkTimes._gps_plot_raw_read_cache = True
+    gpsr.openGlobkTimes = cached_openGlobkTimes
+
+
+def plotStation(sta, variants):
+    """Render every requested (ref, special) plot variant for one station.
+
+    This is the unit of (process-)parallel work: one station, all its
+    sub-period/reference variants in sequence, so the raw-read cache turns
+    the former once-per-variant file read into one read per station.
+    Per-plot fault tolerance is unchanged (:func:`tryTimes`).
+    """
+    _install_raw_read_cache()
+    for kwargs in variants:
+        tryTimes(sta, **kwargs)
+
+
+def _expand_variants(kwargs, refs, specials):
+    """Expand ``--ref``/``--special`` "all" into per-station plot kwargs.
+
+    ``kwargs["ref"]``/``kwargs["special"]`` equal to ``"all"`` expand to
+    the allowed values (``refs`` outer, ``specials`` inner -- the legacy
+    loop order); anything else passes through unchanged.  Always returns
+    fresh dicts safe to ship to worker processes.
+    """
+    ref_all = kwargs.get("ref") == "all"
+    special_all = kwargs.get("special") == "all"
+    base = {
+        key: value
+        for key, value in kwargs.items()
+        if not ((key == "ref" and ref_all) or (key == "special" and special_all))
+    }
+
+    if ref_all and special_all:
+        return [dict(base, ref=r, special=s) for r in refs for s in specials]
+    if special_all:
+        return [dict(base, special=s) for s in specials]
+    if ref_all:
+        return [dict(base, ref=r) for r in refs]
+    return [base]
+
+
 def exit_gracefully(signum, frame):
     """Exit gracefully on Ctrl-C"""
 
-    current_func = sys._getframe().f_code.co_name + "() >> "
-
     # restore the original signal handler as otherwise evil things will happen
-    # in raw_input when CTRL+C is pressed, and our signal handler is not re-entrant
+    # in input() when CTRL+C is pressed, and our signal handler is not re-entrant
     signal.signal(signal.SIGINT, original_sigint)
 
     try:
-        if raw_input("\nReally quit? (y/n)> ").lower().startswith("y"):
+        if input("\nReally quit? (y/n)> ").lower().startswith("y"):
             sys.exit(1)
 
     except KeyboardInterrupt:
@@ -77,6 +146,7 @@ def exit_gracefully(signum, frame):
 # Main
 def main():
     """ """
+    import gps_parser as cp
 
     config = cp.ConfigParser()
     # date to use defaults to today ----
@@ -186,6 +256,15 @@ def main():
     parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
     )
+    parser.add_argument(
+        "-j",
+        "--workers",
+        type=int,
+        default=None,
+        help="number of parallel station-plotting processes when saving; "
+        "defaults to min(cpu count, number of stations). Interactive "
+        "mode (no --save) is always serial.",
+    )
 
     args = parser.parse_args()
 
@@ -234,43 +313,45 @@ def main():
     # ------------------------
 
     if args.t:  # join GPS time series
-        for sta in statlist:
-            tp.compGlobkTimes(sta)
+        raise NotImplementedError(
+            "--t (join GPS time series) is not implemented in this driver"
+        )
 
     del kwargs["t"]
 
-    # plotting
-    if not (args.special == "all" or args.ref == "all"):
-        for sta in stations:
-            tryTimes(sta, **kwargs)
+    # worker-count policy: interactive mode (no --save) shows figures in a
+    # browser backend and stays in-process; batch mode defaults to one
+    # process per station up to the core count.
+    workers = kwargs.pop("workers")
+    if not args.save:
+        workers = 1
+    elif workers is None:
+        workers = min(os.cpu_count() or 1, len(stations))
+    workers = max(1, workers)
 
+    # plotting: expand --ref/--special "all" into the per-station variant
+    # list.  The legacy loops were special-outer/station-inner, re-reading
+    # each station's data files once per sub-period; station-outer order
+    # lets plotStation read each station's raw series once and reuse it
+    # across all its variants.
+    variants = _expand_variants(kwargs, ref_allow[1:], special_allow[1:])
+
+    if workers > 1:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(plotStation, sta, variants): sta for sta in stations}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception:  # one bad station must not sink the batch
+                    traceback.print_exc()
+                    print(
+                        "Unexpected error: %s during processing of %s"
+                        % (sys.exc_info()[0], futures[future]),
+                        file=sys.stderr,
+                    )
     else:
-        if args.special == "all" and args.ref == "all":
-            del kwargs["ref"]
-            del kwargs["special"]
-            del ref_allow[0]
-            del special_allow[0]
-
-            for ref in ref_allow:
-                for special in special_allow:
-                    for sta in stations:
-                        tryTimes(sta, ref=ref, special=special, **kwargs)
-
-        elif args.special == "all" and not args.ref == "all":
-            del kwargs["special"]
-            del special_allow[0]
-
-            for special in special_allow:
-                for sta in stations:
-                    tryTimes(sta, special=special, **kwargs)
-
-        else:
-            del kwargs["ref"]
-            del ref_allow[0]
-
-            for ref in ref_allow:
-                for sta in stations:
-                    tryTimes(sta, ref=ref, **kwargs)
+        for sta in stations:
+            plotStation(sta, variants)
 
 
 if __name__ == "__main__":
