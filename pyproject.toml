@@ -65,7 +65,4 @@ extend-exclude = [
     "src/gps_plot/gasmatplt_workingon15May17.py",  # Python-2 snapshot (unparseable)
     "src/gps_plot/gmtplot.py",                     # legacy velomap recipe (maintenance)
     "bin/timesmatplt-test.py",                     # legacy smoke script
-    # TEMPORARY: plot_gps_timeseries.py is lint-cleaned on the perf-plot-parallel
-    # branch; drop this line at that merge so the active driver is linted.
-    "src/gps_plot/plot_gps_timeseries.py",
 ]
