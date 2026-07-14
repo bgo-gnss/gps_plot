@@ -158,6 +158,7 @@ def main():
     Type_allow = ["TOT", "08h", "JOIN"]
     ref_allow = ["all", "plate", "detrend", "itrf2008"]
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
+    view_allow = ["raw", "cleaned", "detrended"]
 
     parser = argparse.ArgumentParser(
         description="Plot tool for GPS time series.",
@@ -205,6 +206,16 @@ def main():
         default="itrf2008",
         choices=ref_allow,
         help="Reference frame: defaults to itrf2008, remove plate  velocity (plate), Detrend the time series (detrend)",
+    )
+    parser.add_argument(
+        "--view",
+        type=str,
+        default="raw",
+        choices=view_allow,
+        help="Data view (geo_dataread apply-on-read toggle): raw (default), "
+        "cleaned (outlier epochs masked from the main series and overlaid "
+        "as red points), detrended (stored-parameter detrended series — "
+        "pure apply of the deployed detrend record, plate-first)",
     )
     parser.add_argument(
         "--tType",
