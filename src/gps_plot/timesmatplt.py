@@ -240,6 +240,35 @@ def _add_status_subtitle(ax: Any, title: StationTitle) -> None:
     ax.add_artist(box)
 
 
+def _mask_outliers(
+    yearf: Any, data: Any, Ddata: Any
+) -> tuple[Any, tuple[Any, Any] | None]:
+    """Split a series into a cleaned main series and an outlier overlay.
+
+    Flags come from ``geo_dataread.gps_views.detect_view_outliers`` (the
+    model-aware, signal-protecting detector of the analysis leaf) — a MASK,
+    never a filter: the returned main series has flagged epochs set to NaN
+    per component, and the overlay carries exactly those epochs so the plot
+    shows what was flagged. Detection failure/abort degrades inside
+    geo_dataread (warning + all-False flags), in which case the overlay is
+    None and the main series is untouched.
+
+    Returns:
+        ``(data, overlay)`` — overlay is ``(out_data, out_Ddata)`` NaN
+        everywhere except the flagged epochs, or None when nothing was
+        flagged.
+    """
+    from geo_dataread import gps_views
+
+    flags, _prov = gps_views.detect_view_outliers(yearf, data, Ddata)
+    flags = np.atleast_2d(flags)
+    if not flags.any():
+        return data, None
+    cleaned = np.where(flags, np.nan, data)
+    overlay = (np.where(flags, data, np.nan), np.where(flags, Ddata, np.nan))
+    return cleaned, overlay
+
+
 def plotTime(
     sta: str,
     start: datetime.datetime | None = None,
@@ -256,6 +285,7 @@ def plotTime(
     uncert: int = 15,
     logo: bool = True,
     fig: Figure | None = None,
+    view: str = "raw",
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -263,7 +293,25 @@ def plotTime(
     it (``save`` = format or list/comma-string of formats, e.g. ``"png"``
     or ``"eps,pdf,png"`` -- each written by one native ``savefig``) or
     shows it interactively.  Returns the Figure (REPL-friendly).
+
+    ``view`` is the first-class raw|cleaned|detrended toggle of the
+    internal delivery path (geo_dataread ``gps_views``, design
+    DESIGN_live_detrending §0): ``"raw"`` (default) plots exactly as
+    before; ``"cleaned"`` masks outlier epochs from the main series and
+    overlays them as red points (mask only — raw stays retrievable);
+    ``"detrended"`` plots the stored-parameter detrended series (maps to
+    the revived ``ref="detrend"`` read — plate-first, pure apply, no
+    re-fit). Cleaning/detrending degrades gracefully inside geo_dataread
+    (warning + undegraded series), so a plot never fails for a view
+    reason.
     """
+    if view not in ("raw", "cleaned", "detrended"):
+        raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
+    if view == "detrended":
+        # the stored-parameter detrended series IS the revived ref="detrend"
+        # read path; title/filename follow the existing ref convention
+        ref = "detrend"
+
     # heavy production deps are imported lazily so the module (and the
     # figure-building seam) stays importable without them
     import geo_dataread.gps_read as gpsr
@@ -314,6 +362,10 @@ def plotTime(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
+    outliers = None
+    if view == "cleaned":
+        data, outliers = _mask_outliers(yearf, data, Ddata)
+
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
     firstpoint, lastpoint = x[0], x[-1]
@@ -335,6 +387,20 @@ def plotTime(
         warnp=warnp,
         fig=fig,
     )
+
+    if outliers is not None:
+        # cleaned view: flagged epochs as red points on top of the masked
+        # main series (mask only — nothing is deleted, matching the
+        # geo_dataread raw-preservation rule)
+        fig = addData(
+            x,
+            outliers[0],
+            outliers[1],
+            fig,
+            ecolor="r",
+            markerfacecolor="r",
+            markeredgecolor="r",
+        )
 
     if tType == "JOIN":
         Pdata = gpsr.convGlobktopandas(yearf, data, Ddata)
@@ -366,6 +432,8 @@ def plotTime(
 
     if save:
         filend = "-%s" % (ref,)
+        if view == "cleaned":
+            filend += "-cleaned"
         if tType != "TOT":
             filend += "-{0:s}".format(tType)
 
@@ -554,8 +622,10 @@ def stdTimesPlot(
     period = setXlim(axes, x[0], x[-1], start=start, end=end)
     fig = tsTickLabels(fig, axes, period=period)
 
-    ymin = [min(y[0, :]), min(y[1, :]), min(y[2, :])]
-    ymax = [max(y[0, :]), max(y[1, :]), max(y[2, :])]
+    # NaN-safe (the cleaned view masks outlier epochs with NaN); identical
+    # values for all-finite data, so the raw path is unchanged
+    ymin = [np.nanmin(y[0, :]), np.nanmin(y[1, :]), np.nanmin(y[2, :])]
+    ymax = [np.nanmax(y[0, :]), np.nanmax(y[1, :]), np.nanmax(y[2, :])]
     fig = setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
     fig = addData(x, y, Dy, fig, label=label)

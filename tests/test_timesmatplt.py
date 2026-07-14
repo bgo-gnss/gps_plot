@@ -159,3 +159,83 @@ def test_three_format_export_red_header_and_figure_reuse(tmp_path):
     img2 = plt.imread(base2.with_suffix(".png"))
     green2 = (img2[..., 1] > 0.8) & (img2[..., 0] < 0.3) & (img2[..., 2] < 0.3)
     assert int(green2.sum()) > 50
+
+
+# ---------------------------------------------------------------------------
+# view toggle (raw | cleaned | detrended) — internal-delivery slice
+# ---------------------------------------------------------------------------
+
+
+def _install_gps_views_stub(monkeypatch, flags):
+    """Stub geo_dataread.gps_views.detect_view_outliers with fixed flags."""
+    import sys
+    import types
+
+    gps_views = types.ModuleType("geo_dataread.gps_views")
+
+    def detect_view_outliers(yearf, data, Ddata=None, **kwargs):
+        return flags, {
+            "outlier_abort": False,
+            "degraded": False,
+            "degrade_reason": None,
+            "n_flagged": int(np.count_nonzero(flags)),
+        }
+
+    gps_views.detect_view_outliers = detect_view_outliers
+    package = types.ModuleType("geo_dataread")
+    package.gps_views = gps_views
+    monkeypatch.setitem(sys.modules, "geo_dataread", package)
+    monkeypatch.setitem(sys.modules, "geo_dataread.gps_views", gps_views)
+
+
+def test_plot_time_rejects_unknown_view():
+    with pytest.raises(ValueError, match="view must be"):
+        tplt.plotTime("SENG", view="bogus", save="png")
+
+
+def test_mask_outliers_masks_and_overlays(monkeypatch):
+    n = 10
+    yearf = np.linspace(2020.0, 2020.1, n)
+    data = np.arange(3.0 * n).reshape(3, n)
+    ddata = np.full((3, n), 0.5)
+    flags = np.zeros((3, n), dtype=bool)
+    flags[0, 2] = flags[2, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    cleaned, overlay = tplt._mask_outliers(yearf, data.copy(), ddata)
+    assert overlay is not None
+    out_data, out_ddata = overlay
+    # mask only: flagged epochs NaN in the main series, present in overlay
+    assert np.isnan(cleaned[0, 2]) and np.isnan(cleaned[2, 7])
+    assert cleaned[1, 2] == data[1, 2]  # per-component mask
+    assert out_data[0, 2] == data[0, 2] and out_data[2, 7] == data[2, 7]
+    assert np.isnan(out_data[0, 3])
+    assert out_ddata[0, 2] == 0.5 and np.isnan(out_ddata[1, 2])
+    # unflagged values byte-identical
+    keep = ~flags
+    np.testing.assert_array_equal(cleaned[keep], data[keep])
+
+
+def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
+    n = 6
+    yearf = np.linspace(2021.0, 2021.05, n)
+    data = np.arange(3.0 * n).reshape(3, n)
+    ddata = np.full((3, n), 0.5)
+    _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
+
+    cleaned, overlay = tplt._mask_outliers(yearf, data, ddata)
+    assert overlay is None
+    assert cleaned is data  # raw path: same object, no copy, no mask
+
+
+def test_std_times_plot_handles_nan_masked_series():
+    """The cleaned view feeds NaN-masked arrays; ylim math must survive."""
+    x, y, dy = _synthetic_series(60, _yesterday_noon())
+    y = y.copy()
+    y[0, 5] = y[1, 10] = np.nan  # masked outlier epochs
+    fig = tplt.stdTimesPlot(
+        x, y, dy, Title="NANV", ylim=[5], fig=tplt._reusable_figure()
+    )
+    for ax in fig.axes[:3]:
+        lo, hi = ax.get_ylim()
+        assert np.isfinite(lo) and np.isfinite(hi)
