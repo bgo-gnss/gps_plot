@@ -14,6 +14,19 @@ dependencies = [
     "matplotlib>=3.10.3",
     "tornado>=6.5.1",
     "gtimes@git+https://github.com/bgo-gnss/gtimes.git",
+    # Siblings the package imports at RUNTIME. They are imported lazily inside
+    # functions, which only delays the ImportError to first use — it does not
+    # make them optional: plot-gps-timeseries needs gps_parser (config) and
+    # geo_dataread (series I/O) on every single run, timesmatplt needs geofunc
+    # for plate motion, and gps_analysis backs both the declared
+    # gps-analysis-devviz script and maps.py's model fields. Declaring them as
+    # dev-group-only made gps_plot uninstallable for production/containers.
+    # Git URLs are what pip and the container build resolve; [tool.uv.sources]
+    # below overrides them with editable sibling paths for local development.
+    "geo_dataread@git+https://github.com/bgo-gnss/geo_dataread.git",
+    "geofunc@git+https://github.com/bgo-gnss/geofunc.git",
+    "gps_analysis@git+https://github.com/bgo-gnss/gps_analysis.git",
+    "gps_parser@git+https://github.com/bgo-gnss/gps_parser.git",
 ]
 
 # Optional map lane (src/gps_plot/maps.py): PyGMT needs a system GMT >= 6
@@ -34,19 +47,24 @@ allow-direct-references = true
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Dev-viz surface (gps_plot.dev_viz) needs the sibling gps_analysis leaf
-# library. Wired as an editable local path in the dev group so `uv sync`
-# picks up sibling edits immediately (see gpslibrary/CLAUDE.md, "Editing
-# Across Packages"); production installs of gps_plot are unaffected.
 [dependency-groups]
 dev = [
-    "gps_analysis",
-    "gps_parser",
     "pytest>=8.0",
     "ruff>=0.8",
 ]
 
+# Local development only: override the git URLs above with editable sibling
+# checkouts so `uv sync` picks up cross-package edits immediately (see
+# gpslibrary/CLAUDE.md, "Editing Across Packages"). uv honours this; pip and
+# the container build ignore it and resolve the git URLs from [dependencies].
+#
+# geofunc is deliberately NOT overridden here. [tool.uv.sources] only applies to
+# the root project, so the transitive `geofunc@git+https://...` that geo_dataread
+# declares stays a git URL — overriding it locally makes uv see two conflicting
+# URLs for one package and the resolve fails outright. geo_dataread does not
+# override geofunc either; matching that keeps the ecosystem consistent.
 [tool.uv.sources]
+geo_dataread = { path = "../geo_dataread", editable = true }
 gps_analysis = { path = "../gps_analysis", editable = true }
 gps_parser = { path = "../gps_parser", editable = true }
 
