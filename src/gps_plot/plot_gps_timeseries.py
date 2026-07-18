@@ -143,6 +143,25 @@ def exit_gracefully(signum, frame):
 ####    ------------------------------------------------   ####
 
 
+def _config_dir(config, option, default=None):
+    """Resolve a directory from postprocess.cfg, or `default` if unavailable.
+
+    Directories (figDir, totPath) live in [PATHS], with a legacy [Configs]
+    fallback — that is `getPostProcessDir`. `getPostProcessConfig` is a
+    different method for config *files* in [FILES]; calling it here is what
+    broke the console script.
+
+    This must not raise: it runs while argparse is being built, so a missing key
+    (totPath is commented out in the deployed config) or no deployed config at
+    all — a container image before gpsconfig lands — would otherwise kill even
+    `--help`. Callers that genuinely need the value fail at use time instead.
+    """
+    try:
+        return config.getPostProcessDir(option)
+    except Exception:
+        return default
+
+
 # Main
 def main():
     """ """
@@ -253,7 +272,7 @@ def main():
         type=str,
         nargs="?",
         default="",
-        const=config.getPostprocessConfig("figDir"),
+        const=_config_dir(config, "figDir", ""),
         help="Figure save directory",
     )
     parser.add_argument(
@@ -261,7 +280,7 @@ def main():
         "--Dir",
         type=str,
         nargs="?",
-        default=config.getPostprocessConfig("totPath"),
+        default=_config_dir(config, "totPath"),
         help="Time series input directory",
     )
     parser.add_argument(
