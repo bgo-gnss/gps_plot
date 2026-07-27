@@ -11,3 +11,6 @@ wheels/
 
 # Regenerable static-plot review artifacts (bin/render_static_samples.py)
 samples_static_modernize/
+
+# Scratch figure output (tools/local-plot/figview.sh) — never published, never committed
+tmp-figdir/

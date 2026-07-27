@@ -64,3 +64,222 @@ passes untouched. The fix is a per-station **fit window** in
 that fits the stored-detrend trajectory on a recent continuous **pre-unrest**
 window. Edit that catalog, re-run `setup-testcfg.sh`, then
 `ESTIMATE=1 ./plot-views.sh <STA>`.
+
+## figview.sh — scratch figdir + terminal browsing
+
+`plot-gps-timeseries` writes to the CWD when `-d` is omitted, so running it from
+the package root drops `{STA}-*.pdf` straight into the repo. `figview.sh` pins
+`-d` to **`gps_plot/tmp-figdir/`** (gitignored) and defaults `--save png,pdf`:
+
+```bash
+./figview.sh SKHA --special year          # render, list what was written
+./figview.sh -B SKHA BLON --special 90d   # ... and open ranger on the figdir
+./figview.sh --browse                     # just browse
+./figview.sh --last                       # open the newest figure (via rifle)
+./figview.sh --clean                      # empty the figdir (confirms first)
+```
+
+Everything else is passed through to `plot-gps-timeseries` verbatim. `-d` is
+appended **unconditionally** — argparse takes the last occurrence, so output
+cannot escape the scratch dir even if you pass your own `-d`; redirect with
+`FIGDIR=~/gps-data/figs` to share the `plot-views.sh` output dir instead.
+`--save` is only defaulted, so `--save eps` on the command line still wins.
+
+**Formats.** `png` is the published product and the fast preview; `pdf` is the
+on-demand vector. `eps` is legacy (dropped as a product 2026-07-15: eps 442 ms +
+ghostscript 470 ms vs png 83 ms) — it still renders, and previews, but there is
+no reason to ask for it in new work.
+
+### Terminal browsing (ranger + kitty)
+
+| file | preview | `Enter` opens |
+|------|---------|---------------|
+| `.png` | native (kitty graphics) | `imv` |
+| `.pdf` | needs `ranger/scope.sh` below | `zathura` |
+| `.eps` / `.ps` | needs `ranger/scope.sh` below | needs `zathura-ps`, below |
+
+PNG and PDF opening already work with a stock ranger; the two gaps are **image
+previews for PDF/PS** and **opening PS/EPS**.
+
+**1 — previews.** Ranger's packaged `scope.sh` ships the PDF raster branch
+commented out and has no PostScript branch, so both fall back to a useless text
+dump. `ranger/scope.sh` here handles PDF/PS/EPS and delegates everything else to
+the packaged script (so it survives ranger upgrades). Install it into the ranger
+stow package — ranger picks up `~/.config/ranger/scope.sh` automatically, no
+`rc.conf` change:
+
+```bash
+cp tools/local-plot/ranger/scope.sh ~/.dotfiles/ranger/.config/ranger/scope.sh
+chmod +x ~/.dotfiles/ranger/.config/ranger/scope.sh
+```
+
+(`~/.config/ranger` is a stow tree-fold symlink into `~/.dotfiles/ranger`, so
+write the dotfiles path, not the `~/.config` one.)
+
+**2 — opening PS/EPS.** Stock Ubuntu ships only `zathura-pdf-poppler`, so
+zathura cannot open PostScript at all; rifle has no `.eps` rule and falls
+through to `xdg-open`, so the fix is the desktop MIME default (no `rifle.conf`
+fork needed):
+
+```bash
+sudo apt install zathura-ps
+xdg-mime default org.pwmt.zathura-ps.desktop \
+    image/x-eps image/eps application/eps application/x-eps application/postscript
+```
+
+All five types matter: shared-mime-info tags a `.eps` as **`image/x-eps`**, not
+`application/postscript` — setting only the latter leaves `.eps` opening in
+Inkscape. Verify with
+`xdg-mime query default "$(xdg-mime query filetype some.eps)"`.
+
+### Image previews inside herdr
+
+Ranger gates its kitty backend on `'kitty' in TERM` and nothing else, so any
+multiplexer that rewrites `TERM` disables previews. herdr reports
+`TERM=xterm-256color`, but unlike tmux it can re-render kitty graphics itself:
+
+```toml
+# ~/.dotfiles/herdr/.config/herdr/config.toml
+[experimental]
+kitty_graphics = true
+```
+
+then `herdr server reload-config` (no session restart — `prefix+shift+r` is
+bound to `herdr-refresh-env` here, so the default `reload_config` binding is
+shadowed and the CLI is the way in), **then detach and re-attach**
+(`prefix+d`, then `herdr`).
+
+That last step is not optional. `reload-config` reaches only the server, while
+the process that paints graphics onto the outer terminal is the *client*, which
+reads its config when it attaches. Skipping it leaves a convincing half-working
+state: the server's terminal emulation processes the image and replies `OK`,
+the client never paints, and previews are blank. Panes survive a detach — the
+server owns them. Compare `ps -eo pid,lstart,args | grep herdr` against the
+config mtime if in doubt. `figview.sh` detects `HERDR_ENV=1` and
+launches ranger with `TERM=xterm-kitty` so the gate passes.
+
+That is necessary but **not sufficient**. Ranger picks its transfer mode from a
+single startup query (`_late_init`): it asks about `t=f` — "open this path
+yourself" — and understands only `OK` (use temp files) or `EBADF` (send pixels
+inline). herdr renders on the attached *client*, so a pane-side path means
+nothing to it and it replies `EINVAL: unsupported medium`. Neither answer, so
+ranger disables previews even though inline transfer works.
+
+`ranger/plugins/kitty_stream.py` forces the inline path and skips the query.
+
+It also **changes what inline means**. Ranger's stream mode transmits the
+flattened pixel buffer, so a 630×1000 preview is 3.2 MB (4 MB base64); herdr
+caps the frame it forwards to the attached client and logs `dropping oversized
+graphics payload for client frame` — the terminal replies `OK` and the image
+never reaches the screen, which looks exactly like a blank preview. The plugin
+sends PNG bytes inline instead (`f=100`), 406 KB for the same figure. It also
+bounds the reply read, which ranger does with an unbounded `stdin.read(1)`.
+
+Install it alongside `scope.sh`:
+
+```bash
+mkdir -p ~/.dotfiles/ranger/.config/ranger/plugins
+cp tools/local-plot/ranger/plugins/kitty_stream.py \
+   ~/.dotfiles/ranger/.config/ranger/plugins/
+```
+
+It is inert unless `RANGER_KITTY_FORCE_STREAM=1`, so a plain kitty terminal
+keeps ranger's own autodetection. `figview.sh` sets it together with
+`TERM=xterm-kitty` when it sees `HERDR_ENV=1`.
+
+**Probe first if any of this changes.** `kitty-graphics-probe.py` tests each
+medium (`d`/`f`/`t`) under a 3 s `select()` and reports the `TIOCGWINSZ` pixel
+size, so nothing can hang the way ranger's unguarded `stdin.read(1)` would:
+
+```bash
+python3 tools/local-plot/kitty-graphics-probe.py     # must be a real pane, not a pipe
+```
+
+If it reports no pixel size, the plugin falls back to an 8×16 cell — override
+with `RANGER_KITTY_CELL_PX=10x21` (matching your kitty font) if previews come
+out mis-scaled.
+
+For a **blank** preview (terminal says `OK`, nothing appears) the question is
+transfer size, not capability. `kitty-transfer-test.py` draws the same image
+both ways and prints each payload size, outside ranger:
+
+```bash
+python3 tools/local-plot/kitty-transfer-test.py ../../tmp-figdir/SKHA-plate-year.png
+printf '\033_Ga=d\033\\'      # clear leftovers
+```
+
+Whichever block is visible is the medium that survives to the screen — an `OK`
+reply only means herdr accepted the payload.
+
+### If PNG previews render but PDF/EPS stay blank
+
+The cause is a **pixel-count** ceiling, not encoded size and not the exit-6 path.
+herdr/ghostty keeps decoded images as RGBA (`width*height*4`) and answers
+`ENOMEM: out of memory` past roughly 8 MB. Measured here:
+
+| image | megapixels | RGBA | payload | reply |
+|---|---|---|---|---|
+| PDF render 1302×2075 | 2.70 | 10.9 MB | 68.3 KB | `ENOMEM` |
+| PNG figure 981×1556 | 1.53 | 6.1 MB | 169.8 KB | `OK` |
+
+The 68 KB failure next to the 170 KB success is what rules out payload size.
+
+Only converted files hit it because ranger downscales an image *only if it
+overflows the preview box*. On a HiDPI cell (21×41 px here) the box is
+1638×2173, so a full-page PDF render at 1302×2075 fits inside it and is sent at
+native resolution; the taller PNG figures overflow and get scaled under the
+limit by luck. `kitty_stream.py` therefore caps previews at 1.5 MP regardless of
+the box — override with `RANGER_KITTY_MAX_PIXELS` if your terminal is more or
+less generous.
+
+`rc.conf` also sets `collapse_preview false`, which addresses a separate quirk
+ranger flags in `core/actions.py::get_preview` ("Previews can break when
+collapse_preview is on and the preview column is popping out … on e.g. a PDF
+file"). That was **not** the cause here; toggle it with `zc` if suspected.
+
+Confirm conversion is not the problem — every converted file gets a cache entry
+(named `sha1(realpath).jpg`, PNG content despite the extension):
+
+```bash
+ls -la ~/.cache/ranger/ | head
+file ~/.cache/ranger/*.jpg | head -3      # expect "PNG image data, 1300x2075"
+```
+
+Entries present for the PDFs but blank previews ⇒ display, not `scope.sh`.
+
+`collapse_preview false` in `rc.conf` addresses ranger's documented quirk above,
+but it is not always the cause. Two ways to see what is actually happening:
+
+**Ranger's own errors.** `draw_image` funnels every failure into `fm.notify`,
+which flashes in the status bar. Press **`W`** inside ranger to replay the log.
+
+**Trace the draw path.** The plugin logs every call when `RANGER_KITTY_DEBUG`
+points at a file (inherited straight through `figview.sh`):
+
+```bash
+RANGER_KITTY_DEBUG=/tmp/kdebug.log ./figview.sh --browse
+# select a .png, then a .pdf, then quit
+cat /tmp/kdebug.log
+```
+
+An `enter` line with no following `draw` line means decoding failed; a `draw`
+line with no `reply` means the terminal went silent; **no lines at all for the
+PDF** means ranger never called the displayer, so the fault is upstream in its
+exit-6 plumbing rather than in transfer.
+
+**Isolate exit-6 from the image itself.** The cache entries are `.jpg`-named, so
+browsing `~/.cache/ranger/` previews those exact files through the *exit-7*
+path. If they render there but not as PDF previews, the images and the transport
+are both fine and only ranger's converted-preview wiring is at fault.
+
+Note the override is broader than the graphics gate: `TERM=xterm-kitty` also
+makes ranger load kitty's terminfo for keys, colours and cursor sequences, which
+herdr's inner emulator then has to handle. The probe only covers the graphics
+handshake — if previews render but keys or colours misbehave in ranger under
+herdr, suspect terminfo, not the image path.
+
+`ueberzugpp` is not an alternative fallback — installed but broken (missing
+`libvips-cpp.so.42`).
+
+Rendering a dense-scatter PDF preview costs ~0.5 s the first time (`pdftoppm` at
+120 dpi); ranger caches it afterwards.
