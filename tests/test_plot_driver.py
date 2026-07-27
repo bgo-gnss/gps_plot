@@ -8,6 +8,7 @@ suite runs in the repo's own env (which does not ship the production
 readers).
 """
 
+import importlib.util
 import sys
 import types
 
@@ -153,15 +154,23 @@ def test_plot_station_survives_a_bad_variant(fake_gps_read, monkeypatch, capsys)
 # --outlier-param: NAME=VALUE -> OutlierParams (thresholds of the cleaned view)
 # ---------------------------------------------------------------------------
 
-pytest.importorskip("gps_analysis", reason="dev-group sibling for the outlier lane")
+# A MARK, not a module-level importorskip: the latter raises out of the module
+# body, so a missing gps_analysis would drop this file's pre-existing variant /
+# cache / worker coverage too, not just the outlier lane.
+requires_gps_analysis = pytest.mark.skipif(
+    importlib.util.find_spec("gps_analysis") is None,
+    reason="gps_analysis (dev-group sibling) not installed",
+)
 
 
+@requires_gps_analysis
 def test_build_outlier_params_none_when_nothing_assigned():
     """None (not a default-valued object) is what defers to the catalog."""
     assert driver._build_outlier_params(None) is None
     assert driver._build_outlier_params([]) is None
 
 
+@requires_gps_analysis
 def test_build_outlier_params_coerces_field_types():
     params = driver._build_outlier_params(
         ["window_n_sigma=3.5", "window_min_count=7", "scale_estimator=qn"]
@@ -172,6 +181,7 @@ def test_build_outlier_params_coerces_field_types():
     assert params.scale_estimator == "qn"
 
 
+@requires_gps_analysis
 def test_build_outlier_params_leaves_unassigned_fields_at_spec_defaults():
     """No default is restated in the CLI — untouched fields must match."""
     from gps_analysis import OutlierParams
@@ -184,6 +194,7 @@ def test_build_outlier_params_leaves_unassigned_fields_at_spec_defaults():
     assert params.despike is spec.despike
 
 
+@requires_gps_analysis
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -203,16 +214,19 @@ def test_build_outlier_params_parses_booleans(raw, expected):
     assert params.despike is expected
 
 
+@requires_gps_analysis
 def test_build_outlier_params_rejects_a_non_boolean_for_a_bool_field():
     with pytest.raises(SystemExit, match="expected a boolean"):
         driver._build_outlier_params(["despike=maybe"])
 
 
+@requires_gps_analysis
 def test_build_outlier_params_rejects_a_missing_equals():
     with pytest.raises(SystemExit, match="NAME=VALUE"):
         driver._build_outlier_params(["window_n_sigma"])
 
 
+@requires_gps_analysis
 def test_build_outlier_params_lists_valid_fields_on_an_unknown_name():
     with pytest.raises(SystemExit, match="unknown field") as excinfo:
         driver._build_outlier_params(["n_sigma=3"])
@@ -221,14 +235,35 @@ def test_build_outlier_params_lists_valid_fields_on_an_unknown_name():
     assert "global_n_sigma" in str(excinfo.value)
 
 
+@requires_gps_analysis
 def test_build_outlier_params_rejects_a_non_numeric_value():
     with pytest.raises(SystemExit, match="expected float"):
         driver._build_outlier_params(["window_n_sigma=wide"])
 
 
+@requires_gps_analysis
 def test_build_outlier_params_surfaces_post_init_validation():
     """OutlierParams.__post_init__ errors must arrive as clean CLI errors."""
     with pytest.raises(SystemExit, match="global_n_sigma must be > 0"):
         driver._build_outlier_params(["global_n_sigma=-1"])
     with pytest.raises(SystemExit, match="scale_estimator must be"):
         driver._build_outlier_params(["scale_estimator=bogus"])
+
+
+@requires_gps_analysis
+def test_build_outlier_params_survives_the_worker_process_boundary():
+    """main() ships the params through ProcessPoolExecutor -- must pickle.
+
+    plotStation is submitted to a pool when --save is given for more than
+    one station, so an OutlierParams that could not pickle would break
+    only the parallel path, which the serial single-station runs never hit.
+    """
+    import pickle
+
+    params = driver._build_outlier_params(
+        ["window_n_sigma=3.0", "despike=true", "scale_estimator=qn"]
+    )
+    restored = pickle.loads(pickle.dumps(params))
+    assert restored == params
+    assert restored.window_n_sigma == 3.0
+    assert restored.despike is True
