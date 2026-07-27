@@ -75,6 +75,16 @@ OUTLIER_ERRORBAR_COLOR: str = "grey"
 OUTLIER_EDGE_COLOR: str = "dimgrey"
 OUTLIER_FACE_COLOR: str = "lightgrey"
 
+#: PROVISIONAL epochs -- flagged by the identifiers but protected because the
+#: step evidence is indeterminate, and recent enough that data has not yet
+#: settled it (``gps_views.detect_view_outliers`` provenance).  Deliberately
+#: neither red (kept) nor grey (removed): the point IS in the series, and the
+#: marker says the verdict is pending, not made.  Gold reads as "caution"
+#: without colliding with the red/grey pair or the green last-point highlight.
+PROVISIONAL_ERRORBAR_COLOR: str = "darkgoldenrod"
+PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
+PROVISIONAL_FACE_COLOR: str = "gold"
+
 #: Raster resolution for PNG export.  Matches the legacy ImageMagick
 #: ``convert -density 90`` EPS->PNG conversion, so direct-PNG output keeps
 #: the accustomed pixel dimensions.
@@ -256,7 +266,8 @@ def _mask_outliers(
     *,
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
-) -> tuple[Any, tuple[Any, Any] | None]:
+    provisional_days: float | None = None,
+) -> tuple[Any, tuple[Any, Any] | None, tuple[Any, Any] | None]:
     """Split a series into a cleaned main series and an outlier overlay.
 
     Mirrors the station-aware resolution chain of
@@ -288,9 +299,16 @@ def _mask_outliers(
             resolves the deployed catalog.
 
     Returns:
-        ``(data, overlay)`` — overlay is ``(out_data, out_Ddata)`` NaN
-        everywhere except the flagged epochs, or None when nothing was
-        flagged.
+        ``(data, overlay, provisional)`` — ``overlay`` is
+        ``(out_data, out_Ddata)`` NaN everywhere except the flagged
+        epochs, or None when nothing was flagged.  ``provisional`` has the
+        same shape convention for the epochs the detector could not rule
+        on yet (recent + indeterminate step evidence), or None.
+
+        The two are disjoint and behave differently on purpose: flagged
+        epochs are REMOVED from the returned series, provisional ones are
+        KEPT in it.  A provisional marker annotates a point that is still
+        part of the data.
     """
     from geo_dataread import gps_views
 
@@ -305,21 +323,32 @@ def _mask_outliers(
 
     # flags come back shaped like data (1D in -> 1D out); keep it that way so
     # the returned series never changes shape on the caller
-    flags, _prov = gps_views.detect_view_outliers(
-        yearf,
-        data,
-        Ddata,
-        outlier_params=resolved.params,
-        step_epochs=step_epochs if step_epochs.size else None,
-        protect_windows=pwindows,
-        min_outlier=resolved.min_outlier,
-    )
+    detect_kwargs: dict[str, Any] = {
+        "outlier_params": resolved.params,
+        "step_epochs": step_epochs if step_epochs.size else None,
+        "protect_windows": pwindows,
+        "min_outlier": resolved.min_outlier,
+    }
+    if provisional_days is not None:
+        detect_kwargs["provisional_days"] = provisional_days
+    flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
+
+    # DIAGNOSTIC, and absent from older geo_dataread -- never let its absence
+    # break a plot (the same graceful-degrade rule the rest of this path follows)
+    pflags = np.asarray(prov.get("provisional", False), dtype=bool)
+    provisional = None
+    if pflags.shape == flags.shape and pflags.any():
+        provisional = (
+            np.where(pflags, data, np.nan),
+            np.where(pflags, Ddata, np.nan),
+        )
+
     if not flags.any():
-        return data, None
+        return data, None, provisional
     cleaned = np.where(flags, np.nan, data)
     overlay = (np.where(flags, data, np.nan), np.where(flags, Ddata, np.nan))
-    return cleaned, overlay
+    return cleaned, overlay, provisional
 
 
 def plotTime(
@@ -343,6 +372,7 @@ def plotTime(
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
     hide_outliers: bool = False,
+    provisional_days: float | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -445,15 +475,16 @@ def plotTime(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
-    outliers = None
+    outliers = provisional = None
     if view == "cleaned":
-        data, outliers = _mask_outliers(
+        data, outliers, provisional = _mask_outliers(
             sta,
             yearf,
             data,
             Ddata,
             outlier_params=outlier_params,
             outlier_overrides=outlier_overrides,
+            provisional_days=provisional_days,
         )
 
     # single yearf -> datetime conversion (was done twice before)
@@ -497,6 +528,24 @@ def plotTime(
             ecolor=OUTLIER_ERRORBAR_COLOR,
             markerfacecolor=OUTLIER_FACE_COLOR,
             markeredgecolor=OUTLIER_EDGE_COLOR,
+        )
+
+    if provisional is not None:
+        # Epochs the detector cannot rule on yet.  Unlike the grey overlay
+        # these are NOT masked out -- the point is still in the main series
+        # underneath, so the marker is drawn larger to cover the red one and
+        # say "verdict pending", not "removed".  --hide-outliers does NOT
+        # suppress these: hiding a decided outlier declutters, hiding an
+        # undecided one hides the thing most worth looking at.
+        fig = addData(
+            x,
+            provisional[0],
+            provisional[1],
+            fig,
+            markersize=5.5,
+            ecolor=PROVISIONAL_ERRORBAR_COLOR,
+            markerfacecolor=PROVISIONAL_FACE_COLOR,
+            markeredgecolor=PROVISIONAL_EDGE_COLOR,
         )
 
     if tType == "JOIN":

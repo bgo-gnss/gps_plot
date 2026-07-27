@@ -102,6 +102,7 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
         "--outlier-param",
         "--outlier-overrides",
         "--hide-outliers",
+        "--provisional-days",
     ],
 )
 def test_legacy_flag_surface_present(flag: str) -> None:

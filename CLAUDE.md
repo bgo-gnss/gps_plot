@@ -67,10 +67,36 @@ with a `UserWarning`, never a failed plot. Declared steps are not optional — a
 undeclared coseismic/equipment step over-flags or trips the excess-candidate
 abort at ANY threshold. Flags MASK (NaN) + grey overlay.
 
+Three marker states, and the distinction is what each COMMITS to:
+
+| marker | meaning | in the series? |
+|---|---|---|
+| red | clean | yes |
+| grey | flagged outlier | **no** (NaN) |
+| **gold** | **provisional** — recent, indeterminate step evidence | **yes** |
+
+Gold epochs are the ones the detector cannot rule on yet (no data follows
+them, so a blunder and the onset of deformation look identical). They stay in
+the data; the marker only says the verdict is pending, and it WILL change as
+epochs arrive. `--hide-outliers` drops the grey overlay (display only — the
+epochs are already masked; the y-axis then tightens to the cleaned series,
+often dramatically: RHOF north 90 mm → 45 mm of range) but deliberately does
+NOT hide gold: decluttering removes decided outliers, never undecided ones.
+`--provisional-days` bounds the recency window (0 disables; default 14 from
+`geo_dataread`), and the bound matters — indeterminate clusters also sit at
+old mid-series gaps and would otherwise dominate.
+
 ```bash
 plot-gps-timeseries RHOF --view cleaned --outlier-param window_n_sigma=3.0
 plot-gps-timeseries RHOF --view cleaned --outlier-overrides ./overrides.csv
+plot-gps-timeseries RHOF --view cleaned --uncert 10 --hide-outliers
 ```
+
+`--uncert` is the first lever for "obvious outliers survive": detection
+whitens by the formal σ, so a large excursion with a large error bar is not
+anomalous (RHOF: +83 mm Up at σ=13.2 mm scores only 3.3σ). The default 15 mm
+lets those through; `--uncert 10` drops 40 of 4713 epochs and removes most of
+them. Without σ at all the flag count rises ~45 %.
 
 `--outlier-param NAME=VALUE` (repeatable, also `plotTime(outlier_params=)`)
 builds a `gps_analysis.OutlierParams` off the dataclass itself — no default is

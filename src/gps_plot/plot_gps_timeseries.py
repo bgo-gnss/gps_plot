@@ -393,6 +393,19 @@ def main():
         "Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--provisional-days",
+        type=float,
+        default=None,
+        metavar="DAYS",
+        help="recency bound [days] of the PROVISIONAL marker (gold): recent "
+        "candidates the detector could not rule on because the step evidence "
+        "is indeterminate -- no data follows them yet, so a blunder and the "
+        "onset of real deformation look identical. They stay IN the series; "
+        "the marker only says the verdict is pending. 0 disables the marker; "
+        "unset uses the geo_dataread default (14). Ignored unless "
+        "--view cleaned",
+    )
+    parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
     )
     parser.add_argument(
