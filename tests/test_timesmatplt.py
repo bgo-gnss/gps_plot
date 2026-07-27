@@ -168,14 +168,63 @@ def test_three_format_export_red_header_and_figure_reuse(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _install_gps_views_stub(monkeypatch, flags):
-    """Stub geo_dataread.gps_views.detect_view_outliers with fixed flags."""
+class _StubResolved:
+    """Stand-in for gps_views.ResolvedOutlierConfig."""
+
+    def __init__(self, params, min_outlier=None):
+        self.params = params
+        self.min_outlier = min_outlier
+        self.overrides_applied = {}
+        self.overrides_source = None
+        self.min_outlier_source = None
+
+
+def _install_gps_views_stub(
+    monkeypatch,
+    flags,
+    *,
+    steps=(),
+    windows=(),
+    catalog_params="CATALOG",
+    catalog_floor=None,
+):
+    """Stub the whole gps_views cleaning chain and record what it received.
+
+    Mirrors the real module surface ``_mask_outliers`` depends on: the two
+    catalog resolvers, the params/floor resolver and the detector.  The
+    returned dict captures every call so a test can assert the plumbing
+    rather than just the flags.
+    """
     import sys
     import types
 
+    calls = {}
     gps_views = types.ModuleType("geo_dataread.gps_views")
 
+    declared_steps = np.asarray(steps, dtype=float)
+
+    def station_step_epochs(sta, *, steps=None):
+        calls["step_sta"] = sta
+        return declared_steps, None
+
+    def resolve_protect_windows(sta, protect_windows=None):
+        calls["window_sta"] = sta
+        return tuple(windows), None
+
+    def resolve_outlier_detection(
+        sta, *, outlier_params=None, min_outlier=None, outlier_overrides=None
+    ):
+        calls["resolve_sta"] = sta
+        calls["explicit_params"] = outlier_params
+        calls["overrides_path"] = outlier_overrides
+        # real precedence: explicit arg beats the catalog row
+        return _StubResolved(
+            catalog_params if outlier_params is None else outlier_params,
+            catalog_floor,
+        )
+
     def detect_view_outliers(yearf, data, Ddata=None, **kwargs):
+        calls["detect_kwargs"] = kwargs
         return flags, {
             "outlier_abort": False,
             "degraded": False,
@@ -183,11 +232,15 @@ def _install_gps_views_stub(monkeypatch, flags):
             "n_flagged": int(np.count_nonzero(flags)),
         }
 
+    gps_views.station_step_epochs = station_step_epochs
+    gps_views.resolve_protect_windows = resolve_protect_windows
+    gps_views.resolve_outlier_detection = resolve_outlier_detection
     gps_views.detect_view_outliers = detect_view_outliers
     package = types.ModuleType("geo_dataread")
     package.gps_views = gps_views
     monkeypatch.setitem(sys.modules, "geo_dataread", package)
     monkeypatch.setitem(sys.modules, "geo_dataread.gps_views", gps_views)
+    return calls
 
 
 def test_plot_time_rejects_unknown_view():
@@ -204,7 +257,7 @@ def test_mask_outliers_masks_and_overlays(monkeypatch):
     flags[0, 2] = flags[2, 7] = True
     _install_gps_views_stub(monkeypatch, flags)
 
-    cleaned, overlay = tplt._mask_outliers(yearf, data.copy(), ddata)
+    cleaned, overlay = tplt._mask_outliers("RHOF", yearf, data.copy(), ddata)
     assert overlay is not None
     out_data, out_ddata = overlay
     # mask only: flagged epochs NaN in the main series, present in overlay
@@ -225,9 +278,91 @@ def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
     ddata = np.full((3, n), 0.5)
     _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
 
-    cleaned, overlay = tplt._mask_outliers(yearf, data, ddata)
+    cleaned, overlay = tplt._mask_outliers("RHOF", yearf, data, ddata)
     assert overlay is None
     assert cleaned is data  # raw path: same object, no copy, no mask
+
+
+# ---------------------------------------------------------------------------
+# Station-aware resolution chain (mirrors gps_views.read_gps_view)
+# ---------------------------------------------------------------------------
+
+
+def test_mask_outliers_resolves_every_station_catalog():
+    """All three catalogs are keyed on the station and reach the detector."""
+    n = 8
+    yearf = np.linspace(2020.0, 2020.1, n)
+    data = np.zeros((3, n))
+    ddata = np.full((3, n), 0.5)
+    steps = (2020.03, 2020.07)
+    windows = ((2020.01, 2020.02),)
+
+    with pytest.MonkeyPatch.context() as mp:
+        calls = _install_gps_views_stub(
+            mp,
+            np.zeros((3, n), dtype=bool),
+            steps=steps,
+            windows=windows,
+            catalog_floor=(1.0, 2.0, 3.0),
+        )
+        tplt._mask_outliers("HOFN", yearf, data, ddata)
+
+    assert calls["step_sta"] == calls["window_sta"] == calls["resolve_sta"] == "HOFN"
+    dk = calls["detect_kwargs"]
+    np.testing.assert_allclose(dk["step_epochs"], steps)
+    assert dk["protect_windows"] == windows
+    assert dk["min_outlier"] == (1.0, 2.0, 3.0)
+
+
+def test_mask_outliers_defers_to_catalog_params_when_none_passed():
+    """No explicit params => the station's catalog row reaches the detector."""
+    n = 6
+    yearf = np.linspace(2021.0, 2021.05, n)
+    data = np.zeros((3, n))
+
+    with pytest.MonkeyPatch.context() as mp:
+        calls = _install_gps_views_stub(
+            mp, np.zeros((3, n), dtype=bool), catalog_params="CATALOG"
+        )
+        tplt._mask_outliers("RHOF", yearf, data, None)
+
+    assert calls["explicit_params"] is None
+    assert calls["detect_kwargs"]["outlier_params"] == "CATALOG"
+
+
+def test_mask_outliers_explicit_params_and_overrides_path_win():
+    """Explicit params beat the catalog; the overrides path is forwarded."""
+    n = 6
+    yearf = np.linspace(2021.0, 2021.05, n)
+    data = np.zeros((3, n))
+
+    with pytest.MonkeyPatch.context() as mp:
+        calls = _install_gps_views_stub(mp, np.zeros((3, n), dtype=bool))
+        tplt._mask_outliers(
+            "RHOF",
+            yearf,
+            data,
+            None,
+            outlier_params="EXPLICIT",
+            outlier_overrides="/tmp/ov.csv",
+        )
+
+    assert calls["explicit_params"] == "EXPLICIT"
+    assert calls["overrides_path"] == "/tmp/ov.csv"
+    assert calls["detect_kwargs"]["outlier_params"] == "EXPLICIT"
+
+
+def test_mask_outliers_passes_no_steps_as_none_not_empty_array():
+    """An empty step catalog must send None, the detector's 'no steps' value."""
+    n = 5
+    yearf = np.linspace(2021.0, 2021.05, n)
+    data = np.zeros((3, n))
+
+    with pytest.MonkeyPatch.context() as mp:
+        calls = _install_gps_views_stub(mp, np.zeros((3, n), dtype=bool), steps=())
+        tplt._mask_outliers("RHOF", yearf, data, None)
+
+    assert calls["detect_kwargs"]["step_epochs"] is None
 
 
 def test_std_times_plot_handles_nan_masked_series():
@@ -399,3 +534,45 @@ def test_without_name_the_legacy_filename_is_unchanged(monkeypatch, tmp_path):
 
     tplt.plotTime("RHOF", save="png", figDir=str(tmp_path), logo=False, special="90d")
     assert saved == [str(tmp_path / "RHOF-itrf2008-90d")]
+
+
+def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
+    """plotTime -> _mask_outliers: sta first, both levers as keywords."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    seen = {}
+
+    def spy(sta, yearf, data, Ddata, **kwargs):
+        seen["sta"] = sta
+        seen.update(kwargs)
+        return data, None
+
+    monkeypatch.setattr(tplt, "_mask_outliers", spy)
+    tplt.plotTime(
+        "RHOF",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        outlier_params="PARAMS",
+        outlier_overrides="/tmp/ov.csv",
+    )
+    assert seen == {
+        "sta": "RHOF",
+        "outlier_params": "PARAMS",
+        "outlier_overrides": "/tmp/ov.csv",
+    }
+
+
+def test_raw_view_never_touches_the_outlier_chain(monkeypatch, tmp_path):
+    """The levers are cleaned-view only — raw must not resolve any catalog."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+
+    def boom(*a, **k):
+        raise AssertionError("_mask_outliers called for view='raw'")
+
+    monkeypatch.setattr(tplt, "_mask_outliers", boom)
+    tplt.plotTime(
+        "RHOF", save="png", figDir=str(tmp_path), logo=False, outlier_params="PARAMS"
+    )

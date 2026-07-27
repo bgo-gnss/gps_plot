@@ -99,6 +99,8 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
         "--view",
         "--workers",
         "--name",
+        "--outlier-param",
+        "--outlier-overrides",
     ],
 )
 def test_legacy_flag_surface_present(flag: str) -> None:

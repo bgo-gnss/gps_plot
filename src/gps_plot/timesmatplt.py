@@ -249,9 +249,25 @@ def _add_status_subtitle(ax: Any, title: StationTitle) -> None:
 
 
 def _mask_outliers(
-    yearf: Any, data: Any, Ddata: Any
+    sta: str,
+    yearf: Any,
+    data: Any,
+    Ddata: Any,
+    *,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
 ) -> tuple[Any, tuple[Any, Any] | None]:
     """Split a series into a cleaned main series and an outlier overlay.
+
+    Mirrors the station-aware resolution chain of
+    ``geo_dataread.gps_views.read_gps_view`` so a plotted cleaned view
+    matches the canonical read/write path for the SAME station: declared
+    step epochs and protect windows resolve from the deployed catalogs,
+    and the thresholds follow the explicit-arg > per-station catalog >
+    spec-default precedence.  The steps are not optional garnish -- an
+    undeclared coseismic or equipment step over-flags (or trips the
+    excess-candidate abort) at ANY threshold, so a threshold passed
+    without them would be a knob that cannot work.
 
     Flags come from ``geo_dataread.gps_views.detect_view_outliers`` (the
     model-aware, signal-protecting detector of the analysis leaf) — a MASK,
@@ -261,6 +277,16 @@ def _mask_outliers(
     geo_dataread (warning + all-False flags), in which case the overlay is
     None and the main series is untouched.
 
+    Args:
+        sta: Station four-letter name — the key of every catalog lookup.
+        yearf: Epochs, fractional years.
+        data: Observations, shape (C, N) or (N,).
+        Ddata: Formal 1-σ uncertainties, shape of ``data``.
+        outlier_params: ``gps_analysis.OutlierParams`` thresholds; None
+            lets the station's catalog row (else the spec defaults) win.
+        outlier_overrides: Explicit ``outlier_overrides.csv`` path; None
+            resolves the deployed catalog.
+
     Returns:
         ``(data, overlay)`` — overlay is ``(out_data, out_Ddata)`` NaN
         everywhere except the flagged epochs, or None when nothing was
@@ -268,9 +294,26 @@ def _mask_outliers(
     """
     from geo_dataread import gps_views
 
+    # Station catalogs are ENHANCEMENTS: each resolver degrades to "nothing
+    # declared" with a UserWarning rather than raising, so a laptop with no
+    # deployed gpsconfig still plots (plotTime never fails for a view reason).
+    step_epochs, _steps_src = gps_views.station_step_epochs(sta)
+    pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
+    resolved = gps_views.resolve_outlier_detection(
+        sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
+    )
+
     # flags come back shaped like data (1D in -> 1D out); keep it that way so
     # the returned series never changes shape on the caller
-    flags, _prov = gps_views.detect_view_outliers(yearf, data, Ddata)
+    flags, _prov = gps_views.detect_view_outliers(
+        yearf,
+        data,
+        Ddata,
+        outlier_params=resolved.params,
+        step_epochs=step_epochs if step_epochs.size else None,
+        protect_windows=pwindows,
+        min_outlier=resolved.min_outlier,
+    )
     flags = np.asarray(flags, dtype=bool)
     if not flags.any():
         return data, None
@@ -297,6 +340,8 @@ def plotTime(
     fig: Figure | None = None,
     view: str = "raw",
     name: str | None = None,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -315,6 +360,15 @@ def plotTime(
     re-fit). Cleaning/detrending degrades gracefully inside geo_dataread
     (warning + undegraded series), so a plot never fails for a view
     reason.
+
+    ``outlier_params`` / ``outlier_overrides`` reach the ``cleaned`` view
+    only.  Both are thresholds-level levers of
+    :func:`geo_dataread.gps_views.resolve_outlier_detection`: an explicit
+    ``OutlierParams`` beats the station's catalog row, which beats the
+    spec defaults; ``outlier_overrides`` points at a specific
+    ``outlier_overrides.csv`` instead of the deployed one.  Declared step
+    epochs and protect windows always resolve from their own catalogs —
+    see :func:`_mask_outliers` for why they are not optional.
 
     ``name`` fixes the output basename: with ``save`` set the figure is
     written to ``<figDir>/<name>.<fmt>``, BYPASSING the
@@ -382,7 +436,14 @@ def plotTime(
 
     outliers = None
     if view == "cleaned":
-        data, outliers = _mask_outliers(yearf, data, Ddata)
+        data, outliers = _mask_outliers(
+            sta,
+            yearf,
+            data,
+            Ddata,
+            outlier_params=outlier_params,
+            outlier_overrides=outlier_overrides,
+        )
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))

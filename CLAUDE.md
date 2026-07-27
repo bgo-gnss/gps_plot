@@ -57,6 +57,35 @@ plot-gps-timeseries ...   # entry: gps_plot.plot_gps_timeseries:main
 gps-analysis-devviz ...   # entry: gps_plot.dev_viz:main (dev group required)
 ```
 
+## Cleaned view (`--view cleaned`)
+
+`timesmatplt._mask_outliers` mirrors `gps_views.read_gps_view`'s station-aware
+chain (`station_step_epochs` + `resolve_protect_windows` +
+`resolve_outlier_detection`), so a plotted cleaned view matches the canonical
+read/write path for that station; each resolver degrades to "nothing declared"
+with a `UserWarning`, never a failed plot. Declared steps are not optional — an
+undeclared coseismic/equipment step over-flags or trips the excess-candidate
+abort at ANY threshold. Flags MASK (NaN) + grey overlay.
+
+```bash
+plot-gps-timeseries RHOF --view cleaned --outlier-param window_n_sigma=3.0
+plot-gps-timeseries RHOF --view cleaned --outlier-overrides ./overrides.csv
+```
+
+`--outlier-param NAME=VALUE` (repeatable, also `plotTime(outlier_params=)`)
+builds a `gps_analysis.OutlierParams` off the dataclass itself — no default is
+restated here, and an unknown NAME lists the valid ones. Any override REPLACES
+the station's `outlier_overrides.csv` row; unset defers to that catalog, else
+spec defaults. `min_outlier=` is the scalar floor, NOT the catalog's
+per-component `[N,E,U]` vector.
+
+Loosening is **not monotonic** — RHOF 2023→ (3483 component-epochs):
+`window_n_sigma` 4.0 (spec) → 20 flagged, 3.0 → 55, 2.0 → **0**, because at k=2
+the candidate fraction passes `max_flag_fraction=0.05` and the excess-candidate
+rule aborts, silently serving raw. A sudden drop to zero means abort, not a
+clean station. PLAN Phase 3: consume `read_gps_view`'s `{comp}_cleaned` /
+`{comp}_outlier` instead of re-deriving here.
+
 ## Dev-viz (analysis lane, thread C / L5)
 
 Three shared-axis panels for one station/component: observed + `lineperiodic`
@@ -131,5 +160,7 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-07-12 (map lane deformation slices: velocity_map / deformation_vectors / slip_map + dem_grid, optional
-`maps` extra, ruff scope for the modern lane)*
+*Last reviewed: 2026-07-27 (cleaned view: station-aware resolution chain +
+`--outlier-param` / `--outlier-overrides`; map lane deformation slices:
+velocity_map / deformation_vectors / slip_map + dem_grid, optional `maps` extra,
+ruff scope for the modern lane)*

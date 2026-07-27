@@ -118,6 +118,70 @@ def _expand_variants(kwargs, refs, specials):
     return [base]
 
 
+def _coerce_outlier_param(name, typ, raw):
+    """Coerce one ``NAME=VALUE`` string to an OutlierParams field type."""
+    if typ is bool:
+        low = raw.lower()
+        if low in ("1", "true", "yes", "on"):
+            return True
+        if low in ("0", "false", "no", "off"):
+            return False
+        # bool("False") is True -- never let str fall through to the cast
+        raise SystemExit(
+            "--outlier-param %s: expected a boolean (true/false), got %r" % (name, raw)
+        )
+    try:
+        return typ(raw)
+    except (ValueError, TypeError):
+        raise SystemExit(
+            "--outlier-param %s: expected %s, got %r" % (name, typ.__name__, raw)
+        ) from None
+
+
+def _build_outlier_params(assignments):
+    """Build an ``OutlierParams`` from repeated ``NAME=VALUE`` CLI args.
+
+    Field names and types are read off the dataclass itself, so this flag
+    stays in sync with ``gps_analysis`` and NO detection default is
+    restated here -- unassigned fields keep their spec values.  Types come
+    from :func:`typing.get_type_hints`, not ``field.type``, which is a bare
+    string whenever the leaf adopts ``from __future__ import annotations``.
+
+    Returns None when nothing was assigned; that (rather than a
+    default-valued object) is what lets the per-station
+    ``outlier_overrides.csv`` row win downstream.
+    """
+    if not assignments:
+        return None
+
+    import dataclasses
+    import typing
+
+    from gps_analysis import OutlierParams
+
+    hints = typing.get_type_hints(OutlierParams)
+    valid = sorted(f.name for f in dataclasses.fields(OutlierParams))
+    values = {}
+    for item in assignments:
+        name, sep, raw = item.partition("=")
+        name = name.strip()
+        if not sep:
+            raise SystemExit("--outlier-param expects NAME=VALUE, got %r" % (item,))
+        if name not in valid:
+            raise SystemExit(
+                "--outlier-param: unknown field %r; valid fields: %s"
+                % (name, ", ".join(valid))
+            )
+        values[name] = _coerce_outlier_param(name, hints[name], raw.strip())
+
+    try:
+        # OutlierParams.__post_init__ validates ranges/enums -- surface it as a
+        # clean CLI error rather than a traceback
+        return OutlierParams(**values)
+    except (ValueError, TypeError) as exc:
+        raise SystemExit("--outlier-param: %s" % (exc,)) from None
+
+
 def exit_gracefully(signum, frame):
     """Exit gracefully on Ctrl-C"""
 
@@ -295,6 +359,30 @@ def main():
         help="Time series input directory",
     )
     parser.add_argument(
+        "--outlier-param",
+        action="append",
+        metavar="NAME=VALUE",
+        default=None,
+        help="override one gps_analysis.OutlierParams detection threshold of "
+        "the '--view cleaned' detector; repeatable (e.g. --outlier-param "
+        "window_n_sigma=3.5 --outlier-param despike=true). Names/types are "
+        "read off the dataclass, so an unknown NAME lists the valid ones. "
+        "ANY override replaces the station's outlier_overrides.csv row "
+        "wholesale; leave it unset to let that catalog (else the spec "
+        "defaults) decide. Careful: min_outlier= is the SCALAR floor, a "
+        "different knob from the per-component [N,E,U] vector the catalog "
+        "carries. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--outlier-overrides",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="read per-station outlier overrides from this CSV instead of the "
+        "deployed one -- the lever that reproduces a production cleaned "
+        "view locally. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
     )
     parser.add_argument(
@@ -342,6 +430,9 @@ def main():
     kwargs["start"] = start
     kwargs["end"] = end
     kwargs["events"] = eventDict
+    # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
+    # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
+    kwargs["outlier_params"] = _build_outlier_params(kwargs.pop("outlier_param"))
 
     stations = args.Stations  # station list
     del kwargs["Stations"]

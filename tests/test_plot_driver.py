@@ -147,3 +147,88 @@ def test_plot_station_survives_a_bad_variant(fake_gps_read, monkeypatch, capsys)
     driver.plotStation("SENG", variants)  # must not raise
     out = capsys.readouterr().out
     assert "plotted SENG using: plate, year" in out
+
+
+# ---------------------------------------------------------------------------
+# --outlier-param: NAME=VALUE -> OutlierParams (thresholds of the cleaned view)
+# ---------------------------------------------------------------------------
+
+pytest.importorskip("gps_analysis", reason="dev-group sibling for the outlier lane")
+
+
+def test_build_outlier_params_none_when_nothing_assigned():
+    """None (not a default-valued object) is what defers to the catalog."""
+    assert driver._build_outlier_params(None) is None
+    assert driver._build_outlier_params([]) is None
+
+
+def test_build_outlier_params_coerces_field_types():
+    params = driver._build_outlier_params(
+        ["window_n_sigma=3.5", "window_min_count=7", "scale_estimator=qn"]
+    )
+    assert params.window_n_sigma == 3.5
+    assert isinstance(params.window_min_count, int)
+    assert params.window_min_count == 7
+    assert params.scale_estimator == "qn"
+
+
+def test_build_outlier_params_leaves_unassigned_fields_at_spec_defaults():
+    """No default is restated in the CLI — untouched fields must match."""
+    from gps_analysis import OutlierParams
+
+    spec = OutlierParams()
+    params = driver._build_outlier_params(["window_n_sigma=3.5"])
+    assert params.window_n_sigma == 3.5
+    assert params.global_n_sigma == spec.global_n_sigma
+    assert params.max_flag_fraction == spec.max_flag_fraction
+    assert params.despike is spec.despike
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("true", True),
+        ("True", True),
+        ("yes", True),
+        ("1", True),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("0", False),
+    ],
+)
+def test_build_outlier_params_parses_booleans(raw, expected):
+    """bool('False') is True — the coercion must not cast strings blindly."""
+    params = driver._build_outlier_params(["despike=%s" % raw])
+    assert params.despike is expected
+
+
+def test_build_outlier_params_rejects_a_non_boolean_for_a_bool_field():
+    with pytest.raises(SystemExit, match="expected a boolean"):
+        driver._build_outlier_params(["despike=maybe"])
+
+
+def test_build_outlier_params_rejects_a_missing_equals():
+    with pytest.raises(SystemExit, match="NAME=VALUE"):
+        driver._build_outlier_params(["window_n_sigma"])
+
+
+def test_build_outlier_params_lists_valid_fields_on_an_unknown_name():
+    with pytest.raises(SystemExit, match="unknown field") as excinfo:
+        driver._build_outlier_params(["n_sigma=3"])
+    # the error doubles as the discovery mechanism, so it must enumerate
+    assert "window_n_sigma" in str(excinfo.value)
+    assert "global_n_sigma" in str(excinfo.value)
+
+
+def test_build_outlier_params_rejects_a_non_numeric_value():
+    with pytest.raises(SystemExit, match="expected float"):
+        driver._build_outlier_params(["window_n_sigma=wide"])
+
+
+def test_build_outlier_params_surfaces_post_init_validation():
+    """OutlierParams.__post_init__ errors must arrive as clean CLI errors."""
+    with pytest.raises(SystemExit, match="global_n_sigma must be > 0"):
+        driver._build_outlier_params(["global_n_sigma=-1"])
+    with pytest.raises(SystemExit, match="scale_estimator must be"):
+        driver._build_outlier_params(["scale_estimator=bogus"])
