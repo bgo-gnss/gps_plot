@@ -383,6 +383,16 @@ def main():
         "view locally. Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--hide-outliers",
+        action="store_true",
+        help="drop the grey outlier overlay from the figure. The flagged "
+        "epochs are ALREADY absent from the plotted series (--view cleaned "
+        "masks them); this only decides whether the plot still shows what "
+        "was set aside. Side effect: the y-axis tightens to the cleaned "
+        "series, since the overlay no longer stretches the autoscale. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
     )
     parser.add_argument(

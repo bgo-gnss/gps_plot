@@ -342,6 +342,7 @@ def plotTime(
     name: str | None = None,
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
+    hide_outliers: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -369,6 +370,16 @@ def plotTime(
     ``outlier_overrides.csv`` instead of the deployed one.  Declared step
     epochs and protect windows always resolve from their own catalogs —
     see :func:`_mask_outliers` for why they are not optional.
+
+    ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
+    view.  It changes DISPLAY ONLY -- the flagged epochs are already
+    absent from the main series (masked to NaN by :func:`_mask_outliers`),
+    so this decides whether the plot still SHOWS what was set aside.  Two
+    consequences worth knowing: the y-axis tightens to the cleaned series
+    (nothing sets explicit limits unless ``ylim`` is given, so matplotlib
+    autoscales over whatever artists exist, overlay included), and the
+    figure no longer carries the evidence of what the detector removed --
+    which is exactly why the overlay is the default.
 
     ``name`` fixes the output basename: with ``save`` set the figure is
     written to ``<figDir>/<name>.<fmt>``, BYPASSING the
@@ -472,7 +483,7 @@ def plotTime(
         highlight_last=highlight_last,
     )
 
-    if outliers is not None:
+    if outliers is not None and not hide_outliers:
         # cleaned view: flagged epochs overlaid in grey on top of the masked
         # main series (mask only — nothing is deleted, matching the
         # geo_dataread raw-preservation rule).  Colors are passed at the call

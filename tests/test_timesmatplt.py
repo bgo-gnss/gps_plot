@@ -536,6 +536,68 @@ def test_without_name_the_legacy_filename_is_unchanged(monkeypatch, tmp_path):
     assert saved == [str(tmp_path / "RHOF-itrf2008-90d")]
 
 
+def _grey_overlay_lines(fig):
+    """Overlay marker series drawn with the outlier face colour."""
+    return [
+        ln
+        for ax in fig.axes[:3]
+        for ln in ax.get_lines()
+        if ln.get_markerfacecolor() == tplt.OUTLIER_FACE_COLOR
+    ]
+
+
+def _cleaned_fig(monkeypatch, tmp_path, *, hide):
+    """Render the cleaned view with one flagged epoch per component."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+    return tplt.plotTime(
+        "RHOF",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        hide_outliers=hide,
+    )
+
+
+def test_outlier_overlay_drawn_by_default(monkeypatch, tmp_path):
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=False)
+    assert len(_grey_overlay_lines(fig)) == 3  # one per component axis
+
+
+def test_hide_outliers_suppresses_the_overlay(monkeypatch, tmp_path):
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=True)
+    assert _grey_overlay_lines(fig) == []
+
+
+def test_hide_outliers_does_not_restore_the_masked_epochs(monkeypatch, tmp_path):
+    """Display-only: the flagged epoch stays NaN in the plotted series.
+
+    The whole point of the flag is that it changes what is SHOWN, never
+    what is plotted as data -- a hidden overlay must not smuggle the
+    outlier back into the main series.
+    """
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=True)
+    for ax in fig.axes[:3]:
+        main = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 30]
+        assert main, "main series not drawn"
+        assert np.isnan(np.asarray(main[0].get_ydata(), dtype=float)[7])
+
+
+def test_hide_outliers_is_inert_on_the_raw_view(monkeypatch, tmp_path):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    fig = tplt.plotTime(
+        "RHOF", save="png", figDir=str(tmp_path), logo=False, hide_outliers=True
+    )
+    for ax in fig.axes[:3]:
+        main = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 30]
+        assert main and np.all(np.isfinite(np.asarray(main[0].get_ydata(), float)))
+
+
 def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     """plotTime -> _mask_outliers: sta first, both levers as keywords."""
     _stub_gps_read(monkeypatch, _yesterday_noon())
