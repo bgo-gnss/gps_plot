@@ -114,14 +114,16 @@ def test_three_format_export_green_header(tmp_path):
     green = (img[..., 1] > 0.8) & (img[..., 0] < 0.3) & (img[..., 2] < 0.3)
     assert int(green.sum()) > 50
 
-    # the last-point highlight is suppressed (BGÓ 2026-07-11) — no lightgreen marker
+    # ... and the last-point highlight (revived BGÓ 2026-07-27) reaches the
+    # raster too: this series ends yesterday, so the green title fragment and
+    # the lightgreen dot must BOTH be present — they share one decision.
     light = matplotlib.colors.to_rgb("lightgreen")
     lg = (
         (np.abs(img[..., 0] - light[0]) < 0.06)
         & (np.abs(img[..., 1] - light[1]) < 0.06)
         & (np.abs(img[..., 2] - light[2]) < 0.06)
     )
-    assert int(lg.sum()) == 0
+    assert int(lg.sum()) > 0
 
 
 @needs_tex
@@ -239,3 +241,161 @@ def test_std_times_plot_handles_nan_masked_series():
     for ax in fig.axes[:3]:
         lo, hi = ax.get_ylim()
         assert np.isfinite(lo) and np.isfinite(hi)
+
+
+# ---------------------------------------------------------------------------
+# Last-point highlight — the green dot paired with the green title fragment
+# ---------------------------------------------------------------------------
+
+
+def _highlight_markers(ax):
+    """Lines on ``ax`` drawn with the last-point highlight face color."""
+    return [
+        ln
+        for ln in ax.get_lines()
+        if ln.get_markerfacecolor() == "lightgreen" and len(ln.get_xdata()) == 1
+    ]
+
+
+def test_last_point_highlight_drawn_when_data_is_current():
+    """Series ending yesterday => one green dot per component axis."""
+    x, y, dy = _synthetic_series(40, _yesterday_noon())
+    fig = tplt.stdTimesPlot(x, y, dy, Title="GRN", fig=tplt._reusable_figure())
+    for i, ax in enumerate(fig.axes[:3]):
+        markers = _highlight_markers(ax)
+        assert len(markers) == 1, f"component {i}: expected one highlight marker"
+        assert markers[0].get_markeredgecolor() == "black"
+        assert markers[0].get_ydata()[0] == pytest.approx(y[i][-1])
+
+
+def test_last_point_highlight_absent_when_data_is_stale():
+    """Stale series (the local TOT snapshot case) => no marker anywhere."""
+    stale_end = _yesterday_noon() - datetime.timedelta(days=10)
+    x, y, dy = _synthetic_series(40, stale_end)
+    fig = tplt.stdTimesPlot(x, y, dy, Title="RED", fig=tplt._reusable_figure())
+    for ax in fig.axes[:3]:
+        assert _highlight_markers(ax) == []
+
+
+def test_highlight_last_override_wins_over_local_derivation():
+    """plotTime passes the title's decision explicitly; it must be honoured."""
+    stale_end = _yesterday_noon() - datetime.timedelta(days=10)
+    x, y, dy = _synthetic_series(20, stale_end)
+    fig = tplt.stdTimesPlot(
+        x, y, dy, Title="OVR", fig=tplt._reusable_figure(), highlight_last=True
+    )
+    assert all(len(_highlight_markers(ax)) == 1 for ax in fig.axes[:3])
+
+    x, y, dy = _synthetic_series(20, _yesterday_noon())
+    fig = tplt.stdTimesPlot(
+        x, y, dy, Title="OVR", fig=tplt._reusable_figure(), highlight_last=False
+    )
+    assert all(_highlight_markers(ax) == [] for ax in fig.axes[:3])
+
+
+def test_highlight_skips_component_whose_last_epoch_was_masked():
+    """Cleaned view: flagged final epoch draws no dot on THAT axis only."""
+    x, y, dy = _synthetic_series(30, _yesterday_noon())
+    y = y.copy()
+    y[1, -1] = np.nan  # east flagged as an outlier at the last epoch
+    fig = tplt.stdTimesPlot(x, y, dy, Title="MSK", fig=tplt._reusable_figure())
+    assert len(_highlight_markers(fig.axes[0])) == 1
+    assert len(_highlight_markers(fig.axes[2])) == 1
+    drawn = _highlight_markers(fig.axes[1])
+    assert drawn == [] or np.isnan(drawn[0].get_ydata()[0])
+
+
+# ---------------------------------------------------------------------------
+# Outlier overlay styling (cleaned view) — grey, not red
+# ---------------------------------------------------------------------------
+
+
+def test_outlier_overlay_colors_are_grey():
+    assert tplt.OUTLIER_ERRORBAR_COLOR == "grey"
+    assert tplt.OUTLIER_EDGE_COLOR == "dimgrey"
+    assert tplt.OUTLIER_FACE_COLOR == "lightgrey"
+
+
+def test_add_data_applies_outlier_colors():
+    """addData keeps its red defaults; the grey comes from the call site."""
+    x, y, dy = _synthetic_series(12, _yesterday_noon())
+    fig = tplt.stdFrame(fig=tplt._reusable_figure())[0]
+    tplt.addData(
+        x,
+        y,
+        dy,
+        fig,
+        ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
+        markerfacecolor=tplt.OUTLIER_FACE_COLOR,
+        markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+    )
+    for ax in fig.axes[:3]:
+        # errorbar() also leaves a marker-less Line2D of the same length
+        overlay = [
+            ln
+            for ln in ax.get_lines()
+            if len(ln.get_xdata()) == len(x) and ln.get_marker() == "o"
+        ]
+        assert len(overlay) == 1, "expected exactly one overlay marker series"
+        assert overlay[0].get_markerfacecolor() == "lightgrey"
+        assert overlay[0].get_markeredgecolor() == "dimgrey"
+
+
+# ---------------------------------------------------------------------------
+# --name: fixed output basename
+# ---------------------------------------------------------------------------
+
+
+def _stub_gps_read(monkeypatch, end: datetime.datetime, n_days: int = 30):
+    """Stub geo_dataread.gps_read so plotTime runs without station data."""
+    import sys
+    import types
+
+    x, y, dy = _synthetic_series(n_days, end)
+    yearf = np.linspace(2025.0, 2025.0 + n_days / 365.25, n_days)
+
+    gps_read = types.ModuleType("geo_dataread.gps_read")
+    gps_read.getData = lambda sta, **kw: (yearf, y, dy, 0.0)
+    gps_read.toDateTime = lambda _yearf: x
+    package = types.ModuleType("geo_dataread")
+    package.gps_read = gps_read
+    monkeypatch.setitem(sys.modules, "geo_dataread", package)
+    monkeypatch.setitem(sys.modules, "geo_dataread.gps_read", gps_read)
+
+
+def test_name_gives_a_fixed_basename(monkeypatch, tmp_path):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    saved = []
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: saved.append(fn))
+
+    tplt.plotTime(
+        "RHOF", save="png", figDir=str(tmp_path), logo=False, name="RHOF-test"
+    )
+    assert saved == [str(tmp_path / "RHOF-test")]
+
+
+def test_name_is_stable_across_ref_and_special(monkeypatch, tmp_path):
+    """Same --name must overwrite one path, whatever the variant."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    saved = []
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: saved.append(fn))
+
+    for special in ("90d", "year"):
+        tplt.plotTime(
+            "RHOF",
+            save="png",
+            figDir=str(tmp_path),
+            logo=False,
+            name="RHOF-test",
+            special=special,
+        )
+    assert saved == [str(tmp_path / "RHOF-test")] * 2
+
+
+def test_without_name_the_legacy_filename_is_unchanged(monkeypatch, tmp_path):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    saved = []
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: saved.append(fn))
+
+    tplt.plotTime("RHOF", save="png", figDir=str(tmp_path), logo=False, special="90d")
+    assert saved == [str(tmp_path / "RHOF-itrf2008-90d")]

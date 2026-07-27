@@ -98,6 +98,7 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
         # Modern-lane levers the new scheduler relies on.
         "--view",
         "--workers",
+        "--name",
     ],
 )
 def test_legacy_flag_surface_present(flag: str) -> None:

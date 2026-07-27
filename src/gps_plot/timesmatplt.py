@@ -67,6 +67,14 @@ from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
 STATUS_CURRENT_COLOR: tuple[float, float, float] = (0.0, 1.0, 0.0)
 STATUS_STALE_COLOR: tuple[float, float, float] = (1.0, 0.0, 0.0)
 
+#: Outlier-overlay colors of the ``cleaned`` view.  Flagged epochs are drawn
+#: de-emphasised in grey (error bars grey, dark-grey outline, light-grey
+#: fill) so they read as "set aside" instead of competing with the main
+#: series the way the earlier red overlay did.
+OUTLIER_ERRORBAR_COLOR: str = "grey"
+OUTLIER_EDGE_COLOR: str = "dimgrey"
+OUTLIER_FACE_COLOR: str = "lightgrey"
+
 #: Raster resolution for PNG export.  Matches the legacy ImageMagick
 #: ``convert -density 90`` EPS->PNG conversion, so direct-PNG output keeps
 #: the accustomed pixel dimensions.
@@ -260,8 +268,10 @@ def _mask_outliers(
     """
     from geo_dataread import gps_views
 
+    # flags come back shaped like data (1D in -> 1D out); keep it that way so
+    # the returned series never changes shape on the caller
     flags, _prov = gps_views.detect_view_outliers(yearf, data, Ddata)
-    flags = np.atleast_2d(flags)
+    flags = np.asarray(flags, dtype=bool)
     if not flags.any():
         return data, None
     cleaned = np.where(flags, np.nan, data)
@@ -286,6 +296,7 @@ def plotTime(
     logo: bool = True,
     fig: Figure | None = None,
     view: str = "raw",
+    name: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -304,6 +315,13 @@ def plotTime(
     re-fit). Cleaning/detrending degrades gracefully inside geo_dataread
     (warning + undegraded series), so a plot never fails for a view
     reason.
+
+    ``name`` fixes the output basename: with ``save`` set the figure is
+    written to ``<figDir>/<name>.<fmt>``, BYPASSING the
+    ref/view/tType/period filename construction entirely.  Every call with
+    the same ``name`` overwrites the same path -- that is the point (watch
+    one file in a viewer while re-rendering), but it also means a
+    multi-station or multi-variant run leaves only the last render.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -372,6 +390,10 @@ def plotTime(
 
     warnp = -1  # data through currDate(warnp) is labelled green
     Title = make_title(sta, lastpoint, ref=refTitle, warnp=warnp)
+    # ONE currency decision drives both the green title fragment and the
+    # green last-point marker, computed here on the UNMASKED epoch list so
+    # the cleaned view cannot make the two disagree (see stdTimesPlot).
+    highlight_last = data_is_current(lastpoint, warnp)
 
     if save and fig is None:
         fig = _reusable_figure()
@@ -386,20 +408,23 @@ def plotTime(
         ylim=ylim,
         warnp=warnp,
         fig=fig,
+        highlight_last=highlight_last,
     )
 
     if outliers is not None:
-        # cleaned view: flagged epochs as red points on top of the masked
+        # cleaned view: flagged epochs overlaid in grey on top of the masked
         # main series (mask only — nothing is deleted, matching the
-        # geo_dataread raw-preservation rule)
+        # geo_dataread raw-preservation rule).  Colors are passed at the call
+        # site, not as addData defaults, because the JOIN overlay below still
+        # wants the standard red markers.
         fig = addData(
             x,
             outliers[0],
             outliers[1],
             fig,
-            ecolor="r",
-            markerfacecolor="r",
-            markeredgecolor="r",
+            ecolor=OUTLIER_ERRORBAR_COLOR,
+            markerfacecolor=OUTLIER_FACE_COLOR,
+            markeredgecolor=OUTLIER_EDGE_COLOR,
         )
 
     if tType == "JOIN":
@@ -430,7 +455,11 @@ def plotTime(
     if logo:
         inpLogo(fig)
 
-    if save:
+    if save and name:
+        # fixed basename: bypass the whole filend construction so repeated
+        # renders land on exactly the same path
+        saveFig(os.path.join(figDir, name), save, fig)
+    elif save:
         filend = "-%s" % (ref,)
         if view == "cleaned":
             filend += "-cleaned"
@@ -608,6 +637,7 @@ def stdTimesPlot(
     warnp: int = -1,
     label: str | None = None,
     fig: Figure | None = None,
+    highlight_last: bool | None = None,
 ) -> Figure:
     """Build a three-component time-series Figure and return it.
 
@@ -615,6 +645,18 @@ def stdTimesPlot(
     saving/showing is the caller's separate step (see :func:`saveFig`), so
     it can be driven from a REPL.  ``x`` may be datetimes or fractional
     years; ``y``/``Dy`` are shape (3, N).
+
+    ``highlight_last`` re-enables the legacy last-point highlight (a
+    light-green dot with a black rim, :func:`addPoints`) and is the SAME
+    decision as the green "Last datapoint" title fragment.  ``None``
+    derives it locally from ``warnp`` via :func:`data_is_current`;
+    :func:`plotTime` passes it explicitly, computed on the unmasked epoch
+    list, so the marker and the title can never contradict each other.
+
+    One asymmetry is deliberate: in the ``cleaned`` view a flagged final
+    epoch is NaN in that component, so no marker is drawn on that axis
+    while the title stays green -- the EPOCH is current, the value was set
+    aside.  The other two components still get their dot.
     """
     x = _as_datetime_list(x)
 
@@ -629,9 +671,13 @@ def stdTimesPlot(
     fig = setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
     fig = addData(x, y, Dy, fig, label=label)
-    # Last-point highlight suppressed (BGÓ 2026-07-11): the legacy trigger
-    # (Timestamp == date) never fired in production, so no marker is drawn.
-    # ``addPoints`` is retained as a reusable helper if the highlight is revived.
+
+    # Last-point highlight (revived BGÓ 2026-07-27, suppressed 2026-07-11):
+    # pairs with the green title fragment -- see the docstring.
+    if highlight_last is None:
+        highlight_last = data_is_current(x[-1], warnp)
+    if highlight_last:
+        fig = addPoints(x[-1], [y[i][-1] for i in range(3)], fig)
 
     return fig
 

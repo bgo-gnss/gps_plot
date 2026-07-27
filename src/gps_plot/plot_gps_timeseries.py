@@ -215,6 +215,17 @@ def main():
         "(e.g. 'png', 'pdf' or 'eps,pdf,png'); defaults to eps",
     )
     parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="fixed output basename (no directory, no suffix): the figure is "
+        "written as <figDir>/<name>.<fmt>, bypassing the usual "
+        "ref/view/period filename. Handy for re-rendering to one stable path "
+        "you keep open in a viewer (e.g. --name RHOF-test). Every station and "
+        "--ref/--special variant writes the SAME file, so only the last "
+        "render survives a multi-variant run",
+    )
+    parser.add_argument(
         "--fix",
         action="store_true",
         help="plot strictly the period specified, regardless of the data",
@@ -365,6 +376,16 @@ def main():
     # lets plotStation read each station's raw series once and reuse it
     # across all its variants.
     variants = _expand_variants(kwargs, ref_allow[1:], special_allow[1:])
+
+    # --name is a FIXED path by design (re-render into one open viewer), so
+    # a fan-out silently overwrites itself; warn rather than auto-suffix.
+    if args.name and (len(variants) > 1 or len(stations) > 1):
+        print(
+            "warning: --name %s is a fixed basename -- %d variant(s) x %d "
+            "station(s) all write the same file; only the last render survives"
+            % (args.name, len(variants), len(stations)),
+            file=sys.stderr,
+        )
 
     if workers > 1:
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
