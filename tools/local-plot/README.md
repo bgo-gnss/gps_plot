@@ -19,6 +19,7 @@ scripts are versioned.
 ## Quick start
 
 ```bash
+mamba activate gpslibrary                # all packages editable here; scripts on PATH
 cd tools/local-plot
 ./setup-testcfg.sh                       # build ~/gps-data/testcfg (once, or after catalog edits)
 ESTIMATE=1 ./plot-views.sh SKHA BLON      # fit detrend, then render all 3 views
@@ -31,13 +32,13 @@ Output filenames are siblings: `{STA}-plate.png`, `{STA}-plate-cleaned.png`,
 
 ## Prerequisites
 
-- **geo_dataread on the Stage-B branch** (`feat/local-tot-pipeline`) — provides
-  `gps-globk-tot` + `gps-estimate-detrend`. Once merged to `main`, the default
-  `GDR=../geo_dataread` just works; until then point `GDR` at a branch checkout.
+- **`mamba activate gpslibrary`** — the dev env where all nine packages are
+  editable-installed. `gps-globk-tot`, `gps-estimate-detrend` and
+  `plot-gps-timeseries` all come from there (both scripts merged to `main`
+  2026-07-21). The scripts abort with a hint if the env is not active.
 - **gps-config-data analysis-lane catalogs** including `segment_exclusions.csv`
-  and `fit_windows.csv` (also Stage B). `setup-testcfg.sh` copies them from
-  `GCD` (default `~/git/gps-config-data`); point `GCD` at the branch checkout
-  until merged.
+  and `fit_windows.csv`. `setup-testcfg.sh` copies them from `GCD`
+  (default `~/git/gps-config-data`, `main`).
 - `~/gps-data/TOT` populated by `gps-globk-tot` (192 stations as of 2026-07-21).
 
 ## Config knobs
@@ -51,7 +52,7 @@ Every path is env-overridable — see the header of each script. Common:
 | `TESTCFG` | `~/gps-data/testcfg` | layered test config |
 | `SAVE` | `png` | `--save` formats (`pdf`, `eps,pdf,png`, …) |
 | `VIEWS` | `raw cleaned detrended` | which views to render |
-| `GDR` / `GCD` | siblings / `~/git/…` | package + config-data checkouts |
+| `GCD` | `~/git/gps-config-data` | config-data checkout (setup only) |
 
 ## fit_windows.csv — per-station detrend windows
 
