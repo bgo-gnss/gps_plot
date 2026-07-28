@@ -262,7 +262,9 @@ def test_mask_outliers_masks_and_overlays(monkeypatch):
     flags[0, 2] = flags[2, 7] = True
     _install_gps_views_stub(monkeypatch, flags)
 
-    cleaned, overlay, _prov = tplt._mask_outliers("RHOF", yearf, data.copy(), ddata)
+    cleaned, overlay, _prov, _ab = tplt._mask_outliers(
+        "RHOF", yearf, data.copy(), ddata
+    )
     assert overlay is not None
     out_data, out_ddata = overlay
     # mask only: flagged epochs NaN in the main series, present in overlay
@@ -283,7 +285,7 @@ def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
     ddata = np.full((3, n), 0.5)
     _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
 
-    cleaned, overlay, _prov = tplt._mask_outliers("RHOF", yearf, data, ddata)
+    cleaned, overlay, _prov, _ab = tplt._mask_outliers("RHOF", yearf, data, ddata)
     assert overlay is None
     assert cleaned is data  # raw path: same object, no copy, no mask
 
@@ -690,6 +692,95 @@ def test_missing_provisional_key_degrades_quietly(monkeypatch, tmp_path):
     assert len(_grey_overlay_lines(fig)) == 3  # cleaning itself still works
 
 
+def _badge_axes(fig):
+    """Indices of axes carrying the abort badge."""
+    out = []
+    for i, ax in enumerate(fig.axes[:3]):
+        for t in ax.texts:
+            if tplt.ABORT_BADGE_TEXT in t.get_text():
+                out.append(i)
+                break
+    return out
+
+
+def _fig_with_abort(monkeypatch, tmp_path, mask, *, hide_outliers=False):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    import geo_dataread.gps_views as stub
+
+    inner = stub.detect_view_outliers
+
+    def with_abort(yearf, data, Ddata=None, **kwargs):
+        f, prov = inner(yearf, data, Ddata, **kwargs)
+        prov["component_abort"] = list(mask)
+        prov["n_aborted_components"] = int(sum(mask))
+        return f, prov
+
+    stub.detect_view_outliers = with_abort
+    return tplt.plotTime(
+        "SAUD",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        hide_outliers=hide_outliers,
+    )
+
+
+def test_abort_badge_marks_only_the_aborted_axis(monkeypatch, tmp_path):
+    """SAUD's shape: north pathological, east and up fine."""
+    fig = _fig_with_abort(monkeypatch, tmp_path, [True, False, False])
+    assert _badge_axes(fig) == [0]
+
+
+def test_abort_badge_absent_when_nothing_aborted(monkeypatch, tmp_path):
+    fig = _fig_with_abort(monkeypatch, tmp_path, [False, False, False])
+    assert _badge_axes(fig) == []
+
+
+def test_abort_badge_survives_hide_outliers(monkeypatch, tmp_path):
+    """Decluttering removes DECIDED outliers; an abort is the opposite."""
+    fig = _fig_with_abort(
+        monkeypatch, tmp_path, [False, True, False], hide_outliers=True
+    )
+    assert _badge_axes(fig) == [1]
+    assert _grey_overlay_lines(fig) == []
+
+
+def test_abort_badge_on_every_aborted_axis(monkeypatch, tmp_path):
+    fig = _fig_with_abort(monkeypatch, tmp_path, [True, True, True])
+    assert _badge_axes(fig) == [0, 1, 2]
+
+
+def test_missing_component_abort_key_degrades_quietly(monkeypatch, tmp_path):
+    """Older geo_dataread has no component_abort -- must not break a plot."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    import geo_dataread.gps_views as stub
+
+    inner = stub.detect_view_outliers
+
+    def legacy(yearf, data, Ddata=None, **kwargs):
+        f, prov = inner(yearf, data, Ddata, **kwargs)
+        prov.pop("component_abort", None)
+        return f, prov
+
+    stub.detect_view_outliers = legacy
+    fig = tplt.plotTime(
+        "SAUD", save="png", figDir=str(tmp_path), logo=False, view="cleaned"
+    )
+    assert _badge_axes(fig) == []
+    assert len(_grey_overlay_lines(fig)) == 3
+
+
 def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     """plotTime -> _mask_outliers: sta first, both levers as keywords."""
     _stub_gps_read(monkeypatch, _yesterday_noon())
@@ -699,7 +790,7 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     def spy(sta, yearf, data, Ddata, **kwargs):
         seen["sta"] = sta
         seen.update(kwargs)
-        return data, None, None
+        return data, None, None, None
 
     monkeypatch.setattr(tplt, "_mask_outliers", spy)
     tplt.plotTime(

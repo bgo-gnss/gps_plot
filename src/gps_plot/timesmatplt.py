@@ -85,6 +85,14 @@ PROVISIONAL_ERRORBAR_COLOR: str = "darkgoldenrod"
 PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
 
+#: ABORT badge.  A component whose detection aborted is served RAW with only
+#: a UserWarning, so an aborted axis is otherwise indistinguishable from a
+#: clean one -- the worst failure mode for a monitoring product.  Red on a
+#: pale wash, per axis (the abort is per component, §3.5a).
+ABORT_BADGE_TEXT: str = r"DETECTION ABORTED --- raw shown"
+ABORT_BADGE_COLOR: str = "red"
+ABORT_BADGE_FACE: str = "mistyrose"
+
 #: Raster resolution for PNG export.  Matches the legacy ImageMagick
 #: ``convert -density 90`` EPS->PNG conversion, so direct-PNG output keeps
 #: the accustomed pixel dimensions.
@@ -334,6 +342,13 @@ def _mask_outliers(
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
+    # §3.5a: which components the detector refused to rule on. A component
+    # that aborted is served RAW with only a warning, so without this the
+    # figure is indistinguishable from a clean one -- the failure mode is
+    # invisible exactly where it matters most.
+    aborted = prov.get("component_abort")
+    aborted = None if aborted is None else [bool(v) for v in np.atleast_1d(aborted)]
+
     # DIAGNOSTIC, and absent from older geo_dataread -- never let its absence
     # break a plot (the same graceful-degrade rule the rest of this path follows)
     pflags = np.asarray(prov.get("provisional", False), dtype=bool)
@@ -345,10 +360,10 @@ def _mask_outliers(
         )
 
     if not flags.any():
-        return data, None, provisional
+        return data, None, provisional, aborted
     cleaned = np.where(flags, np.nan, data)
     overlay = (np.where(flags, data, np.nan), np.where(flags, Ddata, np.nan))
-    return cleaned, overlay, provisional
+    return cleaned, overlay, provisional, aborted
 
 
 def plotTime(
@@ -475,9 +490,9 @@ def plotTime(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
-    outliers = provisional = None
+    outliers = provisional = aborted = None
     if view == "cleaned":
-        data, outliers, provisional = _mask_outliers(
+        data, outliers, provisional, aborted = _mask_outliers(
             sta,
             yearf,
             data,
@@ -547,6 +562,10 @@ def plotTime(
             markerfacecolor=PROVISIONAL_FACE_COLOR,
             markeredgecolor=PROVISIONAL_EDGE_COLOR,
         )
+
+    if aborted is not None and any(aborted):
+        # after the overlays so the badge is never painted under them
+        fig = addAbortBadge(fig, aborted)
 
     if tType == "JOIN":
         Pdata = gpsr.convGlobktopandas(yearf, data, Ddata)
@@ -857,6 +876,40 @@ def addPoints(
             markeredgecolor=markeredgecolor,
         )
 
+    return fig
+
+
+def addAbortBadge(fig: Figure, component_abort: Sequence[bool]) -> Figure:
+    """Mark each aborted component's axis (§3.5a).
+
+    Per axis, NOT per figure: the abort is per component, and a figure-level
+    banner would hide the granularity the leaf change exists to provide --
+    a station where north aborted but east and up cleaned normally is a
+    different object from one where all three failed.
+
+    Deliberately NOT suppressed by ``hide_outliers``: decluttering removes
+    DECIDED outliers, and an aborted component is the opposite of decided.
+    """
+    for c, aborted in enumerate(component_abort):
+        if not aborted or c >= len(fig.axes):
+            continue
+        fig.axes[c].text(
+            0.5,
+            0.97,
+            ABORT_BADGE_TEXT,
+            transform=fig.axes[c].transAxes,
+            ha="center",
+            va="top",
+            color=ABORT_BADGE_COLOR,
+            fontsize=13,
+            bbox={
+                "facecolor": ABORT_BADGE_FACE,
+                "edgecolor": ABORT_BADGE_COLOR,
+                "boxstyle": "round,pad=0.35",
+                "alpha": 0.9,
+            },
+            zorder=10,
+        )
     return fig
 
 
