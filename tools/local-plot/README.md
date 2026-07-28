@@ -39,7 +39,39 @@ Output filenames are siblings: `{STA}-plate.png`, `{STA}-plate-cleaned.png`,
 - **gps-config-data analysis-lane catalogs** including `segment_exclusions.csv`
   and `fit_windows.csv`. `setup-testcfg.sh` copies them from `GCD`
   (default `~/git/gps-config-data`, `main`).
-- `~/gps-data/TOT` populated by `gps-globk-tot` (192 stations as of 2026-07-21).
+- `~/gps-data/TOT` populated by `gps-globk-tot` (194 stations as of 2026-07-28).
+
+## Refreshing `~/gps-data/TOT` (the joined dataset)
+
+**Why it matters, not just how.** The production archive `/mnt_data/gpsdata`
+holds *raw* GLOBK segments — overlapping in time, with per-segment datums that
+are not reconciled. HVER's Up wraps by 10 m there (1746 epochs off-datum);
+`geo_dataread.globk_join` de-wraps and min-σ-dedupes them, leaving 1. The fix
+is **local only** until it ships to production, so `postprocess.cfg`
+`totDir` points at the joined output and this refresh is a MANUAL step.
+
+```bash
+mamba activate gpslibrary
+cd ~/gps-data/TOT && ls | sed 's/^mb_//; s/_TOT.*//' | sort -u > /tmp/sta.txt
+xargs -a /tmp/sta.txt gps-globk-tot \
+    --pre /mnt_data/gps_gmt_data/pre \
+    --rap /mnt_data/gps_gmt_data/rap \
+    --out ~/gps-data/TOT
+```
+
+- **Use `xargs`, not `$(cat …)`** — this is zsh, where an unquoted parameter
+  does NOT word-split, so the whole station list arrives as one argument and
+  the join errors out on every component (harmlessly: it writes nothing).
+- Segment exclusions (SEY1 name-clash, SUND rap-subset) resolve from the
+  deployed `~/.config/gpsconfig/segment_exclusions.csv`. If that is missing the
+  join warns and proceeds **without** them — copy it from
+  `~/git/gps-config-data/analysis-lane/`.
+- The station list above is inherited from what is already joined. Stations
+  present in `pre`/`rap` but never joined locally stay missing; `pre` carries
+  378 codes and `rap` 394, though most extras are global reference sites.
+- Verify after: a joined series keeps its true height (RHOF Up sits near
+  6.9 m, REYK 3.0 m), so `|U| > 1 m` is NOT a wrap test — check deviation from
+  each station's own median instead.
 
 ## Config knobs
 
