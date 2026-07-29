@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,34 @@ def _s0_params(extra: list[str] | None = None) -> Any:
     return _build_outlier_params(extra or [], base=_stage_overrides("S0"))
 
 
+def _override_settings(settings: Any, **over: Any) -> Any:
+    """Apply CLI curation levers on top of the resolved catalog row.
+
+    Only non-None values override, so an unset flag defers to the catalog,
+    which defers to the defaults -- the same precedence the rest of the
+    ecosystem uses.  ``window_source`` is rewritten whenever anything is
+    overridden, because the record's provenance must say the operator chose
+    this, not a catalog.
+
+    Why this exists at all: `fit_windows.csv` has no model column and no way
+    to say "these gates, just for this look", so without CLI overrides the
+    only route to a different window is editing a deployed catalog between
+    iterations -- which is exactly the loop the workbench is meant to remove.
+    """
+    import dataclasses
+
+    changed = {k: v for k, v in over.items() if v is not None}
+    if not changed:
+        return settings
+    if "steps" in changed:
+        changed["steps"] = tuple(float(v) for v in changed["steps"])
+    if "window" in changed:
+        changed["window"] = tuple(changed["window"])
+    prior = settings.window_source or "defaults"
+    changed["window_source"] = f"workbench-cli(+{prior})"
+    return dataclasses.replace(settings, **changed)
+
+
 def build_record(
     sta: str,
     *,
@@ -71,6 +100,11 @@ def build_record(
     outlier_param: list[str] | None = None,
     fit_catalog: str | Path | None = None,
     model: str | None = None,
+    window: tuple[float | None, float | None] | None = None,
+    steps: Sequence[float] | None = None,
+    max_gap_years: float | None = None,
+    min_epochs: int | None = None,
+    min_span_years: float | None = None,
 ) -> tuple[dict[str, Any], Any, Any, Any]:
     """Read the plate-frame series and estimate one station's record.
 
@@ -106,6 +140,14 @@ def build_record(
         source = str(path)
 
     settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
+    settings = _override_settings(
+        settings,
+        window=window,
+        steps=steps,
+        max_gap_years=max_gap_years,
+        min_epochs=min_epochs,
+        min_span_years=min_span_years,
+    )
     kwargs: dict[str, Any] = {}
     if model:
         kwargs["model"] = model
@@ -272,6 +314,51 @@ def _build_parser() -> argparse.ArgumentParser:
         "from --model: NOT stored, chosen per call",
     )
     p.add_argument(
+        "--window-start",
+        type=float,
+        default=None,
+        metavar="YEARF",
+        help="fit-window start [fractional year]",
+    )
+    p.add_argument(
+        "--window-end",
+        type=float,
+        default=None,
+        metavar="YEARF",
+        help="fit-window end [fractional year]",
+    )
+    p.add_argument(
+        "--step",
+        action="append",
+        type=float,
+        default=[],
+        metavar="YEARF",
+        help="declare an offset epoch (repeatable). DECLARE-AND-FIT: the "
+        "epoch is yours, the amplitude is estimated and printed with "
+        "the record. No epoch detection happens here",
+    )
+    p.add_argument(
+        "--max-gap-years",
+        type=float,
+        default=None,
+        help="validity gate: largest tolerated data gap. The 0.5 default "
+        "rejects most long-history stations (RHOF 1.35, VMEY 1.21, "
+        "HOFN 1.08, SELF 0.73 yr), so this is usually required rather "
+        "than optional",
+    )
+    p.add_argument(
+        "--min-epochs",
+        type=int,
+        default=None,
+        help="validity gate: minimum epochs in the window",
+    )
+    p.add_argument(
+        "--min-span-years",
+        type=float,
+        default=None,
+        help="validity gate: minimum window span [yr]",
+    )
+    p.add_argument(
         "--fit-catalog",
         default=None,
         metavar="CSV",
@@ -300,6 +387,15 @@ def main(argv: list[str] | None = None) -> int:
             outlier_param=args.outlier_param,
             fit_catalog=args.fit_catalog,
             model=args.model,
+            window=(
+                (args.window_start, args.window_end)
+                if (args.window_start or args.window_end)
+                else None
+            ),
+            steps=args.step or None,
+            max_gap_years=args.max_gap_years,
+            min_epochs=args.min_epochs,
+            min_span_years=args.min_span_years,
         )
     except RuntimeError as exc:
         # A refused record is a RESULT, not a crash -- report it plainly and
