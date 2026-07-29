@@ -137,10 +137,15 @@ stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
 renders from that record.
 
 ```bash
-gps-detrend-workbench SELF --window-start 2007.0 --max-gap-years 2.0 \
-    --step 2008.4085 --event 20080529,Olfus_M6.3 --out /tmp/SELF.pdf
+gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
 gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
 ```
+
+`--out` shares the scratch figdir with `tools/local-plot/figview.sh`: a bare
+filename lands in `$FIGDIR`, else the checkout's gitignored `tmp-figdir/`, else
+CWD. A path with a separator is honoured verbatim, so an exported `FIGDIR` can
+never relocate an explicit `--out`. `--max-gap-years` is effectively required —
+the 0.5 default rejects every station in the working set.
 
 Events are **declared, never detected** (tier A), in three colours: `darkgreen`
 TOS equipment changes (live `tostools`; one row per DEVICE join, coalesced to

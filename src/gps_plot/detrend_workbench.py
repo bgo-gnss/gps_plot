@@ -43,6 +43,7 @@ ticket and a separate, explicit flag.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -521,6 +522,7 @@ def render(
 
     x = list(_to_datetime(yearf))
     out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
 
     with PdfPages(out) as pdf:
         # page 1 -- observed (plate frame) with the fitted trajectory over it
@@ -605,6 +607,49 @@ def _validate_record(sta: str, record: Any, doc: Any) -> None:
             f"({type(exc).__name__}: {exc}). Refusing to commit it — it would "
             f"degrade this station to raw at every read."
         ) from None
+
+
+SCRATCH_FIGDIR: str = "tmp-figdir"
+"""Scratch figure dir, shared with ``tools/local-plot/figview.sh``.
+
+That script defaults ``FIGDIR`` to ``<gps_plot>/tmp-figdir`` and injects
+``-d "$FIGDIR"`` into ``plot-gps-timeseries``, so figures from the whole local
+workflow land in one gitignored place.  The workbench predated it and wrote to
+CWD, which litters the repo root on every iteration.
+"""
+
+
+def default_figdir() -> Path:
+    """Where an unqualified ``--out`` lands.
+
+    Precedence mirrors ``figview.sh``: ``$FIGDIR`` wins so that script can
+    redirect us, then the source checkout's ``tmp-figdir/``, then CWD.
+
+    The checkout is identified by ``pyproject.toml`` beside the package root --
+    without that check a wheel install would resolve into ``site-packages``,
+    which is the wrong place to write a figure and may not be writable.
+    """
+    env = os.environ.get("FIGDIR")
+    if env:
+        return Path(env).expanduser()
+    root = Path(__file__).resolve().parents[2]
+    if (root / "pyproject.toml").is_file():
+        return root / SCRATCH_FIGDIR
+    return Path.cwd()
+
+
+def resolve_out(out: str | None, sta: str) -> Path:
+    """Resolve ``--out`` against :func:`default_figdir`.
+
+    A bare filename (``--out SELF-iter1.pdf``) is placed IN the figdir; anything
+    carrying a path separator or ``~`` is honoured verbatim, so an explicit
+    location is never silently relocated.
+    """
+    if out is None:
+        return default_figdir() / f"{sta}-detrend-workbench.pdf"
+    if os.sep in out or out.startswith("~") or (os.altsep and os.altsep in out):
+        return Path(out).expanduser()
+    return default_figdir() / out
 
 
 def commit_record(
@@ -724,7 +769,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         metavar="PDF",
-        help="output PDF (default: <STA>-detrend-workbench.pdf in CWD)",
+        help="output PDF. A bare filename lands in the scratch figdir "
+        "($FIGDIR, else <gps_plot>/tmp-figdir, else CWD); a path with a "
+        "separator is used verbatim. Default: "
+        "<figdir>/<STA>-detrend-workbench.pdf",
     )
     p.add_argument(
         "--model",
@@ -869,7 +917,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     sta = args.station.upper()
-    out = Path(args.out) if args.out else Path(f"{sta}-detrend-workbench.pdf")
+    out = resolve_out(args.out, sta)
 
     try:
         record, yearf, data, sigma = build_record(

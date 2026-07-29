@@ -15,6 +15,7 @@ without them, so a checkout on another machine stays green.
 
 from __future__ import annotations
 
+import json
 import shutil
 import warnings
 from pathlib import Path
@@ -48,9 +49,24 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def gpsconfig(tmp_path, monkeypatch):
-    """A disposable copy of the deployed config tree."""
+    """A disposable copy of the deployed config tree, with ``STA`` REMOVED.
+
+    Removing it ESTABLISHES the precondition these tests need (a station with
+    no stored record) instead of assuming it. The earlier version only
+    asserted ``STA not in stations``, which meant the suite broke the moment
+    an operator legitimately curated RHOF into the live document — a test
+    failing because someone did their job is a bad test, not a bad commit.
+
+    The copy is disposable, so the deletion never touches the real document.
+    """
     dst = tmp_path / "gpsconfig"
     shutil.copytree(TESTCFG, dst, symlinks=False)
+
+    doc = dst / "detrend_params.json"
+    payload = json.loads(doc.read_text())
+    payload["stations"].pop(STA, None)
+    doc.write_text(json.dumps(payload, indent=1))
+
     monkeypatch.setenv("GPS_CONFIG_PATH", str(dst))
     return dst
 
@@ -95,7 +111,8 @@ def test_commit_then_detrended_view_consumes_the_record(gpsconfig, tmp_path):
 
     doc = gpsconfig / "detrend_params.json"
     before_doc = json.loads(doc.read_text())
-    assert STA not in before_doc["stations"], "fixture assumes RHOF is absent"
+    # guaranteed by the gpsconfig fixture, which removes STA from its copy
+    assert STA not in before_doc["stations"]
 
     y0, d0, absent_before = _detrended()
     assert absent_before, "expected the 'absent record' degrade before commit"
@@ -394,3 +411,45 @@ def test_a_half_day_epoch_shift_does_not_move_the_fit():
     assert [round(float(v), 4) for v in a["rms"]] == [
         round(float(v), 4) for v in b["rms"]
     ]
+
+
+# ---------------------------------------------------------------------------
+# --out routing: scratch figdir shared with tools/local-plot/figview.sh
+# ---------------------------------------------------------------------------
+
+
+def test_bare_out_lands_in_figdir_explicit_path_does_not(tmp_path, monkeypatch):
+    """A bare filename is a convenience; a path is an instruction.
+
+    ``$FIGDIR`` must never relocate an explicit path, or figview.sh (which
+    exports FIGDIR) would silently hijack a caller's ``--out /some/where.pdf``.
+    """
+    from gps_plot.detrend_workbench import default_figdir, resolve_out
+
+    monkeypatch.setenv("FIGDIR", str(tmp_path))
+    assert default_figdir() == tmp_path
+    assert resolve_out(None, "SELF") == tmp_path / "SELF-detrend-workbench.pdf"
+    assert resolve_out("SELF-iter1.pdf", "SELF") == tmp_path / "SELF-iter1.pdf"
+    # explicit paths survive an exported FIGDIR untouched
+    assert resolve_out("/abs/x.pdf", "SELF") == Path("/abs/x.pdf")
+    assert resolve_out("~/y.pdf", "SELF") == Path.home() / "y.pdf"
+    assert resolve_out("sub/z.pdf", "SELF") == Path("sub/z.pdf")
+
+
+def test_figdir_falls_back_to_the_checkout_then_cwd(monkeypatch):
+    """Unset FIGDIR resolves to the source checkout's gitignored tmp-figdir.
+
+    Guarded on ``pyproject.toml`` beside the package root: a wheel install
+    resolves into site-packages, which is the wrong place to write a figure and
+    may not even be writable — so that case must degrade to CWD.
+    """
+    import gps_plot.detrend_workbench as wb
+
+    monkeypatch.delenv("FIGDIR", raising=False)
+    got = wb.default_figdir()
+    root = Path(wb.__file__).resolve().parents[2]
+    if (root / "pyproject.toml").is_file():
+        assert got == root / wb.SCRATCH_FIGDIR
+        assert got.name == "tmp-figdir", "must match figview.sh's default"
+    else:
+        assert got == Path.cwd()
