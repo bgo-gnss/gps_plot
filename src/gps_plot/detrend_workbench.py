@@ -278,6 +278,91 @@ def _to_datetime(yearf: Any) -> Any:
     return toDateTime(np.asarray(yearf, dtype=float))
 
 
+def commit_record(
+    sta: str,
+    record: dict[str, Any],
+    *,
+    params_path: str | Path | None = None,
+    init: bool = False,
+    force: bool = False,
+) -> tuple[Path, int, int]:
+    """Merge one station's record into ``detrend_params.json``.
+
+    READ-MODIFY-WRITE, never build-from-scratch.  ``gps-estimate-detrend``
+    assembles a fresh document with ``build_document`` because it owns every
+    station in one run; doing that here would silently drop the other 32.
+
+    ``schema_version`` / ``frame`` / ``units`` / ``phase_convention`` are
+    carried over VERBATIM.  A changed ``schema_version`` makes
+    :func:`gps_views.read_detrend_params` reject the document outright, which
+    degrades the ENTIRE fleet to raw — a one-station edit must not be able to
+    do that.
+
+    Refuses to CREATE a document unless ``init``.  This is the sharp edge:
+    ``default_params_path()`` resolves to ``~/.config/gpsconfig/
+    detrend_params.json``, which does not exist on this machine — the live
+    33-station document is reached via ``GPS_CONFIG_PATH``.  A naive commit
+    would therefore create a brand-new ONE-station document at the default
+    path, and every consumer would silently start reading that instead.
+
+    Returns:
+        ``(path, n_before, n_after)``.
+    """
+    import json
+    import os
+    import tempfile
+
+    from geo_dataread.gps_views import default_params_path, read_detrend_params
+
+    path = Path(params_path) if params_path else default_params_path()
+    if path is None:
+        raise RuntimeError(
+            "no gpsconfig available to resolve detrend_params.json; pass "
+            "--params PATH or set GPS_CONFIG_PATH"
+        )
+
+    if path.is_file():
+        doc = read_detrend_params(path)
+    elif init:
+        from geo_dataread.detrend_estimate import build_document
+
+        doc = build_document({})
+    else:
+        raise RuntimeError(
+            f"{path} does not exist. Refusing to create it: a new one-station "
+            f"document at this path would become what every consumer reads, "
+            f"silently replacing the real one. Point --params at the live "
+            f"document (or set GPS_CONFIG_PATH), or pass --init if you really "
+            f"do mean to start a new one."
+        )
+
+    stations = doc.setdefault("stations", {})
+    n_before = len(stations)
+    if sta in stations and not force:
+        raise RuntimeError(
+            f"{sta} already has a record in {path} "
+            f"(fitted_at={stations[sta].get('fitted_at')}). Pass --force to "
+            f"replace it."
+        )
+    stations[sta] = record
+    n_after = len(stations)
+
+    # atomic: write beside the target, then rename. No helper exists anywhere
+    # in the ecosystem, and a half-written parameter document is worse than a
+    # stale one -- read_detrend_params would reject it and the fleet would
+    # degrade to raw.
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2, sort_keys=False)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return path, n_before, n_after
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gps-detrend-workbench",
@@ -359,6 +444,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="validity gate: minimum window span [yr]",
     )
     p.add_argument(
+        "--commit",
+        action="store_true",
+        help="merge this record into detrend_params.json. WRITES CONFIG "
+        "outside the repos; the resolved path is printed before writing",
+    )
+    p.add_argument(
+        "--params",
+        default=None,
+        metavar="JSON",
+        help="explicit detrend_params.json (default: the gpsconfig resolver)",
+    )
+    p.add_argument(
+        "--init",
+        action="store_true",
+        help="allow --commit to CREATE the document. Off by default because "
+        "a new one-station file at the default path would become what "
+        "every consumer reads",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="allow --commit to replace an existing record for this station",
+    )
+    p.add_argument(
         "--fit-catalog",
         default=None,
         metavar="CSV",
@@ -407,6 +516,23 @@ def main(argv: list[str] | None = None) -> int:
     print(summarise(record, sta))
     path = render(sta, record, yearf, data, sigma, out, terms=args.terms)
     print(f"\nwrote {path}")
+
+    if args.commit:
+        record.setdefault("refs", {})["generator"] = "gps-detrend-workbench"
+        try:
+            target, before, after = commit_record(
+                sta,
+                record,
+                params_path=args.params,
+                init=args.init,
+                force=args.force,
+            )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+        print(f"committed {sta} -> {target}   stations {before} -> {after}")
+    else:
+        print("(not committed — pass --commit to store this record)")
     return 0
 
 
