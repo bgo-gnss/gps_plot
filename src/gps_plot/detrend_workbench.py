@@ -14,14 +14,21 @@ Design notes:
   ``geo_dataread.detrend_estimate.station_record_from_arrays`` — the same
   function ``gps-estimate-detrend`` uses — so the workbench and the batch
   estimator can never disagree about what a record means.
-- **S0-only detection by default.**  §14 stage isolation: S0 works on local
-  first differences with no global fit, so its verdict does not depend on
-  the window's composition.  That matters here because a station with an
-  undeclared step (SELF: a 143 mm 2008 coseismic) drives the full pipeline's
-  candidate fraction past ``max_flag_fraction`` and aborts — the very
-  stations that most need curation are the ones the full detector refuses.
-  The stage set is built by reusing ``plot_gps_timeseries._stage_overrides``,
-  so no detection default is restated here.
+- **Full detection by default, with a LOUD S0 fallback.**  An earlier
+  version defaulted to S0-only, reasoning that S0 is robust to undeclared
+  steps.  That reasoning was wrong here, and measurably so: §14 justified S0
+  for *flagging*, where the virtue is a verdict that does not move with the
+  window's composition.  For *estimation* the inlier set DEFINES the fitted
+  trajectory — S0 leaves the model-visible outliers in, the WLS absorbs them,
+  and the record encodes the bias.  Measured: RHOF vertical rate 0.642
+  (S0) vs 0.105 mm/yr (full), n_rejected [4,6,2] vs [48,31,23].
+  And the fallback case is rarer than it looked: the full pipeline aborted on
+  1 of 28 stations tested, and on that one (SELF) it aborts only while the
+  143 mm coseismic is UNdeclared — a state whose record is visibly garbage
+  and would never be committed.  Once the operator declares the step, full
+  runs and beats S0 on every component (rms [1.97, 3.49, 6.54] vs
+  [2.31, 3.98, 10.87]).  So S0 protects only records nobody should commit.
+  It remains available, and the fallback is announced rather than silent.
 - **Two pages, not two files.**  ``timesmatplt.saveFig`` writes one Figure;
   a two-view PDF needs ``PdfPages``.  This is the one place the workbench
   departs from the production drawing seam, deliberately.
@@ -43,7 +50,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["build_record", "render", "main"]
+__all__ = ["build_record", "borrow_record", "commit_record", "render", "main"]
 
 #: Colour of the fitted-trajectory overlay on the plate-frame panel.  Blue
 #: against the red/grey/gold marker vocabulary of the cleaned view, so the
@@ -52,19 +59,20 @@ FIT_COLOR: str = "royalblue"
 FIT_WIDTH: float = 1.8
 
 
-def _s0_params(extra: list[str] | None = None) -> Any:
-    """S0-only ``OutlierParams``, built from the CLI's own stage mapping.
+def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
+    """``OutlierParams`` for a stage selection, via the CLI's own mapping.
 
+    ``stages=None`` means the full pipeline (catalog/spec defaults decide).
     Reuses :func:`plot_gps_timeseries._stage_overrides` /
-    :func:`_build_outlier_params` rather than restating which fields the S0
-    stage corresponds to — one definition of "S0", in one place.
+    :func:`_build_outlier_params` rather than restating which fields a stage
+    corresponds to — one definition of "S0", in one place.
     """
     from gps_plot.plot_gps_timeseries import _build_outlier_params, _stage_overrides
 
-    return _build_outlier_params(extra or [], base=_stage_overrides("S0"))
+    return _build_outlier_params(extra or [], base=_stage_overrides(stages))
 
 
-def _override_settings(settings: Any, **over: Any) -> Any:
+def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
     """Apply CLI curation levers on top of the resolved catalog row.
 
     Only non-None values override, so an unset flag defers to the catalog,
@@ -84,7 +92,31 @@ def _override_settings(settings: Any, **over: Any) -> Any:
     if not changed:
         return settings
     if "steps" in changed:
-        changed["steps"] = tuple(float(v) for v in changed["steps"])
+        # MERGE with whatever is already declared, never replace.
+        # station_record_from_arrays consults the deployed steps.csv ONLY when
+        # settings.steps is empty, so setting it from the CLI silently DROPS a
+        # station's declared coseismic the moment an operator adds one
+        # equipment offset -- measured on SENG (2 declared rows): rms N/E
+        # 112.85/178.73 -> 271.94/592.92 mm. The help text reads additive.
+        # Note the sources differ: settings.steps is the fit-catalog column,
+        # declared[] is steps.csv. Both must be folded in.
+        declared: set[float] = set(settings.steps or ())
+        if sta:
+            try:
+                from geo_dataread.gps_views import station_step_epochs
+
+                epochs, _src = station_step_epochs(sta)
+                declared |= {float(v) for v in np.atleast_1d(epochs)}
+            except Exception:  # catalogs are enhancements, never a hard failure
+                pass
+        merged = declared | {float(v) for v in changed["steps"]}
+        changed["steps"] = tuple(sorted(merged))
+        if declared:
+            print(
+                f"note: --step merged with {len(declared)} already-declared "
+                f"step(s); fitting {len(merged)} in total: {changed['steps']}",
+                file=sys.stderr,
+            )
     if "window" in changed:
         changed["window"] = tuple(changed["window"])
     prior = settings.window_source or "defaults"
@@ -100,6 +132,7 @@ def build_record(
     outlier_param: list[str] | None = None,
     fit_catalog: str | Path | None = None,
     model: str | None = None,
+    stages: str | None = None,
     window: tuple[float | None, float | None] | None = None,
     steps: Sequence[float] | None = None,
     max_gap_years: float | None = None,
@@ -142,6 +175,7 @@ def build_record(
     settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
     settings = _override_settings(
         settings,
+        sta=sta,
         window=window,
         steps=steps,
         max_gap_years=max_gap_years,
@@ -158,16 +192,38 @@ def build_record(
         f"min_epochs={settings.min_epochs}, "
         f"min_span_years={settings.min_span_years}"
     )
-    try:
-        record = station_record_from_arrays(
+
+    def _estimate(params: Any) -> dict[str, Any] | None:
+        return station_record_from_arrays(
             sta,
             yearf,
             data,
             sigma,
             settings=settings,
-            outlier_params=_s0_params(outlier_param),
+            outlier_params=params,
             **kwargs,
         )
+
+    try:
+        if stages:
+            # explicit operator override -- no fallback, they asked for this
+            record = _estimate(_stage_params(stages, outlier_param))
+        else:
+            record = _estimate(_stage_params(None, outlier_param))
+            if record is None:
+                # Outlier ABORT, not a gate failure. Fall back to S0 so the
+                # station is estimable at all -- but say so, because an S0
+                # record carries absorbed-outlier bias the full one does not.
+                print(
+                    f"note: {sta}: full detection aborted (excess-candidate "
+                    f"rule); falling back to S0-only. An S0 record leaves "
+                    f"model-visible outliers in the fit, so its parameters "
+                    f"are biased relative to a full-detection record. If this "
+                    f"station has an undeclared step, --step is the better "
+                    f"fix: declaring it usually stops the abort.",
+                    file=sys.stderr,
+                )
+                record = _estimate(_stage_params("S0", outlier_param))
     except ValueError as exc:
         # The leaf RAISES on a failed validity gate and RETURNS None on an
         # outlier abort -- two different refusals for the same operator
@@ -181,6 +237,44 @@ def build_record(
             f"aborts the series needs a narrower window or a declared step."
         )
     return record, yearf, data, sigma
+
+
+def borrow_record(
+    donor: str, target: str, *, params_path: str | Path | None = None
+) -> dict[str, Any]:
+    """Fetch a donor station's record to apply to ``target`` (UseSTA).
+
+    Records are SELF-CONTAINED, so a donor's parameters evaluate at any
+    station's epochs — that is what makes borrowing possible at all.
+
+    This is a **duplicate, not a pointer**, and the distinction matters:
+    ``UseSTA`` (``station_detrend_record(use_sta=)``) is a READ-time switch,
+    so borrowing at estimate time is not expressible in the schema.  Copying
+    the donor's record into the target's slot therefore means it will NOT
+    follow the donor if the donor is later re-estimated, and nothing detects
+    that staleness.  ``borrowed`` records where it came from and when the
+    donor was fitted, so at least the drift is legible.
+
+    The upside of a duplicate: it round-trips.  ``plot-gps-timeseries``
+    exposes no ``use_sta``, so a pointer would be invisible to the very path
+    that has to consume it.
+    """
+    from geo_dataread.gps_views import read_detrend_params, station_detrend_record
+
+    doc = read_detrend_params(params_path)
+    record, source = station_detrend_record(doc, donor)
+    if record is None:
+        raise RuntimeError(
+            f"donor {donor!r} has no record in the parameter document "
+            f"(looked up as {source!r}). Estimate and commit the donor first."
+        )
+    borrowed = dict(record)
+    borrowed["borrowed"] = {
+        "from": donor,
+        "donor_fitted_at": record.get("fitted_at"),
+        "applied_to": target,
+    }
+    return borrowed
 
 
 def summarise(record: dict[str, Any], sta: str) -> str:
@@ -278,6 +372,41 @@ def _to_datetime(yearf: Any) -> Any:
     return toDateTime(np.asarray(yearf, dtype=float))
 
 
+def _validate_record(sta: str, record: Any, doc: Any) -> None:
+    """Reject a record the apply path would choke on, at commit time.
+
+    Two checks the document-level reader cannot make:
+
+    - the record must actually evaluate — ``trajectory_from_record`` is the
+      same constructor the apply path uses, so if it raises here it would
+      have raised (or degraded to raw) on every read;
+    - the record's ``frame`` must match the document's.  A frame mismatch is
+      the one condition design §2.5 says to refuse rather than fudge.
+    """
+    from gps_analysis import trajectory_from_record
+
+    if not isinstance(record, dict):
+        raise RuntimeError(
+            f"{sta}: record must be a mapping, got {type(record).__name__}"
+        )
+    doc_frame = doc.get("frame")
+    rec_frame = record.get("frame")
+    if doc_frame and rec_frame and rec_frame != doc_frame:
+        raise RuntimeError(
+            f"{sta}: record frame {rec_frame!r} != document frame {doc_frame!r}. "
+            f"Refusing — applying parameters across frames is a hard error "
+            f"(design §2.5), and committing it would hide that until read time."
+        )
+    try:
+        trajectory_from_record(record)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{sta}: record is not usable by the apply path "
+            f"({type(exc).__name__}: {exc}). Refusing to commit it — it would "
+            f"degrade this station to raw at every read."
+        ) from None
+
+
 def commit_record(
     sta: str,
     record: dict[str, Any],
@@ -320,6 +449,12 @@ def commit_record(
             "no gpsconfig available to resolve detrend_params.json; pass "
             "--params PATH or set GPS_CONFIG_PATH"
         )
+    # Follow symlinks BEFORE writing. The deployed config tree is a symlink
+    # farm (~/gps-data/testcfg links into ~/.config/gpsconfig), and os.replace
+    # on a symlink replaces the LINK with a regular file -- the two trees then
+    # diverge silently and permanently. Demonstrated by review, not theorised.
+    if path.is_symlink() or path.exists():
+        path = path.resolve()
 
     if path.is_file():
         doc = read_detrend_params(path)
@@ -335,6 +470,12 @@ def commit_record(
             f"document (or set GPS_CONFIG_PATH), or pass --init if you really "
             f"do mean to start a new one."
         )
+
+    # Validate BEFORE writing, where the operator is looking. read_detrend_params
+    # only checks the document envelope, so a malformed record commits happily
+    # and then degrades that station to raw at every read, with a warning
+    # nobody is watching for.
+    _validate_record(sta, record, doc)
 
     stations = doc.setdefault("stations", {})
     n_before = len(stations)
@@ -397,6 +538,24 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("all", "secular", "periodic"),
         help="APPLY-time term selection for the figures. Distinct "
         "from --model: NOT stored, chosen per call",
+    )
+    p.add_argument(
+        "--donor",
+        default=None,
+        metavar="STA",
+        help="apply another station's stored record instead of estimating "
+        "one (UseSTA). A DUPLICATE, not a pointer: it will not follow "
+        "the donor if the donor is re-estimated. Both RMS figures are "
+        "printed so the cost of borrowing is visible",
+    )
+    p.add_argument(
+        "--stages",
+        default=None,
+        metavar="LIST",
+        help="force a detection stage set (e.g. S0, or S0,S4). Default is the "
+        "FULL pipeline, falling back to S0 only if it aborts — an S0 "
+        "record leaves model-visible outliers in the fit and its "
+        "parameters are biased relative to a full-detection one",
     )
     p.add_argument(
         "--window-start",
@@ -496,6 +655,7 @@ def main(argv: list[str] | None = None) -> int:
             outlier_param=args.outlier_param,
             fit_catalog=args.fit_catalog,
             model=args.model,
+            stages=args.stages,
             window=(
                 (args.window_start, args.window_end)
                 if (args.window_start or args.window_end)
@@ -512,8 +672,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"\n{sta} — detrend record\n")
-    print(summarise(record, sta))
+    if args.donor:
+        try:
+            borrowed = borrow_record(args.donor, sta, params_path=args.params)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 4
+        own_rms = [round(float(v), 2) for v in record.get("rms", [])]
+        record = borrowed
+        print(f"\n{sta} — BORROWED record from {args.donor}\n")
+        print(summarise(record, sta))
+        print(f"  own-fit rms    {own_rms}   <- the cost of borrowing")
+    else:
+        print(f"\n{sta} — detrend record\n")
+        print(summarise(record, sta))
     path = render(sta, record, yearf, data, sigma, out, terms=args.terms)
     print(f"\nwrote {path}")
 
