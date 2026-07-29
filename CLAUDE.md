@@ -12,6 +12,8 @@ New (2026-07): `dev_viz.py` — development visualization of `gps_analysis` outp
 (trajectory fit, detrended residuals, GBIS4TS break points, WLS velocity). Modern
 code: typed, mypy-strict/ruff/black clean, tested (`tests/test_dev_viz.py`).
 New (2026-07): `maps.py` — PyGMT map lane slice 1 (`station_map`); see Map lane below.
+New (2026-07): `detrend_workbench.py` — operator workbench for detrend curation
+(T0–T6 complete, DoD 1–5 met); see Detrend workbench below.
 Ruff lint/format scope covers the modern lane only — legacy modules and the
 dated snapshots are excluded in `[tool.ruff]` (`pyproject.toml`).
 
@@ -27,11 +29,14 @@ gps_plot/
 │   ├── gmtplot.py                    # dormant velomap seed (recipe ref for maps slice 2/3)
 │   ├── maps.py                       # PyGMT map lane: station_map (optional 'maps' extra)
 │   ├── dev_viz.py                    # analysis-lane dev-viz (gps_analysis outputs)
+│   ├── detrend_workbench.py          # operator workbench — the only config-WRITING module
 │   ├── gasmatplt_workingon15May17.py # historical snapshot — DO NOT delete
 │   └── gasmatplt_bgo_15May17.py      # historical snapshot — DO NOT delete
 ├── bin/timesmatplt-test.py           # smoke test (legacy)
 ├── tests/test_dev_viz.py             # dev-viz smoke tests (uv run pytest)
 ├── tests/test_maps.py                # map-lane tests (render test env-gated on GMT)
+├── tests/test_detrend_workbench.py   # round-trip, safety rails, TOS (tos_SELF.json fixture)
+├── tools/local-plot/                 # local figure workflow + TOT join procedure (README)
 ├── logos/                            # Veður logos used in plot output
 └── pyproject.toml
 ```
@@ -55,6 +60,7 @@ gps_plot/
 gps_plot                  # entry: gps_plot:main
 plot-gps-timeseries ...   # entry: gps_plot.plot_gps_timeseries:main
 gps-analysis-devviz ...   # entry: gps_plot.dev_viz:main (dev group required)
+gps-detrend-workbench ... # entry: gps_plot.detrend_workbench:main
 ```
 
 ## Cleaned view (`--view cleaned`)
@@ -111,6 +117,52 @@ the candidate fraction passes `max_flag_fraction=0.05` and the excess-candidate
 rule aborts, silently serving raw. A sudden drop to zero means abort, not a
 clean station. PLAN Phase 3: consume `read_gps_view`'s `{comp}_cleaned` /
 `{comp}_outlier` instead of re-deriving here.
+
+## Detrend workbench (`gps-detrend-workbench`)
+
+One station, one PDF: plate-frame series + fitted trajectory, and the detrended
+series. Detrend choice is **curation, not computation** — which window is
+pre-unrest, whether a station supports periodic terms, whose parameters to
+borrow. All estimation is called from `geo_dataread.detrend_estimate`
+(`station_record_from_arrays`, `resolve_fit_settings`, `build_document`), so
+workbench and batch `gps-estimate-detrend` can never disagree about what a
+record means. S0-only cleaning runs first — the one stage robust to
+*undeclared* steps, which is what an uncurated station has.
+
+**First `gps_plot` module that writes config.** `--commit` merge-writes one
+station into `detrend_params.json`, preserving the rest; without it nothing is
+stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
+renders from that record.
+
+```bash
+gps-detrend-workbench SELF --window-start 2007.0 --max-gap-years 2.0 \
+    --step 2008.4085 --event 20080529,Olfus_M6.3 --out /tmp/SELF.pdf
+gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
+```
+
+Events are **declared, never detected** (tier A), in three colours: `darkgreen`
+TOS equipment changes (live `tostools`; one row per DEVICE join, coalesced to
+distinct days), `darkred` seismic (`steps.csv` rows whose `kind` is
+earthquake/coseismic/seismic, plus `--event YYYYMMDD[,LABEL]`), `royalblue` the
+fit. Seismic lines read `steps.csv` via `gps_parser.outlier_catalogs.read_steps`,
+**not** `gps_views.station_step_epochs` — that one drops `kind`, so it cannot
+separate an earthquake from an antenna swap. No skjálftalísa client exists
+anywhere in the ecosystem (planned only, in `analysis.yaml` + the CSV header).
+
+Offsets are declare-and-fit: epochs FIXED, amplitudes estimated and shown at
+once. Epoch detection is absent deliberately — it is *circular* today: a jump
+detector needs clean data, the outlier detector needs declared jumps to make it
+(SELF: 9.1 % candidates and abort until one step was declared).
+
+Gaps, measured: `--terms` does NOT round-trip (`model=` is stored at fit time,
+`terms=` is per-call and unstored — two different decisions, 16.48 mm max
+divergence); `--donor` copies rather than points, so it will not follow a
+re-estimated donor; workbench/batch `uncert` defaults differ (10 vs 15) and
+`uncert` is absent from `refs`; the `max_gap_years=0.5` gate fails every station
+in the working set, so pass `--max-gap-years`.
+
+Fractional-year epochs are at **noon** — 2008-05-29 is `149.5/366 = 2008.40847`,
+not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
 
 ## Dev-viz (analysis lane, thread C / L5)
 
@@ -181,12 +233,15 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 - `../CLAUDE.md` — ecosystem overview + dependency graph
 - `../geo_dataread/CLAUDE.md` — produces the time series this package plots
 - `../gps_analysis/CLAUDE.md` — the leaf math library dev_viz visualizes
+- `tools/local-plot/README.md` — local figure workflow, TOT join, epoch/shell traps
+- `.interrogate-detrend-workbench.md` — workbench destination doc (gitignored)
 - `../PLAN-analysis-lane.md` — thread C / task L5 (dev-viz), task H6 (speed pass)
 - Vault hub: `/home/bgo/notes/bgovault/2.Areas/VI_GPS_Library/1776347706-gps-library-ecosystem-hub.md`
 
 ---
 
-*Last reviewed: 2026-07-27 (cleaned view: station-aware resolution chain +
+*Last reviewed: 2026-07-29 (detrend workbench T0–T6: curation levers, --commit
+merge-write + round-trip proof, TOS + seismic event lines; earlier — cleaned view: station-aware resolution chain +
 `--outlier-param` / `--outlier-overrides`; map lane deformation slices:
 velocity_map / deformation_vectors / slip_map + dem_grid, optional `maps` extra,
 ruff scope for the modern lane)*
