@@ -349,6 +349,81 @@ def add_event_lines(
     return fig
 
 
+#: Colour of seismic-event lines.  Distinct from equipment (darkgreen) and
+#: from the fit overlay (royalblue): the whole value of tier A is telling the
+#: two apart at a glance.
+SEISMIC_COLOR: str = "darkred"
+
+#: ``steps.csv`` ``kind`` values treated as seismic rather than equipment.
+SEISMIC_KINDS: tuple[str, ...] = ("earthquake", "coseismic", "seismic")
+
+
+def declared_event_epochs(
+    sta: str, *, steps_catalog: str | Path | None = None
+) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
+    """Declared steps for one station, split seismic vs other.
+
+    Reads ``steps.csv`` through :func:`gps_parser.outlier_catalogs.read_steps`
+    rather than ``gps_views.station_step_epochs``, because the latter flattens
+    to bare epochs and DROPS ``kind``/``source``/``comment`` — and ``kind`` is
+    exactly what distinguishes an earthquake from an antenna swap.
+
+    There is deliberately no seismic-catalogue client here: none exists
+    anywhere in the ecosystem (skjálftalísa appears only as a *planned*
+    source in ``analysis.yaml`` and the ``steps.csv`` header), and writing one
+    is its own project.  The seismic half is therefore served from what an
+    operator has already declared, plus ``--events`` for anything not yet
+    declared.
+
+    Returns:
+        ``(seismic, other)``, each ``[(yearf, label), …]`` sorted.  Rows are
+        de-duplicated by epoch: a step declared for N, E and U separately is
+        one event, not three.
+    """
+    try:
+        from gps_parser.outlier_catalogs import read_steps
+
+        catalog = read_steps(steps_catalog)
+    except Exception:
+        # catalogs are enhancements; a missing one is not an error
+        return [], []
+
+    seismic: dict[float, str] = {}
+    other: dict[float, str] = {}
+    for row in catalog.get(sta.upper(), ()):  # type: ignore[union-attr]
+        epoch = float(row.epoch_yearf)
+        kind = (row.kind or "").strip().lower()
+        note = (row.comment or "").strip()
+        label = f"{kind or 'step'}"
+        if note:
+            label = f"{label}: {note[:40]}"
+        bucket = seismic if kind in SEISMIC_KINDS else other
+        bucket.setdefault(epoch, label)
+    return sorted(seismic.items()), sorted(other.items())
+
+
+def parse_events(specs: Sequence[str]) -> list[tuple[float, str]]:
+    """``--event YYYYMMDD[,label]`` -> ``[(yearf, label), …]``.
+
+    The escape hatch for an event that is real but not yet declared in
+    ``steps.csv`` — which, while the catalogs are still templates, is nearly
+    all of them.
+    """
+    from gtimes.timefunc import TimetoYearf
+
+    out: list[tuple[float, str]] = []
+    for spec in specs or ():
+        day, _, label = spec.partition(",")
+        day = day.strip()
+        if len(day) != 8 or not day.isdigit():
+            raise SystemExit(f"--event expects YYYYMMDD[,label], got {spec!r}")
+        y, m, d = int(day[:4]), int(day[4:6]), int(day[6:])
+        out.append(
+            (float(TimetoYearf(y, m, d)), label.strip() or f"{y}-{m:02d}-{d:02d}")
+        )
+    return sorted(out)
+
+
 def borrow_record(
     donor: str, target: str, *, params_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -427,6 +502,7 @@ def render(
     terms: str = "all",
     events: dict[Any, Any] | None = None,
     tos_events: Sequence[tuple[float, str]] | None = None,
+    seismic_events: Sequence[tuple[float, str]] | None = None,
 ) -> Path:
     """Two-page PDF: plate frame + fitted trajectory, then the detrended view."""
     import matplotlib
@@ -460,6 +536,8 @@ def render(
             tplt.addEvent(events, fig)
         if tos_events:
             add_event_lines(fig, tos_events, TOS_COLOR)
+        if seismic_events:
+            add_event_lines(fig, seismic_events, SEISMIC_COLOR)
         pdf.savefig(fig, bbox_inches="tight")
 
         # page 2 -- the same series with that trajectory removed
@@ -476,6 +554,8 @@ def render(
             tplt.addEvent(events, fig2)
         if tos_events:
             add_event_lines(fig2, tos_events, TOS_COLOR)
+        if seismic_events:
+            add_event_lines(fig2, seismic_events, SEISMIC_COLOR)
         pdf.savefig(fig2, bbox_inches="tight")
 
     return out
@@ -655,6 +735,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "from --model: NOT stored, chosen per call",
     )
     p.add_argument(
+        "--event",
+        action="append",
+        default=[],
+        metavar="YYYYMMDD[,LABEL]",
+        help="draw a seismic/other event line (repeatable). For events not "
+        "yet declared in steps.csv — which, while the catalogs are "
+        "templates, is nearly all of them",
+    )
+    p.add_argument(
         "--no-tos",
         dest="tos",
         action="store_false",
@@ -815,6 +904,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"\n{sta} — detrend record\n")
         print(summarise(record, sta))
+    seismic, declared_other = declared_event_epochs(sta)
+    seismic = sorted(seismic + parse_events(args.event))
     tos_events: list[tuple[float, str]] = []
     if args.tos:
         try:
@@ -829,6 +920,13 @@ def main(argv: list[str] | None = None) -> int:
         for epoch, label in tos_events:
             print(f"    {label}   yearf {epoch:.4f}")
 
+    if seismic or declared_other:
+        print(f"\n  declared / supplied events ({len(seismic) + len(declared_other)}):")
+        for epoch, label in seismic:
+            print(f"    {epoch:9.4f}  seismic   {label}")
+        for epoch, label in declared_other:
+            print(f"    {epoch:9.4f}  other     {label}")
+
     path = render(
         sta,
         record,
@@ -837,7 +935,8 @@ def main(argv: list[str] | None = None) -> int:
         sigma,
         out,
         terms=args.terms,
-        tos_events=tos_events,
+        tos_events=list(tos_events) + list(declared_other),
+        seismic_events=seismic,
     )
     print(f"\nwrote {path}")
 

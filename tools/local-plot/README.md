@@ -73,6 +73,18 @@ xargs -a /tmp/sta.txt gps-globk-tot \
   6.9 m, REYK 3.0 m), so `|U| > 1 m` is NOT a wrap test — check deviation from
   each station's own median instead.
 
+## Fractional-year epochs are at NOON
+
+`gtimes.TimetoYearf` returns the **daily-solution reference epoch**, i.e. noon:
+May 29 2008 is `149.5/366 = 2008.40847`, not the naive midnight `149/366 =
+2008.4071`. Everything in the lane agrees on noon — `steps.csv` rows,
+`fit_windows.csv`, `detrend_params.json`, the workbench's `--event`. A
+hand-computed midnight fractional year therefore sits **half a day early**,
+which is enough to fail an epoch-coincidence check while changing nothing
+visible: on daily data both values fall between the same pair of observations,
+so a step term fitted at either epoch is identical. Convert dates with
+`TimetoYearf`; never divide day-of-year by the year length yourself.
+
 ## Config knobs
 
 Every path is env-overridable — see the header of each script. Common:

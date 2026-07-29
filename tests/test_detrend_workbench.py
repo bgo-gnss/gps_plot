@@ -25,6 +25,7 @@ import pytest
 TOT = Path.home() / "gps-data" / "TOT"
 TESTCFG = Path.home() / "gps-data" / "testcfg"
 STA = "RHOF"
+STA_SELF = "SELF"
 
 #: Thresholds for "the trajectory really was removed", CALIBRATED rather than
 #: guessed. Measured on RHOF: a CORRECT record leaves rate residuals
@@ -281,3 +282,115 @@ def test_tos_live_matches_the_fixture():
     live = tos_equipment_epochs("SELF")
     cached = tos_equipment_epochs("SELF", payload=json.loads(TOS_FIXTURE.read_text()))
     assert live == cached, "TOS changed; refresh tests/data/tos_SELF.json"
+
+
+# ---------------------------------------------------------------------------
+# T6 — seismic / declared event lines (tier A, second half)
+# ---------------------------------------------------------------------------
+
+
+def test_declared_steps_split_seismic_from_equipment(tmp_path):
+    """``kind`` is the discriminator, and it is why steps.csv is read directly.
+
+    ``gps_views.station_step_epochs`` flattens to bare epochs and DROPS
+    kind/source/comment — so it cannot tell an earthquake from an antenna
+    swap, which is the entire point of drawing them in different colours.
+    """
+    from gps_plot.detrend_workbench import declared_event_epochs
+
+    csv = tmp_path / "steps.csv"
+    csv.write_text(
+        "sta,epoch_yearf,component,kind,source,comment\n"
+        "SELF,2008.4085,ALL,earthquake,manual,Olfus M6.3\n"
+        "SELF,2010.4205,ALL,equipment,tos,receiver swap\n"
+        # same epoch declared per-component must coalesce to ONE event
+        "SELF,2024.3183,N,equipment,tos,antenna\n"
+        "SELF,2024.3183,E,equipment,tos,antenna\n"
+        "SELF,2024.3183,U,equipment,tos,antenna\n"
+    )
+    seismic, other = declared_event_epochs("SELF", steps_catalog=csv)
+    assert [round(e, 4) for e, _ in seismic] == [2008.4085]
+    assert "Olfus" in seismic[0][1]
+    assert [round(e, 4) for e, _ in other] == [2010.4205, 2024.3183]
+    assert len(other) == 2, "per-component rows must coalesce to one event"
+
+
+def test_declared_steps_missing_catalog_is_not_an_error(tmp_path):
+    """Catalogs are enhancements — a missing one yields no lines, not a crash."""
+    from gps_plot.detrend_workbench import declared_event_epochs
+
+    assert declared_event_epochs("SELF", steps_catalog=tmp_path / "nope.csv") == (
+        [],
+        [],
+    )
+
+
+def test_parse_events_and_rejects_bad_input():
+    from gtimes.timefunc import TimetoYearf
+
+    from gps_plot.detrend_workbench import parse_events
+
+    got = parse_events(["20080529,Olfus M6.3"])
+    assert len(got) == 1
+    assert got[0][0] == pytest.approx(float(TimetoYearf(2008, 5, 29)), abs=1e-6)
+    assert got[0][1] == "Olfus M6.3"
+    assert parse_events(["20240426"])[0][1] == "2024-04-26"
+    for bad in ("2008-05-29", "200805", "abcdefgh"):
+        with pytest.raises(SystemExit, match="YYYYMMDD"):
+            parse_events([bad])
+
+
+def test_declared_step_coincides_with_the_seismic_event_line(tmp_path):
+    """The plan's acceptance criterion: the declared epoch IS the earthquake.
+
+    Both halves go through the real code paths — the catalog epoch via
+    ``declared_event_epochs`` (darkred line), the calendar date via
+    ``parse_events`` (``--event``) — and they must land on the same epoch.
+
+    On the constants: ``TimetoYearf`` returns the **noon** daily-solution
+    epoch, so May 29 2008 is ``149.5/366 = 2008.40847``, not the naive
+    midnight ``149/366 = 2008.4071``. The plan's ticket hardcoded the
+    midnight value; the declared steps.csv row and ``TimetoYearf`` agree with
+    each other to 3e-5, which is the coincidence the criterion was after.
+
+    The fixture supplies the row rather than the deployed catalog: the
+    analysis-lane catalogs are not deployed on this host, so
+    ``declared_event_epochs("SELF")`` reads an absent file and correctly
+    returns nothing.
+    """
+    from gtimes.timefunc import TimetoYearf
+
+    from gps_plot.detrend_workbench import declared_event_epochs, parse_events
+
+    csv = tmp_path / "steps.csv"
+    csv.write_text(
+        "sta,epoch_yearf,component,kind,source,comment\n"
+        "SELF,2008.4085,ALL,earthquake,manual,Olfus M6.3\n"
+    )
+    seismic, _ = declared_event_epochs(STA_SELF, steps_catalog=csv)
+    declared = seismic[0][0]
+    supplied = parse_events(["20080529,Olfus M6.3"])[0][0]
+
+    assert abs(declared - supplied) < 1e-4
+    assert abs(supplied - float(TimetoYearf(2008, 5, 29))) < 1e-9
+    assert abs(supplied - 2008.4071) > 1e-3, "the midnight constant is NOT this epoch"
+
+
+def test_a_half_day_epoch_shift_does_not_move_the_fit():
+    """Robustness, not tolerance-shopping: on daily data the midnight and
+    noon epochs fall between the same pair of observations, so the step term
+    is identical either way. Worth pinning — it means an operator who types
+    a midnight fractional year still gets the right fit, only a line drawn
+    half a day early."""
+    from gtimes.timefunc import TimetoYearf
+
+    from gps_plot.detrend_workbench import build_record
+
+    noon = float(TimetoYearf(2008, 5, 29))
+    a, *_ = build_record(
+        STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[2008.4071]
+    )
+    b, *_ = build_record(STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[noon])
+    assert [round(float(v), 4) for v in a["rms"]] == [
+        round(float(v), 4) for v in b["rms"]
+    ]
