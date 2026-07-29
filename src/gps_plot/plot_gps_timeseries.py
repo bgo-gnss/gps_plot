@@ -138,7 +138,7 @@ def _coerce_outlier_param(name, typ, raw):
         ) from None
 
 
-def _build_outlier_params(assignments):
+def _build_outlier_params(assignments, base=None):
     """Build an ``OutlierParams`` from repeated ``NAME=VALUE`` CLI args.
 
     Field names and types are read off the dataclass itself, so this flag
@@ -151,7 +151,7 @@ def _build_outlier_params(assignments):
     default-valued object) is what lets the per-station
     ``outlier_overrides.csv`` row win downstream.
     """
-    if not assignments:
+    if not assignments and not base:
         return None
 
     import dataclasses
@@ -160,8 +160,8 @@ def _build_outlier_params(assignments):
     from gps_analysis import OutlierParams
 
     hints = typing.get_type_hints(OutlierParams)
+    values = dict(base or {})
     valid = sorted(f.name for f in dataclasses.fields(OutlierParams))
-    values = {}
     for item in assignments:
         name, sep, raw = item.partition("=")
         name = name.strip()
@@ -180,6 +180,41 @@ def _build_outlier_params(assignments):
         return OutlierParams(**values)
     except (ValueError, TypeError) as exc:
         raise SystemExit("--outlier-param: %s" % (exc,)) from None
+
+
+#: Detection stages selectable with ``--stages`` (§14).  S1/S2 (the robust
+#: trajectory fit and the whitening) are STRUCTURAL — every later stage is
+#: defined on their residuals — so they are always on and are accepted only
+#: for documentation symmetry.
+STAGE_FLAGS = {
+    "S0": "despike",
+    "S3": "enable_global",
+    "S4": "enable_window",
+    "S5": "enable_protection",
+}
+STAGE_ALWAYS_ON = ("S1", "S2")
+
+
+def _stage_overrides(spec):
+    """``--stages`` -> OutlierParams field overrides, or None if unset.
+
+    Named stages are ON, unnamed ones OFF.  This replaces the sentinel-
+    threshold idiom (``global_n_sigma=1e9``), which could not express intent,
+    could not be asserted on, and for the protection stage could not express
+    "off" at all -- its indeterminate arm ignored every threshold (§3.4.2a).
+    """
+    if not spec:
+        return None
+    if spec.strip().lower() == "all":
+        return {v: True for v in STAGE_FLAGS.values()}
+    want = [x.strip().upper() for x in spec.split(",") if x.strip()]
+    bad = [x for x in want if x not in STAGE_FLAGS and x not in STAGE_ALWAYS_ON]
+    if bad:
+        raise SystemExit(
+            "--stages: unknown stage(s) %s; valid: %s (S1/S2 are structural "
+            "and always run)" % (", ".join(bad), ", ".join(sorted(STAGE_FLAGS)))
+        )
+    return {field: (name in want) for name, field in STAGE_FLAGS.items()}
 
 
 def exit_gracefully(signum, frame):
@@ -383,6 +418,19 @@ def main():
         "view locally. Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--stages",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help="run only the named detection stages, e.g. --stages S0 or "
+        "--stages S0,S4 ('all' restores everything). S0 gross-blunder "
+        "despike, S3 global identifier, S4 windowed Hampel, S5 signal "
+        "protection; S1 (robust fit) and S2 (whitening) are structural and "
+        "always run. Named stages are ON, unnamed OFF. Isolation is an "
+        "ATTRIBUTION tool -- with S5 off every candidate becomes a flag, "
+        "which is never a production setting. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "--hide-outliers",
         action="store_true",
         help="drop the grey outlier overlay from the figure. The flagged "
@@ -455,7 +503,12 @@ def main():
     kwargs["events"] = eventDict
     # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
     # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
-    kwargs["outlier_params"] = _build_outlier_params(kwargs.pop("outlier_param"))
+    # --stages sets the enable flags; an explicit --outlier-param still wins,
+    # so the two compose rather than one silently overriding the other.
+    stage_over = _stage_overrides(kwargs.pop("stages"))
+    kwargs["outlier_params"] = _build_outlier_params(
+        kwargs.pop("outlier_param"), base=stage_over
+    )
 
     stations = args.Stations  # station list
     del kwargs["Stations"]

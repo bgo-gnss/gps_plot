@@ -102,6 +102,7 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
         "--outlier-param",
         "--outlier-overrides",
         "--hide-outliers",
+        "--stages",
         "--provisional-days",
     ],
 )
@@ -112,3 +113,39 @@ def test_legacy_flag_surface_present(flag: str) -> None:
     assert flag in proc.stdout, (
         f"{flag} missing from the CLI — the gpsplot port depends on it"
     )
+
+
+def test_stage_overrides_maps_named_stages_on_unnamed_off() -> None:
+    from gps_plot.plot_gps_timeseries import _stage_overrides
+
+    assert _stage_overrides(None) is None
+    assert _stage_overrides("all") == {
+        "despike": True,
+        "enable_global": True,
+        "enable_window": True,
+        "enable_protection": True,
+    }
+    # named ON, unnamed OFF -- the whole point of isolation
+    assert _stage_overrides("S0") == {
+        "despike": True,
+        "enable_global": False,
+        "enable_window": False,
+        "enable_protection": False,
+    }
+    assert _stage_overrides("s0, S4")["enable_window"] is True
+    # S1/S2 are structural: accepted, but they toggle nothing
+    assert _stage_overrides("S1,S2") == {
+        "despike": False,
+        "enable_global": False,
+        "enable_window": False,
+        "enable_protection": False,
+    }
+
+
+def test_stage_overrides_rejects_unknown_stage() -> None:
+    import pytest as _pytest
+
+    from gps_plot.plot_gps_timeseries import _stage_overrides
+
+    with _pytest.raises(SystemExit, match="unknown stage"):
+        _stage_overrides("S0,S9")
