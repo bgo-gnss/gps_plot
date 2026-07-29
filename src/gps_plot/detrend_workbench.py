@@ -512,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    print(f"\n{sta} — detrend record (not committed)\n")
+    print(f"\n{sta} — detrend record\n")
     print(summarise(record, sta))
     path = render(sta, record, yearf, data, sigma, out, terms=args.terms)
     print(f"\nwrote {path}")
