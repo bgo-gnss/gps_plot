@@ -137,6 +137,7 @@ stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
 renders from that record.
 
 ```bash
+# catalogs deployed to ~/.config/gpsconfig 2026-07-29 — no GPS_CONFIG_PATH needed
 gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
 gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
 ```

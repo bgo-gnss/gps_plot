@@ -98,6 +98,30 @@ Every path is env-overridable — see the header of each script. Common:
 | `VIEWS` | `raw cleaned detrended` | which views to render |
 | `GCD` | `~/git/gps-config-data` | config-data checkout (setup only) |
 
+### `GPS_CONFIG_PATH` is no longer needed (2026-07-29)
+
+The analysis-lane catalogs — `steps.csv`, `protect_windows.csv`,
+`outlier_overrides.csv`, `fit_windows.csv`, `analysis.yaml` — plus the
+generated `detrend_params.json` are now **deployed to `~/.config/gpsconfig/`**,
+which is where `gps_parser.catalog_path()` looks by default. `TESTCFG` survives
+as an all-symlink mirror, so `plot-views.sh` still works, but a bare
+`gps-detrend-workbench` / `plot-gps-timeseries` in any shell now resolves them.
+
+Before this, forgetting the export was silent-but-costly rather than an error:
+each catalog degrades to "nothing declared" with a warning, so SELF's 2008
+Ölfus step went undeclared, full detection tripped the excess-candidate abort,
+and the S0 fallback fitted a 150 mm step with a sinusoid — rms
+`[34.1, 32.0, 20.8]` instead of `[1.97, 3.49, 6.54]` mm, seasonal inflated
+~10×, north rate sign-flipped. If you ever see `no step catalog` or
+`stages S0` on a station you know has a declared step, the catalogs are not
+resolving.
+
+> ⚠️ **Do not run `gps-config-data/deploy.py` against `~/.config/gpsconfig` on
+> this laptop without re-checking `totDir`.** The repo's `postprocess.cfg` still
+> has the production `totDir = /mnt_data/gpsdata/`, while the deployed copy is
+> pointed at `~/gps-data/TOT` for the local join (HVER 10 m Up wraps). A deploy
+> would silently revert that and put every plot back on unjoined segments.
+
 ## fit_windows.csv — per-station detrend windows
 
 Most long-history stations have multi-year early gaps (sparse campaign era), so
