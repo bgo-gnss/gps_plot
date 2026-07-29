@@ -126,8 +126,10 @@ pre-unrest, whether a station supports periodic terms, whose parameters to
 borrow. All estimation is called from `geo_dataread.detrend_estimate`
 (`station_record_from_arrays`, `resolve_fit_settings`, `build_document`), so
 workbench and batch `gps-estimate-detrend` can never disagree about what a
-record means. S0-only cleaning runs first — the one stage robust to
-*undeclared* steps, which is what an uncurated station has.
+record means. Detection runs the FULL pipeline, falling back loudly to S0-only
+if the excess-candidate rule aborts — an S0 record leaves model-visible outliers
+in the fit, so on a fallback declaring the missing step beats accepting it
+(measured on RHOF vertical: 0.54 mm/yr of rate difference).
 
 **First `gps_plot` module that writes config.** `--commit` merge-writes one
 station into `detrend_params.json`, preserving the rest; without it nothing is

@@ -195,6 +195,11 @@ def build_record(
     )
 
     def _estimate(params: Any) -> dict[str, Any] | None:
+        # `uncert` screens sigma at READ time (getData above), so the estimator
+        # never sees it and a stored record would be silent about it -- yet the
+        # workbench default (10) differs from the batch estimator's (15), which
+        # made workbench and batch records indistinguishable but unequal.
+        kwargs["refs"] = {"uncert": uncert}
         return station_record_from_arrays(
             sta,
             yearf,
@@ -234,8 +239,8 @@ def build_record(
     if record is None:
         raise RuntimeError(
             f"{sta}: outlier stage aborted — no record stored ({gates}). "
-            f"S0-only detection is already the default here; if this still "
-            f"aborts the series needs a narrower window or a declared step."
+            f"the S0-only fallback aborted too; the series needs a narrower "
+            f"window or a declared step (--step)."
         )
     return record, yearf, data, sigma
 
@@ -706,10 +711,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "two views (plate frame + fitted trajectory, and the detrended "
         "series). Estimation reuses gps-estimate-detrend's own code path, so "
         "a record made here means the same thing as a batch-made one.",
-        epilog="Detection defaults to S0 ONLY (§14): S0 works on local first "
-        "differences with no global fit, so unlike the full pipeline its "
-        "verdict does not depend on the window's composition — which is what "
-        "lets a station with an undeclared step be estimated at all.",
+        epilog="Detection runs the FULL pipeline by default, falling back to "
+        "S0-only (loudly) if the excess-candidate rule aborts. An S0 record "
+        "leaves model-visible outliers in the fit, so its parameters are "
+        "biased relative to a full-detection one — on a fallback, prefer "
+        "declaring the missing step with --step over accepting the S0 record.",
     )
     p.add_argument("station", help="four-letter station code")
     p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
@@ -855,7 +861,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME=VALUE",
-        help="repeatable OutlierParams override, applied on top of the S0 stage set",
+        help="repeatable OutlierParams override, applied on top of the stage set in force",
     )
     return p
 
