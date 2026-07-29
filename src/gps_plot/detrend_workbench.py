@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from matplotlib.figure import Figure
 
 __all__ = ["build_record", "borrow_record", "commit_record", "render", "main"]
 
@@ -239,6 +240,115 @@ def build_record(
     return record, yearf, data, sigma
 
 
+#: Sentinel ``time_from`` TOS uses for "since forever"; not an event.
+TOS_SENTINEL_YEAR = 1900
+
+#: Colour of TOS equipment-change lines.  Distinct from the fit overlay
+#: (royalblue) and from any data-state colour.
+TOS_COLOR: str = "darkgreen"
+
+
+def tos_equipment_epochs(
+    sta: str, *, url: str | None = None, payload: Any = None
+) -> list[tuple[float, str]]:
+    """TOS equipment-change epochs for one station, coalesced.
+
+    "No detection — a lookup" undersells the work.  A station's
+    ``children_connections`` is one row per DEVICE join, so a single site
+    visit that swapped antenna + receiver + radome appears as three rows
+    sharing a ``time_from`` (SELF: 17 joins, 7 distinct epochs).  There is
+    also a ``1000-01-01`` sentinel meaning "since forever", which is not an
+    event.  Coalescing to distinct calendar days is the whole job.
+
+    Args:
+        sta: station code.
+        url: TOS REST endpoint; None uses ``tostools``' own default.
+        payload: pre-fetched entity dict (a cached fixture in tests) —
+            when given, no network call is made.
+
+    Returns:
+        ``[(yearf, label), …]`` sorted, one per distinct day, the label
+        naming how many devices changed together.
+
+    Raises:
+        RuntimeError: on any TOS failure.  Callers degrade to a warning —
+        the workbench must stay usable off-VPN.
+    """
+    from gtimes.timefunc import TimetoYearf
+
+    if payload is None:
+        try:
+            # lazy: tostools is not a declared gps_plot dependency, and the
+            # workbench must import cleanly without it
+            from tostools.gps_metadata_qc import URL_REST_TOS, get_station_metadata
+
+            _contact, payload = get_station_metadata(sta, url or URL_REST_TOS)
+        except (Exception, SystemExit) as exc:
+            # SystemExit is not academic: tostools' get_station_metadata calls
+            # sys.exit() on a connection failure rather than raising, and
+            # SystemExit derives from BaseException — so a plain `except
+            # Exception` lets a TOS outage kill the workbench outright. Found
+            # by test_tos_failure_degrades_to_a_warning, which is the whole
+            # reason that test points at a dead port.
+            raise RuntimeError(
+                f"TOS lookup failed for {sta} ({type(exc).__name__}: {exc})"
+            ) from None
+
+    joins = (payload or {}).get("children_connections") or []
+    by_day: dict[str, int] = {}
+    for join in joins:
+        raw = str(join.get("time_from") or "")[:10]
+        if not raw:
+            continue
+        try:
+            y, m, d = (int(v) for v in raw.split("-"))
+        except ValueError:
+            continue
+        if y <= TOS_SENTINEL_YEAR:  # "since forever", not an event
+            continue
+        by_day[raw] = by_day.get(raw, 0) + 1
+
+    out: list[tuple[float, str]] = []
+    for day, n in sorted(by_day.items()):
+        y, m, d = (int(v) for v in day.split("-"))
+        out.append(
+            (float(TimetoYearf(y, m, d)), f"{day} ({n} device{'s' if n > 1 else ''})")
+        )
+    return out
+
+
+def add_event_lines(
+    fig: Figure, events: Sequence[tuple[float, str]], color: str
+) -> Figure:
+    """Vertical lines with a label on the top axis.
+
+    Lines go through ``timesmatplt.addEvent`` (the existing primitive —
+    ``axvline`` on every axis); only the text is new, and only on axis 0,
+    because repeating it on all three is noise.
+    """
+    import gps_plot.timesmatplt as tplt
+    from gtimes.timefunc import TimefromYearf
+
+    if not events:
+        return fig
+    tplt.addEvent({TimefromYearf(e): [color] for e, _ in events}, fig, linestyle=":")
+    ax = fig.axes[0]
+    lo, hi = ax.get_ylim()
+    for epoch, label in events:
+        ax.text(
+            TimefromYearf(epoch),
+            hi,
+            label.split(" ")[0],
+            rotation=90,
+            va="top",
+            ha="right",
+            fontsize=8,
+            color=color,
+            zorder=6,
+        )
+    return fig
+
+
 def borrow_record(
     donor: str, target: str, *, params_path: str | Path | None = None
 ) -> dict[str, Any]:
@@ -316,6 +426,7 @@ def render(
     *,
     terms: str = "all",
     events: dict[Any, Any] | None = None,
+    tos_events: Sequence[tuple[float, str]] | None = None,
 ) -> Path:
     """Two-page PDF: plate frame + fitted trajectory, then the detrended view."""
     import matplotlib
@@ -347,6 +458,8 @@ def render(
             )
         if events:
             tplt.addEvent(events, fig)
+        if tos_events:
+            add_event_lines(fig, tos_events, TOS_COLOR)
         pdf.savefig(fig, bbox_inches="tight")
 
         # page 2 -- the same series with that trajectory removed
@@ -361,6 +474,8 @@ def render(
             fig2.axes[c].axhline(0.0, color=FIT_COLOR, lw=1.0, zorder=5)
         if events:
             tplt.addEvent(events, fig2)
+        if tos_events:
+            add_event_lines(fig2, tos_events, TOS_COLOR)
         pdf.savefig(fig2, bbox_inches="tight")
 
     return out
@@ -540,6 +655,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "from --model: NOT stored, chosen per call",
     )
     p.add_argument(
+        "--no-tos",
+        dest="tos",
+        action="store_false",
+        help="skip the TOS equipment-change lookup. On by default; any TOS "
+        "failure already degrades to a warning, so the workbench stays "
+        "usable off-VPN either way",
+    )
+    p.add_argument(
+        "--tos-url",
+        default=None,
+        metavar="URL",
+        help="TOS REST endpoint (default: tostools' own)",
+    )
+    p.add_argument(
         "--donor",
         default=None,
         metavar="STA",
@@ -686,7 +815,30 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"\n{sta} — detrend record\n")
         print(summarise(record, sta))
-    path = render(sta, record, yearf, data, sigma, out, terms=args.terms)
+    tos_events: list[tuple[float, str]] = []
+    if args.tos:
+        try:
+            tos_events = tos_equipment_epochs(sta, url=args.tos_url)
+        except RuntimeError as exc:
+            # never fatal: an operator off-VPN still needs the workbench
+            print(
+                f"warning: {exc}; continuing without equipment lines", file=sys.stderr
+            )
+    if tos_events:
+        print(f"\n  TOS equipment changes ({len(tos_events)}):")
+        for epoch, label in tos_events:
+            print(f"    {label}   yearf {epoch:.4f}")
+
+    path = render(
+        sta,
+        record,
+        yearf,
+        data,
+        sigma,
+        out,
+        terms=args.terms,
+        tos_events=tos_events,
+    )
     print(f"\nwrote {path}")
 
     if args.commit:

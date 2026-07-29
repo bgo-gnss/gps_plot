@@ -218,3 +218,66 @@ def _swap_components(record):
     comps = record["components"]
     comps[0]["params"], comps[1]["params"] = comps[1]["params"], comps[0]["params"]
     return record
+
+
+# ---------------------------------------------------------------------------
+# T5 — TOS equipment lines (tier A)
+# ---------------------------------------------------------------------------
+
+TOS_FIXTURE = Path(__file__).parent / "data" / "tos_SELF.json"
+
+
+def test_tos_epochs_coalesce_from_the_cached_payload():
+    """The merge gate is the FIXTURE, not the network.
+
+    A network-dependent assertion cannot gate a merge on a machine off the
+    VPN. The live-TOS check below is marked and skipped by default.
+
+    SELF's payload is 17 device joins over 7 distinct ``time_from`` values,
+    one of which is the ``1000-01-01`` "since forever" sentinel. A single
+    site visit that swaps antenna + receiver + radome is three rows sharing
+    an epoch — coalescing to distinct days is the whole job, and getting it
+    wrong would put three lines on one visit.
+    """
+    import json
+
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    payload = json.loads(TOS_FIXTURE.read_text())
+    assert len(payload["children_connections"]) == 17, "fixture drifted"
+
+    events = tos_equipment_epochs("SELF", payload=payload)
+    assert len(events) == 6, [lbl for _, lbl in events]
+    days = [lbl.split(" ")[0] for _, lbl in events]
+    assert days == [
+        "2001-07-01",
+        "2001-07-16",
+        "2001-09-14",
+        "2002-02-05",
+        "2010-06-03",
+        "2024-04-26",
+    ]
+    assert all(not lbl.startswith("1000") for _, lbl in events), "sentinel leaked"
+    assert events == sorted(events), "epochs must be ordered"
+    # the 2008 Ölfus coseismic is NOT here: TOS knows equipment, not seismicity
+    assert not any(2008.0 < e < 2009.0 for e, _ in events)
+
+
+def test_tos_failure_degrades_to_a_warning(monkeypatch):
+    """Off-VPN the workbench must still work, minus the lines."""
+    from gps_plot import detrend_workbench as wb
+
+    with pytest.raises(RuntimeError, match="TOS lookup failed"):
+        wb.tos_equipment_epochs("SELF", url="http://127.0.0.1:9/nope")
+
+
+@pytest.mark.network
+def test_tos_live_matches_the_fixture():
+    """Live TOS, skipped by default — run with -m network."""
+    import json
+
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    live = tos_equipment_epochs("SELF")
+    cached = tos_equipment_epochs("SELF", payload=json.loads(TOS_FIXTURE.read_text()))
+    assert live == cached, "TOS changed; refresh tests/data/tos_SELF.json"

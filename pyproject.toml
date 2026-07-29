@@ -70,6 +70,7 @@ gps_analysis = { path = "../gps_analysis", editable = true }
 gps_parser = { path = "../gps_parser", editable = true }
 
 [tool.pytest.ini_options]
+markers = ["network: needs live TOS (skipped by default)"]
 testpaths = ["tests"]
 
 # Lint/format scope: the modern lane (maps, dev_viz, timesmatplt, tests).

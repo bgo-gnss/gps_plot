@@ -1,0 +1,90 @@
+{
+  "children_connections": [
+    {
+      "id_entity_child": "4458",
+      "time_from": "2001-07-16T00:00:00",
+      "time_to": "2001-07-19T00:00:00"
+    },
+    {
+      "id_entity_child": "4520",
+      "time_from": "2001-07-01T00:00:00",
+      "time_to": "2001-07-04T00:00:00"
+    },
+    {
+      "id_entity_child": "4454",
+      "time_from": "2001-09-14T00:00:00",
+      "time_to": "2001-09-18T00:00:00"
+    },
+    {
+      "id_entity_child": "4528",
+      "time_from": "2010-06-03T00:00:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "4783",
+      "time_from": "2001-07-01T00:00:00",
+      "time_to": "2001-07-04T00:00:00"
+    },
+    {
+      "id_entity_child": "4820",
+      "time_from": "2001-09-14T00:00:00",
+      "time_to": "2001-09-18T00:00:00"
+    },
+    {
+      "id_entity_child": "4885",
+      "time_from": "2010-06-03T00:00:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "4782",
+      "time_from": "2001-07-16T00:00:00",
+      "time_to": "2001-07-19T00:00:00"
+    },
+    {
+      "id_entity_child": "5247",
+      "time_from": "2001-07-01T00:00:00",
+      "time_to": "2001-07-04T00:00:00"
+    },
+    {
+      "id_entity_child": "5249",
+      "time_from": "2001-09-14T00:00:00",
+      "time_to": "2001-09-18T00:00:00"
+    },
+    {
+      "id_entity_child": "5248",
+      "time_from": "2001-07-16T00:00:00",
+      "time_to": "2001-07-19T00:00:00"
+    },
+    {
+      "id_entity_child": "5250",
+      "time_from": "2002-02-05T00:00:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "5320",
+      "time_from": "2002-02-05T00:00:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "5803",
+      "time_from": "1000-01-01T00:00:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "20290",
+      "time_from": "2024-04-26T14:34:00",
+      "time_to": null
+    },
+    {
+      "id_entity_child": "4827",
+      "time_from": "2002-02-05T00:00:00",
+      "time_to": "2010-06-03T00:00:00"
+    },
+    {
+      "id_entity_child": "4528",
+      "time_from": "2002-02-05T00:00:00",
+      "time_to": "2010-06-03T00:00:00"
+    }
+  ],
+  "id_entity": 4402
+}
