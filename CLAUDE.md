@@ -139,8 +139,20 @@ renders from that record.
 ```bash
 # catalogs deployed to ~/.config/gpsconfig 2026-07-29 — no GPS_CONFIG_PATH needed
 gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
+gps-detrend-workbench SELF --max-gap-years 1.0 --hide-outliers
 gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
 ```
+
+Rejected epochs get the cleaned view's grey vocabulary (`timesmatplt`'s own
+`OUTLIER_*` constants, both pages); `--hide-outliers` is display-only there and
+here. The mask is the FIT's inlier verdict, lifted across the non-finite drop
+and the window subset by `geo_dataread.station_estimate_from_arrays` (new seam;
+`station_record_from_arrays` now wraps it), so per-component counts equal the
+printed `n_rejected`. Re-running `detect_view_outliers` would disagree by
+construction — it sees neither the fit window nor a CLI `--step`. No gold state:
+provisional is a *view* verdict about epochs too recent to rule on, and a fit
+has no such category. Epochs outside the window got no verdict at all, hence the
+dashed royalblue window edges (drawn only when they clip the series).
 
 `--out` shares the scratch figdir with `tools/local-plot/figview.sh`: a bare
 filename lands in `$FIGDIR`, else the checkout's gitignored `tmp-figdir/`, else
@@ -248,7 +260,9 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-07-29 (detrend workbench T0–T6: curation levers, --commit
+*Last reviewed: 2026-07-30 (workbench grey outlier overlay + --hide-outliers,
+fed by the fit's own inlier mask via geo_dataread station_estimate_from_arrays;
+earlier — detrend workbench T0–T6: curation levers, --commit
 merge-write + round-trip proof, TOS + seismic event lines; earlier — cleaned view: station-aware resolution chain +
 `--outlier-param` / `--outlier-overrides`; map lane deformation slices:
 velocity_map / deformation_vectors / slip_map + dem_grid, optional `maps` extra,

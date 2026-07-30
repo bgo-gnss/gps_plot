@@ -52,7 +52,14 @@ from typing import Any
 import numpy as np
 from matplotlib.figure import Figure
 
-__all__ = ["build_record", "borrow_record", "commit_record", "render", "main"]
+__all__ = [
+    "build_record",
+    "borrow_record",
+    "commit_record",
+    "split_outliers",
+    "render",
+    "main",
+]
 
 #: Colour of the fitted-trajectory overlay on the plate-frame panel.  Blue
 #: against the red/grey/gold marker vocabulary of the cleaned view, so the
@@ -140,11 +147,14 @@ def build_record(
     max_gap_years: float | None = None,
     min_epochs: int | None = None,
     min_span_years: float | None = None,
-) -> tuple[dict[str, Any], Any, Any, Any]:
+) -> tuple[dict[str, Any], Any, Any, Any, Any]:
     """Read the plate-frame series and estimate one station's record.
 
     Returns:
-        ``(record, yearf, data, sigma)``.
+        ``(record, yearf, data, sigma, estimate)`` — ``estimate`` is the
+        :class:`geo_dataread.detrend_estimate.StationEstimate` of the
+        WINNING fit (the S0 fallback's, on a fallback), carrying the
+        inlier mask the record itself cannot.
 
     Raises:
         RuntimeError: When estimation returns None.  That is NOT a bug: it
@@ -158,7 +168,7 @@ def build_record(
         default_fit_catalog_path,
         read_fit_catalog,
         resolve_fit_settings,
-        station_record_from_arrays,
+        station_estimate_from_arrays,
     )
 
     yearf, data, sigma, _offset = gpsr.getData(
@@ -195,13 +205,13 @@ def build_record(
         f"min_span_years={settings.min_span_years}"
     )
 
-    def _estimate(params: Any) -> dict[str, Any] | None:
+    def _estimate(params: Any) -> Any:
         # `uncert` screens sigma at READ time (getData above), so the estimator
         # never sees it and a stored record would be silent about it -- yet the
         # workbench default (10) differs from the batch estimator's (15), which
         # made workbench and batch records indistinguishable but unequal.
         kwargs["refs"] = {"uncert": uncert}
-        return station_record_from_arrays(
+        return station_estimate_from_arrays(
             sta,
             yearf,
             data,
@@ -214,10 +224,10 @@ def build_record(
     try:
         if stages:
             # explicit operator override -- no fallback, they asked for this
-            record = _estimate(_stage_params(stages, outlier_param))
+            estimate = _estimate(_stage_params(stages, outlier_param))
         else:
-            record = _estimate(_stage_params(None, outlier_param))
-            if record is None:
+            estimate = _estimate(_stage_params(None, outlier_param))
+            if estimate is None:
                 # Outlier ABORT, not a gate failure. Fall back to S0 so the
                 # station is estimable at all -- but say so, because an S0
                 # record carries absorbed-outlier bias the full one does not.
@@ -230,20 +240,23 @@ def build_record(
                     f"fix: declaring it usually stops the abort.",
                     file=sys.stderr,
                 )
-                record = _estimate(_stage_params("S0", outlier_param))
+                # REBIND, so the mask that reaches the figure is the one the
+                # surviving record was fitted with -- keeping the aborted run's
+                # estimate here would grey out epochs this record never rejected.
+                estimate = _estimate(_stage_params("S0", outlier_param))
     except ValueError as exc:
         # The leaf RAISES on a failed validity gate and RETURNS None on an
         # outlier abort -- two different refusals for the same operator
         # question ("why is there no record?"). Normalise them here so the
         # workbench answers that question the same way either time.
         raise RuntimeError(f"{sta}: {exc} ({gates})") from None
-    if record is None:
+    if estimate is None:
         raise RuntimeError(
             f"{sta}: outlier stage aborted — no record stored ({gates}). "
             f"the S0-only fallback aborted too; the series needs a narrower "
             f"window or a declared step (--step)."
         )
-    return record, yearf, data, sigma
+    return estimate.record, yearf, data, sigma, estimate
 
 
 #: Sentinel ``time_from`` TOS uses for "since forever"; not an event.
@@ -497,6 +510,66 @@ def summarise(record: dict[str, Any], sta: str) -> str:
     return "\n".join(lines)
 
 
+def split_outliers(
+    data: Any, sigma: Any, outliers: Any
+) -> tuple[Any, tuple[Any, Any] | None]:
+    """Split a series into the kept points and a rejected-point overlay.
+
+    The same MASK-not-filter convention as
+    :func:`gps_plot.timesmatplt._mask_outliers`: the returned series is
+    NaN at the rejected epochs and the overlay is NaN everywhere else, so
+    nothing is deleted and the two arrays stay index-aligned with ``x``.
+
+    The mask itself comes from a different place, and that is the point.
+    ``timesmatplt`` re-runs ``detect_view_outliers`` over the whole
+    series; here the mask is the FIT's own inlier verdict, lifted by
+    ``station_estimate_from_arrays``.  Running the view detector instead
+    would disagree with the record by construction — it sees neither the
+    fit window nor a ``--step`` declared on the command line — and the
+    figure would then contradict the ``n_rejected`` printed beside it.
+
+    Returns:
+        ``(kept, overlay)``; ``overlay`` is ``(values, sigmas)`` or None
+        when nothing was rejected.
+    """
+    flags = np.asarray(outliers, dtype=bool)
+    if not flags.any():
+        return data, None
+    kept = np.where(flags, np.nan, data)
+    overlay = (np.where(flags, data, np.nan), np.where(flags, sigma, np.nan))
+    return kept, overlay
+
+
+def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
+    """Mark the fit window, but only where it actually clips the series.
+
+    Epochs outside the window got NO verdict from this fit — they are
+    neither kept nor rejected, they were never judged.  Drawn as plain
+    points they would claim "clean", so the boundary has to be visible.
+    Royalblue, like the trajectory, because the window is a property of
+    the fit and not a fourth data state.  Suppressed when the window is
+    open, where two lines at the plot edges would say nothing.
+    """
+    from gtimes.timefunc import TimefromYearf
+
+    window = record.get("window") or ()
+    if len(window) != 2:
+        return
+    t = np.asarray(yearf, dtype=float)
+    for bound in window:
+        edge = float(bound)
+        if edge <= t.min() + 1e-6 or edge >= t.max() - 1e-6:
+            continue  # open bound: the data itself is the boundary
+        for ax in fig.axes:
+            ax.axvline(
+                TimefromYearf(edge),
+                color=FIT_COLOR,
+                linestyle="--",
+                lw=1.0,
+                zorder=4,
+            )
+
+
 def render(
     sta: str,
     record: dict[str, Any],
@@ -509,8 +582,24 @@ def render(
     events: dict[Any, Any] | None = None,
     tos_events: Sequence[tuple[float, str]] | None = None,
     seismic_events: Sequence[tuple[float, str]] | None = None,
+    outliers: Any = None,
+    hide_outliers: bool = False,
 ) -> Path:
-    """Two-page PDF: plate frame + fitted trajectory, then the detrended view."""
+    """Two-page PDF: plate frame + fitted trajectory, then the detrended view.
+
+    ``outliers`` is the fit's own (3, N) rejection mask.  Its epochs are
+    ALWAYS masked out of the plotted series — they are not in the fit, so
+    drawing them as data would misrepresent what the record was built
+    from — and by default they are redrawn as the grey overlay of the
+    ``plot-gps-timeseries`` cleaned view, using that module's own colour
+    constants so the two tools cannot drift apart.  ``hide_outliers``
+    drops only the overlay: DISPLAY ONLY, exactly as in ``plotTime``, and
+    the y-axis then tightens to the kept series.
+
+    There is deliberately no gold/provisional state here.  Provisional is
+    a *view* verdict about epochs too recent to rule on; a fit has no such
+    category — every windowed epoch is either in the inlier set or not.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -524,11 +613,29 @@ def render(
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    def _overlay(fig: Figure, ov: tuple[Any, Any] | None) -> None:
+        if ov is None or hide_outliers:
+            return
+        tplt.addData(
+            x,
+            ov[0],
+            ov[1],
+            fig,
+            ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
+            markerfacecolor=tplt.OUTLIER_FACE_COLOR,
+            markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+        )
+
     with PdfPages(out) as pdf:
         # page 1 -- observed (plate frame) with the fitted trajectory over it
         fit = np.asarray(evaluate_record(record, yearf, terms=terms))
+        kept, overlay = (
+            split_outliers(data, sigma, outliers)
+            if outliers is not None
+            else (data, None)
+        )
         title = tplt.make_title(sta, x[-1], ref="Plate (workbench)")
-        fig = tplt.stdTimesPlot(x, data, sigma, Title=title)
+        fig = tplt.stdTimesPlot(x, kept, sigma, Title=title)
         for c in range(3):
             fig.axes[c].plot(
                 x,
@@ -539,6 +646,8 @@ def render(
                 zorder=5,
                 label="stored-record trajectory",
             )
+        _overlay(fig, overlay)
+        _add_window_edges(fig, record, yearf)
         if events:
             tplt.addEvent(events, fig)
         if tos_events:
@@ -547,16 +656,26 @@ def render(
             add_event_lines(fig, seismic_events, SEISMIC_COLOR)
         pdf.savefig(fig, bbox_inches="tight")
 
-        # page 2 -- the same series with that trajectory removed
+        # page 2 -- the same series with that trajectory removed.  Detrend the
+        # FULL series, then mask: apply_stored_detrend is a pure evaluation, so
+        # feeding it the NaN-masked series would only propagate the NaNs and
+        # lose the overlay values.
         det = np.asarray(
             apply_stored_detrend(
                 record, yearf, data, terms=terms, frame="plate_removed"
             )
         )
+        kept2, overlay2 = (
+            split_outliers(det, sigma, outliers)
+            if outliers is not None
+            else (det, None)
+        )
         title2 = tplt.make_title(sta, x[-1], ref=f"Detrended (terms={terms})")
-        fig2 = tplt.stdTimesPlot(x, det, sigma, Title=title2)
+        fig2 = tplt.stdTimesPlot(x, kept2, sigma, Title=title2)
         for c in range(3):
             fig2.axes[c].axhline(0.0, color=FIT_COLOR, lw=1.0, zorder=5)
+        _overlay(fig2, overlay2)
+        _add_window_edges(fig2, record, yearf)
         if events:
             tplt.addEvent(events, fig2)
         if tos_events:
@@ -789,6 +908,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "from --model: NOT stored, chosen per call",
     )
     p.add_argument(
+        "--hide-outliers",
+        action="store_true",
+        help="drop the grey overlay of the epochs the fit rejected. They are "
+        "masked out of the plotted series either way — this decides only "
+        "whether the figure still SHOWS them, and hiding them lets the "
+        "y-axis tighten to the fitted series. Same name and meaning as "
+        "plot-gps-timeseries --hide-outliers",
+    )
+    p.add_argument(
         "--event",
         action="append",
         default=[],
@@ -920,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     out = resolve_out(args.out, sta)
 
     try:
-        record, yearf, data, sigma = build_record(
+        record, yearf, data, sigma, estimate = build_record(
             sta,
             tot_dir=args.tot_dir,
             uncert=args.uncert,
@@ -955,6 +1083,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{sta} — BORROWED record from {args.donor}\n")
         print(summarise(record, sta))
         print(f"  own-fit rms    {own_rms}   <- the cost of borrowing")
+        print(
+            f"  note: the grey epochs are {sta}'s OWN detection verdict; "
+            f"{args.donor} contributes only the trajectory."
+        )
     else:
         print(f"\n{sta} — detrend record\n")
         print(summarise(record, sta))
@@ -991,7 +1123,18 @@ def main(argv: list[str] | None = None) -> int:
         terms=args.terms,
         tos_events=list(tos_events) + list(declared_other),
         seismic_events=seismic,
+        outliers=estimate.outliers,
+        hide_outliers=args.hide_outliers,
     )
+    n_out = [int(v) for v in np.asarray(estimate.outliers).sum(axis=1)]
+    n_unjudged = int(np.count_nonzero(~np.asarray(estimate.in_window)))
+    state = "hidden" if args.hide_outliers else "grey"
+    print(f"\n  rejected by the fit  {n_out} ({state}; masked from the series)")
+    if n_unjudged:
+        print(
+            f"  outside the fit window {n_unjudged} epoch(s) — plotted, but "
+            f"the fit passed no verdict on them (window edges dashed)"
+        )
     print(f"\nwrote {path}")
 
     if args.commit:

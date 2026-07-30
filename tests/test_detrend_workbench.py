@@ -414,6 +414,92 @@ def test_a_half_day_epoch_shift_does_not_move_the_fit():
 
 
 # ---------------------------------------------------------------------------
+# Outlier overlay: the figure must agree with the record printed beside it
+# ---------------------------------------------------------------------------
+
+
+def test_grey_overlay_count_matches_the_printed_n_rejected():
+    """The one check that rules out the wrong mask.
+
+    Two masks are available here and they look identical on a figure: the
+    FIT's inlier verdict, and a fresh ``detect_view_outliers`` run of the
+    kind ``plot-gps-timeseries --view cleaned`` does. They disagree by
+    construction — the view detector sees neither the fit window nor a
+    ``--step`` declared on the command line — so a workbench page drawn
+    from the second one would silently contradict the ``n_rejected`` the
+    same run prints. Count parity is what distinguishes them.
+    """
+    from gps_plot.detrend_workbench import build_record, split_outliers
+
+    record, _yearf, data, sigma, est = build_record(
+        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0
+    )
+    n_rejected = [int(v) for v in record["n_rejected"]]
+    assert n_rejected == [int(v) for v in est.outliers.sum(axis=1)]
+    assert any(n_rejected), "SELF should reject something; a no-op proves nothing"
+
+    kept, overlay = split_outliers(data, sigma, est.outliers)
+    assert overlay is not None
+    for c, n in enumerate(n_rejected):
+        # MASK, not filter: the arrays keep their length so they stay
+        # index-aligned with the plotted x, and the two are disjoint.
+        assert kept.shape == data.shape
+        newly_nan = int(np.count_nonzero(np.isnan(kept[c]) & ~np.isnan(data[c])))
+        assert newly_nan == n
+        assert int(np.count_nonzero(~np.isnan(overlay[0][c]))) == n
+
+
+def test_split_outliers_is_a_noop_when_nothing_was_rejected():
+    """No rejections must leave the ORIGINAL array, not a copy full of data.
+
+    ``render`` relies on this to skip the overlay entirely; returning a
+    fresh array would work but hides that nothing happened.
+    """
+    from gps_plot.detrend_workbench import split_outliers
+
+    data = np.arange(12, dtype=float).reshape(3, 4)
+    sigma = np.ones_like(data)
+    kept, overlay = split_outliers(data, sigma, np.zeros_like(data, dtype=bool))
+    assert overlay is None
+    assert kept is data
+
+
+def test_hide_outliers_changes_display_only(tmp_path):
+    """``--hide-outliers`` must not touch the record or the masked series.
+
+    Same contract as ``plotTime``: the epochs are already out of the fit,
+    so this decides only whether the figure still shows them.
+    """
+    from gps_plot.detrend_workbench import build_record, render
+
+    record, yearf, data, sigma, est = build_record(
+        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0
+    )
+    shown = render(
+        STA_SELF,
+        record,
+        yearf,
+        data,
+        sigma,
+        tmp_path / "shown.pdf",
+        outliers=est.outliers,
+    )
+    hidden = render(
+        STA_SELF,
+        record,
+        yearf,
+        data,
+        sigma,
+        tmp_path / "hidden.pdf",
+        outliers=est.outliers,
+        hide_outliers=True,
+    )
+    assert shown.is_file() and hidden.is_file()
+    # the overlay is real artist output, so dropping it must shrink the file
+    assert hidden.stat().st_size < shown.stat().st_size
+
+
+# ---------------------------------------------------------------------------
 # --out routing: scratch figdir shared with tools/local-plot/figview.sh
 # ---------------------------------------------------------------------------
 
