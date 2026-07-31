@@ -142,6 +142,36 @@ def test_stage_overrides_maps_named_stages_on_unnamed_off() -> None:
     }
 
 
+def test_workbench_refuses_to_commit_a_non_default_terms(capsys) -> None:
+    """`--terms` is apply-time and unstored, so committing under it is a trap.
+
+    The operator judges a figure rendered with the terms they asked for, the
+    record has no field to carry that choice, and production reads it back at
+    the default — measured up to 16.48 mm apart on RHOF. Refused BEFORE any
+    data is read, which is also why this test needs no station data: reaching
+    the read at all would already be the bug.
+    """
+    from gps_plot.detrend_workbench import APPLY_TERMS_DEFAULT, main
+
+    assert main(["RHOF", "--terms", "secular", "--commit"]) == 5
+    err = capsys.readouterr().err
+    assert "--terms secular cannot be committed" in err
+    assert "--model" in err, "the refusal must name the lever that DOES round-trip"
+    # ...and the default terms are not refused: only the mismatch is.
+    assert APPLY_TERMS_DEFAULT == "all"
+
+
+@requires_installed_cli
+def test_workbench_help_advertises_the_commit_refusal() -> None:
+    """The trap must be visible before the operator falls into it."""
+    cli = shutil.which("gps-detrend-workbench")
+    if cli is None:
+        pytest.skip("gps-detrend-workbench console script not on PATH")
+    proc = subprocess.run([cli, "--help"], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "refused with --commit" in proc.stdout
+
+
 def test_stage_overrides_rejects_unknown_stage() -> None:
     import pytest as _pytest
 

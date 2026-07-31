@@ -67,6 +67,18 @@ __all__ = [
 FIT_COLOR: str = "royalblue"
 FIT_WIDTH: float = 1.8
 
+#: Apply-time term selection the READ path uses.  ``evaluate_record`` /
+#: ``apply_stored_detrend`` default to ``"all"``, and the record has no field
+#: to say otherwise, so this is the only value a committed record can be
+#: reproduced under.  Anything else is a look-only choice -- see ``main``.
+APPLY_TERMS_DEFAULT: str = "all"
+
+#: ``uncert`` default of :func:`geo_dataread.gps_read.getData`, which is what
+#: the batch estimator ``gps-estimate-detrend`` uses when ``--uncert`` is not
+#: passed.  The workbench screens harder by default (see ``--uncert``), so a
+#: commit says how to reproduce the record in batch rather than assuming it.
+BATCH_UNCERT_DEFAULT: int = 15
+
 
 def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     """``OutlierParams`` for a stage selection, via the CLI's own mapping.
@@ -902,10 +914,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--terms",
-        default="all",
+        default=APPLY_TERMS_DEFAULT,
         choices=("all", "secular", "periodic"),
         help="APPLY-time term selection for the figures. Distinct "
-        "from --model: NOT stored, chosen per call",
+        "from --model: NOT stored, chosen per call — so anything other "
+        f"than {APPLY_TERMS_DEFAULT!r} is refused with --commit",
     )
     p.add_argument(
         "--hide-outliers",
@@ -1045,6 +1058,26 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     sta = args.station.upper()
+
+    if args.commit and args.terms != APPLY_TERMS_DEFAULT:
+        # Refused BEFORE any work: the figure you would judge is not the
+        # series production would render. `terms` is an apply-time argument
+        # that the record has no field for, so committing under a non-default
+        # one stores a record whose figure nobody can reproduce -- and the
+        # divergence is not cosmetic (measured 16.48 mm max on RHOF between
+        # terms="all" and terms="secular" on the same record).
+        print(
+            f"error: --terms {args.terms} cannot be committed. It is an "
+            f"APPLY-time choice, evaluated per call and NOT stored, so the "
+            f"record would be read back with terms={APPLY_TERMS_DEFAULT!r} "
+            f"and render a different series than the one you judged. To make "
+            f"that decision part of the record, fit it: --model periodic (or "
+            f"linear) is stored and does round-trip. To keep looking under "
+            f"--terms {args.terms}, drop --commit.",
+            file=sys.stderr,
+        )
+        return 5
+
     out = resolve_out(args.out, sta)
 
     try:
@@ -1151,6 +1184,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 3
         print(f"committed {sta} -> {target}   stations {before} -> {after}")
+        if args.uncert != BATCH_UNCERT_DEFAULT:
+            # `uncert` screens sigma at read time, so it changes WHICH epochs
+            # were fitted without appearing in any fitted quantity. The record
+            # carries it in refs; this line is what makes it actionable, since
+            # a batch re-run at the default would silently replace this record
+            # with one fitted on a different set of epochs.
+            print(
+                f"  note: fitted with --uncert {args.uncert}; "
+                f"gps-estimate-detrend defaults to {BATCH_UNCERT_DEFAULT}. "
+                f"Re-run it as `gps-estimate-detrend {sta} --uncert "
+                f"{args.uncert}` to reproduce this record in batch."
+            )
     else:
         print("(not committed — pass --commit to store this record)")
     return 0
