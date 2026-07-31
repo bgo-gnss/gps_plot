@@ -148,11 +148,36 @@ Rejected epochs get the cleaned view's grey vocabulary (`timesmatplt`'s own
 here. The mask is the FIT's inlier verdict, lifted across the non-finite drop
 and the window subset by `geo_dataread.station_estimate_from_arrays` (new seam;
 `station_record_from_arrays` now wraps it), so per-component counts equal the
-printed `n_rejected`. Re-running `detect_view_outliers` would disagree by
-construction — it sees neither the fit window nor a CLI `--step`. No gold state:
-provisional is a *view* verdict about epochs too recent to rule on, and a fit
-has no such category. Epochs outside the window got no verdict at all, hence the
-dashed royalblue window edges (drawn only when they clip the series).
+printed `n_rejected`. Re-running `detect_view_outliers` *inside* the window
+would disagree by construction — it sees neither the fit window nor a CLI
+`--step`.
+
+**Outside** the window there is no such conflict — the fit passed no verdict at
+all, and with a pre-unrest window that is most of the series (RHOF: 3337 of
+4789 epochs). Drawn plain they claim "clean" and one blunder owns the y-axis, so
+`screen_outside_window` fills the silence with the view detector, restricted to
+`~estimate.in_window` (`--no-screen-outside-window` to opt out). It is a
+**second lane, never a merge**: hollow grey against the fit's solid grey, its
+own printed count, and the record — `n_rejected`, `--commit`, everything stored
+— is untouched. RHOF flags [31, 16, 10] out there and north's out-of-window
+range falls 73 → 27 mm. Masked because a *view* verdict masks (the cleaned
+view's rule), not because "not in the fit" — no out-of-window epoch is.
+
+Two seams make the lanes agree rather than argue: `timesmatplt.view_flags` is
+now the single detector call site (`_mask_outliers` is its plotting half),
+taking `restrict=` — detection still runs on the FULL series, only the verdict
+narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.csv ∪
+fit-catalog ∪ `--step`). `record["step_epochs"]` is the wrong source and
+instructively so: it keeps only epochs *inside* the window. Expect these flags
+to differ from `--view cleaned` — `uncert` screens σ at read time and the
+workbench defaults to 10 against the plot driver's 15.
+
+Gold DOES appear out there. "A fit has no provisional category" is a statement
+about *fit* verdicts; the view detector has one, and with a pre-unrest window
+the newest epochs are exactly the out-of-window ones — rendering a genuinely
+undecided recent epoch red would be the one claim nobody can make. Gold survives
+`--hide-outliers`; both greys do not. The dashed royalblue window edges stay
+essential — they are what says which grey is which.
 
 `--out` shares the scratch figdir with `tools/local-plot/figview.sh`: a bare
 filename lands in `$FIGDIR`, else the checkout's gitignored `tmp-figdir/`, else
@@ -271,7 +296,10 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-07-31 (workbench round-trip fidelity: --commit refused
+*Last reviewed: 2026-07-31 (workbench out-of-window screen: the view detector
+fills the fit's silence outside the window as a second, hollow-grey lane with
+its own count — record untouched; `timesmatplt.view_flags` is now the single
+detector call site (`restrict=`/`step_epochs=`); earlier — round-trip fidelity: --commit refused
 under a non-default --terms, `uncert` expressible + recorded on both the
 workbench and batch sides; earlier — workbench grey outlier overlay + --hide-outliers,
 fed by the fit's own inlier mask via geo_dataread station_estimate_from_arrays;

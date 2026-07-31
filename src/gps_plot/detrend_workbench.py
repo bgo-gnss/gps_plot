@@ -56,6 +56,7 @@ __all__ = [
     "build_record",
     "borrow_record",
     "commit_record",
+    "screen_outside_window",
     "split_outliers",
     "render",
     "main",
@@ -93,6 +94,40 @@ def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     return _build_outlier_params(extra or [], base=_stage_overrides(stages))
 
 
+def _declared_step_epochs(sta: str, *sources: Any) -> tuple[float, ...]:
+    """Union of every step declaration in play, the deployed catalog included.
+
+    ``steps.csv`` is a FLOOR, never a fallback: the fit-catalog column and a
+    CLI ``--step`` add to it.  Consulting the catalog only when the other
+    sources are empty is the precise bug this exists to prevent —
+    ``station_record_from_arrays`` does exactly that, so declaring one
+    equipment offset from the CLI used to silently drop a station's declared
+    coseismic (measured on SENG, 2 declared rows: rms N/E 112.85/178.73 ->
+    271.94/592.92 mm).
+
+    Args:
+        sta: Station name; "" skips the catalog lookup.
+        *sources: Any iterables of epochs [yr]; None entries are ignored.
+
+    Returns:
+        The sorted union.  A catalog failure degrades to "nothing declared"
+        rather than raising — catalogs are enhancements on this path.
+    """
+    declared: set[float] = set()
+    for source in sources:
+        if source is not None:
+            declared |= {float(v) for v in np.atleast_1d(np.asarray(source)).ravel()}
+    if sta:
+        try:
+            from geo_dataread.gps_views import station_step_epochs
+
+            epochs, _src = station_step_epochs(sta)
+            declared |= {float(v) for v in np.atleast_1d(epochs)}
+        except Exception:  # catalogs are enhancements, never a hard failure
+            pass
+    return tuple(sorted(declared))
+
+
 def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
     """Apply CLI curation levers on top of the resolved catalog row.
 
@@ -113,29 +148,17 @@ def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
     if not changed:
         return settings
     if "steps" in changed:
-        # MERGE with whatever is already declared, never replace.
-        # station_record_from_arrays consults the deployed steps.csv ONLY when
-        # settings.steps is empty, so setting it from the CLI silently DROPS a
-        # station's declared coseismic the moment an operator adds one
-        # equipment offset -- measured on SENG (2 declared rows): rms N/E
-        # 112.85/178.73 -> 271.94/592.92 mm. The help text reads additive.
-        # Note the sources differ: settings.steps is the fit-catalog column,
-        # declared[] is steps.csv. Both must be folded in.
-        declared: set[float] = set(settings.steps or ())
-        if sta:
-            try:
-                from geo_dataread.gps_views import station_step_epochs
-
-                epochs, _src = station_step_epochs(sta)
-                declared |= {float(v) for v in np.atleast_1d(epochs)}
-            except Exception:  # catalogs are enhancements, never a hard failure
-                pass
-        merged = declared | {float(v) for v in changed["steps"]}
-        changed["steps"] = tuple(sorted(merged))
+        # MERGE with whatever is already declared, never replace -- the help
+        # text reads additive, and _declared_step_epochs documents the cost of
+        # getting it wrong.  The sources differ: settings.steps is the
+        # fit-catalog column, the lookup inside is steps.csv; both fold in.
+        declared = _declared_step_epochs(sta, settings.steps)
+        merged = _declared_step_epochs(sta, settings.steps, changed["steps"])
+        changed["steps"] = merged
         if declared:
             print(
                 f"note: --step merged with {len(declared)} already-declared "
-                f"step(s); fitting {len(merged)} in total: {changed['steps']}",
+                f"step(s); fitting {len(merged)} in total: {merged}",
                 file=sys.stderr,
             )
     if "window" in changed:
@@ -552,6 +575,106 @@ def split_outliers(
     return kept, overlay
 
 
+#: Marker fill of the OUT-OF-WINDOW outlier lane.  Hollow, sharing the grey
+#: edge and errorbar of the fit's own rejections but not their fill, because
+#: the two greys are different claims.  Inside the window an epoch was WEIGHED
+#: by the fit and rejected, and the count of those marks is the record's
+#: ``n_rejected``; outside it the fit passed no verdict at all and the mark is
+#: the view detector's opinion about data the record never saw.  One shared
+#: marker would break the very invariant :func:`split_outliers` exists to
+#: protect — that what the figure greys out equals the ``n_rejected`` printed
+#: beside it.
+OUTSIDE_FACE_COLOR: str = "none"
+
+
+def screen_outside_window(
+    sta: str,
+    yearf: Any,
+    data: Any,
+    sigma: Any,
+    estimate: Any,
+    *,
+    steps: Sequence[float] | None = None,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
+    provisional_days: float | None = None,
+) -> tuple[Any, Any]:
+    """View-detector verdicts on the epochs the fit window left unjudged.
+
+    A curated fit window is usually a small pre-unrest slice of a long
+    series — RHOF's is 1452 of 4789 epochs — so most of what the operator
+    LOOKS at on the detrended page was never weighed by the fit.  Drawn
+    plain, those epochs claim "clean" (the flaw :func:`_add_window_edges`
+    can only warn about), and a single blunder among them sets the y-axis:
+    RHOF north spans 73 mm out-of-window, 27 mm once screened.
+
+    So the fit's silence is filled by the *view* detector — the same
+    station-aware chain ``plot-gps-timeseries --view cleaned`` uses, via
+    :func:`gps_plot.timesmatplt.view_flags`, restricted to
+    ``~estimate.in_window``.  The two lanes are disjoint by construction
+    and neither touches the other: inside the window the fit's verdict
+    stands alone, so ``n_rejected``, the stored record and everything
+    ``--commit`` writes are unchanged by this.  It is a reading aid on
+    data the record has no opinion about, not a second opinion on data it
+    does.
+
+    Two details make the lanes agree rather than argue:
+
+    - the detector is fed every step DECLARED for the station, not just
+      the ones the fit used.  ``record["step_epochs"]`` is the wrong
+      source and instructively so: it keeps only epochs inside the window
+      (outside it there is no amplitude to estimate), which is exactly the
+      set this lane does not care about.  A step in the screened stretch
+      is invisible to the record and over-flags around itself at ANY
+      threshold — that hazard is why :func:`split_outliers` refuses to
+      re-run the view detector *inside* the window.  Pass ``steps`` for a
+      CLI ``--step``; ``steps.csv`` is folded in either way;
+    - detection still runs over the whole series and only the verdict is
+      narrowed, because a detector handed the post-window fragment alone
+      would fit it worse.
+
+    Expect these flags to differ from ``plot-gps-timeseries --view
+    cleaned`` on the same station: ``uncert`` screens σ at READ time and
+    the workbench defaults to 10 against the plot driver's 15, so the two
+    tools are not even looking at the same epochs.
+
+    Returns:
+        ``(flags, provisional)`` — bool arrays shaped like ``data``, False
+        everywhere inside the window — or ``(None, None)`` when the
+        window is open (nothing to screen) or the screen failed.  A
+        detection abort degrades inside ``geo_dataread`` to all-False
+        flags plus a ``UserWarning``; the figure is never lost over it.
+    """
+    import gps_plot.timesmatplt as tplt
+
+    in_window = np.asarray(estimate.in_window, dtype=bool)
+    outside = ~in_window
+    if not outside.any():
+        return None, None
+
+    declared = _declared_step_epochs(sta, estimate.record.get("step_epochs"), steps)
+    try:
+        flags, pflags, _aborted = tplt.view_flags(
+            sta,
+            yearf,
+            data,
+            sigma,
+            outlier_params=outlier_params,
+            outlier_overrides=outlier_overrides,
+            provisional_days=provisional_days,
+            step_epochs=np.asarray(declared, dtype=float),
+            restrict=outside,
+        )
+    except Exception as exc:  # the screen is an aid; never lose the figure
+        print(
+            f"note: {sta}: out-of-window screen failed "
+            f"({type(exc).__name__}: {exc}); those epochs are drawn unjudged.",
+            file=sys.stderr,
+        )
+        return None, None
+    return flags, pflags
+
+
 def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
     """Mark the fit window, but only where it actually clips the series.
 
@@ -561,6 +684,11 @@ def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
     Royalblue, like the trajectory, because the window is a property of
     the fit and not a fourth data state.  Suppressed when the window is
     open, where two lines at the plot edges would say nothing.
+
+    :func:`screen_outside_window` now fills that silence with the view
+    detector's verdicts, but the edges stay just as necessary: they are
+    what tells the operator WHICH grey they are looking at, and that the
+    fit itself weighed only the epochs between them.
     """
     from gtimes.timefunc import TimefromYearf
 
@@ -595,6 +723,8 @@ def render(
     tos_events: Sequence[tuple[float, str]] | None = None,
     seismic_events: Sequence[tuple[float, str]] | None = None,
     outliers: Any = None,
+    outside_outliers: Any = None,
+    outside_provisional: Any = None,
     hide_outliers: bool = False,
 ) -> Path:
     """Two-page PDF: plate frame + fitted trajectory, then the detrended view.
@@ -608,9 +738,24 @@ def render(
     drops only the overlay: DISPLAY ONLY, exactly as in ``plotTime``, and
     the y-axis then tightens to the kept series.
 
-    There is deliberately no gold/provisional state here.  Provisional is
-    a *view* verdict about epochs too recent to rule on; a fit has no such
-    category — every windowed epoch is either in the inlier set or not.
+    ``outside_outliers`` is the second grey lane
+    (:func:`screen_outside_window`): the view detector's verdict on epochs
+    the fit window excluded.  Also masked, but for a different reason —
+    "not in the fit" cannot justify it, since NO out-of-window epoch is in
+    the fit; it is masked because this is a *view* verdict and the cleaned
+    view masks what it flags.  Drawn hollow (:data:`OUTSIDE_FACE_COLOR`)
+    so the two greys stay countable apart, and suppressed by
+    ``hide_outliers`` alongside the first.
+
+    ``outside_provisional`` is gold, and only ever appears outside the
+    window.  The fit has no provisional category — every windowed epoch is
+    an inlier or not — but the view detector does, and with a pre-unrest
+    window the newest epochs are precisely the out-of-window ones.
+    Dropping them there would render a recent, genuinely undecided epoch
+    as plain red: "clean", the one claim nobody can make about it yet.
+    Like ``plotTime``, these stay IN the series and survive
+    ``hide_outliers``: hiding a decided outlier declutters, hiding an
+    undecided one hides the thing most worth looking at.
     """
     import matplotlib
 
@@ -625,27 +770,71 @@ def render(
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    def _overlay(fig: Figure, ov: tuple[Any, Any] | None) -> None:
-        if ov is None or hide_outliers:
-            return
-        tplt.addData(
-            x,
-            ov[0],
-            ov[1],
-            fig,
-            ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
-            markerfacecolor=tplt.OUTLIER_FACE_COLOR,
-            markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
-        )
+    def _lanes(values: Any) -> tuple[Any, dict[str, tuple[Any, Any] | None]]:
+        """Mask every judged epoch out of ``values``, then build the overlays.
+
+        :func:`split_outliers` is called once per lane instead of being
+        reimplemented: the combined call produces the series the operator
+        reads, and the per-lane calls produce overlays that stay
+        separately countable — which is the whole point of having two
+        greys.  A lane whose mask is empty comes back None from
+        ``split_outliers`` and simply is not drawn.
+        """
+        lanes: dict[str, tuple[Any, Any] | None] = {}
+        masks = [
+            np.asarray(m, dtype=bool)
+            for m in (outliers, outside_outliers)
+            if m is not None
+        ]
+        kept_ = values
+        if masks:
+            kept_, _ = split_outliers(values, sigma, np.logical_or.reduce(masks))
+        for name, mask in (
+            ("fit", outliers),
+            ("outside", outside_outliers),
+            # provisional epochs are NOT in `masks`: they stay in the series
+            ("provisional", outside_provisional),
+        ):
+            lanes[name] = (
+                split_outliers(values, sigma, mask)[1] if mask is not None else None
+            )
+        return kept_, lanes
+
+    def _draw_lanes(fig: Figure, lanes: dict[str, tuple[Any, Any] | None]) -> None:
+        if lanes["fit"] is not None and not hide_outliers:
+            tplt.addData(
+                x,
+                *lanes["fit"],
+                fig,
+                ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
+                markerfacecolor=tplt.OUTLIER_FACE_COLOR,
+                markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+            )
+        if lanes["outside"] is not None and not hide_outliers:
+            tplt.addData(
+                x,
+                *lanes["outside"],
+                fig,
+                ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
+                markerfacecolor=OUTSIDE_FACE_COLOR,
+                markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+            )
+        if lanes["provisional"] is not None:
+            # larger, to cover the red marker of the point still underneath
+            tplt.addData(
+                x,
+                *lanes["provisional"],
+                fig,
+                markersize=5.5,
+                ecolor=tplt.PROVISIONAL_ERRORBAR_COLOR,
+                markerfacecolor=tplt.PROVISIONAL_FACE_COLOR,
+                markeredgecolor=tplt.PROVISIONAL_EDGE_COLOR,
+            )
 
     with PdfPages(out) as pdf:
         # page 1 -- observed (plate frame) with the fitted trajectory over it
         fit = np.asarray(evaluate_record(record, yearf, terms=terms))
-        kept, overlay = (
-            split_outliers(data, sigma, outliers)
-            if outliers is not None
-            else (data, None)
-        )
+        kept, lanes = _lanes(data)
         title = tplt.make_title(sta, x[-1], ref="Plate (workbench)")
         fig = tplt.stdTimesPlot(x, kept, sigma, Title=title)
         for c in range(3):
@@ -658,7 +847,7 @@ def render(
                 zorder=5,
                 label="stored-record trajectory",
             )
-        _overlay(fig, overlay)
+        _draw_lanes(fig, lanes)
         _add_window_edges(fig, record, yearf)
         if events:
             tplt.addEvent(events, fig)
@@ -677,16 +866,12 @@ def render(
                 record, yearf, data, terms=terms, frame="plate_removed"
             )
         )
-        kept2, overlay2 = (
-            split_outliers(det, sigma, outliers)
-            if outliers is not None
-            else (det, None)
-        )
+        kept2, lanes2 = _lanes(det)
         title2 = tplt.make_title(sta, x[-1], ref=f"Detrended (terms={terms})")
         fig2 = tplt.stdTimesPlot(x, kept2, sigma, Title=title2)
         for c in range(3):
             fig2.axes[c].axhline(0.0, color=FIT_COLOR, lw=1.0, zorder=5)
-        _overlay(fig2, overlay2)
+        _draw_lanes(fig2, lanes2)
         _add_window_edges(fig2, record, yearf)
         if events:
             tplt.addEvent(events, fig2)
@@ -1052,6 +1237,17 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME=VALUE",
         help="repeatable OutlierParams override, applied on top of the stage set in force",
     )
+    p.add_argument(
+        "--no-screen-outside-window",
+        dest="screen_outside_window",
+        action="store_false",
+        help="stop screening the epochs OUTSIDE the fit window. On by "
+        "default: the fit judges only its window (RHOF: 1452 of 4789 "
+        "epochs), so without this the rest is drawn as if clean and one "
+        "blunder sets the y-axis. Those flags come from the view "
+        "detector, are drawn HOLLOW grey to stay countable apart from "
+        "the fit's own solid grey, and change NOTHING about the record",
+    )
     return p
 
 
@@ -1146,6 +1342,18 @@ def main(argv: list[str] | None = None) -> int:
         for epoch, label in declared_other:
             print(f"    {epoch:9.4f}  other     {label}")
 
+    outside = outside_prov = None
+    if args.screen_outside_window:
+        outside, outside_prov = screen_outside_window(
+            sta,
+            yearf,
+            data,
+            sigma,
+            estimate,
+            steps=args.step or None,
+            outlier_params=_stage_params(args.stages, args.outlier_param),
+        )
+
     path = render(
         sta,
         record,
@@ -1157,6 +1365,8 @@ def main(argv: list[str] | None = None) -> int:
         tos_events=list(tos_events) + list(declared_other),
         seismic_events=seismic,
         outliers=estimate.outliers,
+        outside_outliers=outside,
+        outside_provisional=outside_prov,
         hide_outliers=args.hide_outliers,
     )
     n_out = [int(v) for v in np.asarray(estimate.outliers).sum(axis=1)]
@@ -1165,9 +1375,27 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n  rejected by the fit  {n_out} ({state}; masked from the series)")
     if n_unjudged:
         print(
-            f"  outside the fit window {n_unjudged} epoch(s) — plotted, but "
-            f"the fit passed no verdict on them (window edges dashed)"
+            f"  outside the fit window {n_unjudged} epoch(s) — the fit passed "
+            f"no verdict on them (window edges dashed)"
         )
+        if outside is None:
+            print("    not screened — those epochs are drawn unjudged")
+        else:
+            # A SECOND count, never folded into n_out: the number above is the
+            # record's own n_rejected, and a reader has to be able to match the
+            # figure back to it.
+            n_screened = [int(v) for v in np.asarray(outside).sum(axis=1)]
+            print(
+                f"    flagged by the view detector {n_screened} "
+                f"({'hidden' if args.hide_outliers else 'hollow grey'}; "
+                f"masked, but NOT part of the record's n_rejected)"
+            )
+            n_prov = [int(v) for v in np.asarray(outside_prov).sum(axis=1)]
+            if any(n_prov):
+                print(
+                    f"    provisional {n_prov} (gold; kept in the series — "
+                    f"too recent for the detector to rule on)"
+                )
     print(f"\nwrote {path}")
 
     if args.commit:

@@ -266,6 +266,106 @@ def _add_status_subtitle(ax: Any, title: StationTitle) -> None:
     ax.add_artist(box)
 
 
+def view_flags(
+    sta: str,
+    yearf: Any,
+    data: Any,
+    Ddata: Any,
+    *,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
+    provisional_days: float | None = None,
+    step_epochs: Any = None,
+    restrict: Any = None,
+) -> tuple[Any, Any, list[bool] | None]:
+    """Run the station-aware view detector and return its raw verdicts.
+
+    The resolution chain of ``geo_dataread.gps_views.read_gps_view`` lives
+    here, in ONE place: declared step epochs and protect windows from the
+    deployed catalogs, thresholds by explicit-arg > per-station catalog >
+    spec default.  :func:`_mask_outliers` is the plotting wrapper around
+    it; a caller that needs the verdicts themselves rather than a split
+    series (the detrend workbench, screening epochs its fit window left
+    unjudged) calls this directly, so there is exactly one detector call
+    site and the two tools cannot drift apart.
+
+    Args:
+        sta: Station four-letter name — the key of every catalog lookup.
+        yearf: Epochs, fractional years, shape (N,).
+        data: Observations, shape (C, N) or (N,).
+        Ddata: Formal 1-σ uncertainties, shape of ``data``.
+        outlier_params: ``gps_analysis.OutlierParams`` thresholds; None
+            lets the station's catalog row (else the spec defaults) win.
+        outlier_overrides: Explicit ``outlier_overrides.csv`` path.
+        provisional_days: Recency bound of the provisional mask [d].
+        step_epochs: Declared step epochs, REPLACING the catalog lookup.
+            A caller that declared its own steps (the workbench's
+            ``--step``) must pass them: detection around an undeclared
+            step over-flags at ANY threshold, so a detector fed fewer
+            steps than its caller knows about answers a different
+            question.  None resolves the deployed catalog.
+        restrict: Optional (N,) bool mask — verdicts are forced False
+            outside it.  Detection still runs over the FULL series, and
+            deliberately so: the detector fits its own trajectory and
+            needs the whole span to place it.  Only the REPORTED verdict
+            is narrowed.  This is how a caller says "rule on these epochs
+            only" without handing the detector a truncated series it
+            would fit worse.
+
+    Returns:
+        ``(flags, provisional, aborted)`` — two bool arrays shaped like
+        ``data`` and the per-component abort list (None when the
+        provenance lacks it).  ``flags`` and ``provisional`` are disjoint
+        by construction: a flagged epoch is a removal, a provisional one
+        is a pending verdict on an epoch that stays in the series.
+    """
+    from geo_dataread import gps_views
+
+    # Station catalogs are ENHANCEMENTS: each resolver degrades to "nothing
+    # declared" with a UserWarning rather than raising, so a laptop with no
+    # deployed gpsconfig still plots (plotTime never fails for a view reason).
+    if step_epochs is None:
+        steps, _steps_src = gps_views.station_step_epochs(sta)
+    else:
+        steps = np.atleast_1d(np.asarray(step_epochs, dtype=float))
+    pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
+    resolved = gps_views.resolve_outlier_detection(
+        sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
+    )
+
+    # flags come back shaped like data (1D in -> 1D out); keep it that way so
+    # the returned series never changes shape on the caller
+    detect_kwargs: dict[str, Any] = {
+        "outlier_params": resolved.params,
+        "step_epochs": steps if steps.size else None,
+        "protect_windows": pwindows,
+        "min_outlier": resolved.min_outlier,
+    }
+    if provisional_days is not None:
+        detect_kwargs["provisional_days"] = provisional_days
+    flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
+    flags = np.asarray(flags, dtype=bool)
+
+    # DIAGNOSTIC, and absent from older geo_dataread -- never let its absence
+    # break a plot (the same graceful-degrade rule the rest of this path follows)
+    pflags = np.asarray(prov.get("provisional", False), dtype=bool)
+    if pflags.shape != flags.shape:
+        pflags = np.zeros_like(flags)
+
+    if restrict is not None:
+        keep = np.asarray(restrict, dtype=bool)
+        flags = flags & keep
+        pflags = pflags & keep
+
+    # §3.5a: which components the detector refused to rule on. A component
+    # that aborted is served RAW with only a warning, so without this the
+    # figure is indistinguishable from a clean one -- the failure mode is
+    # invisible exactly where it matters most.
+    aborted = prov.get("component_abort")
+    aborted = None if aborted is None else [bool(v) for v in np.atleast_1d(aborted)]
+    return flags, pflags, aborted
+
+
 def _mask_outliers(
     sta: str,
     yearf: Any,
@@ -278,15 +378,10 @@ def _mask_outliers(
 ) -> tuple[Any, tuple[Any, Any] | None, tuple[Any, Any] | None]:
     """Split a series into a cleaned main series and an outlier overlay.
 
-    Mirrors the station-aware resolution chain of
-    ``geo_dataread.gps_views.read_gps_view`` so a plotted cleaned view
-    matches the canonical read/write path for the SAME station: declared
-    step epochs and protect windows resolve from the deployed catalogs,
-    and the thresholds follow the explicit-arg > per-station catalog >
-    spec-default precedence.  The steps are not optional garnish -- an
-    undeclared coseismic or equipment step over-flags (or trips the
-    excess-candidate abort) at ANY threshold, so a threshold passed
-    without them would be a knob that cannot work.
+    The station-aware resolution chain lives in :func:`view_flags` (which
+    mirrors ``geo_dataread.gps_views.read_gps_view``, so a plotted cleaned
+    view matches the canonical read/write path for the SAME station); this
+    is the plotting half — turning verdicts into a series and overlays.
 
     Flags come from ``geo_dataread.gps_views.detect_view_outliers`` (the
     model-aware, signal-protecting detector of the analysis leaf) — a MASK,
@@ -318,42 +413,18 @@ def _mask_outliers(
         KEPT in it.  A provisional marker annotates a point that is still
         part of the data.
     """
-    from geo_dataread import gps_views
-
-    # Station catalogs are ENHANCEMENTS: each resolver degrades to "nothing
-    # declared" with a UserWarning rather than raising, so a laptop with no
-    # deployed gpsconfig still plots (plotTime never fails for a view reason).
-    step_epochs, _steps_src = gps_views.station_step_epochs(sta)
-    pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
-    resolved = gps_views.resolve_outlier_detection(
-        sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
+    flags, pflags, aborted = view_flags(
+        sta,
+        yearf,
+        data,
+        Ddata,
+        outlier_params=outlier_params,
+        outlier_overrides=outlier_overrides,
+        provisional_days=provisional_days,
     )
 
-    # flags come back shaped like data (1D in -> 1D out); keep it that way so
-    # the returned series never changes shape on the caller
-    detect_kwargs: dict[str, Any] = {
-        "outlier_params": resolved.params,
-        "step_epochs": step_epochs if step_epochs.size else None,
-        "protect_windows": pwindows,
-        "min_outlier": resolved.min_outlier,
-    }
-    if provisional_days is not None:
-        detect_kwargs["provisional_days"] = provisional_days
-    flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
-    flags = np.asarray(flags, dtype=bool)
-
-    # §3.5a: which components the detector refused to rule on. A component
-    # that aborted is served RAW with only a warning, so without this the
-    # figure is indistinguishable from a clean one -- the failure mode is
-    # invisible exactly where it matters most.
-    aborted = prov.get("component_abort")
-    aborted = None if aborted is None else [bool(v) for v in np.atleast_1d(aborted)]
-
-    # DIAGNOSTIC, and absent from older geo_dataread -- never let its absence
-    # break a plot (the same graceful-degrade rule the rest of this path follows)
-    pflags = np.asarray(prov.get("provisional", False), dtype=bool)
     provisional = None
-    if pflags.shape == flags.shape and pflags.any():
+    if pflags.any():
         provisional = (
             np.where(pflags, data, np.nan),
             np.where(pflags, Ddata, np.nan),

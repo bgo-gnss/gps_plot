@@ -500,6 +500,207 @@ def test_hide_outliers_changes_display_only(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Out-of-window screen: a SECOND lane, on epochs the fit never judged
+# ---------------------------------------------------------------------------
+
+#: A window that ends well before the series does, so most of the station's
+#: history is out of it.  A record fitted on an open window judges every
+#: epoch and leaves this lane with nothing to prove.
+WINDOW_END = 2014.5
+
+
+def _windowed_estimate(sta=STA):
+    from gps_plot.detrend_workbench import build_record
+
+    return build_record(
+        sta, tot_dir=str(TOT), window=(None, WINDOW_END), max_gap_years=2.0
+    )
+
+
+def test_screen_flags_only_epochs_the_fit_left_unjudged():
+    """The two lanes must be disjoint, and the fit's must be untouched.
+
+    This is the invariant that lets the figure carry two greys at all: a
+    reader counts the solid grey and gets the record's ``n_rejected``,
+    counts the hollow grey and gets epochs the record has no opinion
+    about.  If the screen leaked one flag inside the window, the printed
+    ``n_rejected`` would stop matching the figure — the exact failure
+    ``test_grey_overlay_count_matches_the_printed_n_rejected`` guards
+    against on the other side.
+    """
+    from gps_plot.detrend_workbench import screen_outside_window
+
+    record, yearf, data, sigma, est = _windowed_estimate()
+    in_window = np.asarray(est.in_window, dtype=bool)
+    assert not in_window.all(), "the window must actually clip the series"
+
+    flags, prov = screen_outside_window(STA, yearf, data, sigma, est)
+    assert flags is not None
+    assert flags.shape == data.shape
+    assert not flags[:, in_window].any(), "the screen must not judge inside"
+    assert not np.asarray(prov)[:, in_window].any()
+    assert flags.any(), "RHOF has blunders after 2014; a no-op proves nothing"
+
+    # and the fit's own verdict is unchanged by the screen having run
+    assert [int(v) for v in record["n_rejected"]] == [
+        int(v) for v in est.outliers.sum(axis=1)
+    ]
+    assert not (flags & np.asarray(est.outliers, dtype=bool)).any()
+
+
+def test_restrict_narrows_the_verdict_not_the_detection():
+    """``restrict`` must not change WHAT the detector sees, only what it says.
+
+    Detection fits its own trajectory across the series, so screening a
+    post-2014 fragment on its own would be a different — and worse —
+    estimate than screening the full series and reporting a slice of it.
+    Equality with the unrestricted run masked down is what proves the
+    detector still got the whole span; a truncating implementation passes
+    every shape assertion and fails this one.
+    """
+    from gps_plot.timesmatplt import view_flags
+
+    _record, yearf, data, sigma, est = _windowed_estimate()
+    outside = ~np.asarray(est.in_window, dtype=bool)
+
+    full, _fp, _fa = view_flags(STA, yearf, data, sigma)
+    narrowed, _np_, _na = view_flags(STA, yearf, data, sigma, restrict=outside)
+    assert np.array_equal(narrowed, full & outside)
+    assert narrowed.any() and not np.array_equal(narrowed, full)
+
+
+def test_screen_is_fed_the_fits_own_declared_steps():
+    """A ``--step`` typed at the CLI has to reach the screen too.
+
+    And the record cannot deliver it: ``record["step_epochs"]`` keeps only
+    the epochs INSIDE the fit window, so a step declared in the screened
+    stretch — the only place this lane looks — is absent from it by
+    construction.  A detector run without a declared step over-flags
+    around it at any threshold, the same hazard that keeps
+    ``split_outliers`` from re-running the view detector inside the
+    window.
+    """
+    from gps_plot import detrend_workbench as wb
+
+    step = 2016.5
+    _record, yearf, data, sigma, est = wb.build_record(
+        STA,
+        tot_dir=str(TOT),
+        window=(None, WINDOW_END),
+        max_gap_years=2.0,
+        steps=[step],
+    )
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return (
+            np.zeros(np.shape(data), dtype=bool),
+            np.zeros(np.shape(data), dtype=bool),
+            None,
+        )
+
+    import gps_plot.timesmatplt as tplt
+
+    assert step not in [float(v) for v in (_record["step_epochs"] or ())], (
+        "the record must NOT carry an out-of-window step; that is why the "
+        "screen cannot use it as its source"
+    )
+
+    original = tplt.view_flags
+    tplt.view_flags = _spy
+    try:
+        wb.screen_outside_window(STA, yearf, data, sigma, est, steps=[step])
+    finally:
+        tplt.view_flags = original
+
+    assert step in [float(v) for v in np.atleast_1d(seen["step_epochs"])]
+
+
+def test_screen_failure_leaves_the_epochs_unjudged_and_the_figure_intact():
+    """The screen is a reading aid; losing it must never lose the figure.
+
+    Same graceful-degrade rule as every catalog resolver on this path: a
+    warning and no lane, rather than an operator with no PDF.
+    """
+    from gps_plot import detrend_workbench as wb
+    import gps_plot.timesmatplt as tplt
+
+    record, yearf, data, sigma, est = _windowed_estimate()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("detector exploded")
+
+    original = tplt.view_flags
+    tplt.view_flags = _boom
+    try:
+        flags, prov = wb.screen_outside_window(STA, yearf, data, sigma, est)
+    finally:
+        tplt.view_flags = original
+    assert flags is None and prov is None
+
+
+def test_hide_outliers_drops_the_out_of_window_lane_too(tmp_path):
+    """``--hide-outliers`` means both greys: they are both decided verdicts.
+
+    Only the gold provisional lane survives it, and for the reason it
+    survives in ``plotTime`` — hiding a decided outlier declutters, hiding
+    an undecided one hides the thing most worth looking at.
+    """
+    from gps_plot.detrend_workbench import render, screen_outside_window
+
+    record, yearf, data, sigma, est = _windowed_estimate()
+    outside, prov = screen_outside_window(STA, yearf, data, sigma, est)
+    assert outside is not None and outside.any()
+
+    def _render(name, **kw):
+        return render(
+            STA,
+            record,
+            yearf,
+            data,
+            sigma,
+            tmp_path / name,
+            outliers=est.outliers,
+            **kw,
+        )
+
+    plain = _render("plain.pdf")
+    screened = _render(
+        "screened.pdf", outside_outliers=outside, outside_provisional=prov
+    )
+    hidden = _render(
+        "hidden.pdf",
+        outside_outliers=outside,
+        outside_provisional=prov,
+        hide_outliers=True,
+    )
+    assert screened.stat().st_size > plain.stat().st_size, "the lane must draw"
+    assert hidden.stat().st_size < screened.stat().st_size
+
+
+def test_screening_masks_the_out_of_window_blunders_from_the_series():
+    """Masked, not merely marked — that is what lets the y-axis tighten.
+
+    The operational complaint this lane answers is a single post-window
+    blunder owning the axis: RHOF north spans 73 mm out-of-window and 27
+    once screened.  Marking without masking would leave the range intact
+    and the figure just as unreadable.
+    """
+    from gps_plot.detrend_workbench import screen_outside_window, split_outliers
+
+    _record, yearf, data, sigma, est = _windowed_estimate()
+    outside, _prov = screen_outside_window(STA, yearf, data, sigma, est)
+    kept, overlay = split_outliers(data, sigma, outside)
+    assert overlay is not None
+
+    unjudged = ~np.asarray(est.in_window, dtype=bool)
+    before = np.nanmax(data[0][unjudged]) - np.nanmin(data[0][unjudged])
+    after = np.nanmax(kept[0][unjudged]) - np.nanmin(kept[0][unjudged])
+    assert after < before / 2
+
+
+# ---------------------------------------------------------------------------
 # --out routing: scratch figdir shared with tools/local-plot/figview.sh
 # ---------------------------------------------------------------------------
 
