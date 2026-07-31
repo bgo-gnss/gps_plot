@@ -174,12 +174,23 @@ once. Epoch detection is absent deliberately — it is *circular* today: a jump
 detector needs clean data, the outlier detector needs declared jumps to make it
 (SELF: 9.1 % candidates and abort until one step was declared).
 
-Gaps, measured: `--terms` does NOT round-trip (`model=` is stored at fit time,
+Round-trip fidelity — what you judged is what gets stored — is enforced, not
+assumed. `--terms` still does NOT round-trip (`model=` is stored at fit time,
 `terms=` is per-call and unstored — two different decisions, 16.48 mm max
-divergence); `--donor` copies rather than points, so it will not follow a
-re-estimated donor; workbench/batch `uncert` defaults differ (10 vs 15) and
-`uncert` is absent from `refs`; the `max_gap_years=0.5` gate fails every station
-in the working set, so pass `--max-gap-years`.
+divergence), so `--commit` under a non-default `--terms` is **refused** before
+any data is read (exit 5), naming `--model` as the lever that is stored.
+Looking under `--terms` stays free. `uncert` screens sigma at READ time, so it
+changes which epochs were fitted while leaving no trace in any fitted
+quantity: both sides now carry it in `refs` and both expose the flag
+(`gps-estimate-detrend --uncert`, default 15 = `getData`'s own; workbench
+default 10), and a commit that used a non-default prints the batch invocation
+that reproduces it.
+
+Remaining gaps: `--donor` copies rather than points, so it will not follow a
+re-estimated donor; the `max_gap_years=0.5` gate fails every station in the
+working set, so pass `--max-gap-years` (0.5 is the *shared* default — it also
+lives in `gps_analysis.estimate_detrend` and `gps_api`'s precompute config, so
+changing it is a fleet decision, not a CLI default).
 
 Fractional-year epochs are at **noon** — 2008-05-29 is `149.5/366 = 2008.40847`,
 not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
@@ -260,7 +271,9 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-07-30 (workbench grey outlier overlay + --hide-outliers,
+*Last reviewed: 2026-07-31 (workbench round-trip fidelity: --commit refused
+under a non-default --terms, `uncert` expressible + recorded on both the
+workbench and batch sides; earlier — workbench grey outlier overlay + --hide-outliers,
 fed by the fit's own inlier mask via geo_dataread station_estimate_from_arrays;
 earlier — detrend workbench T0–T6: curation levers, --commit
 merge-write + round-trip proof, TOS + seismic event lines; earlier — cleaned view: station-aware resolution chain +
