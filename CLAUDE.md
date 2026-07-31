@@ -172,12 +172,17 @@ instructively so: it keeps only epochs *inside* the window. Expect these flags
 to differ from `--view cleaned` — `uncert` screens σ at read time and the
 workbench defaults to 10 against the plot driver's 15.
 
-Gold DOES appear out there. "A fit has no provisional category" is a statement
-about *fit* verdicts; the view detector has one, and with a pre-unrest window
-the newest epochs are exactly the out-of-window ones — rendering a genuinely
-undecided recent epoch red would be the one claim nobody can make. Gold survives
-`--hide-outliers`; both greys do not. The dashed royalblue window edges stay
-essential — they are what says which grey is which.
+Gold DOES appear out there, bounded by `--provisional-days` (same meaning as in
+the plot driver; the bound matters more here, since a decade of screened epochs
+holds old mid-series indeterminate clusters that would otherwise dominate the
+lane). "A fit has no provisional category" is a statement about *fit* verdicts;
+the view detector has one, and with a pre-unrest window the newest epochs are
+exactly the out-of-window ones — rendering a genuinely undecided recent epoch
+red would be the one claim nobody can make. Gold survives `--hide-outliers`;
+both greys do not. The dashed royalblue window edges stay essential — they are
+what says which grey is which, which is also why `--donor` skips the screen
+outright and says so: the edges would then be the donor's window while the
+unjudged epochs are the station's own.
 
 `--out` shares the scratch figdir with `tools/local-plot/figview.sh`: a bare
 filename lands in `$FIGDIR`, else the checkout's gitignored `tmp-figdir/`, else

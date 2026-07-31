@@ -1248,6 +1248,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "detector, are drawn HOLLOW grey to stay countable apart from "
         "the fit's own solid grey, and change NOTHING about the record",
     )
+    p.add_argument(
+        "--provisional-days",
+        type=float,
+        default=None,
+        metavar="DAYS",
+        help="recency bound [days] of the PROVISIONAL marker (gold), same "
+        "meaning as in plot-gps-timeseries. The bound is what makes the "
+        "marker useful here: a pre-unrest window leaves a decade of "
+        "screened epochs, and indeterminate clusters also sit at old "
+        "mid-series gaps, which would otherwise dominate the lane. 0 "
+        "disables it; unset uses the geo_dataread default (14). Only the "
+        "out-of-window lane has this state — a fit has no provisional "
+        "category",
+    )
     return p
 
 
@@ -1343,7 +1357,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {epoch:9.4f}  other     {label}")
 
     outside = outside_prov = None
-    if args.screen_outside_window:
+    if args.screen_outside_window and args.donor:
+        # The two annotations would contradict each other: _add_window_edges
+        # draws the DONOR's window (it comes off the record) while in_window is
+        # the own fit's, so under --donor the dashes would no longer delimit
+        # the hollow grey -- and the dashes are what says which grey is which.
+        print(
+            "  note: out-of-window screen skipped under --donor; the dashed "
+            "edges are the donor's window while the unjudged epochs are this "
+            "station's own, so the two would not line up."
+        )
+    elif args.screen_outside_window:
         outside, outside_prov = screen_outside_window(
             sta,
             yearf,
@@ -1352,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
             estimate,
             steps=args.step or None,
             outlier_params=_stage_params(args.stages, args.outlier_param),
+            provisional_days=args.provisional_days,
         )
 
     path = render(

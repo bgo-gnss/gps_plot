@@ -617,6 +617,49 @@ def test_screen_is_fed_the_fits_own_declared_steps():
     assert step in [float(v) for v in np.atleast_1d(seen["step_epochs"])]
 
 
+def test_provisional_days_reaches_the_detector_from_the_cli(tmp_path, monkeypatch):
+    """The gold lane's only bound must be reachable, not just accepted.
+
+    ``provisional_days`` decides which indeterminate epochs are recent
+    enough to mark. Out-of-window is where a pre-unrest window leaves a
+    decade of epochs, and indeterminate clusters also sit at old
+    mid-series gaps — so an unreachable bound would let those dominate a
+    lane documented as being about RECENT undecided epochs.
+    """
+    from gps_plot import detrend_workbench as wb
+    import gps_plot.timesmatplt as tplt
+
+    seen = {}
+    original = tplt.view_flags
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return original(*args, **kwargs)
+
+    tplt.view_flags = _spy
+    try:
+        rc = wb.main(
+            [
+                STA,
+                "--tot-dir",
+                str(TOT),
+                "--window-end",
+                str(WINDOW_END),
+                "--max-gap-years",
+                "2.0",
+                "--no-tos",
+                "--provisional-days",
+                "45",
+                "--out",
+                str(tmp_path / "prov.pdf"),
+            ]
+        )
+    finally:
+        tplt.view_flags = original
+    assert rc == 0
+    assert seen["provisional_days"] == 45.0
+
+
 def test_screen_failure_leaves_the_epochs_unjudged_and_the_figure_intact():
     """The screen is a reading aid; losing it must never lose the figure.
 
