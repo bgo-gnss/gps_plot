@@ -17,3 +17,6 @@ tmp-figdir/
 
 # Interrogation destination docs (/interrogate) — alignment artifacts, not code
 .interrogate-*.md
+
+# Excalidraw MCP server log — dropped in whatever cwd the canvas server ran from
+excalidraw.log
