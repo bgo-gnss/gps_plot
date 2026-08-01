@@ -545,13 +545,37 @@ def test_a_half_day_epoch_shift_does_not_move_the_fit():
     from gps_plot.detrend_workbench import build_record
 
     noon = float(TimetoYearf(2008, 5, 29))
-    a, *_ = build_record(
-        STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[2008.4071]
-    )
-    b, *_ = build_record(STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[noon])
+    midnight = 2008.4071
+    assert 0 < noon - midnight < 2.0 / 365.25, "the two must straddle no epoch"
+    # RHOF, not SELF: SELF's steps.csv DECLARES 2008.4085, so passing either
+    # spelling there merges into two steps for one event -- which is now a
+    # hard error (see the next test). RHOF declares none, so each run here
+    # fits exactly one step and the comparison is of epochs, not of counts.
+    a, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0, steps=[midnight])
+    b, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0, steps=[noon])
     assert [round(float(v), 4) for v in a["rms"]] == [
         round(float(v), 4) for v in b["rms"]
     ]
+
+
+def test_redeclaring_a_catalog_step_is_refused_not_silently_degenerate():
+    """The footgun the half-day test used to walk into unnoticed.
+
+    SELF's ``steps.csv`` declares the Ölfus coseismic at 2008.4085. An
+    operator who types ``--step 2008.4071`` for the SAME event gets both,
+    because ``_declared_step_epochs`` treats the catalog as a floor and
+    merges. Half a day apart on daily data, no epoch separates them, so the
+    two Heaviside columns are IDENTICAL and the design matrix is rank
+    deficient: the individual amplitudes are meaningless (only their sum is
+    determined) and the covariance comes back infinite.
+
+    That used to happen silently -- the fit still predicted well, so an rms
+    comparison could not see it. It is now refused, naming both epochs.
+    """
+    from gps_plot.detrend_workbench import build_record
+
+    with pytest.raises(RuntimeError, match="not separable"):
+        build_record(STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[2008.4071])
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +678,7 @@ def _windowed_estimate(sta=STA):
     from gps_plot.detrend_workbench import build_record
 
     return build_record(
-        sta, tot_dir=str(TOT), window=(None, WINDOW_END), max_gap_years=2.0
+        sta, tot_dir=str(TOT), segments=((None, WINDOW_END),), max_gap_years=2.0
     )
 
 
@@ -727,7 +751,7 @@ def test_screen_is_fed_the_fits_own_declared_steps():
     _record, yearf, data, sigma, est = wb.build_record(
         STA,
         tot_dir=str(TOT),
-        window=(None, WINDOW_END),
+        segments=((None, WINDOW_END),),
         max_gap_years=2.0,
         steps=[step],
     )
@@ -1042,3 +1066,117 @@ def test_figdir_falls_back_to_the_checkout_then_cwd(monkeypatch):
         assert got.name == "tmp-figdir", "must match figview.sh's default"
     else:
         assert got == Path.cwd()
+
+
+# ---------------------------------------------------------------------------
+# --segment: a union fit domain from the command line
+# ---------------------------------------------------------------------------
+
+
+def test_segments_estimate_the_offset_a_single_window_cannot(tmp_path):
+    """The whole point of the feature, on the station that motivated it.
+
+    SELF carries the 2008-05-29 Ölfus M6.3: a coseismic offset with
+    transients either side. A contiguous window either includes the
+    transients (biasing the rate) or starts after the quake (never
+    estimating the offset at all). Excising the transient leaves flanks on
+    both sides, which is exactly what makes the step estimable -- the step
+    epoch itself lies INSIDE the excision.
+    """
+    from gps_plot.detrend_workbench import build_record
+
+    record, *_ = build_record(
+        STA_SELF,
+        tot_dir=str(TOT),
+        segments=((2002.1, 2008.35), (2008.7, 2019.5)),
+        max_gap_years=1.5,
+    )
+    assert record["segments"] == [[2002.1, 2008.35], [2008.7, 2019.5]]
+    assert record["window"] == [2002.1, 2019.5], "window is the hull"
+    assert len(record["segment_gaps"]) == 1
+
+    step = record["step_epochs"][0]
+    assert 2008.35 < step < 2008.7, "the step is inside the excised gap"
+    amps = [
+        c["params"][record["param_names"].index("step_amp_1")]
+        for c in record["components"]
+    ]
+    # steps.csv annotates this event as -150.8 mm north; the fit must find it
+    assert amps[0] == pytest.approx(-150.8, abs=1.0)
+
+
+def test_cli_segment_flag_reaches_the_fit(tmp_path, monkeypatch):
+    from gps_plot import detrend_workbench as wb
+
+    seen = {}
+    original = wb.build_record
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(wb, "build_record", _spy)
+    rc = wb.main(
+        [
+            STA_SELF,
+            "--tot-dir",
+            str(TOT),
+            "--no-tos",
+            "--segment",
+            "2002.1:2008.35",
+            "--segment",
+            "2008.7:2019.5",
+            "--max-gap-years",
+            "1.5",
+            "--out",
+            str(tmp_path / "seg.pdf"),
+        ]
+    )
+    assert rc == 0
+    assert seen["segments"] == ((2002.1, 2008.35), (2008.7, 2019.5))
+
+
+def test_cli_refuses_segment_mixed_with_window_flags(tmp_path):
+    """Two ways to say which epochs are fitted; letting one win silently
+    would change stored science without saying so."""
+    from gps_plot.detrend_workbench import main
+
+    with pytest.raises(SystemExit, match="cannot be combined"):
+        main([STA_SELF, "--segment", "2002.1:2008.35", "--window-end", "2019.5"])
+
+
+@pytest.mark.parametrize("spec", ["2002.1-2008.35", "2002.1:2008.35:x", "a:b"])
+def test_cli_rejects_a_malformed_segment(spec):
+    from gps_plot.detrend_workbench import main
+
+    with pytest.raises(SystemExit):
+        main([STA_SELF, "--segment", spec])
+
+
+def test_open_bounds_are_expressible_from_the_cli(tmp_path, monkeypatch):
+    """An empty side means open, matching --window-start/--window-end."""
+    from gps_plot import detrend_workbench as wb
+
+    seen = {}
+    original = wb.build_record
+    monkeypatch.setattr(
+        wb, "build_record", lambda *a, **k: (seen.update(k), original(*a, **k))[1]
+    )
+    rc = wb.main(
+        [
+            STA_SELF,
+            "--tot-dir",
+            str(TOT),
+            "--no-tos",
+            "--segment",
+            ":2008.35",
+            "--segment",
+            "2008.7:",
+            "--max-gap-years",
+            "1.5",
+            "--out",
+            str(tmp_path / "open.pdf"),
+        ]
+    )
+    assert rc == 0
+    assert seen["segments"] == ((None, 2008.35), (2008.7, None))

@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import textwrap
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -94,6 +95,52 @@ def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     from gps_plot.plot_gps_timeseries import _build_outlier_params, _stage_overrides
 
     return _build_outlier_params(extra or [], base=_stage_overrides(stages))
+
+
+def _resolve_cli_segments(
+    args: Any,
+) -> tuple[tuple[float | None, float | None], ...] | None:
+    """``--segment`` else ``--window-start/--window-end``, never both.
+
+    Returns None when the operator asked for neither, so the station's
+    catalog row (else the open default) still decides — the same
+    "unset defers" precedence every other workbench lever follows.
+
+    Raises:
+        SystemExit: When both spellings are given.  They are two ways to
+            say which epochs are fitted, and letting one silently win
+            would change stored science without saying so.
+    """
+    windowed = args.window_start is not None or args.window_end is not None
+    if args.segment and windowed:
+        raise SystemExit(
+            "--segment cannot be combined with --window-start/--window-end; "
+            "--segment is the general form (pass one to get a single window)"
+        )
+    if args.segment:
+        out: list[tuple[float | None, float | None]] = []
+        for spec in args.segment:
+            if spec.count(":") != 1:
+                raise SystemExit(
+                    f"--segment expects START:END (either side may be empty "
+                    f"for an open bound), got {spec!r}"
+                )
+            lo, _, hi = spec.partition(":")
+            try:
+                out.append(
+                    (
+                        float(lo) if lo.strip() else None,
+                        float(hi) if hi.strip() else None,
+                    )
+                )
+            except ValueError:
+                raise SystemExit(
+                    f"--segment {spec!r}: bounds must be fractional years"
+                ) from None
+        return tuple(out)
+    if windowed:
+        return ((args.window_start, args.window_end),)
+    return None
 
 
 def _declared_step_epochs(sta: str, *sources: Any) -> tuple[float, ...]:
@@ -163,8 +210,8 @@ def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
                 f"step(s); fitting {len(merged)} in total: {merged}",
                 file=sys.stderr,
             )
-    if "window" in changed:
-        changed["window"] = tuple(changed["window"])
+    if "segments" in changed:
+        changed["segments"] = tuple(tuple(s) for s in changed["segments"])
     prior = settings.window_source or "defaults"
     changed["window_source"] = f"workbench-cli(+{prior})"
     return dataclasses.replace(settings, **changed)
@@ -179,7 +226,7 @@ def build_record(
     fit_catalog: str | Path | None = None,
     model: str | None = None,
     stages: str | None = None,
-    window: tuple[float | None, float | None] | None = None,
+    segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
     max_gap_years: float | None = None,
     min_epochs: int | None = None,
@@ -225,7 +272,7 @@ def build_record(
     settings = _override_settings(
         settings,
         sta=sta,
-        window=window,
+        segments=segments,
         steps=steps,
         max_gap_years=max_gap_years,
         min_epochs=min_epochs,
@@ -236,7 +283,8 @@ def build_record(
         kwargs["model"] = model
 
     gates = (
-        f"settings from {settings.window_source}; window={settings.window}, "
+        f"settings from {settings.window_source}; "
+        f"segments={settings.segments}, "
         f"max_gap_years={settings.max_gap_years}, "
         f"min_epochs={settings.min_epochs}, "
         f"min_span_years={settings.min_span_years}"
@@ -792,6 +840,15 @@ def summarise(record: dict[str, Any], sta: str) -> str:
         f"  stages         {(record.get('refs') or {}).get('outlier_stages')}",
         f"  window         {record.get('window')}",
         f"  span_used      {record.get('span_used')}",
+        *(
+            # only when it says something the hull does not
+            [
+                f"  segments       {record.get('segments')}",
+                f"  excised        {[round(g, 4) for g in record.get('segment_gaps') or []]} yr",
+            ]
+            if len(record.get("segments") or []) > 1
+            else []
+        ),
         f"  n_epochs       {record.get('n_epochs')}",
         f"  n_rejected     {record.get('n_rejected')}",
         f"  rms [mm]       {[round(float(v), 2) for v in record.get('rms', [])]}",
@@ -1389,17 +1446,38 @@ def commit_record(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from gps_plot.plot_gps_timeseries import outlier_param_help
+
+    # Raw*Description* leaves description and epilog verbatim (argument help is
+    # still auto-wrapped), which is what lets the generated --outlier-param
+    # table keep its columns -- so the prose either side has to be wrapped here
+    # rather than by argparse.
     p = argparse.ArgumentParser(
         prog="gps-detrend-workbench",
-        description="Operator workbench for detrending: one station, one PDF, "
-        "two views (plate frame + fitted trajectory, and the detrended "
-        "series). Estimation reuses gps-estimate-detrend's own code path, so "
-        "a record made here means the same thing as a batch-made one.",
-        epilog="Detection runs the FULL pipeline by default, falling back to "
-        "S0-only (loudly) if the excess-candidate rule aborts. An S0 record "
-        "leaves model-visible outliers in the fit, so its parameters are "
-        "biased relative to a full-detection one — on a fallback, prefer "
-        "declaring the missing step with --step over accepting the S0 record.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.fill(
+            "Operator workbench for detrending: one station, one PDF, "
+            "two views (plate frame + fitted trajectory, and the detrended "
+            "series). Estimation reuses gps-estimate-detrend's own code path, "
+            "so a record made here means the same thing as a batch-made one.",
+            width=78,
+        ),
+        epilog="\n\n".join(
+            block
+            for block in (
+                textwrap.fill(
+                    "Detection runs the FULL pipeline by default, falling back "
+                    "to S0-only (loudly) if the excess-candidate rule aborts. "
+                    "An S0 record leaves model-visible outliers in the fit, so "
+                    "its parameters are biased relative to a full-detection "
+                    "one — on a fallback, prefer declaring the missing step "
+                    "with --step over accepting the S0 record.",
+                    width=78,
+                ),
+                outlier_param_help(),
+            )
+            if block
+        ),
     )
     p.add_argument("station", help="four-letter station code")
     p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
@@ -1497,6 +1575,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "parameters are biased relative to a full-detection one",
     )
     p.add_argument(
+        "--segment",
+        action="append",
+        default=[],
+        metavar="START:END",
+        help="fit the UNION of these intervals [fractional year], repeatable; "
+        "either side may be empty for an open bound. This is how you excise "
+        "a post-seismic transient and still estimate the coseismic offset: "
+        "the flanks on both sides of the excision constrain the level, so a "
+        "--step inside the gap is estimable. Mutually exclusive with "
+        "--window-start/--window-end, which is the one-segment spelling",
+    )
+    p.add_argument(
         "--window-start",
         type=float,
         default=None,
@@ -1576,7 +1666,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME=VALUE",
-        help="repeatable OutlierParams override, applied on top of the stage set in force",
+        help="repeatable OutlierParams override, applied on top of the stage "
+        "set in force (e.g. max_flag_fraction=0.15 to stop the "
+        "excess-candidate abort from serving a component raw). Every valid "
+        "NAME with its spec default is listed at the END of this help; an "
+        "unknown one also lists them",
     )
     p.add_argument(
         "--no-screen-outside-window",
@@ -1640,11 +1734,7 @@ def main(argv: list[str] | None = None) -> int:
             fit_catalog=args.fit_catalog,
             model=args.model,
             stages=args.stages,
-            window=(
-                (args.window_start, args.window_end)
-                if (args.window_start or args.window_end)
-                else None
-            ),
+            segments=_resolve_cli_segments(args),
             steps=args.step or None,
             max_gap_years=args.max_gap_years,
             min_epochs=args.min_epochs,

@@ -106,7 +106,11 @@ them. Without σ at all the flag count rises ~45 %.
 
 `--outlier-param NAME=VALUE` (repeatable, also `plotTime(outlier_params=)`)
 builds a `gps_analysis.OutlierParams` off the dataclass itself — no default is
-restated here, and an unknown NAME lists the valid ones. Any override REPLACES
+restated here, and an unknown NAME lists the valid ones. `--help` lists them
+too, on both CLIs: `outlier_param_help()` generates the block (grouped by
+stage via `OUTLIER_PARAM_GROUPS`, unknown fields falling into "other" so
+coverage cannot go stale) into the parser epilog, which is why both parsers
+now use `RawDescriptionHelpFormatter` and wrap their own prose. Any override REPLACES
 the station's `outlier_overrides.csv` row; unset defers to that catalog, else
 spec defaults. `min_outlier=` is the scalar floor, NOT the catalog's
 per-component `[N,E,U]` vector.
@@ -142,7 +146,55 @@ gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
 gps-detrend-workbench SELF --max-gap-years 1.0 --hide-outliers
 gps-detrend-workbench NYLA --max-gap-years 1.5 --show-outliers   # audit the verdicts
 gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
+gps-detrend-workbench SELF --segment 2002.1:2008.35 --segment 2008.7:2019.5 \
+    --max-gap-years 1.5          # excise the transient, estimate the offset
 ```
+
+## Segments (`--segment START:END`, repeatable)
+
+The fit domain is a **union of intervals**, not one window. That single
+generalisation answers four asks at once: two (or N) detrend periods; cutting
+transients out; offsets estimable *outside* the trend window; and include/skip
+per offset (which epochs you declare). `--window-start`/`--window-end` is the
+one-segment spelling and is refused alongside `--segment` — two ways to say
+which epochs are fitted, and letting one win silently would change stored
+science. An empty side is an open bound (`:2008.35`).
+
+Why it works: `estimate_detrend`'s step filter uses the **hull** of the kept
+epochs, so a step epoch inside an excised gap still enters the model, and its
+amplitude is estimable precisely because the flanking segments constrain the
+level on both sides. SELF 2008 Ölfus M6.3, transient excised:
+`step_amp_1 [-150.8, 148.0, 55.6] mm` — a line that did not exist under any
+single window, and it matches `steps.csv`'s own annotation.
+
+The gates changed meaning, each identically equal to the old one at J = 1:
+**`max_gap_years` is now per segment** (on the hull the deliberate excision was
+the largest diff, so every union was rejected — the blocker; and raising the
+threshold past it would have disabled the gate *inside* every segment too);
+**`min_span_years` is summed coverage** (Σ ≤ hull always, so uniformly stricter
+— a hull gate passes two 18-day nubs 17 yr apart while four seasonal terms fit
+36 days); `min_epochs` stays a total. A segment with **zero** kept epochs is a
+hard error naming its index — the real failure is a bound typed into a data gap.
+
+Two steps with no fitted epoch between them are now **refused** (identical
+Heaviside columns ⇒ rank-deficient design, amplitudes meaningless, covariance
+infinite). This bites in practice: `--step 2008.4071` on SELF merges with
+`steps.csv`'s declared 2008.4085 into two steps for one event. It used to
+degrade silently.
+
+Persisted per station via a `segments` column in `fit_windows.csv`
+(`a:b;c:d`, `;` already means list there, `:` avoids minus-sign ambiguity) —
+one cell, not one row per segment, because that reader is strict by design and
+a mistyped extra row would parse into different-but-valid science. The header
+check became an allowlist so the deployed 8-column files still read.
+
+The stored record gains `segments` + `segment_gaps` **additively at
+`record_version` 1**: `window` keeps its 2-tuple hull meaning (two readers
+index it positionally), `trajectory_from_record` never reads either, so
+segmented and the 37 deployed single-window records coexist in one document.
+`segment_gaps` reports the *realized* excision rather than gating it — a
+boundary placed inside a genuine outage hides it from the per-segment gate, and
+naming the distance is the honest answer without adding a knob.
 
 Rejected epochs get the cleaned view's grey vocabulary (`timesmatplt`'s own
 `OUTLIER_*` constants, both pages); `--hide-outliers` is display-only there and
