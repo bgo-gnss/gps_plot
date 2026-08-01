@@ -245,19 +245,38 @@ def _swap_components(record):
 TOS_FIXTURE = Path(__file__).parent / "data" / "tos_SELF.json"
 
 
-#: SELF's device subtypes, as TOS returns them (verified live 2026-08-01).
-#: Kept in the TEST rather than folded into ``tos_SELF.json`` so the fixture
-#: stays a faithful mirror of one station payload — which is what
+def _dev(subtype, model=None, serial=None):
+    from gps_plot.detrend_workbench import DeviceInfo
+
+    return DeviceInfo(subtype, model, serial)
+
+
+#: SELF's devices, as TOS returns them (verified live 2026-08-01). Kept in
+#: the TEST rather than folded into ``tos_SELF.json`` so the fixture stays a
+#: faithful mirror of one station payload — which is what
 #: ``test_tos_live_matches_the_fixture`` compares against.
-SELF_SUBTYPES = {
-    5803: "sim_card",
-    4520: "antenna", 4783: "gnss_receiver", 5247: "monument",
-    4458: "antenna", 4782: "gnss_receiver", 5248: "monument",
-    4454: "antenna", 4820: "gnss_receiver", 5249: "monument",
-    5250: "monument", 5320: "radome", 4827: "gnss_receiver", 4528: "antenna",
-    4885: "gnss_receiver",
-    20290: "modem_gsm",
-}  # fmt: skip
+#:
+#: Antenna 4528 is the case that earns the serial column: TRM29659.00 /
+#: 263955 runs to 2010-06-03 and re-joins the SAME day, so without an
+#: identity check that day claims an antenna change it never had.
+SELF_DEVICES = {
+    5803: _dev("sim_card"),
+    4520: _dev("antenna", "TRM29659.00", "190269"),
+    4783: _dev("gnss_receiver", "TRIMBLE 4000SSI", "15404"),
+    5247: _dev("monument"),
+    4458: _dev("antenna", "TRM33429.20+GP", "0220171774"),
+    4782: _dev("gnss_receiver", "TRIMBLE 4000SSI", "15269"),
+    5248: _dev("monument"),
+    4454: _dev("antenna", "TRM33429.00+GP", "0220156111"),
+    4820: _dev("gnss_receiver", "TRIMBLE 4000SSI", "24908"),
+    5249: _dev("monument"),
+    5250: _dev("monument"),
+    5320: _dev("radome"),
+    4827: _dev("gnss_receiver", "TRIMBLE 5700", "0220268934"),
+    4528: _dev("antenna", "TRM29659.00", "263955"),
+    4885: _dev("gnss_receiver", "TRIMBLE NETRS", "4808145652"),
+    20290: _dev("modem_gsm"),
+}
 
 
 def test_tos_epochs_keep_only_antenna_and_receiver_installs():
@@ -284,7 +303,7 @@ def test_tos_epochs_keep_only_antenna_and_receiver_installs():
     payload = json.loads(TOS_FIXTURE.read_text())
     assert len(payload["children_connections"]) == 17, "fixture drifted"
 
-    events = tos_equipment_epochs("SELF", payload=payload, subtypes=SELF_SUBTYPES)
+    events = tos_equipment_epochs("SELF", payload=payload, devices=SELF_DEVICES)
     assert len(events) == 5, [lbl for _, lbl in events]
     days = [lbl.split(" ")[0] for _, lbl in events]
     assert days == [
@@ -297,9 +316,17 @@ def test_tos_epochs_keep_only_antenna_and_receiver_installs():
     assert not any("2024-04-26" in lbl for _, lbl in events), "GSM modem drew a line"
     assert all(not lbl.startswith("1000") for _, lbl in events), "sentinel leaked"
     assert events == sorted(events), "epochs must be ordered"
-    # the label names WHAT changed -- "2 devices" could not distinguish an
-    # antenna swap from a SIM card, which is the whole reason for the lookup
-    assert all("antenna" in lbl or "receiver" in lbl for _, lbl in events)
+
+    # the label names the INSTRUMENT: "2 devices" could not tell an antenna
+    # swap from a SIM card, and "(antenna, receiver)" could not tell a new
+    # antenna from the same one re-registered -- which is the next assertion
+    labels = [lbl for _, lbl in events]
+    assert labels[3] == "2002-02-05 (rx TRIMBLE 5700, ant TRM29659.00)"
+
+    # 2010-06-03: receiver TRIMBLE 5700 -> NETRS, but antenna TRM29659.00 /
+    # 263955 CONTINUES (it is re-registered the same day it is closed). The
+    # day is a receiver change and must not claim an antenna change.
+    assert labels[4] == "2010-06-03 (rx TRIMBLE NETRS)"
     # the 2008 Ölfus coseismic is NOT here: TOS knows equipment, not seismicity
     assert not any(2008.0 < e < 2009.0 for e, _ in events)
 
@@ -320,8 +347,10 @@ def test_removals_never_draw_a_line():
             {"id_entity_child": 1, "time_from": "2010-05-04", "time_to": "2015-09-01"},
         ]
     }
-    events = tos_equipment_epochs("X", payload=payload, subtypes={1: "antenna"})
-    assert [lbl for _, lbl in events] == ["2010-05-04 (antenna)"]
+    events = tos_equipment_epochs(
+        "X", payload=payload, devices={1: _dev("antenna", "TRM29659.00", "263955")}
+    )
+    assert [lbl for _, lbl in events] == ["2010-05-04 (ant TRM29659.00)"]
 
 
 def test_a_telecoms_visit_earns_no_line():
@@ -338,8 +367,8 @@ def test_a_telecoms_visit_earns_no_line():
             {"id_entity_child": 18659, "time_from": "2023-08-16T15:30:00"},
         ]
     }
-    subtypes = {18662: "modem_gsm", 18659: "sim_card"}
-    assert tos_equipment_epochs("RHOF", payload=payload, subtypes=subtypes) == []
+    devices = {18662: _dev("modem_gsm"), 18659: _dev("sim_card")}
+    assert tos_equipment_epochs("RHOF", payload=payload, devices=devices) == []
 
 
 def test_total_lookup_failure_raises_instead_of_reporting_no_changes():
@@ -359,11 +388,13 @@ def test_total_lookup_failure_raises_instead_of_reporting_no_changes():
         ]
     }
     with pytest.raises(RuntimeError, match="resolved nothing"):
-        tos_equipment_epochs("X", payload=payload, subtypes={})
+        tos_equipment_epochs("X", payload=payload, devices={})
 
     # one of two resolves -> a line for it, no exception
-    events = tos_equipment_epochs("X", payload=payload, subtypes={7: "antenna"})
-    assert [lbl for _, lbl in events] == ["2010-05-04 (antenna)"]
+    events = tos_equipment_epochs(
+        "X", payload=payload, devices={7: _dev("antenna", "TRM29659.00", "263955")}
+    )
+    assert [lbl for _, lbl in events] == ["2010-05-04 (ant TRM29659.00)"]
 
 
 def test_tos_failure_degrades_to_a_warning(monkeypatch):
@@ -383,11 +414,11 @@ def test_tos_live_matches_the_fixture():
 
     live = tos_equipment_epochs("SELF")
     cached = tos_equipment_epochs(
-        "SELF", payload=json.loads(TOS_FIXTURE.read_text()), subtypes=SELF_SUBTYPES
+        "SELF", payload=json.loads(TOS_FIXTURE.read_text()), devices=SELF_DEVICES
     )
     assert live == cached, (
-        "TOS changed; refresh tests/data/tos_SELF.json AND SELF_SUBTYPES — the "
-        "subtypes are a second mirror and drift independently of the payload"
+        "TOS changed; refresh tests/data/tos_SELF.json AND SELF_DEVICES — the "
+        "device records are a second mirror and drift independently of the payload"
     )
 
 

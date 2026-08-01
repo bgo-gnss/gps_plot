@@ -203,14 +203,19 @@ A green line claims the phase centre may have MOVED, so three filters stand
 between a TOS row and one. Subtype: `EQUIPMENT_SUBTYPES` = `antenna` +
 `gnss_receiver` only, verified against the canonical 153 — `children_connections`
 is one row per device join of any kind, and RHOF's 2023-08-16 line was a GSM
-modem plus a SIM card drawn across all three components. Naming the subtype takes
-one entity call per device (`resolve_device_subtypes`, ~30 ms, process-cached):
-the join row carries only `id_entity_child`, which is why labels used to read
-"2 devices" instead of `2012-08-28 (antenna, receiver)`. Installs only —
-`time_to` is read by nothing, a removal is not a line. Plus the `1000-01-01`
-"since forever" sentinel. Survivors still coalesce per day (one visit swapping
-antenna+receiver is two rows; RHOF's 13:20 and 15:30 are one visit). Net: RHOF
-4 lines → 3, SELF 6 → 5. A whitelist fails SILENT, so a lookup that resolves
+modem plus a SIM card drawn across all three components. Resolving the device
+takes one entity call each (`resolve_devices` → `DeviceInfo`, ~30 ms,
+process-cached): the join row carries only `id_entity_child`, which is why
+labels read "2 devices", then "(antenna, receiver)", and now name the
+instrument — `2010-06-03 (rx TRIMBLE NETRS)`. Installs only — `time_to` is read
+by nothing, a removal is not a line. **Actually new**: a join continuing the
+same model AND serial it replaces is a re-registration, caught by
+`is_same_unit`. SELF 2010-06-03 is the case — antenna TRM29659.00/263955
+re-joins the day it closes, so the day claimed an antenna change when only the
+receiver moved (5700 → NETRS); invisible until labels named the unit. Plus the
+`1000-01-01` sentinel. Survivors coalesce per day, always one line (RHOF's 13:20
+and 15:30 are one visit). Net: RHOF 4 lines → 3, SELF 6 → 5. A whitelist fails
+SILENT, so a lookup that resolves
 nothing raises rather than returning an empty list — bare and "never swapped"
 render identically. `monument` is excluded per the operator rule and is the one
 excluded subtype that physically could matter.

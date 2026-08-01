@@ -47,7 +47,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from matplotlib.figure import Figure
@@ -56,7 +56,7 @@ __all__ = [
     "build_record",
     "borrow_record",
     "commit_record",
-    "resolve_device_subtypes",
+    "resolve_devices",
     "tos_equipment_epochs",
     "screen_outside_window",
     "split_outliers",
@@ -329,31 +329,64 @@ EQUIPMENT_SUBTYPES: dict[str, str] = {
     "gnss_receiver": "receiver",
 }
 
-#: Resolved ``id_entity`` -> subtype, for the life of the process.  A
-#: device's subtype is immutable, so this can never go stale within a run.
-#: Measured cost without it: 28-34 ms per device, 0.34 s for RHOF's ten and
-#: 0.48 s for SELF's seventeen — small enough that nothing is persisted to
-#: disk, which would only add a staleness question with no payoff.
-_SUBTYPE_CACHE: dict[int, str] = {}
+
+class DeviceInfo(NamedTuple):
+    """What a green line needs to know about one joined device."""
+
+    subtype: str
+    model: str | None = None
+    serial: str | None = None
+
+    def describe(self) -> str:
+        """Label fragment: the MODEL, because that is what an operator reads.
+
+        Serial is deliberately not in the label — two Trimble 4000SSIs are
+        the same instrument to a reader scanning a figure, and the string is
+        already drawn rotated against a crowded axis.  It stays on the
+        record for :func:`is_same_unit`, which is where identity matters.
+        """
+        return self.model or EQUIPMENT_SUBTYPES.get(self.subtype, self.subtype)
 
 
-def resolve_device_subtypes(
+def is_same_unit(a: DeviceInfo, b: DeviceInfo) -> bool:
+    """Whether two joins are the same physical instrument.
+
+    Model AND serial, not the entity id: TOS can hold one unit under more
+    than one id, and a serial alone repeats across manufacturers.
+    """
+    return (a.subtype, a.model, a.serial) == (b.subtype, b.model, b.serial)
+
+
+#: Resolved ``id_entity`` -> :class:`DeviceInfo`, for the life of the
+#: process.  A device's identity is immutable, so this can never go stale
+#: within a run.  Measured cost without it: 28-34 ms per device, 0.34 s for
+#: RHOF's ten and 0.48 s for SELF's seventeen — small enough that nothing is
+#: persisted to disk, which would only add a staleness question with no payoff.
+_DEVICE_CACHE: dict[int, DeviceInfo] = {}
+
+#: Attribute codes carrying the model name, most specific first.  TOS is not
+#: uniform about this across subtypes, so the first hit wins rather than one
+#: code being assumed.
+_MODEL_CODES: tuple[str, ...] = ("model", "antenna_type", "receiver_type")
+
+
+def resolve_devices(
     ids: Sequence[int], *, url: str | None = None
-) -> dict[int, str]:
-    """Look up ``code_entity_subtype`` for each device id.
+) -> dict[int, DeviceInfo]:
+    """Look up subtype, model and serial for each device id.
 
     ``children_connections`` carries only ``id_entity_child`` — no type, no
     model, no serial — and the station payload has no ``children`` block at
     all, so naming what changed takes one entity call per device.  That is
-    the whole reason the epoch labels used to say "2 devices" instead of
-    what those devices were.
+    the whole reason the epoch labels once said "2 devices", then
+    "(antenna, receiver)", instead of which antenna and which receiver.
 
     Args:
         ids: device ``id_entity`` values; duplicates are fine.
         url: TOS REST endpoint; None uses ``tostools``' own default.
 
     Returns:
-        ``{id: subtype}``, omitting ids that could not be resolved.  The
+        ``{id: DeviceInfo}``, omitting ids that could not be resolved.  The
         caller decides what an omission means — under
         :data:`EQUIPMENT_SUBTYPES` it means "not whitelisted", i.e. no
         line, because a line we cannot justify is worse than a missing one.
@@ -365,7 +398,7 @@ def resolve_device_subtypes(
             caller's existing warning rather than a silently bare figure.
     """
     wanted = {int(i) for i in ids if i is not None}
-    missing = sorted(wanted - _SUBTYPE_CACHE.keys())
+    missing = sorted(wanted - _DEVICE_CACHE.keys())
     if missing:
         try:
             from tostools.api.tos_client import TOSClient
@@ -381,9 +414,25 @@ def resolve_device_subtypes(
             except (Exception, SystemExit):
                 continue  # unresolved -> not whitelisted, counted by the caller
             subtype = (history or {}).get("code_entity_subtype")
-            if subtype:
-                _SUBTYPE_CACHE[dev] = str(subtype)
-    return {i: _SUBTYPE_CACHE[i] for i in wanted if i in _SUBTYPE_CACHE}
+            if not subtype:
+                continue
+            attrs = {}
+            for attr in (history or {}).get("attributes") or []:
+                code = attr.get("code")
+                # attributes are a HISTORY: the same code repeats with
+                # different validity, and the first row is the one TOS
+                # returns as current. Later rows must not overwrite it.
+                if code and code not in attrs:
+                    attrs[code] = attr.get("value")
+            model = next((attrs[c] for c in _MODEL_CODES if attrs.get(c)), None)
+            _DEVICE_CACHE[dev] = DeviceInfo(
+                subtype=str(subtype),
+                model=str(model) if model else None,
+                serial=str(attrs["serial_number"])
+                if attrs.get("serial_number")
+                else None,
+            )
+    return {i: _DEVICE_CACHE[i] for i in wanted if i in _DEVICE_CACHE}
 
 
 def tos_equipment_epochs(
@@ -391,7 +440,7 @@ def tos_equipment_epochs(
     *,
     url: str | None = None,
     payload: Any = None,
-    subtypes: Mapping[int, str] | None = None,
+    devices: Mapping[int, DeviceInfo] | None = None,
 ) -> list[tuple[float, str]]:
     """Epochs where a new antenna or receiver was INSTALLED, coalesced.
 
@@ -409,13 +458,20 @@ def tos_equipment_epochs(
     - **installations only.**  ``time_to`` is read by nothing here.  A
       removal is not a line: the operator rule is new equipment, and a swap
       already announces itself through the incoming device's ``time_from``.
+    - **actually NEW.**  A join whose instrument is the same model AND
+      serial as the one it directly continues is a re-registration, not an
+      installation.  SELF proves the case: antenna TRM29659.00 / 263955 ran
+      to 2010-06-03 and re-joins the same day, so the label read
+      ``(antenna, receiver)`` when only the receiver changed (TRIMBLE 5700
+      -> NETRS).  Invisible while labels said "antenna"; obvious the moment
+      they name the unit.
     - **the ``1000-01-01`` sentinel** meaning "since forever", which is a
       registration artefact rather than an event.
 
     Then coalescing to distinct calendar days, because one site visit that
     swaps antenna and receiver is two rows sharing a ``time_from`` — and,
     on RHOF's 2023-08-16, two rows timestamped 13:20 and 15:30 that are
-    plainly the same visit.
+    plainly the same visit.  One day is one line, always.
 
     Net effect on the working set: RHOF 4 lines -> 3, SELF 6 -> 5.
 
@@ -424,13 +480,14 @@ def tos_equipment_epochs(
         url: TOS REST endpoint; None uses ``tostools``' own default.
         payload: pre-fetched entity dict (a cached fixture in tests) —
             when given, no station call is made.
-        subtypes: pre-resolved ``{id_entity: subtype}`` — when given, no
+        devices: pre-resolved ``{id_entity: DeviceInfo}`` — when given, no
             device calls are made either.  This is what lets the fixture
             test run the whole filter offline.
 
     Returns:
         ``[(yearf, label), …]`` sorted, one per distinct day, the label
-        naming WHAT changed — ``2012-08-28 (antenna, receiver)``.
+        naming the instruments — ``2010-06-03 (rx TRIMBLE NETRS)``,
+        ``2002-02-05 (rx TRIMBLE 5700, ant TRM29659.00)``.
 
     Raises:
         RuntimeError: on any TOS failure, including a device lookup that
@@ -465,9 +522,10 @@ def tos_equipment_epochs(
 
     # Only rows that could still become a line are worth a lookup: dropping
     # the sentinel first keeps a registration artefact from costing a call.
-    dated: list[tuple[str, int]] = []
+    dated: list[tuple[str, str, int]] = []
     for join in joins:
         raw = str(join.get("time_from") or "")[:10]
+        until = str(join.get("time_to") or "")[:10]
         dev = join.get("id_entity_child")
         if not raw or dev is None:
             continue
@@ -477,12 +535,13 @@ def tos_equipment_epochs(
             continue
         if y <= TOS_SENTINEL_YEAR:  # "since forever", not an event
             continue
-        dated.append((raw, int(dev)))
+        dated.append((raw, until, int(dev)))
+    dated.sort()
 
-    if subtypes is None:
-        subtypes = resolve_device_subtypes([d for _day, d in dated], url=url)
-    unresolved = {d for _day, d in dated if d not in subtypes}
-    if dated and len(unresolved) == len(set(d for _, d in dated)):
+    if devices is None:
+        devices = resolve_devices([d for _f, _t, d in dated], url=url)
+    unresolved = {d for _f, _t, d in dated if d not in devices}
+    if dated and len(unresolved) == len({d for _f, _t, d in dated}):
         raise RuntimeError(
             f"TOS device lookup resolved nothing for {sta} "
             f"({len(unresolved)} device(s)); refusing to report 'no equipment "
@@ -496,17 +555,30 @@ def tos_equipment_epochs(
             file=sys.stderr,
         )
 
-    by_day: dict[str, set[str]] = {}
-    for day, dev in dated:
-        label = EQUIPMENT_SUBTYPES.get(subtypes.get(dev, ""))
-        if label is None:
-            continue  # radome, monument, SIM card, GSM modem, …
-        by_day.setdefault(day, set()).add(label)
+    # What each subtype was running immediately before this join, so a
+    # re-registration of the SAME unit can be told from an installation.
+    running: dict[str, tuple[str, DeviceInfo]] = {}
+    by_day: dict[str, dict[str, str]] = {}
+    for start, until, dev in dated:
+        info = devices.get(dev)
+        if info is None or info.subtype not in EQUIPMENT_SUBTYPES:
+            continue  # radome, monument, SIM card, GSM modem, unresolved, …
+        prior = running.get(info.subtype)
+        running[info.subtype] = (until, info)
+        if prior is not None and prior[0] == start and is_same_unit(prior[1], info):
+            continue  # continues the very unit it replaced — not new
+        by_day.setdefault(start, {})[EQUIPMENT_SUBTYPES[info.subtype]] = info.describe()
 
     out: list[tuple[float, str]] = []
     for day, kinds in sorted(by_day.items()):
         y, m, d = (int(v) for v in day.split("-"))
-        what = ", ".join(sorted(kinds))
+        # receiver first: the operator asked for it by name, and it is the
+        # part that changes most often
+        order = list(EQUIPMENT_SUBTYPES.values())
+        what = ", ".join(
+            f"{'rx' if k == 'receiver' else 'ant'} {kinds[k]}"
+            for k in sorted(kinds, key=lambda k: -order.index(k))
+        )
         out.append((float(TimetoYearf(y, m, d)), f"{day} ({what})"))
     return out
 
