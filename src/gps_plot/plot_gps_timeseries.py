@@ -7,6 +7,7 @@ import datetime as dt
 import functools
 import os
 import sys
+import textwrap
 import traceback
 
 # from gtimes.timefunc import TimefromYearf, currTime, TimetoYearf
@@ -182,6 +183,127 @@ def _build_outlier_params(assignments, base=None):
         raise SystemExit("--outlier-param: %s" % (exc,)) from None
 
 
+#: ``--outlier-param`` NAMEs grouped by the stage each acts on, so ``--help``
+#: reads as something an operator can navigate rather than 31 alphabetical
+#: fields.  Only the ORDERING lives here -- names, types and defaults are read
+#: off the dataclass, and any field this map does not know lands in a trailing
+#: "other" group.  So the listing can go stale in arrangement, never in
+#: COVERAGE: a leaf that adds a threshold still documents it.
+OUTLIER_PARAM_GROUPS = (
+    (
+        "S0 despike",
+        ("despike", "despike_n_sigma", "despike_return_sigma", "despike_gap_days"),
+    ),
+    (
+        "S1/S2 fit+whiten",
+        ("loss", "f_scale", "whiten_sigma_clip", "scale_estimator", "scale_floor"),
+    ),
+    ("S3 global", ("enable_global", "global_n_sigma")),
+    (
+        "S4 windowed",
+        (
+            "enable_window",
+            "window_days",
+            "window_n_sigma",
+            "window_min_count",
+            "window_order",
+            "window_robust_iterations",
+        ),
+    ),
+    (
+        "S5 protection",
+        (
+            "enable_protection",
+            "min_outlier",
+            "max_run_days",
+            "cluster_gap_days",
+            "run_sign_fraction",
+            "step_evidence_sigma",
+            "step_window_days",
+            "step_flank_max_reach_days",
+            "step_magnitude_ratio",
+            "protect_on_indeterminate",
+        ),
+    ),
+    (
+        "iteration/abort",
+        (
+            "max_iterations",
+            "max_flag_fraction",
+            "min_abort_candidates",
+            "epoch_policy",
+        ),
+    ),
+)
+
+
+def outlier_param_help(width=78):
+    """The ``--outlier-param`` NAME list, for a parser epilog.
+
+    Generated from ``gps_analysis.OutlierParams`` at parse time rather
+    than written down, for the same reason
+    :func:`_build_outlier_params` reads the dataclass: a help text that
+    restated the fields would drift from the detector the moment the leaf
+    gained one, and it would do so SILENTLY -- an operator would read a
+    name that no longer exists, or never learn about one that does.
+
+    The shown values are the SPEC defaults, and are labelled as such
+    because they are not necessarily what a given station gets: an unset
+    field defers to that station's ``outlier_overrides.csv`` row first.
+    Booleans print as ``true``/``false``, one of the spellings
+    :func:`_coerce_outlier_param` accepts, so a line can be copied
+    straight onto the command line.
+
+    Returns:
+        The block, or "" if ``gps_analysis`` cannot be imported --
+        ``--help`` must never be the thing that fails.
+    """
+    import dataclasses
+
+    try:
+        from gps_analysis import OutlierParams
+    except Exception:
+        return ""
+
+    fields = {f.name: f for f in dataclasses.fields(OutlierParams)}
+    grouped = [
+        (title, [n for n in names if n in fields])
+        for title, names in OUTLIER_PARAM_GROUPS
+    ]
+    known = {n for _t, names in grouped for n in names}
+    other = [n for n in fields if n not in known]
+    if other:
+        grouped.append(("other", other))
+
+    def _shown(name):
+        default = fields[name].default
+        if isinstance(default, bool):
+            return "%s=%s" % (name, str(default).lower())
+        return "%s=%s" % (name, default)
+
+    label_w = max(len(t) for t, _n in grouped) + 2
+    lines = textwrap.wrap(
+        "--outlier-param NAME=VALUE, repeatable. Valid NAMEs, shown with "
+        "the SPEC default (a station's outlier_overrides.csv row wins "
+        "wherever a NAME is left unset, and is REPLACED wholesale by any "
+        "override):",
+        width=width,
+    ) + [""]
+    for title, names in grouped:
+        if not names:
+            continue
+        body = ", ".join(_shown(n) for n in names)
+        lines.extend(
+            textwrap.wrap(
+                body,
+                width=width,
+                initial_indent="  %-*s" % (label_w, title),
+                subsequent_indent="  " + " " * label_w,
+            )
+        )
+    return "\n".join(lines)
+
+
 #: Detection stages selectable with ``--stages`` (§14).  S1/S2 (the robust
 #: trajectory fit and the whitening) are STRUCTURAL — every later stage is
 #: defined on their residuals — so they are always on and are accepted only
@@ -278,9 +400,25 @@ def main():
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
     view_allow = ["raw", "cleaned", "detrended"]
 
+    # Raw*Description* leaves the epilog alone (argument help is still
+    # auto-wrapped), which is what lets the generated NAME table keep its
+    # columns instead of being reflowed into a comma wall.
     parser = argparse.ArgumentParser(
         description="Plot tool for GPS time series.",
-        epilog="For any issues regarding this program or the GPS system contact, Benni, gsm: 847 4985, email: bgo@vedur.is, or Hildur email: hildur@vedur.is",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="\n\n".join(
+            block
+            for block in (
+                outlier_param_help(),
+                textwrap.fill(
+                    "For any issues regarding this program or the GPS system "
+                    "contact, Benni, gsm: 847 4985, email: bgo@vedur.is, or "
+                    "Hildur email: hildur@vedur.is",
+                    width=78,
+                ),
+            )
+            if block
+        ),
     )
 
     parser.add_argument("Stations", nargs="+", help="List of stations")
@@ -401,7 +539,8 @@ def main():
         help="override one gps_analysis.OutlierParams detection threshold of "
         "the '--view cleaned' detector; repeatable (e.g. --outlier-param "
         "window_n_sigma=3.5 --outlier-param despike=true). Names/types are "
-        "read off the dataclass, so an unknown NAME lists the valid ones. "
+        "read off the dataclass: every valid NAME with its spec default is "
+        "listed at the END of this help, and an unknown one lists them too. "
         "ANY override replaces the station's outlier_overrides.csv row "
         "wholesale; leave it unset to let that catalog (else the spec "
         "defaults) decide. Careful: min_outlier= is the SCALAR floor, a "

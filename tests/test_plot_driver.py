@@ -195,6 +195,53 @@ def test_build_outlier_params_leaves_unassigned_fields_at_spec_defaults():
 
 
 @requires_gps_analysis
+def test_help_lists_every_outlier_param_name():
+    """``--help`` must document the flag the leaf actually accepts.
+
+    The listing is generated, so the failure this guards is the one a
+    hand-written list would produce silently: the leaf gains a threshold,
+    ``--outlier-param`` accepts it, and the help never mentions it. The
+    grouping map is allowed to be incomplete — an unknown field falls into
+    "other" — and this asserts that the fallback really catches it.
+    """
+    import dataclasses
+
+    from gps_analysis import OutlierParams
+
+    text = driver.outlier_param_help()
+    for field in dataclasses.fields(OutlierParams):
+        assert "%s=" % field.name in text, "%s is undocumented" % field.name
+
+
+@requires_gps_analysis
+def test_help_shows_the_spec_defaults_in_a_spelling_the_flag_accepts():
+    """A line must be copyable onto the command line, booleans included.
+
+    ``bool("False")`` is True, so ``despike=False`` printed Python-style
+    would parse back as the OPPOSITE of what the help says.
+    """
+    text = driver.outlier_param_help()
+    assert "despike=false" in text and "despike=False" not in text
+    assert "max_flag_fraction=0.05" in text
+    assert driver._build_outlier_params(["despike=false"]).despike is False
+
+
+def test_help_survives_a_missing_gps_analysis(monkeypatch):
+    """``--help`` is the last thing allowed to fail on a bare install."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_gps_analysis(name, *args, **kwargs):
+        if name == "gps_analysis":
+            raise ImportError("simulated bare install")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_gps_analysis)
+    assert driver.outlier_param_help() == ""
+
+
+@requires_gps_analysis
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
