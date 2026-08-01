@@ -213,8 +213,13 @@ same model AND serial it replaces is a re-registration, caught by
 `is_same_unit`. SELF 2010-06-03 is the case — antenna TRM29659.00/263955
 re-joins the day it closes, so the day claimed an antenna change when only the
 receiver moved (5700 → NETRS); invisible until labels named the unit. Plus the
-`1000-01-01` sentinel. Survivors coalesce per day, always one line (RHOF's 13:20
-and 15:30 are one visit). Net: RHOF 4 lines → 3, SELF 6 → 5. A whitelist fails
+`1000-01-01` sentinel. **`MIN_DEPLOYMENT_DAYS = 30`**: a campaign measurement is
+registered exactly like a permanent install, so only duration separates them —
+SELF's 2001-07-01/-07-16/-09-14 are 3–4 day deployments against installs of
+3040 days and open, four lines in a two-year span where two belong. An OPEN join
+always counts however young, else the newest equipment on every station is
+invisible. Survivors coalesce per day, always one line (RHOF's 13:20 and 15:30
+are one visit). Net: RHOF 4 lines → 3, **SELF 6 → 2**. A whitelist fails
 SILENT, so a lookup that resolves
 nothing raises rather than returning an empty list — bare and "never swapped"
 render identically. `monument` is excluded per the operator rule and is the one

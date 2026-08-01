@@ -286,15 +286,18 @@ def test_tos_epochs_keep_only_antenna_and_receiver_installs():
     VPN. The live-TOS check below is marked and skipped by default.
 
     SELF's payload is 17 device joins over 7 distinct ``time_from`` values,
-    and three filters stand between those rows and a green line: the
-    ``1000-01-01`` "since forever" sentinel is a registration artefact;
-    only ``antenna`` / ``gnss_receiver`` can move a phase centre, so the
-    monuments, the radome, the SIM card and the 2024 GSM modem earn nothing;
-    and one visit that swaps antenna AND receiver is two rows sharing an
-    epoch, so the survivors still coalesce per day.
+    and every filter has to fire to get from those to the two lines an
+    operator expects. The ``1000-01-01`` "since forever" sentinel is a
+    registration artefact. Only ``antenna`` / ``gnss_receiver`` can move a
+    phase centre, so the monuments, the radome, the SIM card and the 2024
+    GSM modem earn nothing. Three joins are 3-4 day CAMPAIGN deployments
+    from before the station's real life, registered exactly like permanent
+    equipment — only their duration tells them apart. And one visit that
+    swaps antenna AND receiver is two rows sharing an epoch, so what
+    survives still coalesces per day.
 
-    2024-04-26 is the case worth naming: a GSM modem, drawn across all
-    three components as a coordinate event until this filter existed.
+    17 rows -> 2 lines. Each number below is a different filter's evidence,
+    which is why they are asserted separately rather than as one count.
     """
     import json
 
@@ -304,31 +307,48 @@ def test_tos_epochs_keep_only_antenna_and_receiver_installs():
     assert len(payload["children_connections"]) == 17, "fixture drifted"
 
     events = tos_equipment_epochs("SELF", payload=payload, devices=SELF_DEVICES)
-    assert len(events) == 5, [lbl for _, lbl in events]
-    days = [lbl.split(" ")[0] for _, lbl in events]
-    assert days == [
-        "2001-07-01",
-        "2001-07-16",
-        "2001-09-14",
-        "2002-02-05",
-        "2010-06-03",
-    ]
-    assert not any("2024-04-26" in lbl for _, lbl in events), "GSM modem drew a line"
-    assert all(not lbl.startswith("1000") for _, lbl in events), "sentinel leaked"
-    assert events == sorted(events), "epochs must be ordered"
-
-    # the label names the INSTRUMENT: "2 devices" could not tell an antenna
-    # swap from a SIM card, and "(antenna, receiver)" could not tell a new
-    # antenna from the same one re-registered -- which is the next assertion
     labels = [lbl for _, lbl in events]
-    assert labels[3] == "2002-02-05 (rx TRIMBLE 5700, ant TRM29659.00)"
-
-    # 2010-06-03: receiver TRIMBLE 5700 -> NETRS, but antenna TRM29659.00 /
-    # 263955 CONTINUES (it is re-registered the same day it is closed). The
-    # day is a receiver change and must not claim an antenna change.
-    assert labels[4] == "2010-06-03 (rx TRIMBLE NETRS)"
+    assert labels == [
+        "2002-02-05 (rx TRIMBLE 5700, ant TRM29659.00)",
+        # receiver TRIMBLE 5700 -> NETRS, but antenna TRM29659.00 / 263955
+        # CONTINUES (re-registered the day it is closed). A receiver change,
+        # and it must not claim an antenna change it never had.
+        "2010-06-03 (rx TRIMBLE NETRS)",
+    ]
+    assert not any("2024-04-26" in lbl for lbl in labels), "GSM modem drew a line"
+    assert not any(lbl.startswith("1000") for lbl in labels), "sentinel leaked"
+    assert not any(lbl.startswith("2001-") for lbl in labels), "campaign gear drew"
+    assert events == sorted(events), "epochs must be ordered"
     # the 2008 Ölfus coseismic is NOT here: TOS knows equipment, not seismicity
     assert not any(2008.0 < e < 2009.0 for e, _ in events)
+
+
+def test_short_campaign_joins_are_not_station_equipment():
+    """3-4 day joins are campaign gear; an OPEN join counts however young.
+
+    The distinction has to be duration, because TOS registers a campaign
+    deployment exactly like a permanent install — same subtype, same
+    attributes. SELF's three (2001-07-01, -07-16, -09-14, all 3-4 d) sit
+    against installs of 3040 days and open, so the 30-day floor separates
+    them with two orders of magnitude to spare.
+
+    The open case is the one worth pinning: treating "no end date" as zero
+    days would hide the newest equipment on every station in the network.
+    """
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    ant = _dev("antenna", "TRM29659.00", "263955")
+    payload = {
+        "children_connections": [
+            {"id_entity_child": 1, "time_from": "2001-07-01", "time_to": "2001-07-04"},
+            {"id_entity_child": 1, "time_from": "2015-01-01", "time_to": "2015-03-01"},
+            {"id_entity_child": 1, "time_from": "2026-07-30"},  # open, days old
+        ]
+    }
+    labels = [
+        lbl for _, lbl in tos_equipment_epochs("X", payload=payload, devices={1: ant})
+    ]
+    assert labels == ["2015-01-01 (ant TRM29659.00)", "2026-07-30 (ant TRM29659.00)"]
 
 
 def test_removals_never_draw_a_line():

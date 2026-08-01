@@ -303,6 +303,27 @@ TOS_SENTINEL_YEAR = 1900
 #: (royalblue) and from any data-state colour.
 TOS_COLOR: str = "darkgreen"
 
+#: Shortest join that counts as STATION equipment [days].
+#:
+#: A campaign measurement is registered exactly like a permanent install —
+#: same subtype, same attributes — and only its duration tells them apart.
+#: SELF carries three: 2001-07-01, 2001-07-16 and 2001-09-14, all antenna +
+#: receiver, all 3-4 days, all before the station's real life began on
+#: 2002-02-05.  They put four green lines into a two-year span where the
+#: operator expects two, and their labels overlap into an unreadable smear
+#: at any full-series zoom.
+#:
+#: 30 days is not tuned, it is a gap: the working set has 3-4 day campaigns
+#: and 3040-day-or-open installs, with nothing between, so any threshold in
+#: that range separates them identically.  A join still OPEN always counts
+#: however young it is — the alternative is a fresh install that draws no
+#: line until a month has passed.
+#:
+#: The cost is real and worth stating: a receiver that genuinely failed and
+#: was replaced inside a month draws nothing, and that IS a coordinate
+#: event.  ``--event YYYYMMDD`` is the escape hatch when it happens.
+MIN_DEPLOYMENT_DAYS: int = 30
+
 #: The ONLY device subtypes that earn a line, and the label each gets.
 #:
 #: A green line is a claim that the antenna's phase centre may have moved.
@@ -346,6 +367,24 @@ class DeviceInfo(NamedTuple):
         record for :func:`is_same_unit`, which is where identity matters.
         """
         return self.model or EQUIPMENT_SUBTYPES.get(self.subtype, self.subtype)
+
+
+def _span_days(start: str, until: str) -> int | None:
+    """How long a join lasted, or None while it is still open.
+
+    Open is NOT "zero days": an install registered yesterday has no end and
+    must count, or the newest equipment on every station would be invisible.
+    """
+    if not until:
+        return None
+    from datetime import date
+
+    try:
+        a = date(*(int(v) for v in start.split("-")))  # type: ignore[arg-type]
+        b = date(*(int(v) for v in until.split("-")))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None  # unparseable end -> treat as open, never as instant
+    return (b - a).days
 
 
 def is_same_unit(a: DeviceInfo, b: DeviceInfo) -> bool:
@@ -563,6 +602,11 @@ def tos_equipment_epochs(
         info = devices.get(dev)
         if info is None or info.subtype not in EQUIPMENT_SUBTYPES:
             continue  # radome, monument, SIM card, GSM modem, unresolved, …
+        span = _span_days(start, until)
+        if span is not None and span < MIN_DEPLOYMENT_DAYS:
+            # campaign gear, never this station's equipment -- so it must not
+            # become the baseline the NEXT install is compared against either
+            continue
         prior = running.get(info.subtype)
         running[info.subtype] = (until, info)
         if prior is not None and prior[0] == start and is_same_unit(prior[1], info):
