@@ -245,17 +245,37 @@ def _swap_components(record):
 TOS_FIXTURE = Path(__file__).parent / "data" / "tos_SELF.json"
 
 
-def test_tos_epochs_coalesce_from_the_cached_payload():
+#: SELF's device subtypes, as TOS returns them (verified live 2026-08-01).
+#: Kept in the TEST rather than folded into ``tos_SELF.json`` so the fixture
+#: stays a faithful mirror of one station payload — which is what
+#: ``test_tos_live_matches_the_fixture`` compares against.
+SELF_SUBTYPES = {
+    5803: "sim_card",
+    4520: "antenna", 4783: "gnss_receiver", 5247: "monument",
+    4458: "antenna", 4782: "gnss_receiver", 5248: "monument",
+    4454: "antenna", 4820: "gnss_receiver", 5249: "monument",
+    5250: "monument", 5320: "radome", 4827: "gnss_receiver", 4528: "antenna",
+    4885: "gnss_receiver",
+    20290: "modem_gsm",
+}  # fmt: skip
+
+
+def test_tos_epochs_keep_only_antenna_and_receiver_installs():
     """The merge gate is the FIXTURE, not the network.
 
     A network-dependent assertion cannot gate a merge on a machine off the
     VPN. The live-TOS check below is marked and skipped by default.
 
     SELF's payload is 17 device joins over 7 distinct ``time_from`` values,
-    one of which is the ``1000-01-01`` "since forever" sentinel. A single
-    site visit that swaps antenna + receiver + radome is three rows sharing
-    an epoch — coalescing to distinct days is the whole job, and getting it
-    wrong would put three lines on one visit.
+    and three filters stand between those rows and a green line: the
+    ``1000-01-01`` "since forever" sentinel is a registration artefact;
+    only ``antenna`` / ``gnss_receiver`` can move a phase centre, so the
+    monuments, the radome, the SIM card and the 2024 GSM modem earn nothing;
+    and one visit that swaps antenna AND receiver is two rows sharing an
+    epoch, so the survivors still coalesce per day.
+
+    2024-04-26 is the case worth naming: a GSM modem, drawn across all
+    three components as a coordinate event until this filter existed.
     """
     import json
 
@@ -264,8 +284,8 @@ def test_tos_epochs_coalesce_from_the_cached_payload():
     payload = json.loads(TOS_FIXTURE.read_text())
     assert len(payload["children_connections"]) == 17, "fixture drifted"
 
-    events = tos_equipment_epochs("SELF", payload=payload)
-    assert len(events) == 6, [lbl for _, lbl in events]
+    events = tos_equipment_epochs("SELF", payload=payload, subtypes=SELF_SUBTYPES)
+    assert len(events) == 5, [lbl for _, lbl in events]
     days = [lbl.split(" ")[0] for _, lbl in events]
     assert days == [
         "2001-07-01",
@@ -273,12 +293,77 @@ def test_tos_epochs_coalesce_from_the_cached_payload():
         "2001-09-14",
         "2002-02-05",
         "2010-06-03",
-        "2024-04-26",
     ]
+    assert not any("2024-04-26" in lbl for _, lbl in events), "GSM modem drew a line"
     assert all(not lbl.startswith("1000") for _, lbl in events), "sentinel leaked"
     assert events == sorted(events), "epochs must be ordered"
+    # the label names WHAT changed -- "2 devices" could not distinguish an
+    # antenna swap from a SIM card, which is the whole reason for the lookup
+    assert all("antenna" in lbl or "receiver" in lbl for _, lbl in events)
     # the 2008 Ölfus coseismic is NOT here: TOS knows equipment, not seismicity
     assert not any(2008.0 < e < 2009.0 for e, _ in events)
+
+
+def test_removals_never_draw_a_line():
+    """``time_to`` is read by nothing: a line is an INSTALL, per operator rule.
+
+    Constructed rather than fixture-driven, because neither RHOF nor SELF
+    has a removal day without an install on it — the case is real but not
+    present in the working set, and a filter nobody exercises is a filter
+    nobody can trust.
+    """
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    payload = {
+        "children_connections": [
+            # installed 2010, pulled 2015 and NOT replaced
+            {"id_entity_child": 1, "time_from": "2010-05-04", "time_to": "2015-09-01"},
+        ]
+    }
+    events = tos_equipment_epochs("X", payload=payload, subtypes={1: "antenna"})
+    assert [lbl for _, lbl in events] == ["2010-05-04 (antenna)"]
+
+
+def test_a_telecoms_visit_earns_no_line():
+    """RHOF 2023-08-16: a GSM modem + a SIM card, two rows, one visit.
+
+    This drew a full-height line across all three components before the
+    subtype filter. It cannot displace the antenna by a micron.
+    """
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    payload = {
+        "children_connections": [
+            {"id_entity_child": 18662, "time_from": "2023-08-16T13:20:00"},
+            {"id_entity_child": 18659, "time_from": "2023-08-16T15:30:00"},
+        ]
+    }
+    subtypes = {18662: "modem_gsm", 18659: "sim_card"}
+    assert tos_equipment_epochs("RHOF", payload=payload, subtypes=subtypes) == []
+
+
+def test_total_lookup_failure_raises_instead_of_reporting_no_changes():
+    """An unresolvable fleet must NOT read as "this station never changed".
+
+    Empty output and total failure render identically — a figure with no
+    green lines — so the blanket case has to reach the operator through the
+    caller's existing warning. A PARTIAL failure is survivable: unresolved
+    means not whitelisted, and the count is printed.
+    """
+    from gps_plot.detrend_workbench import tos_equipment_epochs
+
+    payload = {
+        "children_connections": [
+            {"id_entity_child": 7, "time_from": "2010-05-04"},
+            {"id_entity_child": 8, "time_from": "2012-06-06"},
+        ]
+    }
+    with pytest.raises(RuntimeError, match="resolved nothing"):
+        tos_equipment_epochs("X", payload=payload, subtypes={})
+
+    # one of two resolves -> a line for it, no exception
+    events = tos_equipment_epochs("X", payload=payload, subtypes={7: "antenna"})
+    assert [lbl for _, lbl in events] == ["2010-05-04 (antenna)"]
 
 
 def test_tos_failure_degrades_to_a_warning(monkeypatch):
@@ -297,8 +382,13 @@ def test_tos_live_matches_the_fixture():
     from gps_plot.detrend_workbench import tos_equipment_epochs
 
     live = tos_equipment_epochs("SELF")
-    cached = tos_equipment_epochs("SELF", payload=json.loads(TOS_FIXTURE.read_text()))
-    assert live == cached, "TOS changed; refresh tests/data/tos_SELF.json"
+    cached = tos_equipment_epochs(
+        "SELF", payload=json.loads(TOS_FIXTURE.read_text()), subtypes=SELF_SUBTYPES
+    )
+    assert live == cached, (
+        "TOS changed; refresh tests/data/tos_SELF.json AND SELF_SUBTYPES — the "
+        "subtypes are a second mirror and drift independently of the payload"
+    )
 
 
 # ---------------------------------------------------------------------------

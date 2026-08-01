@@ -45,7 +45,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,8 @@ __all__ = [
     "build_record",
     "borrow_record",
     "commit_record",
+    "resolve_device_subtypes",
+    "tos_equipment_epochs",
     "screen_outside_window",
     "split_outliers",
     "render",
@@ -301,32 +303,143 @@ TOS_SENTINEL_YEAR = 1900
 #: (royalblue) and from any data-state colour.
 TOS_COLOR: str = "darkgreen"
 
+#: The ONLY device subtypes that earn a line, and the label each gets.
+#:
+#: A green line is a claim that the antenna's phase centre may have moved.
+#: A station's ``children_connections`` carries far more than that: RHOF's
+#: ten joins include ``monument``, ``radome``, ``sim_card`` and
+#: ``modem_gsm``, and its 2023-08-16 line was a GSM modem plus a SIM card —
+#: a telecoms visit that cannot displace the antenna by a micron, drawn
+#: across all three components as if it could.
+#:
+#: Checked against the canonical list (153 subtypes, TOS
+#: ``/entity_subtypes/``): ``antenna`` and ``gnss_receiver`` are the only
+#: codes that can be one; ``gps_clock`` is timing, ``radome`` does not move
+#: the phase centre on its own.  A WHITELIST fails silent by nature — a
+#: receiver registered under some future variant code would draw no line at
+#: all — so the constant is the place to look when a known swap is missing.
+#:
+#: ``monument`` is deliberately absent per the operator rule, and it is the
+#: one excluded subtype that physically could matter (replacing a monument
+#: moves the antenna).  On the working set every monument join shares its
+#: day with an antenna or receiver join, so nothing is lost today; an
+#: unexplained step at a monument-only date is the case to remember.
+EQUIPMENT_SUBTYPES: dict[str, str] = {
+    "antenna": "antenna",
+    "gnss_receiver": "receiver",
+}
+
+#: Resolved ``id_entity`` -> subtype, for the life of the process.  A
+#: device's subtype is immutable, so this can never go stale within a run.
+#: Measured cost without it: 28-34 ms per device, 0.34 s for RHOF's ten and
+#: 0.48 s for SELF's seventeen — small enough that nothing is persisted to
+#: disk, which would only add a staleness question with no payoff.
+_SUBTYPE_CACHE: dict[int, str] = {}
+
+
+def resolve_device_subtypes(
+    ids: Sequence[int], *, url: str | None = None
+) -> dict[int, str]:
+    """Look up ``code_entity_subtype`` for each device id.
+
+    ``children_connections`` carries only ``id_entity_child`` — no type, no
+    model, no serial — and the station payload has no ``children`` block at
+    all, so naming what changed takes one entity call per device.  That is
+    the whole reason the epoch labels used to say "2 devices" instead of
+    what those devices were.
+
+    Args:
+        ids: device ``id_entity`` values; duplicates are fine.
+        url: TOS REST endpoint; None uses ``tostools``' own default.
+
+    Returns:
+        ``{id: subtype}``, omitting ids that could not be resolved.  The
+        caller decides what an omission means — under
+        :data:`EQUIPMENT_SUBTYPES` it means "not whitelisted", i.e. no
+        line, because a line we cannot justify is worse than a missing one.
+
+    Raises:
+        RuntimeError: When the client cannot be built at all.  A blanket
+            failure must NOT read as "this station never had a swap", so
+            :func:`tos_equipment_epochs` turns a total loss into the
+            caller's existing warning rather than a silently bare figure.
+    """
+    wanted = {int(i) for i in ids if i is not None}
+    missing = sorted(wanted - _SUBTYPE_CACHE.keys())
+    if missing:
+        try:
+            from tostools.api.tos_client import TOSClient
+
+            client = TOSClient() if url is None else TOSClient(url)
+        except (Exception, SystemExit) as exc:
+            raise RuntimeError(
+                f"TOS device lookup unavailable ({type(exc).__name__}: {exc})"
+            ) from None
+        for dev in missing:
+            try:
+                history = client.get_entity_history(dev)
+            except (Exception, SystemExit):
+                continue  # unresolved -> not whitelisted, counted by the caller
+            subtype = (history or {}).get("code_entity_subtype")
+            if subtype:
+                _SUBTYPE_CACHE[dev] = str(subtype)
+    return {i: _SUBTYPE_CACHE[i] for i in wanted if i in _SUBTYPE_CACHE}
+
 
 def tos_equipment_epochs(
-    sta: str, *, url: str | None = None, payload: Any = None
+    sta: str,
+    *,
+    url: str | None = None,
+    payload: Any = None,
+    subtypes: Mapping[int, str] | None = None,
 ) -> list[tuple[float, str]]:
-    """TOS equipment-change epochs for one station, coalesced.
+    """Epochs where a new antenna or receiver was INSTALLED, coalesced.
 
-    "No detection — a lookup" undersells the work.  A station's
-    ``children_connections`` is one row per DEVICE join, so a single site
-    visit that swapped antenna + receiver + radome appears as three rows
-    sharing a ``time_from`` (SELF: 17 joins, 7 distinct epochs).  There is
-    also a ``1000-01-01`` sentinel meaning "since forever", which is not an
-    event.  Coalescing to distinct calendar days is the whole job.
+    A green line is a claim that the antenna's phase centre may have moved,
+    so three filters stand between a TOS row and a line:
+
+    - **subtype.**  Only :data:`EQUIPMENT_SUBTYPES`.  A station's
+      ``children_connections`` is one row per DEVICE join of ANY kind, and
+      most kinds cannot displace anything: RHOF's 2023-08-16 line was a GSM
+      modem plus a SIM card, drawn across all three components as if a
+      telecoms visit were a coordinate event.  Resolving the subtype takes
+      one entity call per device (:func:`resolve_device_subtypes`) — the
+      join row carries only ``id_entity_child``, which is why the label used
+      to say "2 devices" rather than what they were.
+    - **installations only.**  ``time_to`` is read by nothing here.  A
+      removal is not a line: the operator rule is new equipment, and a swap
+      already announces itself through the incoming device's ``time_from``.
+    - **the ``1000-01-01`` sentinel** meaning "since forever", which is a
+      registration artefact rather than an event.
+
+    Then coalescing to distinct calendar days, because one site visit that
+    swaps antenna and receiver is two rows sharing a ``time_from`` — and,
+    on RHOF's 2023-08-16, two rows timestamped 13:20 and 15:30 that are
+    plainly the same visit.
+
+    Net effect on the working set: RHOF 4 lines -> 3, SELF 6 -> 5.
 
     Args:
         sta: station code.
         url: TOS REST endpoint; None uses ``tostools``' own default.
         payload: pre-fetched entity dict (a cached fixture in tests) —
-            when given, no network call is made.
+            when given, no station call is made.
+        subtypes: pre-resolved ``{id_entity: subtype}`` — when given, no
+            device calls are made either.  This is what lets the fixture
+            test run the whole filter offline.
 
     Returns:
         ``[(yearf, label), …]`` sorted, one per distinct day, the label
-        naming how many devices changed together.
+        naming WHAT changed — ``2012-08-28 (antenna, receiver)``.
 
     Raises:
-        RuntimeError: on any TOS failure.  Callers degrade to a warning —
-        the workbench must stay usable off-VPN.
+        RuntimeError: on any TOS failure, including a device lookup that
+            resolves NOTHING.  That last case matters: an empty list draws
+            a figure with no green lines, which is indistinguishable from a
+            station that never had a swap, so a blanket failure has to
+            surface as the caller's "continuing without equipment lines"
+            warning instead.  Partial failures are survivable and are
+            reported as a count.
     """
     from gtimes.timefunc import TimetoYearf
 
@@ -349,25 +462,52 @@ def tos_equipment_epochs(
             ) from None
 
     joins = (payload or {}).get("children_connections") or []
-    by_day: dict[str, int] = {}
+
+    # Only rows that could still become a line are worth a lookup: dropping
+    # the sentinel first keeps a registration artefact from costing a call.
+    dated: list[tuple[str, int]] = []
     for join in joins:
         raw = str(join.get("time_from") or "")[:10]
-        if not raw:
+        dev = join.get("id_entity_child")
+        if not raw or dev is None:
             continue
         try:
-            y, m, d = (int(v) for v in raw.split("-"))
+            y, _m, _d = (int(v) for v in raw.split("-"))
         except ValueError:
             continue
         if y <= TOS_SENTINEL_YEAR:  # "since forever", not an event
             continue
-        by_day[raw] = by_day.get(raw, 0) + 1
+        dated.append((raw, int(dev)))
+
+    if subtypes is None:
+        subtypes = resolve_device_subtypes([d for _day, d in dated], url=url)
+    unresolved = {d for _day, d in dated if d not in subtypes}
+    if dated and len(unresolved) == len(set(d for _, d in dated)):
+        raise RuntimeError(
+            f"TOS device lookup resolved nothing for {sta} "
+            f"({len(unresolved)} device(s)); refusing to report 'no equipment "
+            f"changes', which is what an empty result would look like"
+        )
+    if unresolved:
+        print(
+            f"warning: {sta}: {len(unresolved)} device(s) could not be typed; "
+            f"excluded — a line that cannot be justified is worse than a "
+            f"missing one.",
+            file=sys.stderr,
+        )
+
+    by_day: dict[str, set[str]] = {}
+    for day, dev in dated:
+        label = EQUIPMENT_SUBTYPES.get(subtypes.get(dev, ""))
+        if label is None:
+            continue  # radome, monument, SIM card, GSM modem, …
+        by_day.setdefault(day, set()).add(label)
 
     out: list[tuple[float, str]] = []
-    for day, n in sorted(by_day.items()):
+    for day, kinds in sorted(by_day.items()):
         y, m, d = (int(v) for v in day.split("-"))
-        out.append(
-            (float(TimetoYearf(y, m, d)), f"{day} ({n} device{'s' if n > 1 else ''})")
-        )
+        what = ", ".join(sorted(kinds))
+        out.append((float(TimetoYearf(y, m, d)), f"{day} ({what})"))
     return out
 
 
@@ -1127,9 +1267,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-tos",
         dest="tos",
         action="store_false",
-        help="skip the TOS equipment-change lookup. On by default; any TOS "
-        "failure already degrades to a warning, so the workbench stays "
-        "usable off-VPN either way",
+        help="skip the TOS lookup for new antenna / receiver installs. On by "
+        "default; any TOS failure already degrades to a warning, so the "
+        "workbench stays usable off-VPN either way. Costs one entity call "
+        "per joined device (~0.5 s a station) because the join row names no "
+        "device type, and typing it is what keeps a SIM-card swap from "
+        "drawing a line",
     )
     p.add_argument(
         "--tos-url",

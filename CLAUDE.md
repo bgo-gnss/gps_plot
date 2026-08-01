@@ -191,13 +191,29 @@ never relocate an explicit `--out`. `--max-gap-years` is effectively required �
 the 0.5 default rejects every station in the working set.
 
 Events are **declared, never detected** (tier A), in three colours: `darkgreen`
-TOS equipment changes (live `tostools`; one row per DEVICE join, coalesced to
-distinct days), `darkred` seismic (`steps.csv` rows whose `kind` is
+new antenna / receiver installs (live `tostools`), `darkred` seismic
+(`steps.csv` rows whose `kind` is
 earthquake/coseismic/seismic, plus `--event YYYYMMDD[,LABEL]`), `royalblue` the
 fit. Seismic lines read `steps.csv` via `gps_parser.outlier_catalogs.read_steps`,
 **not** `gps_views.station_step_epochs` — that one drops `kind`, so it cannot
 separate an earthquake from an antenna swap. No skjálftalísa client exists
 anywhere in the ecosystem (planned only, in `analysis.yaml` + the CSV header).
+
+A green line claims the phase centre may have MOVED, so three filters stand
+between a TOS row and one. Subtype: `EQUIPMENT_SUBTYPES` = `antenna` +
+`gnss_receiver` only, verified against the canonical 153 — `children_connections`
+is one row per device join of any kind, and RHOF's 2023-08-16 line was a GSM
+modem plus a SIM card drawn across all three components. Naming the subtype takes
+one entity call per device (`resolve_device_subtypes`, ~30 ms, process-cached):
+the join row carries only `id_entity_child`, which is why labels used to read
+"2 devices" instead of `2012-08-28 (antenna, receiver)`. Installs only —
+`time_to` is read by nothing, a removal is not a line. Plus the `1000-01-01`
+"since forever" sentinel. Survivors still coalesce per day (one visit swapping
+antenna+receiver is two rows; RHOF's 13:20 and 15:30 are one visit). Net: RHOF
+4 lines → 3, SELF 6 → 5. A whitelist fails SILENT, so a lookup that resolves
+nothing raises rather than returning an empty list — bare and "never swapped"
+render identically. `monument` is excluded per the operator rule and is the one
+excluded subtype that physically could matter.
 
 Offsets are declare-and-fit: epochs FIXED, amplitudes estimated and shown at
 once. Epoch detection is absent deliberately — it is *circular* today: a jump
