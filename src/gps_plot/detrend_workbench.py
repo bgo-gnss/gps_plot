@@ -635,6 +635,13 @@ def add_event_lines(
     Lines go through ``timesmatplt.addEvent`` (the existing primitive —
     ``axvline`` on every axis); only the text is new, and only on axis 0,
     because repeating it on all three is noise.
+
+    The label is drawn in FULL.  It used to be ``label.split(" ")[0]`` —
+    the date and nothing else — which was right while the rest of the
+    string was a device count, and silently threw away the equipment names
+    the moment they existed.  Date and equipment go on two rotated lines
+    so the identifying part stays at the axis edge and the detail runs
+    beside it rather than after it.
     """
     import gps_plot.timesmatplt as tplt
     from gtimes.timefunc import TimefromYearf
@@ -643,16 +650,19 @@ def add_event_lines(
         return fig
     tplt.addEvent({TimefromYearf(e): [color] for e, _ in events}, fig, linestyle=":")
     ax = fig.axes[0]
-    lo, hi = ax.get_ylim()
+    _lo, hi = ax.get_ylim()
     for epoch, label in events:
+        head, sep, tail = label.partition(" (")
+        text = f"{head}\n{tail.rstrip(')')}" if sep else label
         ax.text(
             TimefromYearf(epoch),
             hi,
-            label.split(" ")[0],
+            text,
             rotation=90,
             va="top",
             ha="right",
-            fontsize=8,
+            fontsize=7,
+            linespacing=0.95,
             color=color,
             zorder=6,
         )
