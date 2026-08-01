@@ -140,6 +140,7 @@ renders from that record.
 # catalogs deployed to ~/.config/gpsconfig 2026-07-29 — no GPS_CONFIG_PATH needed
 gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
 gps-detrend-workbench SELF --max-gap-years 1.0 --hide-outliers
+gps-detrend-workbench NYLA --max-gap-years 1.5 --show-outliers   # audit the verdicts
 gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
 ```
 
@@ -151,6 +152,24 @@ and the window subset by `geo_dataread.station_estimate_from_arrays` (new seam;
 printed `n_rejected`. Re-running `detect_view_outliers` *inside* the window
 would disagree by construction — it sees neither the fit window nor a CLI
 `--step`.
+
+`--show-outliers` inverts that emphasis — flagged red, everything else grey —
+display-only in the same sense (same masks, counts and record), exclusive with
+`--hide-outliers`. Solid vs hollow still separates the two lanes, gold stays
+gold (provisional has no inverse), and the y-axis widens. The swap is an
+OVERPAINT, not a colour argument: `stdTimesPlot` draws red and has no colour
+knob, and adding one would reach into `plot-gps-timeseries`' path for a
+workbench display option — so the kept series is redrawn grey over itself, the
+green "last datapoint" rim survives (it marks the epoch, not a verdict), and
+default figures stay bit-identical.
+
+What it makes legible: **an all-grey component is one where NOTHING was
+flagged**, which on an aborted component is the only on-figure trace of the
+abort — `screen_outside_window` discards `view_flags`' abort list, so
+`ABORT_BADGE_*` never reaches this lane (it is wired on `--view cleaned`).
+NYLA is the worked case (numbers in the memory note): unmodeled deformation in
+the last two years alone trips the abort, and a +48 mm one-day blunder from
+2022 therefore renders as ordinary data.
 
 **Outside** the window there is no such conflict — the fit passed no verdict at
 all, and with a pre-unrest window that is most of the series (RHOF: 3337 of
@@ -327,7 +346,10 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-07-31 (workbench out-of-window screen: the view detector
+*Last reviewed: 2026-08-01 (workbench `--show-outliers`: inverted emphasis —
+flagged red, the rest grey — display-only, exclusive with `--hide-outliers`,
+lanes still countable; makes an aborted component legible as an all-grey axis
+(NYLA); earlier — workbench out-of-window screen: the view detector
 fills the fit's silence outside the window as a second, hollow-grey lane with
 its own count — record untouched; `timesmatplt.view_flags` is now the single
 detector call site (`restrict=`/`step_epochs=`); earlier — round-trip fidelity: --commit refused

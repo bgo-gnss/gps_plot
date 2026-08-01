@@ -863,6 +863,124 @@ def test_hide_outliers_drops_the_out_of_window_lane_too(tmp_path):
     assert hidden.stat().st_size < screened.stat().st_size
 
 
+# ---------------------------------------------------------------------------
+# --show-outliers: the SAME verdicts, drawn the other way round
+# ---------------------------------------------------------------------------
+
+
+def _capture_lanes(monkeypatch, tmp_path, name, **kw):
+    """Render once, returning every ``addData`` layer keyed by marker fill.
+
+    Colour is the whole of what ``--show-outliers`` changes, so the test
+    has to see the artists rather than the file: a size comparison would
+    pass just as happily on a figure that painted the inversion onto the
+    wrong epochs.
+    """
+    import gps_plot.timesmatplt as tplt
+    from gps_plot.detrend_workbench import render
+
+    record, yearf, data, sigma, est = _windowed_estimate()
+    outside, prov = screen_outside_window_or_skip(yearf, data, sigma, est)
+    calls: list[dict] = []
+    real = tplt.addData
+
+    def spy(x, y, Dy, fig, **kwargs):
+        calls.append({"y": np.asarray(y, dtype=float), **kwargs})
+        return real(x, y, Dy, fig, **kwargs)
+
+    monkeypatch.setattr(tplt, "addData", spy)
+    render(
+        STA,
+        record,
+        yearf,
+        data,
+        sigma,
+        tmp_path / name,
+        outliers=est.outliers,
+        outside_outliers=outside,
+        outside_provisional=prov,
+        **kw,
+    )
+    # First occurrence per colour is page 1; `calls` is kept so a test can
+    # check the SECOND page got the same treatment -- the detrended page
+    # builds its own lanes, so an inversion could land on one page only.
+    by_face: dict[str, np.ndarray] = {}
+    for call in calls:
+        face = call.get("markerfacecolor")
+        if face is not None and face not in by_face:
+            by_face[face] = call["y"]
+    return np.asarray(data, dtype=float), est, outside, by_face, calls
+
+
+def screen_outside_window_or_skip(yearf, data, sigma, est):
+    from gps_plot.detrend_workbench import screen_outside_window
+
+    outside, prov = screen_outside_window(STA, yearf, data, sigma, est)
+    if outside is None or not outside.any():
+        pytest.skip("no out-of-window flags on this station/dataset")
+    return outside, prov
+
+
+def test_show_outliers_draws_every_epoch_exactly_once(monkeypatch, tmp_path):
+    """The inversion is a repaint, not a re-selection.
+
+    Grey now means "no verdict against it" and red means "flagged", so
+    the three marker layers must PARTITION the finite series: an epoch
+    drawn twice would read as flagged on top of clean, and one drawn
+    nowhere would vanish from a figure whose whole job is to show what
+    the detector did.
+    """
+    import gps_plot.timesmatplt as tplt
+
+    data, est, outside, by_face, calls = _capture_lanes(
+        monkeypatch, tmp_path, "inverted.pdf", show_outliers=True
+    )
+    from gps_plot.detrend_workbench import INVERTED_FACE_COLOR, OUTSIDE_FACE_COLOR
+
+    n_grey = sum(
+        1 for c in calls if c.get("markerfacecolor") == tplt.OUTLIER_FACE_COLOR
+    )
+    assert n_grey == 2, "both pages must invert, not just the plate-frame one"
+
+    grey = np.isfinite(by_face[tplt.OUTLIER_FACE_COLOR])
+    red = np.isfinite(by_face[INVERTED_FACE_COLOR])
+    hollow = np.isfinite(by_face[OUTSIDE_FACE_COLOR])
+
+    finite = np.isfinite(data)
+    assert not (grey & red).any(), "an epoch cannot be both kept and rejected"
+    assert not (grey & hollow).any()
+    assert not (red & hollow).any(), "the two red lanes must stay countable"
+    assert ((grey | red | hollow) == finite).all(), "the layers must partition"
+    # and the red lanes are exactly the masks, unchanged by the inversion
+    assert (red == (np.asarray(est.outliers) & finite)).all()
+    assert (hollow == (np.asarray(outside) & finite)).all()
+
+
+def test_show_outliers_leaves_the_default_view_alone(monkeypatch, tmp_path):
+    """Without the flag nothing is repainted — no grey layer is drawn.
+
+    The kept series stays ``stdTimesPlot``'s own red, which is what makes
+    the flag a pure addition: every existing figure is bit-identical.
+    """
+    import gps_plot.timesmatplt as tplt
+
+    _data, _est, _outside, by_face, _calls = _capture_lanes(
+        monkeypatch, tmp_path, "plain.pdf"
+    )
+    grey = by_face.get(tplt.OUTLIER_FACE_COLOR)
+    assert grey is not None, "the fit's own rejections are still grey"
+    # ... and that grey is the REJECTIONS, not the kept series
+    assert np.isfinite(grey).sum() == int(np.asarray(_est.outliers).sum())
+
+
+def test_show_outliers_is_exclusive_with_hide_outliers():
+    """Contradictory by definition: drop the verdicts vs. show only them."""
+    from gps_plot.detrend_workbench import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args([STA, "--show-outliers", "--hide-outliers"])
+
+
 def test_screening_masks_the_out_of_window_blunders_from_the_series():
     """Masked, not merely marked — that is what lets the y-axis tighten.
 

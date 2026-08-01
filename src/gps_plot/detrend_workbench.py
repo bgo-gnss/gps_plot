@@ -852,6 +852,19 @@ def split_outliers(
 #: beside it.
 OUTSIDE_FACE_COLOR: str = "none"
 
+#: Marker colours of the FLAGGED lanes under ``--show-outliers``, where the
+#: emphasis is inverted: the verdicts are what the operator came to look at
+#: and the series itself becomes the backdrop.  Only the marker swaps — the
+#: error bars stay grey on every lane, as they already are for kept and
+#: rejected epochs alike, so nothing about the swap is load-bearing beyond
+#: colour.  The out-of-window lane keeps :data:`OUTSIDE_FACE_COLOR`: hollow
+#: red against solid red preserves exactly the distinction the two greys
+#: carry, and it can stay a true "none" fill because the base series is
+#: masked at those epochs — there is never a marker underneath to show
+#: through.
+INVERTED_FACE_COLOR: str = "red"
+INVERTED_EDGE_COLOR: str = "red"
+
 
 def screen_outside_window(
     sta: str,
@@ -992,6 +1005,7 @@ def render(
     outside_outliers: Any = None,
     outside_provisional: Any = None,
     hide_outliers: bool = False,
+    show_outliers: bool = False,
 ) -> Path:
     """Two-page PDF: plate frame + fitted trajectory, then the detrended view.
 
@@ -1022,6 +1036,27 @@ def render(
     Like ``plotTime``, these stay IN the series and survive
     ``hide_outliers``: hiding a decided outlier declutters, hiding an
     undecided one hides the thing most worth looking at.
+
+    ``show_outliers`` INVERTS that emphasis — flagged epochs red, the
+    unflagged series grey — and is display-only in exactly the sense
+    ``hide_outliers`` is: same masks, same counts, same record.  The two
+    are mutually exclusive at the CLI because they are contradictory.
+    The swap is done by OVERPAINTING the kept series grey rather than by
+    colouring it grey at the source: ``stdTimesPlot`` draws red and has
+    no colour knob, and giving it one would reach into
+    ``plot-gps-timeseries``' path for a workbench display option.  Two
+    consequences are deliberate, not oversights — the "last datapoint"
+    highlight keeps its green rim (it marks the EPOCH, not a verdict,
+    and a 3.5 pt grey dot sits inside its 5.5 pt ring), and the y-axis
+    widens to hold the flagged epochs, which is the whole point.
+
+    The inversion answers a question the normal view cannot: an
+    all-grey component is one where NOTHING was flagged, and on a
+    station whose detection aborted (the excess-candidate rule serves a
+    component raw) that is the only on-figure trace of it — measured on
+    NYLA, where north and east abort at 7.9 / 9.2 % candidates and a
+    +48 mm one-day blunder in east therefore renders as ordinary red
+    data in the normal view.
     """
     import matplotlib
 
@@ -1053,28 +1088,50 @@ def render(
             if m is not None
         ]
         kept_ = values
-        if masks:
-            kept_, _ = split_outliers(values, sigma, np.logical_or.reduce(masks))
+        judged = np.logical_or.reduce(masks) if masks else None
+        if judged is not None:
+            kept_, _ = split_outliers(values, sigma, judged)
         for name, mask in (
             ("fit", outliers),
             ("outside", outside_outliers),
             # provisional epochs are NOT in `masks`: they stay in the series
             ("provisional", outside_provisional),
+            # the inversion's grey lane -- the complement of everything
+            # judged, i.e. the series MINUS both flagged lanes.  Built from
+            # the same one-line split as its opposites so the two colourings
+            # cannot cover different epoch sets.
+            ("unflagged", ~judged if (show_outliers and judged is not None) else None),
         ):
             lanes[name] = (
                 split_outliers(values, sigma, mask)[1] if mask is not None else None
             )
+        if show_outliers and judged is None:
+            # nothing judged at all: every epoch is the grey lane
+            lanes["unflagged"] = (values, sigma)
         return kept_, lanes
 
     def _draw_lanes(fig: Figure, lanes: dict[str, tuple[Any, Any] | None]) -> None:
+        if lanes["unflagged"] is not None:
+            # FIRST, so the flagged lanes land on top of it: this repaints the
+            # red series stdTimesPlot has already drawn, marker for marker.
+            tplt.addData(
+                x,
+                *lanes["unflagged"],
+                fig,
+                ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
+                markerfacecolor=tplt.OUTLIER_FACE_COLOR,
+                markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+            )
+        fit_face = INVERTED_FACE_COLOR if show_outliers else tplt.OUTLIER_FACE_COLOR
+        edge = INVERTED_EDGE_COLOR if show_outliers else tplt.OUTLIER_EDGE_COLOR
         if lanes["fit"] is not None and not hide_outliers:
             tplt.addData(
                 x,
                 *lanes["fit"],
                 fig,
                 ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
-                markerfacecolor=tplt.OUTLIER_FACE_COLOR,
-                markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+                markerfacecolor=fit_face,
+                markeredgecolor=edge,
             )
         if lanes["outside"] is not None and not hide_outliers:
             tplt.addData(
@@ -1083,7 +1140,7 @@ def render(
                 fig,
                 ecolor=tplt.OUTLIER_ERRORBAR_COLOR,
                 markerfacecolor=OUTSIDE_FACE_COLOR,
-                markeredgecolor=tplt.OUTLIER_EDGE_COLOR,
+                markeredgecolor=edge,
             )
         if lanes["provisional"] is not None:
             # larger, to cover the red marker of the point still underneath
@@ -1371,7 +1428,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "from --model: NOT stored, chosen per call — so anything other "
         f"than {APPLY_TERMS_DEFAULT!r} is refused with --commit",
     )
-    p.add_argument(
+    # Contradictory by definition: one drops the verdicts from the figure, the
+    # other makes them the only thing on it.
+    emphasis = p.add_mutually_exclusive_group()
+    emphasis.add_argument(
         "--hide-outliers",
         action="store_true",
         help="drop the grey overlay of the epochs the fit rejected. They are "
@@ -1379,6 +1439,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "whether the figure still SHOWS them, and hiding them lets the "
         "y-axis tighten to the fitted series. Same name and meaning as "
         "plot-gps-timeseries --hide-outliers",
+    )
+    emphasis.add_argument(
+        "--show-outliers",
+        action="store_true",
+        help="INVERT the emphasis: flagged epochs red, everything else grey. "
+        "The counts, the masks and the record are identical — only the "
+        "colours swap, so this is for auditing WHAT was flagged (and, on "
+        "an all-grey component, what was not). The solid/hollow "
+        "distinction survives the swap: solid red is the fit's own "
+        "rejection, hollow red the out-of-window screen. Gold stays gold "
+        "— provisional has no inverse. The y-axis widens, the exact "
+        "inverse of --hide-outliers",
     )
     p.add_argument(
         "--event",
@@ -1662,10 +1734,18 @@ def main(argv: list[str] | None = None) -> int:
         outside_outliers=outside,
         outside_provisional=outside_prov,
         hide_outliers=args.hide_outliers,
+        show_outliers=args.show_outliers,
     )
     n_out = [int(v) for v in np.asarray(estimate.outliers).sum(axis=1)]
     n_unjudged = int(np.count_nonzero(~np.asarray(estimate.in_window)))
-    state = "hidden" if args.hide_outliers else "grey"
+    # The text names the colour the figure actually uses -- under --show-outliers
+    # "grey" would describe the epochs this count does NOT cover.
+    if args.hide_outliers:
+        state, outside_state = "hidden", "hidden"
+    elif args.show_outliers:
+        state, outside_state = "red", "hollow red"
+    else:
+        state, outside_state = "grey", "hollow grey"
     print(f"\n  rejected by the fit  {n_out} ({state}; masked from the series)")
     if n_unjudged:
         print(
@@ -1681,8 +1761,8 @@ def main(argv: list[str] | None = None) -> int:
             n_screened = [int(v) for v in np.asarray(outside).sum(axis=1)]
             print(
                 f"    flagged by the view detector {n_screened} "
-                f"({'hidden' if args.hide_outliers else 'hollow grey'}; "
-                f"masked, but NOT part of the record's n_rejected)"
+                f"({outside_state}; masked, but NOT part of the record's "
+                f"n_rejected)"
             )
             n_prov = [int(v) for v in np.asarray(outside_prov).sum(axis=1)]
             if any(n_prov):
