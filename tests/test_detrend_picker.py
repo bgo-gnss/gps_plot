@@ -87,3 +87,54 @@ def test_headless_backend_refuses_rather_than_hanging() -> None:
             pick_stage_plan("SELF", [2000.0], [[0.0]], None, {"model": "linear"})
     finally:
         matplotlib.use(old, force=True)
+
+
+class TestMarimoNotebook:
+    """The notebook is a real artifact, so it gets real checks.
+
+    marimo enforces that each name is defined in exactly ONE cell — that
+    strictness is what makes its dataflow analysable, and it caught a genuine
+    duplicate-import bug while this was being written. ``marimo export`` runs
+    that analysis, so exporting IS the structural test.
+    """
+
+    NOTEBOOK = "notebooks/detrend_picker.py"
+
+    def test_notebook_exists_and_is_a_marimo_app(self) -> None:
+        from pathlib import Path
+
+        src = Path(self.NOTEBOOK)
+        if not src.is_file():
+            pytest.skip("notebook not present in this checkout")
+        text = src.read_text()
+        assert "marimo.App(" in text
+        assert "app.run()" in text
+
+    def test_dataflow_analyses_cleanly(self) -> None:
+        # Catches duplicate definitions and cycles across cells.
+        import shutil
+        import subprocess
+        from pathlib import Path
+
+        if not Path(self.NOTEBOOK).is_file():
+            pytest.skip("notebook not present in this checkout")
+        if shutil.which("marimo") is None:
+            pytest.skip("marimo not installed (dev group)")
+        r = subprocess.run(
+            ["marimo", "export", "script", self.NOTEBOOK, "-o", "/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert r.returncode == 0, r.stderr
+
+    def test_notebook_never_commits(self) -> None:
+        # The contract: it emits the command, the workbench stores. A --commit
+        # in here would be a second path to stored science.
+        from pathlib import Path
+
+        if not Path(self.NOTEBOOK).is_file():
+            pytest.skip("notebook not present in this checkout")
+        text = Path(self.NOTEBOOK).read_text()
+        assert "commit_record" not in text
+        assert "write_stage_plan" not in text
