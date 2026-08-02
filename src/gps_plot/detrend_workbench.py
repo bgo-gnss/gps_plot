@@ -1096,13 +1096,12 @@ def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
             )
 
 
-def render(
+def build_pages(
     sta: str,
     record: dict[str, Any],
     yearf: Any,
     data: Any,
     sigma: Any,
-    out: str | Path,
     *,
     terms: str = "all",
     events: dict[Any, Any] | None = None,
@@ -1113,8 +1112,15 @@ def render(
     outside_provisional: Any = None,
     hide_outliers: bool = False,
     show_outliers: bool = False,
-) -> Path:
-    """Two-page PDF: plate frame + fitted trajectory, then the detrended view.
+) -> list[Figure]:
+    """Build the workbench's two pages as live figures.
+
+    Split out of :func:`render` so a caller can DISPLAY these rather than
+    only write them -- the interactive pickers need the production figure,
+    overlays and all, and rebuilding it elsewhere is how two figures drift
+    apart. ``render`` is now the thin "save them" wrapper.
+
+    Two-page: plate frame + fitted trajectory, then the detrended view.
 
     ``outliers`` is the fit's own (3, N) rejection mask.  Its epochs are
     ALWAYS masked out of the plotted series — they are not in the fit, so
@@ -1165,18 +1171,11 @@ def render(
     +48 mm one-day blunder in east therefore renders as ordinary red
     data in the normal view.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from matplotlib.backends.backend_pdf import PdfPages
-
     import gps_plot.timesmatplt as tplt
     from gps_analysis import evaluate_record
     from geo_dataread.gps_views import apply_stored_detrend
 
     x = list(_to_datetime(yearf))
-    out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
 
     # Clip HERE, not in the caller: both pages draw from these lists, and a
     # caller that forgot would produce a figure whose annotations point off
@@ -1267,56 +1266,83 @@ def render(
                 markeredgecolor=tplt.PROVISIONAL_EDGE_COLOR,
             )
 
-    with PdfPages(out) as pdf:
-        # page 1 -- observed (plate frame) with the fitted trajectory over it
-        fit = np.asarray(evaluate_record(record, yearf, terms=terms))
-        kept, lanes = _lanes(data)
-        title = tplt.make_title(sta, x[-1], ref="Plate (workbench)")
-        fig = tplt.stdTimesPlot(x, kept, sigma, Title=title)
-        for c in range(3):
-            fig.axes[c].plot(
-                x,
-                fit[c],
-                "-",
-                color=FIT_COLOR,
-                lw=FIT_WIDTH,
-                zorder=5,
-                label="stored-record trajectory",
-            )
-        _draw_lanes(fig, lanes)
-        _add_window_edges(fig, record, yearf)
-        if events:
-            tplt.addEvent(events, fig)
-        if tos_events:
-            add_event_lines(fig, tos_events, TOS_COLOR)
-        if seismic_events:
-            add_event_lines(fig, seismic_events, SEISMIC_COLOR)
-        pdf.savefig(fig, bbox_inches="tight")
-
-        # page 2 -- the same series with that trajectory removed.  Detrend the
-        # FULL series, then mask: apply_stored_detrend is a pure evaluation, so
-        # feeding it the NaN-masked series would only propagate the NaNs and
-        # lose the overlay values.
-        det = np.asarray(
-            apply_stored_detrend(
-                record, yearf, data, terms=terms, frame="plate_removed"
-            )
+    # page 1 -- observed (plate frame) with the fitted trajectory over it
+    fit = np.asarray(evaluate_record(record, yearf, terms=terms))
+    kept, lanes = _lanes(data)
+    title = tplt.make_title(sta, x[-1], ref="Plate (workbench)")
+    fig = tplt.stdTimesPlot(x, kept, sigma, Title=title)
+    for c in range(3):
+        fig.axes[c].plot(
+            x,
+            fit[c],
+            "-",
+            color=FIT_COLOR,
+            lw=FIT_WIDTH,
+            zorder=5,
+            label="stored-record trajectory",
         )
-        kept2, lanes2 = _lanes(det)
-        title2 = tplt.make_title(sta, x[-1], ref=f"Detrended (terms={terms})")
-        fig2 = tplt.stdTimesPlot(x, kept2, sigma, Title=title2)
-        for c in range(3):
-            fig2.axes[c].axhline(0.0, color=FIT_COLOR, lw=1.0, zorder=5)
-        _draw_lanes(fig2, lanes2)
-        _add_window_edges(fig2, record, yearf)
-        if events:
-            tplt.addEvent(events, fig2)
-        if tos_events:
-            add_event_lines(fig2, tos_events, TOS_COLOR)
-        if seismic_events:
-            add_event_lines(fig2, seismic_events, SEISMIC_COLOR)
-        pdf.savefig(fig2, bbox_inches="tight")
+    _draw_lanes(fig, lanes)
+    _add_window_edges(fig, record, yearf)
+    if events:
+        tplt.addEvent(events, fig)
+    if tos_events:
+        add_event_lines(fig, tos_events, TOS_COLOR)
+    if seismic_events:
+        add_event_lines(fig, seismic_events, SEISMIC_COLOR)
 
+    # page 2 -- the same series with that trajectory removed.  Detrend the
+    # FULL series, then mask: apply_stored_detrend is a pure evaluation, so
+    # feeding it the NaN-masked series would only propagate the NaNs and
+    # lose the overlay values.
+    det = np.asarray(
+        apply_stored_detrend(record, yearf, data, terms=terms, frame="plate_removed")
+    )
+    kept2, lanes2 = _lanes(det)
+    title2 = tplt.make_title(sta, x[-1], ref=f"Detrended (terms={terms})")
+    fig2 = tplt.stdTimesPlot(x, kept2, sigma, Title=title2)
+    for c in range(3):
+        fig2.axes[c].axhline(0.0, color=FIT_COLOR, lw=1.0, zorder=5)
+    _draw_lanes(fig2, lanes2)
+    _add_window_edges(fig2, record, yearf)
+    if events:
+        tplt.addEvent(events, fig2)
+    if tos_events:
+        add_event_lines(fig2, tos_events, TOS_COLOR)
+    if seismic_events:
+        add_event_lines(fig2, seismic_events, SEISMIC_COLOR)
+
+    return [fig, fig2]
+
+
+def render(
+    sta: str,
+    record: dict[str, Any],
+    yearf: Any,
+    data: Any,
+    sigma: Any,
+    out: str | Path,
+    **kwargs: Any,
+) -> Path:
+    """Write :func:`build_pages`' figures to a two-page PDF.
+
+    Kept as its own function with an unchanged signature: every existing
+    caller and test targets this, and the split exists to let the pickers
+    DISPLAY the same figures, not to change what the workbench writes.
+    """
+    import matplotlib
+
+    # Agg belongs HERE, not in build_pages: writing a PDF wants a headless
+    # backend, but the pickers DISPLAY the same figures and forcing Agg in
+    # the shared builder would silently give them nothing to click on.
+    matplotlib.use("Agg")
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    figs = build_pages(sta, record, yearf, data, sigma, **kwargs)
+    with PdfPages(out) as pdf:
+        for fig in figs:
+            pdf.savefig(fig, bbox_inches="tight")
     return out
 
 
