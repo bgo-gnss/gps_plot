@@ -40,6 +40,7 @@ gps_plot = "gps_plot:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
 gps-analysis-devviz = "gps_plot.dev_viz:main"
 gps-detrend-workbench = "gps_plot.detrend_workbench:main"
+gps-detrend-picker = "gps_plot.detrend_picker:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
