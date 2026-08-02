@@ -226,6 +226,8 @@ def build_record(
     fit_catalog: str | Path | None = None,
     model: str | None = None,
     stages: str | None = None,
+    stage_plan: object | None = None,
+    lookup_donor: object | None = None,
     segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
     max_gap_years: float | None = None,
@@ -303,6 +305,8 @@ def build_record(
             sigma,
             settings=settings,
             outlier_params=params,
+            stage_plan=stage_plan,
+            lookup_donor=lookup_donor,
             **kwargs,
         )
 
@@ -1785,26 +1789,39 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 6
 
-        # The grammar, its refusals, the config round-trip and the record
-        # fragment are all in place; what is NOT yet in place is routing the
-        # fit through gps_analysis.estimate_staged. Running anyway would
-        # produce a SINGLE-stage fit under a multi-stage declaration and
-        # commit it as if it were what was asked for -- silently wrong
-        # science, which is the exact failure this grammar exists to prevent.
-        # So refuse, and say what remains.
-        print(
-            f"error: --stage/--hold parse and validate ({len(stage_plan.stages)} "
-            f"stage(s): {', '.join(stage_plan.names)}), but the workbench does "
-            f"not yet route the fit through estimate_staged, so running would "
-            f"give you an ORDINARY single-stage fit under a staged "
-            f"declaration. Refusing rather than storing that. Open question "
-            f"blocking the wiring: estimate_detrend runs the S0-S5 outlier "
-            f"pipeline and estimate_staged has no outlier stage, so how the "
-            f"two compose is a science decision, not wiring. Meanwhile "
-            f"--segment excises, and --donor borrows a whole record.",
-            file=sys.stderr,
+    resolved_stages = None
+    donor_lookup = None
+    if stage_plan is not None:
+        from geo_dataread.gps_views import (
+            default_params_path,
+            read_detrend_params,
+            station_detrend_record,
         )
-        return 7
+        from geo_dataread.stage_plan import resolve_stage_plan
+
+        def _donor(code: str) -> dict:
+            doc = read_detrend_params(args.params or default_params_path())
+            rec, _src = station_detrend_record(doc, code)
+            if rec is None:
+                raise RuntimeError(
+                    f"donor {code} has no stored record; estimate and commit "
+                    f"{code} before borrowing from it"
+                )
+            return dict(rec)
+
+        try:
+            # component 0 only: the plan is resolved per component inside the
+            # estimator, this is the up-front existence check so a missing
+            # donor fails before any data is read.
+            # Up-front existence check only: a missing donor must fail
+            # before any data is read. The estimator re-resolves per
+            # component, since a donor hold borrows THAT component's numbers.
+            resolve_stage_plan(stage_plan, lookup_donor=_donor, component=0)
+            resolved_stages = stage_plan
+            donor_lookup = _donor
+        except (RuntimeError, ValueError, KeyError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 4
 
     out = resolve_out(args.out, sta)
 
@@ -1817,6 +1834,8 @@ def main(argv: list[str] | None = None) -> int:
             fit_catalog=args.fit_catalog,
             model=args.model,
             stages=args.stages,
+            stage_plan=resolved_stages,
+            lookup_donor=donor_lookup,
             segments=_resolve_cli_segments(args),
             steps=args.step or None,
             max_gap_years=args.max_gap_years,
