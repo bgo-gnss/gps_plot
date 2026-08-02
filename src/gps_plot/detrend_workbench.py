@@ -1587,6 +1587,41 @@ def _build_parser() -> argparse.ArgumentParser:
         "--window-start/--window-end, which is the one-segment spelling",
     )
     p.add_argument(
+        "--stage",
+        action="append",
+        default=[],
+        metavar="NAME:GROUP,GROUP[@START:END]",
+        help="declare one stage of a STAGED estimation, repeatable and "
+        "executed in order: NAME labels it, the comma list names the term "
+        "groups it estimates, and the optional @START:END (same union "
+        "spelling as --segment) is its fit domain. OMITTING @ inherits the "
+        "caller's domain; '@:' is the full span; a bare trailing '@' is "
+        "refused because those two differ. Terms are best constrained on "
+        "different domains -- the seasonal where the data is clean, the "
+        "rate where the baseline is longest",
+    )
+    p.add_argument(
+        "--hold",
+        action="append",
+        default=[],
+        metavar="[STAGE:]GROUP=stage:NAME|donor:STA",
+        help="hold a term group fixed instead of estimating it: "
+        "'stage:NAME' reuses what an EARLIER stage fitted, 'donor:STA' "
+        "borrows station STA's stored value. The kind is never inferred -- "
+        "the two are stored with different provenance, so a bare "
+        "'GROUP=clean' is refused. The STAGE: prefix is required once two "
+        "or more stages are declared, since binding to the last --stage "
+        "seen would make flag ORDER change the science",
+    )
+    p.add_argument(
+        "--analysis-yaml",
+        default=None,
+        metavar="PATH",
+        help="where --commit stores a --stage/--hold plan (default: the "
+        "deployed analysis.yaml). The plan is config, not a fitted quantity, "
+        "so it lives beside the record where a batch re-run will find it",
+    )
+    p.add_argument(
         "--window-start",
         type=float,
         default=None,
@@ -1722,6 +1757,54 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 5
+
+    stage_plan = None
+    if args.stage or args.hold:
+        # Parsed BEFORE any data is read, like the --terms refusal above: a
+        # grammar error should cost nothing, and every message below names the
+        # spelling that would have worked.
+        from geo_dataread.stage_plan import build_stage_plan
+
+        try:
+            stage_plan = build_stage_plan(args.stage, args.hold)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 6
+
+        if args.donor:
+            # --donor replaces the WHOLE record with the donor's; a donor hold
+            # replaces ONE term group and fits the rest. Silently letting the
+            # first win would discard the plan the operator just wrote.
+            print(
+                "error: --donor cannot be combined with --stage/--hold. "
+                "--donor swaps in the donor's entire record, whereas "
+                "'--hold GROUP=donor:STA' borrows ONE group and estimates the "
+                "rest -- which is what a stage plan is for. Drop --donor and "
+                "name the group you meant to borrow.",
+                file=sys.stderr,
+            )
+            return 6
+
+        # The grammar, its refusals, the config round-trip and the record
+        # fragment are all in place; what is NOT yet in place is routing the
+        # fit through gps_analysis.estimate_staged. Running anyway would
+        # produce a SINGLE-stage fit under a multi-stage declaration and
+        # commit it as if it were what was asked for -- silently wrong
+        # science, which is the exact failure this grammar exists to prevent.
+        # So refuse, and say what remains.
+        print(
+            f"error: --stage/--hold parse and validate ({len(stage_plan.stages)} "
+            f"stage(s): {', '.join(stage_plan.names)}), but the workbench does "
+            f"not yet route the fit through estimate_staged, so running would "
+            f"give you an ORDINARY single-stage fit under a staged "
+            f"declaration. Refusing rather than storing that. Open question "
+            f"blocking the wiring: estimate_detrend runs the S0-S5 outlier "
+            f"pipeline and estimate_staged has no outlier stage, so how the "
+            f"two compose is a science decision, not wiring. Meanwhile "
+            f"--segment excises, and --donor borrows a whole record.",
+            file=sys.stderr,
+        )
+        return 7
 
     out = resolve_out(args.out, sta)
 
@@ -1876,6 +1959,30 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 3
         print(f"committed {sta} -> {target}   stations {before} -> {after}")
+        if stage_plan is not None:
+            # The plan is config, not a fitted quantity, so it is stored
+            # ALONGSIDE the record rather than inside it: analysis.yaml is
+            # what a batch re-run reads, and a plan living only in the record
+            # would be invisible to gps-estimate-detrend.
+            from geo_dataread.stage_plan import (
+                default_analysis_yaml_path,
+                write_stage_plan,
+            )
+
+            yaml_path = args.analysis_yaml or default_analysis_yaml_path()
+            if yaml_path is None:
+                print(
+                    "  warning: stage plan NOT stored — no analysis.yaml is "
+                    "reachable (no gpsconfig on this host). The record was "
+                    "committed, but a batch re-run will re-fit this station "
+                    "single-stage. Pass --analysis-yaml to say where.",
+                    file=sys.stderr,
+                )
+            else:
+                write_stage_plan(yaml_path, sta, stage_plan)
+                print(
+                    f"  stage plan -> {yaml_path}   ({len(stage_plan.stages)} stages)"
+                )
         if args.uncert != BATCH_UNCERT_DEFAULT:
             # `uncert` screens sigma at read time, so it changes WHICH epochs
             # were fitted without appearing in any fitted quantity. The record
