@@ -261,6 +261,15 @@ CWD. A path with a separator is honoured verbatim, so an exported `FIGDIR` can
 never relocate an explicit `--out`. `--max-gap-years` is effectively required —
 the 0.5 default rejects every station in the working set.
 
+Every event line is **clipped to the plotted span** by `render` itself
+(`clip_events_to_span`), and `main` prints what that dropped. Not cosmetic:
+`axvline` clips to the axes but `Text` does not, so an out-of-span event loses
+its line and keeps its caption, stranded in the margin beside an axis it does
+not mark. BJTV is the case — installed 2021-08-09, solution starts 2024.09.
+The clip lives in `render` so a direct call (test, REPL) cannot skip it; an
+empty or all-NaN `yearf` keeps everything, since with no span nothing can be
+outside it.
+
 Events are **declared, never detected** (tier A), in three colours: `darkgreen`
 new antenna / receiver installs (live `tostools`), `darkred` seismic
 (`steps.csv` rows whose `kind` is

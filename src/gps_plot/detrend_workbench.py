@@ -679,6 +679,52 @@ def tos_equipment_epochs(
     return out
 
 
+def clip_events_to_span(
+    events: Sequence[tuple[float, str]], yearf: Any
+) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
+    """Split events into those inside the plotted span and those outside.
+
+    Event epochs come from catalogs that describe the STATION, not this
+    figure: TOS knows when the receiver was installed, ``steps.csv`` knows
+    every declared offset, and neither has an opinion about how much of
+    the series has been processed.  BJTV is the case — the antenna went up
+    2021-08-09 and the solution starts 2025-02, so the install sits 3.5
+    years off the left edge.
+
+    Left in, such an event is not merely useless, it is *misdrawn*:
+    ``axvline`` is clipped to the axes and vanishes, but the label is
+    :class:`matplotlib.text.Text`, which does not clip by default — so the
+    line disappears and its caption is left stranded in the margin, beside
+    an axis it does not mark.  A reader sees an annotation pointing at
+    nothing.
+
+    Dropping is the honest half; the caller prints what was dropped, so
+    "this station was installed long before the series starts" stays
+    available as TEXT, where it does not have to be positioned to be true.
+
+    Args:
+        events: ``(epoch [yr], label)`` pairs.
+        yearf: The plotted epochs; the span is their finite min/max, which
+            is exactly what ``stdTimesPlot`` hands to ``setXlim``.
+
+    Returns:
+        ``(inside, outside)``, each in the input's order.  An empty or
+        all-non-finite ``yearf`` keeps everything — with no span there is
+        nothing to be outside of, and silently emptying the annotation
+        would be the worse failure.
+    """
+    finite = np.asarray(yearf, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return list(events), []
+    lo, hi = float(finite.min()), float(finite.max())
+    inside: list[tuple[float, str]] = []
+    outside: list[tuple[float, str]] = []
+    for event in events:
+        (inside if lo <= float(event[0]) <= hi else outside).append(event)
+    return inside, outside
+
+
 def add_event_lines(
     fig: Figure, events: Sequence[tuple[float, str]], color: str
 ) -> Figure:
@@ -1131,6 +1177,12 @@ def render(
     x = list(_to_datetime(yearf))
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Clip HERE, not in the caller: both pages draw from these lists, and a
+    # caller that forgot would produce a figure whose annotations point off
+    # the axes.  `main` reports what this drops -- see clip_events_to_span.
+    tos_events, _ = clip_events_to_span(tos_events or (), yearf)
+    seismic_events, _ = clip_events_to_span(seismic_events or (), yearf)
 
     def _lanes(values: Any) -> tuple[Any, dict[str, tuple[Any, Any] | None]]:
         """Mask every judged epoch out of ``values``, then build the overlays.
@@ -1888,6 +1940,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {epoch:9.4f}  seismic   {label}")
         for epoch, label in declared_other:
             print(f"    {epoch:9.4f}  other     {label}")
+
+    # Say what the figure will NOT show. `render` clips events to the plotted
+    # span (a label outside it is stranded in the margin beside an axis it does
+    # not mark), and a station whose equipment predates the processed solution
+    # loses every line -- BJTV: installed 2021-08-09, series starts 2025-02.
+    # Printed, that fact survives without needing a position on the figure.
+    _kept, off_figure = clip_events_to_span(
+        list(tos_events) + list(declared_other) + list(seismic), yearf
+    )
+    if off_figure:
+        print(
+            f"\n  outside the plotted span {yearf.min():.4f}–{yearf.max():.4f}, "
+            f"so NOT drawn ({len(off_figure)}):"
+        )
+        for epoch, label in sorted(off_figure):
+            print(f"    {epoch:9.4f}  {label}")
 
     outside = outside_prov = None
     if args.screen_outside_window and args.donor:

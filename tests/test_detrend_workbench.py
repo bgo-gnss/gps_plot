@@ -498,6 +498,72 @@ def test_parse_events_and_rejects_bad_input():
             parse_events([bad])
 
 
+def test_events_outside_the_plotted_span_are_split_off():
+    """An install that predates the solution must not reach the figure.
+
+    ``axvline`` clips to the axes but its label does not, so an
+    out-of-span event loses its line and keeps its caption — stranded in
+    the margin beside an axis it does not mark. Measured on BJTV:
+    installed 2021-08-09, series starts 2024.09.
+    """
+    from gps_plot.detrend_workbench import clip_events_to_span
+
+    yearf = np.linspace(2024.1, 2026.5, 100)
+    events = [
+        (2021.6041, "2021-08-09 (rx TRIMBLE NETR5)"),
+        (2024.7363, "2024-09-26 (rx TRIMBLE NETR9)"),
+        (2030.0, "future"),
+    ]
+    inside, outside = clip_events_to_span(events, yearf)
+    assert [e[0] for e in inside] == [2024.7363]
+    assert [e[0] for e in outside] == [2021.6041, 2030.0]
+    # the bounds themselves are INSIDE — an event on the first or last
+    # epoch marks a real column of data
+    edges = [(float(yearf[0]), "first"), (float(yearf[-1]), "last")]
+    assert clip_events_to_span(edges, yearf)[1] == []
+
+
+def test_clip_keeps_everything_when_there_is_no_span():
+    """No span means nothing can be outside it — never empty the annotation."""
+    from gps_plot.detrend_workbench import clip_events_to_span
+
+    events = [(2021.6, "a"), (2030.0, "b")]
+    for empty in (np.array([]), np.array([np.nan, np.nan])):
+        inside, outside = clip_events_to_span(events, empty)
+        assert inside == events and outside == []
+
+
+def test_render_clips_events_itself(tmp_path, monkeypatch):
+    """The clip lives in ``render``, so no caller can forget it.
+
+    Both PDF pages draw from these lists; a caller-side clip would leave
+    a direct ``render()`` call (tests, a REPL) drawing into the margin.
+    """
+    import gps_plot.detrend_workbench as wb
+
+    record, yearf, data, sigma, est = _windowed_estimate()
+    lo = float(np.nanmin(yearf))
+    drawn: list[tuple[float, str]] = []
+    monkeypatch.setattr(
+        wb,
+        "add_event_lines",
+        lambda fig, events, color: drawn.extend(events) or fig,
+    )
+    wb.render(
+        STA,
+        record,
+        yearf,
+        data,
+        sigma,
+        tmp_path / "clipped.pdf",
+        outliers=est.outliers,
+        tos_events=[(lo - 3.0, "long before"), (lo + 0.5, "in span")],
+        seismic_events=[(lo - 1.0, "also before")],
+    )
+    assert drawn, "the in-span event must still be drawn"
+    assert [label for _e, label in drawn] == ["in span", "in span"]  # two pages
+
+
 def test_declared_step_coincides_with_the_seismic_event_line(tmp_path):
     """The plan's acceptance criterion: the declared epoch IS the earthquake.
 
