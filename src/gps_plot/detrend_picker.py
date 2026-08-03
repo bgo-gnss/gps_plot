@@ -42,30 +42,43 @@ from __future__ import annotations
 
 import shlex
 import sys
+from collections.abc import Sequence
 from typing import Any
 
-__all__ = ["pick_stage_plan", "main"]
+__all__ = ["pick_stage_plan", "populated_groups", "render_command", "main"]
 
 #: Shading for accepted stage spans, cycled in declaration order.
 _SPAN_COLORS = ("#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3")
 _SPAN_ALPHA = 0.16
 
 
-def _populated_groups(record: dict[str, Any]) -> tuple[str, ...]:
+def populated_groups(record: dict[str, Any]) -> tuple[str, ...]:
     """Term groups this station's fitted model actually has parameters for.
+
+    Public because the marimo notebook consumes it -- and marimo treats
+    leading-underscore names as cell-private, so a shared helper cannot have
+    one.
 
     Offering a group the model lacks would produce a plan the estimator
     refuses (an empty mask is a silent no-op, which is why it refuses), so
     the picker only ever offers what is addressable.
     """
     import numpy as np
-    from gps_analysis import GROUP_ORDER, with_steps
+    from gps_analysis import GROUP_ORDER, TrajectoryModel, with_steps
     from gps_analysis.detrend import _resolve_model
     from gps_analysis.staged import group_parameter_mask
 
-    base, _ = _resolve_model(str(record["model"]))
-    steps = np.asarray(record.get("step_epochs") or [], dtype=float).ravel()
-    model = with_steps(base, steps) if steps.size else base
+    spec = record.get("terms")
+    if spec is not None:
+        # A record-version-2 record carries its own terms, so read them
+        # rather than reconstructing from a model code -- a code plus step
+        # epochs cannot express a transient, and offering "transient" only
+        # when it is really there is what keeps the picker honest.
+        model = TrajectoryModel.from_spec(spec).as_modelfunc()
+    else:
+        base, _ = _resolve_model(str(record["model"]))
+        steps = np.asarray(record.get("step_epochs") or [], dtype=float).ravel()
+        model = with_steps(base, steps) if steps.size else base
     return tuple(g for g in GROUP_ORDER if group_parameter_mask(model, g).any())
 
 
@@ -220,7 +233,7 @@ def pick_stage_plan(
     if not spans:
         return None
 
-    populated = _populated_groups(record)
+    populated = populated_groups(record)
     print(f"\npopulated term groups for {sta}: {', '.join(populated)}\n")
 
     stage_specs: list[str] = []
@@ -270,7 +283,12 @@ def pick_stage_plan(
         return None
 
 
-def render_command(sta: str, plan: Any, extra: list[str] | None = None) -> str:
+def render_command(
+    sta: str,
+    plan: Any,
+    extra: list[str] | None = None,
+    terms: Sequence[str] | None = None,
+) -> str:
     """Render a plan back into the exact ``gps-detrend-workbench`` invocation.
 
     The round trip that makes "one grammar, two producers" true rather than
@@ -280,7 +298,9 @@ def render_command(sta: str, plan: Any, extra: list[str] | None = None) -> str:
     from geo_dataread.stage_plan import StageRef
 
     parts = ["gps-detrend-workbench", sta]
-    for st in plan.stages:
+    for term in terms or ():
+        parts += ["--term", term]
+    for st in plan.stages if plan is not None else ():
         spec = f"{st.name}:{','.join(st.free)}"
         if st.segments is not None:
             spec += "@" + ";".join(
@@ -288,8 +308,8 @@ def render_command(sta: str, plan: Any, extra: list[str] | None = None) -> str:
                 for lo, hi in st.segments
             )
         parts += ["--stage", spec]
-    multi = len(plan.stages) > 1
-    for st in plan.stages:
+    multi = plan is not None and len(plan.stages) > 1
+    for st in plan.stages if plan is not None else ():
         for group, ref in st.held.items():
             value = (
                 f"stage:{ref.stage}"

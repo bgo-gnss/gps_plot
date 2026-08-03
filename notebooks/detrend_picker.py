@@ -40,7 +40,8 @@ def _():
     # strictness is what makes the dataflow analysable, so every import lives
     # here rather than beside its use.
     from geo_dataread.stage_plan import build_stage_plan
-    from gps_plot.detrend_picker import _populated_groups, render_command
+    from geo_dataread.term_spec import parse_term_spec
+    from gps_plot.detrend_picker import populated_groups, render_command
     from gps_plot.detrend_workbench import (
         build_pages,
         build_record,
@@ -49,27 +50,26 @@ def _():
     )
 
     return (
-        mo,
-        build_stage_plan,
-        _populated_groups,
-        render_command,
         build_pages,
         build_record,
+        build_stage_plan,
         declared_event_epochs,
+        mo,
+        parse_term_spec,
+        populated_groups,
+        render_command,
         summarise,
     )
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        # Detrend stage picker
+    mo.md("""
+    # Detrend stage picker
 
-        Pick a **staged** plan and watch the fit follow. Nothing is stored —
-        the command at the bottom is what commits.
-        """
-    )
+    Pick a **staged** plan and watch the fit follow. Nothing is stored —
+    the command at the bottom is what commits.
+    """)
     return
 
 
@@ -81,11 +81,11 @@ def _(mo):
     uncert = mo.ui.number(value=10.0, start=1.0, stop=50.0, step=1.0,
                           label="--uncert")
     mo.hstack([station, max_gap, uncert])
-    return station, max_gap, uncert
+    return max_gap, station, uncert
 
 
 @app.cell
-def _(station, max_gap, uncert, build_record, declared_event_epochs):
+def _(build_record, declared_event_epochs, max_gap, station, uncert):
     # Loading is its own cell so it re-runs only when the station or the
     # read-time levers change -- not on every slider nudge.
     sta = station.value.strip().upper()
@@ -94,12 +94,12 @@ def _(station, max_gap, uncert, build_record, declared_event_epochs):
     )
     seismic, _other = declared_event_epochs(sta)
     span = (float(yearf.min()), float(yearf.max()))
-    return sta, record0, yearf, data, sigma, est0, seismic, span
+    return data, est0, record0, seismic, sigma, span, sta, yearf
 
 
 @app.cell
-def _(mo, sta, span, record0, _populated_groups):
-    groups = _populated_groups(record0)
+def _(mo, record0, span, sta, populated_groups):
+    groups = populated_groups(record0)
     mo.md(
         f"**{sta}** — {span[0]:.2f} to {span[1]:.2f} · "
         f"populated groups: `{', '.join(groups)}`"
@@ -108,7 +108,7 @@ def _(mo, sta, span, record0, _populated_groups):
 
 
 @app.cell
-def _(mo, span, groups):
+def _(groups, mo, span):
     # THE reactive control. Drag it and the fit below re-runs. A range slider
     # rather than a brush on purpose: the win here is watching the fit move,
     # and a slider delivers that without a second chart in a second visual
@@ -133,11 +133,46 @@ def _(mo, span, groups):
         label="stage 2 holds, from stage 1",
     )
     mo.vstack([stage1, mo.hstack([free1, free2, hold2])])
-    return stage1, free1, free2, hold2
+    return free1, free2, hold2, stage1
 
 
 @app.cell
-def _(stage1, free1, free2, hold2, build_stage_plan):
+def _(mo, span):
+    # Adding a TRANSIENT is the other half of curation, and on a deforming
+    # station it is the half that matters: an excess-candidate abort is a
+    # MODEL-ADEQUACY problem, so no window and no stage plan fixes it -- only
+    # a term that can follow the signal. Watch n_rejected in the summary:
+    # [0, 1, 0] means the detector aborted and judged nothing.
+    use_term = mo.ui.checkbox(value=False, label="add a transient")
+    kind = mo.ui.dropdown(options=["log", "exp"], value="log", label="kind")
+    t_tau = mo.ui.slider(
+        start=0.1, stop=10.0, step=0.1, value=2.0,
+        label="tau [yr]", show_value=True,
+    )
+    t_epoch = mo.ui.slider(
+        start=span[0], stop=span[1], step=0.05,
+        value=round((span[0] + span[1]) / 2.0, 2),
+        label="onset epoch", show_value=True, full_width=True,
+    )
+    mo.vstack([mo.hstack([use_term, kind, t_tau]), t_epoch])
+    return kind, t_epoch, t_tau, use_term
+
+
+@app.cell
+def _(kind, parse_term_spec, t_epoch, t_tau, use_term):
+    term_specs, term_error = [], None
+    if use_term.value:
+        spec = f"{kind.value}@{round(t_epoch.value, 4)},tau={round(t_tau.value, 3)}"
+        try:
+            parse_term_spec(spec)   # the CLI grammar is the authority
+            term_specs = [spec]
+        except ValueError as exc:
+            term_error = str(exc)
+    return term_error, term_specs
+
+
+@app.cell
+def _(build_stage_plan, free1, free2, hold2, stage1):
     lo, hi = (round(v, 4) for v in stage1.value)
     specs = [f"clean:{','.join(free1.value)}@{lo}:{hi}"]
     holds = []
@@ -157,13 +192,13 @@ def _(stage1, free1, free2, hold2, build_stage_plan):
 
 
 @app.cell
-def _(mo, plan, plan_error):
+def _(mo, plan_error):
     mo.md(f"⚠️ **{plan_error}**") if plan_error else mo.md("")
     return
 
 
 @app.cell
-def _(plan, plan_error, sta, record0, est0, uncert, max_gap, build_record):
+def _(build_record, est0, max_gap, plan, plan_error, record0, sta, uncert, term_specs):
     # The fit itself, re-run whenever the plan changes.
     fit_error, record, estimate = None, record0, est0
     if plan is not None and plan_error is None:
@@ -171,23 +206,36 @@ def _(plan, plan_error, sta, record0, est0, uncert, max_gap, build_record):
             record, yearf_, data_, sigma_, estimate = build_record(
                 sta, uncert=uncert.value, max_gap_years=max_gap.value,
                 stage_plan=plan, lookup_donor=None,
+                terms_spec=term_specs or None,
             )
         except (RuntimeError, ValueError) as exc:
             # A refused plan is a RESULT, not a crash: rank-deficient stages
             # and empty groups are the estimator telling you the plan cannot
             # be fitted. Show it and keep the previous record on screen.
             fit_error = str(exc)
-    return record, estimate, fit_error
+    return estimate, fit_error, record
 
 
 @app.cell
-def _(mo, fit_error):
-    mo.md(f"⚠️ **fit refused:** {fit_error}") if fit_error else mo.md("")
+def _(fit_error, mo, term_error):
+    msg = term_error or fit_error
+    mo.md(f"⚠️ **{msg}**") if msg else mo.md("")
     return
 
 
 @app.cell
-def _(mo, sta, record, yearf, data, sigma, estimate, seismic, build_pages, summarise):
+def _(
+    build_pages,
+    data,
+    estimate,
+    mo,
+    record,
+    seismic,
+    sigma,
+    sta,
+    summarise,
+    yearf,
+):
     figs = build_pages(
         sta, record, yearf, data, sigma,
         outliers=getattr(estimate, "outliers", None),
@@ -198,11 +246,11 @@ def _(mo, sta, record, yearf, data, sigma, estimate, seismic, build_pages, summa
 
 
 @app.cell
-def _(mo, plan, sta, max_gap, uncert, render_command):
+def _(max_gap, mo, plan, render_command, sta, term_specs, uncert):
     extra = ["--max-gap-years", str(max_gap.value)]
     if uncert.value != 10.0:
         extra += ["--uncert", str(uncert.value)]
-    cmd = render_command(sta, plan, extra) if plan is not None else ""
+    cmd = render_command(sta, plan, extra, terms=term_specs)
     mo.vstack([
         mo.md("## The command"),
         mo.md(f"```bash\n{cmd}\n```"),
@@ -211,6 +259,11 @@ def _(mo, plan, sta, max_gap, uncert, render_command):
             "re-parses this line, so every refusal still applies._"
         ),
     ])
+    return
+
+
+@app.cell
+def _():
     return
 
 
