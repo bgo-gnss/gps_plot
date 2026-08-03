@@ -113,15 +113,43 @@ def _(mo, record0, span, sta, populated_groups, term_specs):
 
 
 @app.cell
-def _(groups, mo, span):
-    # THE reactive control. Drag it and the fit below re-runs. A range slider
-    # rather than a brush on purpose: the win here is watching the fit move,
-    # and a slider delivers that without a second chart in a second visual
-    # vocabulary competing with the production figure.
-    stage1 = mo.ui.range_slider(
+def _(mo, span):
+    # THE OUTER CONTROL, and the one that actually restricts the fit.
+    #
+    # There are two windows here and confusing them is easy, because only
+    # this one changes the record's `window`:
+    #
+    #   fit domain   -- which epochs are fitted AT ALL (emits --segment)
+    #   stage window -- which epochs THAT STAGE uses, inside the domain
+    #
+    # A stage declared without its own window INHERITS the domain, and the
+    # composition rule is "the last stage in which a term is free owns its
+    # value" -- so stage 2 owns the rate over the WHOLE domain no matter
+    # where stage 1 sits. That is the Askja manoeuvre working as designed
+    # (seasonal from clean data, rate from the longest baseline), and it is
+    # exactly wrong for a station whose long baseline is the problem: on
+    # NYLA, dragging this right edge to 2020 takes rms from
+    # [42.4, 65.5, 9.2] to [2.0, 1.8, 4.0], because the post-2020
+    # deformation is SIGNAL, not trend.
+    domain = mo.ui.range_slider(
         start=span[0], stop=span[1], step=0.05,
-        value=[span[0], min(span[0] + 8.0, span[1])],
-        label="stage 1 window", full_width=True, show_value=True,
+        value=[span[0], span[1]],
+        label="fit domain (--segment) — restricts the whole fit",
+        full_width=True, show_value=True,
+    )
+    domain
+    return (domain,)
+
+
+@app.cell
+def _(domain, groups, mo):
+    # Bounded BY the domain, so a stage window outside it is unexpressible.
+    d_lo, d_hi = domain.value
+    stage1 = mo.ui.range_slider(
+        start=d_lo, stop=d_hi, step=0.05,
+        value=[d_lo, min(d_lo + 8.0, d_hi)],
+        label="stage 1 window (inside the fit domain)",
+        full_width=True, show_value=True,
     )
     free1 = mo.ui.multiselect(
         options=list(groups), value=["secular", "periodic"],
@@ -130,7 +158,7 @@ def _(groups, mo, span):
     free2 = mo.ui.multiselect(
         options=list(groups),
         value=[g for g in ("secular", "step", "transient") if g in groups],
-        label="stage 2 estimates (whole domain)",
+        label="stage 2 estimates (inherits the fit domain)",
     )
     hold2 = mo.ui.dropdown(
         options=["(none)"] + [g for g in groups],
@@ -203,7 +231,7 @@ def _(mo, plan_error):
 
 
 @app.cell
-def _(build_record, est0, max_gap, plan, plan_error, record0, sta, uncert, term_specs):
+def _(build_record, domain, est0, max_gap, plan, plan_error, record0, sta, uncert, term_specs):
     # The fit itself, re-run whenever the plan changes.
     fit_error, record, estimate = None, record0, est0
     if plan is not None and plan_error is None:
@@ -212,6 +240,7 @@ def _(build_record, est0, max_gap, plan, plan_error, record0, sta, uncert, term_
                 sta, uncert=uncert.value, max_gap_years=max_gap.value,
                 stage_plan=plan, lookup_donor=None,
                 terms_spec=term_specs or None,
+                segments=[(round(domain.value[0], 4), round(domain.value[1], 4))],
             )
         except (RuntimeError, ValueError) as exc:
             # A refused plan is a RESULT, not a crash: rank-deficient stages
@@ -251,8 +280,11 @@ def _(
 
 
 @app.cell
-def _(max_gap, mo, plan, render_command, sta, term_specs, uncert):
+def _(domain, max_gap, mo, plan, render_command, sta, span, term_specs, uncert):
     extra = ["--max-gap-years", str(max_gap.value)]
+    seg_lo, seg_hi = (round(v, 4) for v in domain.value)
+    if (seg_lo, seg_hi) != (round(span[0], 4), round(span[1], 4)):
+        extra += ["--segment", f"{seg_lo}:{seg_hi}"]
     if uncert.value != 10.0:
         extra += ["--uncert", str(uncert.value)]
     cmd = render_command(sta, plan, extra, terms=term_specs)
