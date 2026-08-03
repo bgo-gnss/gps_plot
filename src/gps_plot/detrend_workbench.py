@@ -228,6 +228,7 @@ def build_record(
     stages: str | None = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    terms_spec: Sequence[str] | None = None,
     segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
     max_gap_years: float | None = None,
@@ -307,6 +308,7 @@ def build_record(
             outlier_params=params,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
+            terms=terms_spec,
             **kwargs,
         )
 
@@ -1696,6 +1698,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "seen would make flag ORDER change the science",
     )
     p.add_argument(
+        "--term",
+        action="append",
+        default=[],
+        metavar="KIND@EPOCH,tau=VALUE",
+        help="add a transient term to the model, repeatable: "
+        "'log@2008.4085,tau=1.0' is A*log(1+dt/T) (afterslip / rate-and-"
+        "state, Bevis & Brown eq. 9), 'exp@2010.0,tau=0.33' is "
+        "Phi*(1-exp(-dt/tau)) (relaxation toward a steady state, Reverso "
+        "eq. 20). tau [yr] is REQUIRED and operator-fixed, which keeps the "
+        "model linear in its parameters; the amplitude is estimated. A "
+        "transient is the only thing that fixes an excess-candidate abort "
+        "on a deforming station -- re-judging the epochs does not, because "
+        "the abort is a model-adequacy problem",
+    )
+    p.add_argument(
         "--analysis-yaml",
         default=None,
         metavar="PATH",
@@ -1914,6 +1931,7 @@ def main(argv: list[str] | None = None) -> int:
             stages=args.stages,
             stage_plan=resolved_stages,
             lookup_donor=donor_lookup,
+            terms_spec=args.term or None,
             segments=_resolve_cli_segments(args),
             steps=args.step or None,
             max_gap_years=args.max_gap_years,
