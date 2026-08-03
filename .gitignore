@@ -20,3 +20,6 @@ tmp-figdir/
 
 # Excalidraw MCP server log — dropped in whatever cwd the canvas server ran from
 excalidraw.log
+
+# marimo notebook cache
+__marimo__/
