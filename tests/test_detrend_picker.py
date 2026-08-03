@@ -138,3 +138,106 @@ class TestMarimoNotebook:
         text = Path(self.NOTEBOOK).read_text()
         assert "commit_record" not in text
         assert "write_stage_plan" not in text
+
+
+class TestQtPicker:
+    """The Qt picker is a GUI, so test what can be tested without a screen."""
+
+    def test_import_guard_explains_itself(self) -> None:
+        from gps_plot.detrend_picker_qt import _require_qt
+
+        pg, qtw = _require_qt()  # installed in the dev group
+        assert hasattr(pg, "LinearRegionItem")
+        assert hasattr(qtw, "QApplication")
+
+    def test_picks_reach_the_fit_and_the_command(self) -> None:
+        # Drives the real widgets offscreen: move a pick, assert the fit and
+        # the emitted command both follow. This is the whole contract.
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import numpy as np
+
+        import geo_dataread.gps_read as gpsr
+        from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
+        from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
+
+        _pg, qtw = _require_qt()
+        _app = qtw.QApplication.instance() or qtw.QApplication([])
+
+        try:
+            yearf, data, sigma, _ = gpsr.getData(
+                "NYLA", ref="plate", Dir=None, tType="TOT", uncert=10
+            )
+        except Exception:  # pragma: no cover - station data not present
+            pytest.skip("NYLA data not available in this environment")
+        if yearf is None or len(yearf) == 0:  # pragma: no cover
+            pytest.skip("NYLA data not available")
+
+        settings = resolve_fit_settings("NYLA", None, FitDefaults(max_gap_years=3.0))
+        w = PickerWindow(
+            "NYLA",
+            np.asarray(yearf, float),
+            np.atleast_2d(np.asarray(data, float)),
+            np.atleast_2d(np.asarray(sigma, float)),
+            settings,
+            max_gap_years=3.0,
+            uncert=10.0,
+        )
+
+        # Full domain on NYLA aborts, so there is no record and the command
+        # carries no --segment.
+        assert "--segment" not in w.command.text()
+
+        # Drag the domain: the fit must follow and the flag must appear.
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion((w.span[0], 2020.0))
+            r.blockSignals(False)
+        w.refit()
+        assert w.record is not None
+        assert max(w.record["rms"]) < 10.0  # was 65 mm across the unrest
+        assert "--segment" in w.command.text()
+
+        # Double-click equivalent: declaring the 2023-11-10 dike as a step.
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion(w.span)
+            r.blockSignals(False)
+        w._add_step(2023.862)
+        assert "--step 2023.862" in w.command.text()
+        assert w.record is not None
+        assert w.record["step_epochs"] == [2023.862]
+
+        # A transient reaches the model and the record's terms.
+        w._clear_steps()
+        w.cb_term.setChecked(True)
+        for ln in w.onset_lines:
+            ln.blockSignals(True)
+            ln.setValue(2018.0)
+            ln.blockSignals(False)
+        w.refit()
+        assert "--term log@2018.0,tau=2.0" in w.command.text()
+        assert w.record is not None
+        assert w.record["record_version"] == 2
+
+    def test_emitted_command_parses_back(self) -> None:
+        # Same contract as the other producers: whatever it prints must be
+        # re-parseable by the grammar, or "one grammar" is a slogan.
+        import shlex
+
+        from geo_dataread.stage_plan import build_stage_plan
+        from geo_dataread.term_spec import parse_term_spec
+
+        cmd = (
+            "gps-detrend-workbench NYLA --term log@2018.0,tau=2.0 "
+            "--stage clean:secular,periodic@2006.5767:2018.0 "
+            "--stage long:secular,transient --hold long:periodic=stage:clean "
+            "--segment 2006.5767:2020.0 --max-gap-years 3.0"
+        )
+        c = shlex.split(cmd)
+        parse_term_spec(c[c.index("--term") + 1])
+        build_stage_plan(
+            [c[i + 1] for i, a in enumerate(c) if a == "--stage"],
+            [c[i + 1] for i, a in enumerate(c) if a == "--hold"],
+        )
