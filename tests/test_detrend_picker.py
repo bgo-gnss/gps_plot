@@ -241,3 +241,98 @@ class TestQtPicker:
             [c[i + 1] for i, a in enumerate(c) if a == "--stage"],
             [c[i + 1] for i, a in enumerate(c) if a == "--hold"],
         )
+
+
+class TestQtPickerBorrowedFeatures:
+    """Three features taken from the published pickers, each attributed.
+
+    SARI (Santamaria-Gomez 2019, doi:10.1007/s10291-019-0846-y) — metadata
+    fusion: flag candidate discontinuities from equipment history.
+    TSAnalyzer (Wu et al. 2017, doi:10.1007/s10291-017-0637-2) — a reloadable
+    pick file. Both carry a Lomb-Scargle residual periodogram.
+    """
+
+    @staticmethod
+    def _window(sta="SELF", gap=1.5):
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import numpy as np
+
+        import geo_dataread.gps_read as gpsr
+        from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
+        from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
+
+        _pg, qtw = _require_qt()
+        qtw.QApplication.instance() or qtw.QApplication([])
+        try:
+            yearf, data, sigma, _ = gpsr.getData(
+                sta, ref="plate", Dir=None, tType="TOT", uncert=10
+            )
+        except Exception:  # pragma: no cover
+            pytest.skip(f"{sta} data not available")
+        if yearf is None or len(yearf) == 0:  # pragma: no cover
+            pytest.skip(f"{sta} data not available")
+        settings = resolve_fit_settings(sta, None, FitDefaults(max_gap_years=gap))
+        return PickerWindow(
+            sta,
+            np.asarray(yearf, float),
+            np.atleast_2d(np.asarray(data, float)),
+            np.atleast_2d(np.asarray(sigma, float)),
+            settings,
+            max_gap_years=gap,
+            uncert=10.0,
+        )
+
+    def test_declared_events_are_drawn(self) -> None:
+        # SELF's 2008 Olfus M6.3 is in steps.csv, so it must be marked BEFORE
+        # the operator decides whether to declare a step there.
+        w = self._window()
+        assert w.declared_events
+        assert any(abs(e - 2008.4085) < 0.01 for e, _lbl in w.declared_events)
+
+    def test_residual_spectrum_is_computed(self) -> None:
+        import numpy as np
+
+        w = self._window()
+        f, p = w.spec_curves[0].getData()
+        assert f is not None and len(f) > 100
+        # SELF's seasonal is well modelled, so annual power must be small.
+        annual = float(p[int(np.argmin(np.abs(f - 1.0)))])
+        assert annual < 0.2
+
+    def test_session_round_trips(self) -> None:
+        w = self._window()
+        w._add_step(2008.4085)
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion((w.span[0], 2019.5))
+            r.blockSignals(False)
+        w.cb_term.setChecked(True)
+        w.tau.setValue(1.5)
+        w.refit()
+        w.save_session()
+        path = w._session_path()
+        try:
+            assert path.exists()
+            w2 = self._window()
+            assert [round(g[0].value(), 4) for g in w2.step_lines] == [2008.4085]
+            assert round(w2.domain_regions[0].getRegion()[1], 4) == 2019.5
+            assert w2.cb_term.isChecked()
+            assert w2.tau.value() == pytest.approx(1.5)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_session_is_not_provenance(self) -> None:
+        # The emitted COMMAND is the record; the session is convenience. If
+        # this ever stopped being true there would be two paths to stored
+        # science, which is exactly what the CLI-first design avoids.
+        import json
+
+        w = self._window()
+        w.save_session()
+        path = w._session_path()
+        try:
+            assert "convenience" in json.loads(path.read_text())["note"]
+        finally:
+            path.unlink(missing_ok=True)

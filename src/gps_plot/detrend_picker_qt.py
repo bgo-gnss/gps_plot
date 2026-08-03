@@ -30,6 +30,36 @@ renderer, so judge borderline cosmetics on the PDF. What it buys is
 interaction the publication figure cannot give: grab-handled regions,
 draggable markers and redraw fast enough to explore with.
 
+Prior art, surveyed 2026-08-03; each idea below is attributed where it is
+used:
+
+* **SARI** — Santamaría-Gómez, A. (2019), *SARI: interactive GNSS position
+  time series analysis software*, GPS Solutions 23:52,
+  doi:10.1007/s10291-019-0846-y. R/Shiny, browser-based. Same term algebra
+  (polynomial + offsets + sinusoids + exp/log decays); WLS and Kalman
+  fitters. Notably **digests equipment changes from IGS site logs, GAMIT
+  ``station.info``, the NGL offsets file or a custom offsets file** to flag
+  candidate discontinuities, and can subtract a nearby station's series.
+* **TSAnalyzer** — Wu, D., Yan, H., Shen, Y. (2017), *TSAnalyzer, a GNSS
+  time series analysis software*, GPS Solutions 21:1389–1394,
+  doi:10.1007/s10291-017-0637-2. Python + Qt, the same stack as this module,
+  arrived at independently. Semi-automatic offset detection via ``sigseg``
+  (Vitti 2012) then manual inspection, and **records picked offsets in a
+  JSON file that can be reloaded**, replotted as coloured lines by kind.
+* **Snuffler** — Heimann et al., Pyrocko seismological toolbox,
+  https://pyrocko.org/docs/current/apps/snuffler/manual.html. The mature
+  interactive-picking tradition: distinct marker TYPES, double-click to
+  pick, click-and-drag for a time span, markers attached to a trace or
+  global, and a plugin system (*snufflings*).
+* Both GNSS tools cite **Gazeaux et al. (2013)**, doi:10.1002/jgrb.50152,
+  for the finding this whole tool rests on: automatic offset detection has
+  not matched expert manual inspection.
+
+What is NOT borrowed, deliberately: both published GNSS tools are
+GUI-PRIMARY, with the model inside the interface. This one is CLI-first and
+emits a command, so a picked record is reproducible from a line of text
+rather than from a session file.
+
 Requires ``pyqtgraph`` and ``PySide6``, which live in the DEV group — a
 local development tool, never a production dependency (``uv sync`` installs
 them; a production install is unaffected).
@@ -38,6 +68,7 @@ them; a production install is unaffected).
 from __future__ import annotations
 
 import dataclasses
+import os
 import shlex
 import sys
 from typing import Any
@@ -54,6 +85,8 @@ STAGE_COLOR = (255, 127, 14, 55)
 OUTSIDE_COLOR = (105, 105, 105)  # dimgrey — view-flagged OUTSIDE the fit window
 PROV_FACE = (255, 215, 0)  # gold          — provisional: verdict PENDING
 PROV_EDGE = (184, 134, 11)  # darkgoldenrod
+TOS_EVENT_COLOR = (0, 100, 0)  # darkgreen — TOS equipment change
+SEISMIC_EVENT_COLOR = (139, 0, 0)  # darkred — declared seismic step
 STEP_COLOR = (140, 20, 20)  # dark red   — declared step
 ONSET_COLOR = (44, 120, 44)  # dark green — transient onset
 COMPONENTS = ("North", "East", "Up")
@@ -191,6 +224,35 @@ class PickerWindow:  # pragma: no cover - GUI
             self.fit_curves.append(p.plot([], [], pen=pg.mkPen(FIT_COLOR, width=2)))
             self.plots.append(p)
         self.plots[-1].setLabel("bottom", "fractional year")
+        self._draw_declared_events()
+
+        # Fourth panel: the residual periodogram. Both published GNSS pickers
+        # carry one (SARI's Lomb-Scargle + wavelet; TSAnalyzer's Lomb-Scargle),
+        # and it answers the question the time-domain panels cannot: is the
+        # SEASONAL adequately modelled? Leftover power at 1 cycle/yr says the
+        # stage-1 window is drawing the seasonal from the wrong stretch.
+        # Lomb-Scargle rather than an FFT because GNSS series are gappy and
+        # unevenly sampled (Lomb 1976; Scargle 1982) -- resampling to force an
+        # FFT would invent the very structure being tested for.
+        self.spec = self.glw.addPlot(row=3, col=0)
+        self.spec.setLabel("left", "residual power")
+        self.spec.setLabel("bottom", "cycles per year")
+        self.spec.showGrid(x=True, y=True, alpha=0.25)
+        self.spec.setMaximumHeight(190)
+        self.spec_curves = [
+            self.spec.plot([], [], pen=pg.mkPen(col, width=1))
+            for col in ((200, 60, 60), (60, 140, 60), (60, 60, 200))
+        ]
+        for f, lbl in ((1.0, "annual"), (2.0, "semi")):
+            mark = pg.InfiniteLine(
+                pos=f,
+                angle=90,
+                movable=False,
+                pen=pg.mkPen((150, 150, 150), width=1, style=self.pg.QtCore.Qt.DotLine),
+                label=lbl,
+                labelOpts={"position": 0.9, "color": (110, 110, 110)},
+            )
+            self.spec.addItem(mark)
 
         # --- the picks -------------------------------------------------
         # Regions live on every panel and move together: a fit domain that
@@ -220,7 +282,63 @@ class PickerWindow:  # pragma: no cover - GUI
         self.win.setCentralWidget(central)
         self.win.resize(1250, 950)
         self.glw.scene().sigMouseClicked.connect(self._on_click)
-        self.refit()
+        if not self.load_session():
+            self.refit()
+
+    def _draw_declared_events(self) -> None:
+        """Draw already-DECLARED events, so a pick is informed rather than guessed.
+
+        Borrowed from SARI (Santamaría-Gómez 2019, doi:10.1007/s10291-019-0846-y),
+        which digests IGS site logs / GAMIT ``station.info`` / the NGL offsets
+        file to flag candidate discontinuities. Our equivalent sources are the
+        TOS device history and ``steps.csv``, already resolved by the
+        workbench, so the vocabulary matches the PDF exactly: **darkgreen** =
+        new antenna/receiver install, **darkred** = declared seismic step.
+
+        These are DECLARATIONS, not detections — nothing here is fitted. They
+        are drawn thin and behind the picks so an operator can see that an
+        antenna changed on the day they are about to double-click, which is
+        the difference between declaring a step and inventing one.
+        """
+        pg = self.pg
+        from gps_plot.detrend_workbench import declared_event_epochs
+
+        events: list[tuple[float, str, tuple[int, int, int]]] = []
+        try:
+            seismic, _other = declared_event_epochs(self.sta)
+            events += [(e, lbl, SEISMIC_EVENT_COLOR) for e, lbl in seismic]
+        except Exception:
+            pass  # a missing catalog must never cost the window
+        try:
+            from gps_plot.detrend_workbench import tos_equipment_epochs
+
+            events += [
+                (e, lbl, TOS_EVENT_COLOR) for e, lbl in tos_equipment_epochs(self.sta)
+            ]
+        except Exception:
+            # TOS is a live service; being offline is not an error here.
+            pass
+
+        lo, hi = self.span
+        self.declared_events = [(e, lbl) for e, lbl, _c in events if lo <= e <= hi]
+        for epoch, label, colour in events:
+            if not (lo <= epoch <= hi):
+                continue  # clipped: an off-axis line loses its line and keeps its caption
+            for i, p in enumerate(self.plots):
+                ln = pg.InfiniteLine(
+                    pos=epoch,
+                    angle=90,
+                    movable=False,
+                    pen=pg.mkPen(colour, width=1, style=self.pg.QtCore.Qt.DotLine),
+                    label=label if i == 0 else None,
+                    labelOpts={
+                        "position": 0.92,
+                        "color": colour,
+                        "fill": (255, 255, 255, 180),
+                    },
+                )
+                ln.setZValue(-20)
+                p.addItem(ln)
 
     # -- construction helpers ------------------------------------------
     def _add_region(self, values: tuple[float, float], colour: Any) -> list[Any]:
@@ -306,6 +424,9 @@ class PickerWindow:  # pragma: no cover - GUI
         clear = QtWidgets.QPushButton("clear steps")
         clear.clicked.connect(self._clear_steps)
         row.addWidget(clear)
+        save = QtWidgets.QPushButton("save session")
+        save.clicked.connect(self.save_session)
+        row.addWidget(save)
 
         row.addWidget(
             QtWidgets.QLabel(
@@ -314,6 +435,96 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         row.addStretch(1)
         return box
+
+    # -- session (TSAnalyzer's reloadable pick file) --------------------
+    def _session_path(self) -> Any:
+        from pathlib import Path
+
+        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+        d = Path(base) / "gps-detrend-picker" / "sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{self.sta}.json"
+
+    def save_session(self) -> None:
+        """Write the current picks so they survive closing the window.
+
+        Borrowed from TSAnalyzer (Wu et al. 2017,
+        doi:10.1007/s10291-017-0637-2), which "uses a JSON text format to
+        record all these data offset events … and all the data offset events
+        can thus be recorded and reloaded".
+
+        This is a CONVENIENCE, not a record: the emitted command is what
+        reproduces the science, because it is re-parsed by the same grammar
+        the CLI uses. A session that could be mistaken for provenance would
+        be a second path to stored results, which this tool does not have.
+        """
+        import json
+
+        lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
+        s_lo, s_hi = (round(v, 4) for v in self.stage_regions[0].getRegion())
+        payload = {
+            "station": self.sta,
+            "note": "picker convenience only — the emitted command is the record",
+            "domain": [lo, hi],
+            "steps": [round(g[0].value(), 4) for g in self.step_lines],
+            "stage": {"on": self.cb_stage.isChecked(), "window": [s_lo, s_hi]},
+            "term": {
+                "on": self.cb_term.isChecked(),
+                "kind": self.kind.currentText(),
+                "epoch": round(self.onset_lines[0].value(), 4),
+                "tau": round(self.tau.value(), 3),
+            },
+            "params": {
+                "uncert": self.uncert,
+                "max_gap_years": self.max_gap_years,
+                "provisional_days": self.provisional_days,
+            },
+        }
+        self._session_path().write_text(json.dumps(payload, indent=2))
+        self.summary.setPlainText(f"session saved -> {self._session_path()}")
+
+    def load_session(self) -> bool:
+        """Restore picks written by :meth:`save_session`. Returns True if any."""
+        import json
+
+        path = self._session_path()
+        if not path.exists():
+            return False
+        try:
+            d = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return False
+        for r in self.domain_regions:
+            r.blockSignals(True)
+            r.setRegion(tuple(d.get("domain", self.span)))
+            r.blockSignals(False)
+        for r in self.stage_regions:
+            r.blockSignals(True)
+            r.setRegion(tuple(d.get("stage", {}).get("window", self.span)))
+            r.blockSignals(False)
+        self.cb_stage.setChecked(bool(d.get("stage", {}).get("on")))
+        term = d.get("term", {})
+        self.cb_term.setChecked(bool(term.get("on")))
+        if term.get("kind") in ("log", "exp"):
+            self.kind.setCurrentText(term["kind"])
+        if term.get("epoch") is not None:
+            for ln in self.onset_lines:
+                ln.blockSignals(True)
+                ln.setValue(float(term["epoch"]))
+                ln.blockSignals(False)
+        if term.get("tau"):
+            self.tau.setValue(float(term["tau"]))
+        self._clear_steps_quiet()
+        for e in d.get("steps", []):
+            self.step_lines.append(self._add_line(float(e), STEP_COLOR))
+        self.refit()
+        return True
+
+    def _clear_steps_quiet(self) -> None:
+        for group in self.step_lines:
+            for p, ln in zip(self.plots, group, strict=True):
+                p.removeItem(ln)
+        self.step_lines.clear()
 
     # -- interaction ----------------------------------------------------
     def _toggle_stage(self, on: bool) -> None:
@@ -493,6 +704,7 @@ class PickerWindow:  # pragma: no cover - GUI
                 self.outside_scatters[c].setData(self.yearf[out_c], self.data[c][out_c])
                 self.prov_scatters[c].setData(self.yearf[prov_c], self.data[c][prov_c])
                 self._prov_counts[c] = int(prov_c.sum())
+            self._update_spectrum(fit)
             self.summary.setPlainText(self._summary(est.record))
         else:
             for group in (
@@ -571,6 +783,43 @@ class PickerWindow:  # pragma: no cover - GUI
                 "</span>"
             )
         self.header.setText("  ·  ".join(bits))
+
+    def _update_spectrum(self, fit: Any) -> None:
+        """Lomb-Scargle periodogram of the fit residuals, per component.
+
+        Equation (Lomb 1976, Astrophys. Space Sci. 39; Scargle 1982, ApJ 263,
+        eq. 10): the least-squares power of a sinusoid at angular frequency ω
+        fitted to unevenly sampled data, which is why it is the right tool
+        here — GNSS series are gappy, and resampling onto a regular grid to
+        permit an FFT would manufacture the structure being tested for.
+
+        Read it as a MODEL-ADEQUACY check, not as science: a peak left at
+        1 cycle/yr means the stored seasonal does not describe this series,
+        usually because the stage-1 window drew it from an unrepresentative
+        stretch.
+        """
+        import numpy as np
+        from scipy.signal import lombscargle
+
+        freqs = np.linspace(0.2, 6.0, 400)  # cycles per year
+        omega = 2.0 * np.pi * freqs
+        for c in range(3):
+            good = np.isfinite(self.data[c]) & np.isfinite(fit[c])
+            t = self.yearf[good]
+            resid = self.data[c][good] - fit[c][good]
+            if t.size < 32 or not np.isfinite(resid).all():
+                self.spec_curves[c].setData([], [])
+                continue
+            resid = resid - resid.mean()
+            if not np.any(resid):
+                self.spec_curves[c].setData([], [])
+                continue
+            try:
+                power = lombscargle(t, resid, omega, normalize=True)
+            except (ValueError, ZeroDivisionError):
+                self.spec_curves[c].setData([], [])
+                continue
+            self.spec_curves[c].setData(freqs, np.asarray(power, dtype=float))
 
     def _summary(self, rec: dict[str, Any]) -> str:
         keys = ("model", "window", "n_epochs", "n_rejected", "rms", "step_epochs")
