@@ -103,10 +103,18 @@ class PickerWindow:  # pragma: no cover - GUI
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
 
+        self.header = QtWidgets.QLabel()
+        self.header.setStyleSheet(
+            "font-family: monospace; font-size: 13px; padding: 4px;"
+        )
+        self.header.setTextInteractionFlags(self.pg.QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(self.header)
+
         self.glw = pg.GraphicsLayoutWidget()
         layout.addWidget(self.glw, stretch=1)
         self.plots: list[Any] = []
         self.fit_curves: list[Any] = []
+        self.kept_scatters: list[Any] = []
         self.flag_scatters: list[Any] = []
         for c, name in enumerate(COMPONENTS):
             p = self.glw.addPlot(row=c, col=0)
@@ -115,14 +123,20 @@ class PickerWindow:  # pragma: no cover - GUI
             if c:
                 p.setXLink(self.plots[0])
             finite = np.isfinite(yearf) & np.isfinite(data[c])
-            p.plot(
-                yearf[finite],
-                data[c][finite],
-                pen=None,
-                symbol="o",
-                symbolSize=3,
-                symbolBrush=KEPT_COLOR,
-                symbolPen=None,
+            # Red is the KEPT series only. Production masks a flagged epoch
+            # (NaN) and redraws it grey, so drawing it red with a grey ring
+            # would say "in the fit, and also flagged" -- two different
+            # claims. Re-masked on every refit.
+            self.kept_scatters.append(
+                p.plot(
+                    yearf[finite],
+                    data[c][finite],
+                    pen=None,
+                    symbol="o",
+                    symbolSize=3,
+                    symbolBrush=KEPT_COLOR,
+                    symbolPen=None,
+                )
             )
             self.flag_scatters.append(
                 p.plot(
@@ -398,10 +412,22 @@ class PickerWindow:  # pragma: no cover - GUI
             for c in range(3):
                 good = np.isfinite(self.yearf) & np.isfinite(fit[c])
                 self.fit_curves[c].setData(self.yearf[good], fit[c][good])
-                m = outl[c] & np.isfinite(self.data[c])
-                self.flag_scatters[c].setData(self.yearf[m], self.data[c][m])
+                finite = np.isfinite(self.data[c])
+                flagged = outl[c] & finite
+                kept = finite & ~outl[c]
+                self.kept_scatters[c].setData(self.yearf[kept], self.data[c][kept])
+                self.flag_scatters[c].setData(
+                    self.yearf[flagged], self.data[c][flagged]
+                )
             self.summary.setPlainText(self._summary(est.record))
-        elif not note:
+        else:
+            for sc in self.flag_scatters:
+                sc.setData([], [])
+            for c in range(3):
+                finite = np.isfinite(self.data[c])
+                self.kept_scatters[c].setData(self.yearf[finite], self.data[c][finite])
+            self.record = None
+        if est is None and not note:
             note = (
                 "no record: the outlier stage aborted, or a validity gate "
                 "rejected this domain (span / epochs / max-gap)"
@@ -410,6 +436,56 @@ class PickerWindow:  # pragma: no cover - GUI
             self.summary.setPlainText(note)
 
         self.command.setText(self._command(plan, extra, terms))
+        self._update_header(terms, plan)
+
+    def _update_header(self, terms: list[str], plan: Any) -> None:
+        """Station, run parameters and the live picks, always on screen.
+
+        The run parameters matter enough to display rather than remember:
+        ``uncert`` screens sigma at READ time, so it changes WHICH epochs are
+        fitted while leaving no trace in any fitted quantity, and
+        ``max_gap_years`` decides whether the station is estimable at all.
+        Two records that differ only in these are indistinguishable from
+        their numbers.
+        """
+        lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
+        rec = self.record
+        bits = [
+            f"<b>{self.sta}</b>",
+            f"uncert {self.uncert:g} mm",
+            f"max-gap {self.max_gap_years if self.max_gap_years is not None else 'default'} yr",
+            f"domain {lo}:{hi}",
+        ]
+        if self.step_lines:
+            bits.append(f"steps {[round(g[0].value(), 4) for g in self.step_lines]}")
+        if terms:
+            bits.append(f"term {terms[0]}")
+        if plan is not None:
+            bits.append("staged")
+        if rec is not None:
+            n = rec.get("n_rejected")
+            method = str(rec.get("detrend_method", ""))
+            stages = str((rec.get("refs") or {}).get("outlier_stages", "?"))
+            # An abort is the difference between "nothing was wrong" and
+            # "nothing was judged", so say which.
+            aborted = method == "plain_wls" or (n and not any(n))
+            flag = (
+                f"<span style='color:#a00'>outliers ABORTED (stages {stages}) "
+                f"— nothing judged</span>"
+                if aborted
+                else f"outliers {n} (stages {stages})"
+            )
+            bits.append(flag)
+        else:
+            # The case where the operator most needs telling: an abort or a
+            # failed gate leaves the PREVIOUS trajectory on screen, which
+            # otherwise reads as a successful fit of the current picks.
+            bits.append(
+                "<span style='color:#a00'>NO RECORD — outlier stage aborted, "
+                "or a gate rejected this domain; the curve shown is stale"
+                "</span>"
+            )
+        self.header.setText("  ·  ".join(bits))
 
     def _summary(self, rec: dict[str, Any]) -> str:
         keys = ("model", "window", "n_epochs", "n_rejected", "rms", "step_epochs")
