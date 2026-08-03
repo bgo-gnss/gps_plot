@@ -98,8 +98,13 @@ def _(build_record, declared_event_epochs, max_gap, station, uncert):
 
 
 @app.cell
-def _(mo, record0, span, sta, populated_groups):
-    groups = populated_groups(record0)
+def _(mo, record0, span, sta, populated_groups, term_specs):
+    # The groups on offer must describe the model AS CONFIGURED, not the
+    # baseline record. Adding a transient puts log_amp/exp_amp into the
+    # model, and a stage plan that never frees them is refused outright:
+    # "parameters ['log_amp_1'] are never estimated and not held in the
+    # final stage". Offering the group is what lets the emitted command run.
+    groups = populated_groups(record0) + (("transient",) if term_specs else ())
     mo.md(
         f"**{sta}** — {span[0]:.2f} to {span[1]:.2f} · "
         f"populated groups: `{', '.join(groups)}`"
@@ -124,7 +129,7 @@ def _(groups, mo, span):
     )
     free2 = mo.ui.multiselect(
         options=list(groups),
-        value=[g for g in ("secular", "step") if g in groups],
+        value=[g for g in ("secular", "step", "transient") if g in groups],
         label="stage 2 estimates (whole domain)",
     )
     hold2 = mo.ui.dropdown(
