@@ -485,6 +485,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
     settings = resolve_fit_settings(sta, catalog, defaults, catalog_source=source)
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    # Pin the Wayland app_id rather than letting Qt derive one from argv[0]:
+    # the sway scratchpad rules match on app_id, and a binding that depends
+    # on how the program happened to be invoked is a binding that breaks.
+    app.setApplicationName("gps-detrend-picker")
+    app.setDesktopFileName("gps-detrend-picker")
     window = PickerWindow(
         sta,
         np.asarray(yearf, float),
