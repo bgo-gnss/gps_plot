@@ -178,7 +178,9 @@ def _declared_step_epochs(sta: str, *sources: Any) -> tuple[float, ...]:
     return tuple(sorted(declared))
 
 
-def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
+def _override_settings(
+    settings: Any, sta: str = "", *, quiet: bool = False, **over: Any
+) -> Any:
     """Apply CLI curation levers on top of the resolved catalog row.
 
     Only non-None values override, so an unset flag defers to the catalog,
@@ -191,6 +193,21 @@ def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
     to say "these gates, just for this look", so without CLI overrides the
     only route to a different window is editing a deployed catalog between
     iterations -- which is exactly the loop the workbench is meant to remove.
+
+    Shared with the Qt picker, which assembles the same settings from picks
+    on the plot rather than from flags.  That is the point: the picker used
+    to build its own ``dataclasses.replace(settings, steps=picked)``, which
+    REPLACED the declared steps while the command it emitted merged them, so
+    the fit on screen and the fit the copied command reproduces were
+    different.  One assembly site is what makes those agree.
+
+    Args:
+        settings: The resolved catalog row.
+        sta: Station name, for the ``steps.csv`` lookup inside the merge.
+        quiet: Suppress the merge note.  The picker re-assembles on every
+            drag of a region handle, so its note would be per-frame noise
+            on stderr; it shows the merged set in the header instead.
+        **over: Field overrides; None values are ignored.
     """
     import dataclasses
 
@@ -205,7 +222,7 @@ def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
         declared = _declared_step_epochs(sta, settings.steps)
         merged = _declared_step_epochs(sta, settings.steps, changed["steps"])
         changed["steps"] = merged
-        if declared:
+        if declared and not quiet:
             print(
                 f"note: --step merged with {len(declared)} already-declared "
                 f"step(s); fitting {len(merged)} in total: {merged}",

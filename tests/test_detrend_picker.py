@@ -14,6 +14,20 @@ from geo_dataread.stage_plan import build_stage_plan
 from gps_plot.detrend_picker import render_command
 
 
+@pytest.fixture(autouse=True)
+def _isolated_session_store(tmp_path, monkeypatch):
+    """Keep the suite out of the operator's real session store.
+
+    ``PickerWindow.__init__`` auto-loads a session and ``save_session``
+    writes one, both under ``$XDG_STATE_HOME``.  Unisolated, this suite
+    OVERWROTE and then unlinked a real ``sessions/SELF.json`` in its
+    teardown -- destroying live curation state -- and a real session for a
+    tested station would silently change what the assertions here run
+    against (restored picks are indistinguishable from defaults).
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+
 def _roundtrip(stages: list[str], holds: list[str]):
     plan = build_stage_plan(stages, holds)
     cmd = shlex.split(render_command("SELF", plan))
@@ -336,3 +350,57 @@ class TestQtPickerBorrowedFeatures:
             assert "convenience" in json.loads(path.read_text())["note"]
         finally:
             path.unlink(missing_ok=True)
+
+    def test_a_picked_step_does_not_erase_the_declared_ones(self) -> None:
+        """The picker's fit and the command it emits must be the SAME fit.
+
+        Regression (2026-08-09): ``_current`` did
+        ``dataclasses.replace(settings, steps=picked)``, which REPLACED the
+        station's declared steps, while ``--step`` on the workbench merges
+        with ``steps.csv`` and the fit catalog. So the figure the operator
+        judged and the fit their copied command reproduces diverged.
+
+        SELF is the sharp case -- dropping its declared 2008 Olfus
+        coseismic makes the excess-candidate rule abort, so the picker
+        showed a stale curve with NO record while the emitted command
+        fitted cleanly. On a milder station the divergence is silent:
+        different step set, different inliers, different rate.
+        """
+        w = self._window()
+        declared = [e for e, _lbl in w.declared_events]
+        assert any(abs(e - 2008.4085) < 0.01 for e in declared)
+
+        w._add_step(2015.5)
+        assert w.record is not None, "the declared step is missing -> abort"
+        # The picked step is emitted; the declared one is the workbench's
+        # floor and must NOT be, or it would be declared twice.
+        assert "--step 2015.5" in w.command.text()
+        assert "2008.4085" not in w.command.text()
+        # ...but it must be in the FIT.
+        fitted = [round(float(v), 4) for v in w.record["step_epochs"]]
+        assert 2008.4085 in fitted and 2015.5 in fitted
+
+        # And the equivalence itself: the settings the picker fits with are
+        # the settings the emitted command resolves to.
+        from gps_plot.detrend_workbench import _override_settings, estimate_record
+
+        cli = _override_settings(
+            w.base_settings,
+            "SELF",
+            segments=tuple(
+                tuple(round(v, 4) for v in r.getRegion()) for r in w.domain_regions[:1]
+            ),
+            steps=(2015.5,),
+        )
+        est = estimate_record("SELF", w.yearf, w.data, w.sigma, settings=cli)
+        assert est is not None
+        assert [round(float(v), 4) for v in est.record["step_epochs"]] == fitted
+        assert est.record["n_rejected"] == w.record["n_rejected"]
+
+    def test_the_header_names_the_fitted_steps_not_the_clicked_ones(self) -> None:
+        # The merge is invisible on the plot -- a declared step draws no
+        # pick line -- so the header is where it has to be legible.
+        w = self._window()
+        w._add_step(2015.5)
+        assert "picked [2015.5]" in w.header.text()
+        assert "fitting [2008.4085, 2015.5]" in w.header.text()

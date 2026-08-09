@@ -584,18 +584,39 @@ class PickerWindow:  # pragma: no cover - GUI
 
     # -- the fit --------------------------------------------------------
     def _current(self) -> tuple[Any, list[str], list[str], list[str]]:
-        """Read the picks off the plot into settings + CLI flags."""
+        """Read the picks off the plot into settings + CLI flags.
+
+        Settings and flags are assembled by the SAME function the workbench
+        CLI uses (``_override_settings``), because the picker's promise is
+        that the emitted command reproduces the figure.  Building the
+        settings here instead is what broke it: a picked step REPLACED the
+        station's declared ones, while ``--step`` on the command line merges
+        with them.  On SELF that was the difference between an aborted fit
+        showing a stale curve and a clean one -- the undeclared 2008 Ölfus
+        coseismic trips the excess-candidate rule -- and on a milder station
+        it would have been a silent difference in rate.
+        """
+        from gps_plot.detrend_workbench import _override_settings
+
         lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
-        settings = dataclasses.replace(self.base_settings, segments=((lo, hi),))
         extra: list[str] = []
         if (lo, hi) != tuple(round(v, 4) for v in self.span):
             extra += ["--segment", f"{lo}:{hi}"]
 
+        # Only the PICKED steps become --step flags; the declared ones are
+        # already the workbench's floor, so emitting them would be a no-op
+        # at best and a double-declaration at worst.
         steps = tuple(round(g[0].value(), 4) for g in self.step_lines)
-        if steps:
-            settings = dataclasses.replace(settings, steps=steps)
-            for e in steps:
-                extra += ["--step", str(e)]
+        for e in steps:
+            extra += ["--step", str(e)]
+
+        settings = _override_settings(
+            self.base_settings,
+            self.sta,
+            quiet=True,
+            segments=((lo, hi),),
+            steps=steps or None,
+        )
 
         terms: list[str] = []
         if self.cb_term.isChecked():
@@ -747,8 +768,17 @@ class PickerWindow:  # pragma: no cover - GUI
             f"prov {self.provisional_days if self.provisional_days is not None else 'default 14'} d",
             f"domain {lo}:{hi}",
         ]
-        if self.step_lines:
-            bits.append(f"steps {[round(g[0].value(), 4) for g in self.step_lines]}")
+        picked = [round(g[0].value(), 4) for g in self.step_lines]
+        # What was FITTED, not what was clicked. steps.csv and the fit
+        # catalog are a floor the picks add to, and the window filter drops
+        # any step outside the domain, so the two lists routinely differ --
+        # and the operator has to see which, because the merge is exactly
+        # what used to be missing from this fit.
+        fitted = [round(float(v), 4) for v in (rec or {}).get("step_epochs", [])]
+        if fitted and fitted != picked:
+            bits.append(f"steps picked {picked} → fitting {fitted}")
+        elif picked:
+            bits.append(f"steps {picked}")
         if terms:
             bits.append(f"term {terms[0]}")
         if plan is not None:
