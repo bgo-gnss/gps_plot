@@ -54,6 +54,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 __all__ = [
+    "estimate_record",
     "build_record",
     "borrow_record",
     "commit_record",
@@ -217,6 +218,78 @@ def _override_settings(settings: Any, sta: str = "", **over: Any) -> Any:
     return dataclasses.replace(settings, **changed)
 
 
+def estimate_record(
+    sta: str,
+    yearf: Any,
+    data: Any,
+    sigma: Any,
+    *,
+    settings: Any,
+    outlier_params: Any = None,
+    stage_plan: object | None = None,
+    lookup_donor: object | None = None,
+    terms: Sequence[str] | None = None,
+    model: str | None = None,
+    refs: Mapping[str, Any] | None = None,
+) -> Any:
+    """Estimate one station's detrend record — gps_plot's single call site.
+
+    Thin wrapper over
+    :func:`geo_dataread.detrend_estimate.station_estimate_from_arrays` that
+    every consumer in this package routes through, so the workbench
+    (:func:`build_record`) and the Qt picker (``PickerWindow.refit``) cannot
+    drift apart in which kwargs they forward.  The picker passes a SUBSET
+    (no ``outlier_params`` / ``refs`` — it does not commit, so the
+    round-trip-fidelity concerns that force the workbench to carry
+    ``uncert`` in ``refs`` do not apply to it); the workbench passes the
+    full set.  That asymmetry is now visible at the two call sites rather
+    than buried in two independent ``station_estimate_from_arrays(...)``
+    blocks that could (and did) diverge.
+
+    This is also the seam at which a second estimator will enter.  The
+    leaf already carries a method tag —
+    :attr:`gps_analysis.DetrendEstimate.detrend_method`, serialized into
+    every stored record as ``detrend_method`` — so "which algorithm
+    produced this" is already provenance-tracked fleet-wide.  Today that
+    vocabulary distinguishes OUTLIER-HANDLING strategy
+    (:data:`gps_analysis.detrend.DETREND_METHOD_ROBUST` vs
+    :data:`gps_analysis.detrend.DETREND_METHOD_PLAIN`); the estimator
+    machinery itself is a single WLS closed-form.  When a second estimator
+    is wanted, the house pattern (mirroring :mod:`gps_analysis.velocity`'s
+    ``method`` tag) is a sibling function returning
+    :class:`~gps_analysis.DetrendEstimate` under an extended tag, and THIS
+    function gains a ``method=`` selector that dispatches to it — not a
+    Protocol, which the estimator lane deliberately does not use (the
+    ``Term`` Protocol is for the additive-math-unit abstraction, a
+    different axis).
+
+    Returns:
+        The :class:`~geo_dataread.detrend_estimate.StationEstimate`, or
+        ``None`` on an outlier-stage abort (the leaf's convention for
+        "refused to store a record"; a validity gate instead RAISES,
+        which :func:`build_record` normalises to ``RuntimeError``).
+    """
+    from geo_dataread.detrend_estimate import station_estimate_from_arrays
+
+    extra: dict[str, Any] = {}
+    if model is not None:
+        extra["model"] = model
+    if refs is not None:
+        extra["refs"] = refs
+    return station_estimate_from_arrays(
+        sta,
+        yearf,
+        data,
+        sigma,
+        settings=settings,
+        outlier_params=outlier_params,
+        stage_plan=stage_plan,
+        lookup_donor=lookup_donor,
+        terms=terms,
+        **extra,
+    )
+
+
 def build_record(
     sta: str,
     *,
@@ -255,7 +328,6 @@ def build_record(
         default_fit_catalog_path,
         read_fit_catalog,
         resolve_fit_settings,
-        station_estimate_from_arrays,
     )
 
     yearf, data, sigma, _offset = gpsr.getData(
@@ -281,7 +353,11 @@ def build_record(
         min_epochs=min_epochs,
         min_span_years=min_span_years,
     )
-    kwargs: dict[str, Any] = {}
+    # `uncert` screens sigma at READ time (getData above), so the estimator
+    # never sees it and a stored record would be silent about it -- yet the
+    # workbench default (10) differs from the batch estimator's (15), which
+    # made workbench and batch records indistinguishable but unequal.
+    kwargs: dict[str, Any] = {"refs": {"uncert": uncert}}
     if model:
         kwargs["model"] = model
 
@@ -294,12 +370,7 @@ def build_record(
     )
 
     def _estimate(params: Any) -> Any:
-        # `uncert` screens sigma at READ time (getData above), so the estimator
-        # never sees it and a stored record would be silent about it -- yet the
-        # workbench default (10) differs from the batch estimator's (15), which
-        # made workbench and batch records indistinguishable but unequal.
-        kwargs["refs"] = {"uncert": uncert}
-        return station_estimate_from_arrays(
+        return estimate_record(
             sta,
             yearf,
             data,

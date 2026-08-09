@@ -611,8 +611,8 @@ class PickerWindow:  # pragma: no cover - GUI
         return settings, extra, terms, stages
 
     def refit(self, *_: Any) -> None:
-        from geo_dataread.detrend_estimate import station_estimate_from_arrays
         from geo_dataread.stage_plan import build_stage_plan
+        from gps_plot.detrend_workbench import estimate_record
 
         np = self.np
         settings, extra, terms, stage_specs = self._current()
@@ -637,7 +637,7 @@ class PickerWindow:  # pragma: no cover - GUI
         est = None
         if not note:
             try:
-                est = station_estimate_from_arrays(
+                est = estimate_record(
                     self.sta,
                     self.yearf,
                     self.data,
@@ -645,7 +645,6 @@ class PickerWindow:  # pragma: no cover - GUI
                     settings=settings,
                     terms=terms or None,
                     stage_plan=plan,
-                    lookup_donor=None,
                 )
             except (ValueError, RuntimeError) as exc:
                 # A refused fit is a RESULT -- rank-deficient stage, an
