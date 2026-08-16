@@ -61,6 +61,8 @@ gps_plot                  # entry: gps_plot:main
 plot-gps-timeseries ...   # entry: gps_plot.plot_gps_timeseries:main
 gps-analysis-devviz ...   # entry: gps_plot.dev_viz:main (dev group required)
 gps-detrend-workbench ... # entry: gps_plot.detrend_workbench:main
+gps-detrend-picker-qt ... # entry: gps_plot.detrend_picker_qt:main (pyqtgraph)
+gps-detrend-picker ...    # entry: gps_plot.detrend_picker:main (marimo notebook)
 ```
 
 ## Cleaned view (`--view cleaned`)
@@ -331,6 +333,33 @@ changing it is a fleet decision, not a CLI default).
 Fractional-year epochs are at **noon** — 2008-05-29 is `149.5/366 = 2008.40847`,
 not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
 
+## Qt picker (`gps-detrend-picker-qt`)
+
+Layered ON TOP of the workbench CLI, never replacing it, and its whole
+promise is one invariant: **the emitted command reproduces the figure.**
+Every divergence found so far has been a second place that assembled the
+same decision — so settings are built by the workbench's own
+`_override_settings` (one assembly site), and every run parameter that
+changes the data is emitted.
+
+Four ways it broke that invariant, all fixed 2026-08-09/16 and worth knowing
+because the shape recurs: a picked step REPLACED the declared ones while
+`--step` MERGES (on SELF the difference between an aborted fit and a clean
+one); the domain region opened on the DATA SPAN and emitted `--segment` only
+when moved off it, so an untouched region on a station with a
+`fit_windows.csv` window fitted everything and emitted a command reproducing
+the window; `--tot-dir` was never emitted (a different series, not a
+different fit); `--uncert` was float here and int there, so any non-default
+screen emitted a command that will not parse.
+
+An UNTOUCHED domain region passes `segments=None` rather than its own hull —
+a catalog row may declare a UNION and one region cannot draw one, so the
+header says `shown as hull of N catalog segments` instead of silently
+re-including an excision. `load_session` runs at LAUNCH and parses the whole
+payload before touching a widget: a corrupt session degrades to the declared
+defaults and names the file (it is somebody's curation), where it used to
+take the application down before the window appeared.
+
 ## Dev-viz (analysis lane, thread C / L5)
 
 Three shared-axis panels for one station/component: observed + `lineperiodic`
@@ -407,7 +436,7 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-08-01 (workbench `--show-outliers`: inverted emphasis —
+*Last reviewed: 2026-08-16 (Qt picker section added — the emitted command reproduces the figure, and the four ways that broke; `_mask_outliers` returns FOUR members (the fourth, `aborted`, is what makes an aborted axis distinguishable from a clean one) — the annotation said three; the equipment-line count in `tos_equipment_epochs` was stale at 6 → 5 from before `MIN_DEPLOYMENT_DAYS`, verified 6 → 2 against the fixture; earlier — workbench `--show-outliers`: inverted emphasis —
 flagged red, the rest grey — display-only, exclusive with `--hide-outliers`,
 lanes still countable; makes an aborted component legible as an all-grey axis
 (NYLA); earlier — workbench out-of-window screen: the view detector
