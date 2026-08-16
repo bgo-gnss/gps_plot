@@ -267,7 +267,7 @@ class TestQtPickerBorrowedFeatures:
     """
 
     @staticmethod
-    def _window(sta="SELF", gap=1.5):
+    def _window(sta="SELF", gap=1.5, catalog_window=None):
         import os
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -287,7 +287,18 @@ class TestQtPickerBorrowedFeatures:
             pytest.skip(f"{sta} data not available")
         if yearf is None or len(yearf) == 0:  # pragma: no cover
             pytest.skip(f"{sta} data not available")
-        settings = resolve_fit_settings(sta, None, FitDefaults(max_gap_years=gap))
+        catalog = None
+        if catalog_window is not None:
+            from geo_dataread.detrend_estimate import FitCatalogRow
+
+            catalog = {
+                sta: FitCatalogRow(
+                    window_start=catalog_window[0], window_end=catalog_window[1]
+                )
+            }
+        settings = resolve_fit_settings(
+            sta, catalog, FitDefaults(max_gap_years=gap), catalog_source="test.csv"
+        )
         return PickerWindow(
             sta,
             np.asarray(yearf, float),
@@ -404,3 +415,69 @@ class TestQtPickerBorrowedFeatures:
         w._add_step(2015.5)
         assert "picked [2015.5]" in w.header.text()
         assert "fitting [2008.4085, 2015.5]" in w.header.text()
+
+    def test_the_domain_region_opens_on_the_catalog_window(self) -> None:
+        """The picker must not assert a fit domain the catalog contradicts.
+
+        Regression (2026-08-16), the picked-step bug one lever over: the
+        region opened on the DATA SPAN, and ``--segment`` was emitted only
+        when the region differed from that span. So on a station whose
+        ``fit_windows.csv`` row declares a narrow pre-unrest window, an
+        operator who touched nothing got a figure fitted over everything and
+        a command that emitted no ``--segment`` at all — reproducing the
+        catalog window instead. Two different fits, no indication.
+
+        Latent when found: the deployed catalog has no window rows yet.
+        """
+        w = self._window(catalog_window=(2009.0, 2019.5))
+        lo, hi = (round(v, 4) for v in w.domain_regions[0].getRegion())
+        assert (lo, hi) == (2009.0, 2019.5)
+        assert lo > w.span[0] and hi < w.span[1], "the window must actually bite"
+
+        # untouched -> defer to the catalog entirely: no flag, and the fit is
+        # the one `gps-detrend-workbench SELF` would produce with no flags
+        assert "--segment" not in w.command.text()
+        settings, _extra, _terms, _stages = w._current()
+        assert settings.segments == w.base_settings.segments
+
+        from gps_plot.detrend_workbench import estimate_record
+
+        cli = estimate_record(
+            "SELF", w.yearf, w.data, w.sigma, settings=w.base_settings
+        )
+        assert cli is not None and w.record is not None
+        assert cli.record["window"] == w.record["window"]
+        assert cli.record["n_epochs"] == w.record["n_epochs"]
+
+    def test_moving_the_region_emits_the_segment_it_fits(self) -> None:
+        w = self._window(catalog_window=(2009.0, 2019.5))
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion((2012.0, 2018.0))
+            r.blockSignals(False)
+        w.refit()
+        assert "--segment 2012.0:2018.0" in w.command.text()
+        assert w.record is not None
+        assert w.record["window"] == [2012.0, 2018.0]
+
+    def test_reset_returns_to_the_declared_domain_not_the_data_span(self) -> None:
+        w = self._window(catalog_window=(2009.0, 2019.5))
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion((2012.0, 2018.0))
+            r.blockSignals(False)
+        w.refit()
+        w._reset_domain()
+        assert tuple(round(v, 4) for v in w.domain_regions[0].getRegion()) == (
+            2009.0,
+            2019.5,
+        )
+        assert "--segment" not in w.command.text()
+
+    def test_no_catalog_window_still_opens_on_the_full_span(self) -> None:
+        """The 37 deployed stations have no window row — nothing moves for them."""
+        w = self._window()
+        assert tuple(round(v, 4) for v in w.domain_regions[0].getRegion()) == tuple(
+            round(v, 4) for v in w.span
+        )
+        assert "--segment" not in w.command.text()

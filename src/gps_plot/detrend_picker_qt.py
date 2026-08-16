@@ -132,6 +132,18 @@ class PickerWindow:  # pragma: no cover - GUI
         self.max_gap_years, self.uncert = max_gap_years, uncert
         self.provisional_days = provisional_days
         self.span = (float(np.nanmin(yearf)), float(np.nanmax(yearf)))
+        # The domain region opens on the CATALOG's fit window, not on the data
+        # span.  Starting at the span asserted "fit everything" over a station
+        # whose `fit_windows.csv` row says otherwise, and then -- because
+        # `--segment` was emitted only when the region differed from the SPAN
+        # -- an untouched region emitted no flag at all, so the copied command
+        # fitted the catalog window while the figure showed the full span.
+        # The same divergence as the picked-step bug, one lever over.
+        lo, hi = self.base_settings.window  # hull; either side may be open
+        self.default_domain = (
+            self.span[0] if lo is None else max(float(lo), self.span[0]),
+            self.span[1] if hi is None else min(float(hi), self.span[1]),
+        )
         self.step_lines: list[Any] = []
         self._prov_counts: list[int] = [0, 0, 0]
         self.record: dict[str, Any] | None = None
@@ -258,7 +270,7 @@ class PickerWindow:  # pragma: no cover - GUI
         # Regions live on every panel and move together: a fit domain that
         # differed between components would be meaningless, and seeing the
         # same window on all three is most of the point.
-        self.domain_regions = self._add_region(self.span, DOMAIN_COLOR)
+        self.domain_regions = self._add_region(self.default_domain, DOMAIN_COLOR)
         self.stage_regions = self._add_region(
             (self.span[0], min(self.span[0] + 8.0, self.span[1])), STAGE_COLOR
         )
@@ -496,7 +508,9 @@ class PickerWindow:  # pragma: no cover - GUI
             return False
         for r in self.domain_regions:
             r.blockSignals(True)
-            r.setRegion(tuple(d.get("domain", self.span)))
+            # a session with no stored domain falls back to the DECLARED one,
+            # for the same reason the initial region does
+            r.setRegion(tuple(d.get("domain", self.default_domain)))
             r.blockSignals(False)
         for r in self.stage_regions:
             r.blockSignals(True)
@@ -536,9 +550,15 @@ class PickerWindow:  # pragma: no cover - GUI
         self.refit()
 
     def _reset_domain(self) -> None:
+        """Back to the DECLARED domain, which is what "reset" has to mean.
+
+        Resetting to the data span would be a third way to say "fit
+        everything" and would leave the picker asserting something the
+        catalog does not.
+        """
         for r in self.domain_regions:
             r.blockSignals(True)
-            r.setRegion(self.span)
+            r.setRegion(self.default_domain)
             r.blockSignals(False)
         self.refit()
 
@@ -600,7 +620,17 @@ class PickerWindow:  # pragma: no cover - GUI
 
         lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
         extra: list[str] = []
-        if (lo, hi) != tuple(round(v, 4) for v in self.span):
+        # An UNTOUCHED region defers to the catalog entirely -- no flag, and
+        # `segments=None` so `_override_settings` leaves the row's own
+        # segments in place.  That matters beyond tidiness: a catalog row may
+        # declare a UNION of intervals, and one region cannot express a union,
+        # so overriding it with the hull would silently re-include an
+        # excision the operator never touched.  Once the region IS moved, the
+        # single interval is both fitted and emitted, and `--segment`
+        # replaces the row -- figure and command agree either way.
+        moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
+        segments = ((lo, hi),) if moved else None
+        if moved:
             extra += ["--segment", f"{lo}:{hi}"]
 
         # Only the PICKED steps become --step flags; the declared ones are
@@ -614,7 +644,7 @@ class PickerWindow:  # pragma: no cover - GUI
             self.base_settings,
             self.sta,
             quiet=True,
-            segments=((lo, hi),),
+            segments=segments,
             steps=steps or None,
         )
 
@@ -768,6 +798,19 @@ class PickerWindow:  # pragma: no cover - GUI
             f"prov {self.provisional_days if self.provisional_days is not None else 'default 14'} d",
             f"domain {lo}:{hi}",
         ]
+        # One region cannot draw a union, so when the catalog declares several
+        # segments and the region is untouched, the picture is the HULL while
+        # the fit is the union. Say so rather than let the excision be
+        # invisible; moving the region collapses it to the single interval
+        # drawn, which is then also what the command says.
+        n_seg = len(self.base_settings.segments)
+        if n_seg > 1:
+            moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
+            bits.append(
+                f"⚠ shown as hull of {n_seg} catalog segments"
+                if not moved
+                else f"⚠ collapses {n_seg} catalog segments to one"
+            )
         picked = [round(g[0].value(), 4) for g in self.step_lines]
         # What was FITTED, not what was clicked. steps.csv and the fit
         # catalog are a floor the picks add to, and the window filter drops
