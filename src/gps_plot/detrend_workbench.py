@@ -2184,6 +2184,30 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 3
         print(f"committed {sta} -> {target}   stations {before} -> {after}")
+
+        # The MODEL and the --term transients are fit-time decisions stored in
+        # the record -- but the batch recomputes the record, so it has to read
+        # them from config or it re-fits this station on the global --model
+        # with no transients. Exactly the hole the stage plans were in.
+        if args.model is not None or args.term:
+            from geo_dataread.analysis_yaml import StationModel, write_station_model
+            from geo_dataread.stage_plan import default_analysis_yaml_path
+
+            yaml_path = args.analysis_yaml or default_analysis_yaml_path()
+            if yaml_path is None:
+                print(
+                    "  warning: model/terms NOT stored — no analysis.yaml is "
+                    "reachable (no gpsconfig on this host). The record was "
+                    "committed, but gps-estimate-detrend will re-fit this "
+                    "station on its global --model with no transients. Pass "
+                    "--analysis-yaml to say where.",
+                    file=sys.stderr,
+                )
+            else:
+                entry = StationModel(model=args.model, terms=tuple(args.term or ()))
+                write_station_model(yaml_path, sta, entry)
+                print(f"  model/terms -> {yaml_path}   ({entry})")
+
         if stage_plan is not None:
             # The plan is config, not a fitted quantity, so it is stored
             # ALONGSIDE the record rather than inside it: analysis.yaml is

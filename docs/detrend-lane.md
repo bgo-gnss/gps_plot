@@ -1,0 +1,308 @@
+# gps_plot — the detrend lane
+
+Deep context for the detrend/curation lane, routed out of `gps_plot/CLAUDE.md`
+when that file passed 450 lines. **Moved verbatim** — every measured number
+here (RHOF 90 → 45 mm, SELF `step_amp_1 [-150.8, 148.0, 55.6]`, the
+non-monotonic 4.0 → 20 / 3.0 → 55 / 2.0 → 0, 0.54 mm/yr, 16.48 mm) was
+expensive to obtain, and compressing while moving is where that dies.
+
+Covers: the cleaned view (`plot-gps-timeseries --view cleaned`), the detrend
+workbench, segments, and the Qt picker. Read `../CLAUDE.md` first for the
+package summary and cross-references.
+
+---
+
+## Cleaned view (`--view cleaned`)
+
+`timesmatplt._mask_outliers` mirrors `gps_views.read_gps_view`'s station-aware
+chain (`station_step_epochs` + `resolve_protect_windows` +
+`resolve_outlier_detection`), so a plotted cleaned view matches the canonical
+read/write path for that station; each resolver degrades to "nothing declared"
+with a `UserWarning`, never a failed plot. Declared steps are not optional — an
+undeclared coseismic/equipment step over-flags or trips the excess-candidate
+abort at ANY threshold. Flags MASK (NaN) + grey overlay.
+
+Three marker states, and the distinction is what each COMMITS to:
+
+| marker | meaning | in the series? |
+|---|---|---|
+| red | clean | yes |
+| grey | flagged outlier | **no** (NaN) |
+| **gold** | **provisional** — recent, indeterminate step evidence | **yes** |
+
+Gold epochs are the ones the detector cannot rule on yet (no data follows
+them, so a blunder and the onset of deformation look identical). They stay in
+the data; the marker only says the verdict is pending, and it WILL change as
+epochs arrive. `--hide-outliers` drops the grey overlay (display only — the
+epochs are already masked; the y-axis then tightens to the cleaned series,
+often dramatically: RHOF north 90 mm → 45 mm of range) but deliberately does
+NOT hide gold: decluttering removes decided outliers, never undecided ones.
+`--provisional-days` bounds the recency window (0 disables; default 14 from
+`geo_dataread`), and the bound matters — indeterminate clusters also sit at
+old mid-series gaps and would otherwise dominate.
+
+```bash
+plot-gps-timeseries RHOF --view cleaned --outlier-param window_n_sigma=3.0
+plot-gps-timeseries RHOF --view cleaned --outlier-overrides ./overrides.csv
+plot-gps-timeseries RHOF --view cleaned --uncert 10 --hide-outliers
+```
+
+`--uncert` is the first lever for "obvious outliers survive": detection
+whitens by the formal σ, so a large excursion with a large error bar is not
+anomalous (RHOF: +83 mm Up at σ=13.2 mm scores only 3.3σ). The default 15 mm
+lets those through; `--uncert 10` drops 40 of 4713 epochs and removes most of
+them. Without σ at all the flag count rises ~45 %.
+
+`--outlier-param NAME=VALUE` (repeatable, also `plotTime(outlier_params=)`)
+builds a `gps_analysis.OutlierParams` off the dataclass itself — no default is
+restated here, and an unknown NAME lists the valid ones. `--help` lists them
+too, on both CLIs: `outlier_param_help()` generates the block (grouped by
+stage via `OUTLIER_PARAM_GROUPS`, unknown fields falling into "other" so
+coverage cannot go stale) into the parser epilog, which is why both parsers
+now use `RawDescriptionHelpFormatter` and wrap their own prose. Any override REPLACES
+the station's `outlier_overrides.csv` row; unset defers to that catalog, else
+spec defaults. `min_outlier=` is the scalar floor, NOT the catalog's
+per-component `[N,E,U]` vector.
+
+Loosening is **not monotonic** — RHOF 2023→ (3483 component-epochs):
+`window_n_sigma` 4.0 (spec) → 20 flagged, 3.0 → 55, 2.0 → **0**, because at k=2
+the candidate fraction passes `max_flag_fraction=0.05` and the excess-candidate
+rule aborts, silently serving raw. A sudden drop to zero means abort, not a
+clean station. PLAN Phase 3: consume `read_gps_view`'s `{comp}_cleaned` /
+`{comp}_outlier` instead of re-deriving here.
+
+## Detrend workbench (`gps-detrend-workbench`)
+
+One station, one PDF: plate-frame series + fitted trajectory, and the detrended
+series. Detrend choice is **curation, not computation** — which window is
+pre-unrest, whether a station supports periodic terms, whose parameters to
+borrow. All estimation is called from `geo_dataread.detrend_estimate`
+(`station_record_from_arrays`, `resolve_fit_settings`, `build_document`), so
+workbench and batch `gps-estimate-detrend` can never disagree about what a
+record means. Detection runs the FULL pipeline, falling back loudly to S0-only
+if the excess-candidate rule aborts — an S0 record leaves model-visible outliers
+in the fit, so on a fallback declaring the missing step beats accepting it
+(measured on RHOF vertical: 0.54 mm/yr of rate difference).
+
+**First `gps_plot` module that writes config.** `--commit` merge-writes one
+station into `detrend_params.json`, preserving the rest; without it nothing is
+stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
+renders from that record.
+
+```bash
+# catalogs deployed to ~/.config/gpsconfig 2026-07-29 — no GPS_CONFIG_PATH needed
+gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
+gps-detrend-workbench SELF --max-gap-years 1.0 --hide-outliers
+gps-detrend-workbench NYLA --max-gap-years 1.5 --show-outliers   # audit the verdicts
+gps-detrend-workbench RHOF --model periodic --donor VMEY --commit
+gps-detrend-workbench SELF --segment 2002.1:2008.35 --segment 2008.7:2019.5 \
+    --max-gap-years 1.5          # excise the transient, estimate the offset
+```
+
+## Segments (`--segment START:END`, repeatable)
+
+The fit domain is a **union of intervals**, not one window. That single
+generalisation answers four asks at once: two (or N) detrend periods; cutting
+transients out; offsets estimable *outside* the trend window; and include/skip
+per offset (which epochs you declare). `--window-start`/`--window-end` is the
+one-segment spelling and is refused alongside `--segment` — two ways to say
+which epochs are fitted, and letting one win silently would change stored
+science. An empty side is an open bound (`:2008.35`).
+
+Why it works: `estimate_detrend`'s step filter uses the **hull** of the kept
+epochs, so a step epoch inside an excised gap still enters the model, and its
+amplitude is estimable precisely because the flanking segments constrain the
+level on both sides. SELF 2008 Ölfus M6.3, transient excised:
+`step_amp_1 [-150.8, 148.0, 55.6] mm` — a line that did not exist under any
+single window, and it matches `steps.csv`'s own annotation.
+
+The gates changed meaning, each identically equal to the old one at J = 1:
+**`max_gap_years` is now per segment** (on the hull the deliberate excision was
+the largest diff, so every union was rejected — the blocker; and raising the
+threshold past it would have disabled the gate *inside* every segment too);
+**`min_span_years` is summed coverage** (Σ ≤ hull always, so uniformly stricter
+— a hull gate passes two 18-day nubs 17 yr apart while four seasonal terms fit
+36 days); `min_epochs` stays a total. A segment with **zero** kept epochs is a
+hard error naming its index — the real failure is a bound typed into a data gap.
+
+Two steps with no fitted epoch between them are now **refused** (identical
+Heaviside columns ⇒ rank-deficient design, amplitudes meaningless, covariance
+infinite). This bites in practice: `--step 2008.4071` on SELF merges with
+`steps.csv`'s declared 2008.4085 into two steps for one event. It used to
+degrade silently.
+
+Persisted per station via a `segments` column in `fit_windows.csv`
+(`a:b;c:d`, `;` already means list there, `:` avoids minus-sign ambiguity) —
+one cell, not one row per segment, because that reader is strict by design and
+a mistyped extra row would parse into different-but-valid science. The header
+check became an allowlist so the deployed 8-column files still read.
+
+The stored record gains `segments` + `segment_gaps` **additively at
+`record_version` 1**: `window` keeps its 2-tuple hull meaning (two readers
+index it positionally), `trajectory_from_record` never reads either, so
+segmented and the 37 deployed single-window records coexist in one document.
+`segment_gaps` reports the *realized* excision rather than gating it — a
+boundary placed inside a genuine outage hides it from the per-segment gate, and
+naming the distance is the honest answer without adding a knob.
+
+Rejected epochs get the cleaned view's grey vocabulary (`timesmatplt`'s own
+`OUTLIER_*` constants, both pages); `--hide-outliers` is display-only there and
+here. The mask is the FIT's inlier verdict, lifted across the non-finite drop
+and the window subset by `geo_dataread.station_estimate_from_arrays` (new seam;
+`station_record_from_arrays` now wraps it), so per-component counts equal the
+printed `n_rejected`. Re-running `detect_view_outliers` *inside* the window
+would disagree by construction — it sees neither the fit window nor a CLI
+`--step`.
+
+`--show-outliers` inverts that emphasis — flagged red, everything else grey —
+display-only in the same sense (same masks, counts and record), exclusive with
+`--hide-outliers`. Solid vs hollow still separates the two lanes, gold stays
+gold (provisional has no inverse), and the y-axis widens. The swap is an
+OVERPAINT, not a colour argument: `stdTimesPlot` draws red and has no colour
+knob, and adding one would reach into `plot-gps-timeseries`' path for a
+workbench display option — so the kept series is redrawn grey over itself, the
+green "last datapoint" rim survives (it marks the epoch, not a verdict), and
+default figures stay bit-identical.
+
+What it makes legible: **an all-grey component is one where NOTHING was
+flagged**, which on an aborted component is the only on-figure trace of the
+abort — `screen_outside_window` discards `view_flags`' abort list, so
+`ABORT_BADGE_*` never reaches this lane (it is wired on `--view cleaned`).
+NYLA is the worked case (numbers in the memory note): unmodeled deformation in
+the last two years alone trips the abort, and a +48 mm one-day blunder from
+2022 therefore renders as ordinary data.
+
+**Outside** the window there is no such conflict — the fit passed no verdict at
+all, and with a pre-unrest window that is most of the series (RHOF: 3337 of
+4789 epochs). Drawn plain they claim "clean" and one blunder owns the y-axis, so
+`screen_outside_window` fills the silence with the view detector, restricted to
+`~estimate.in_window` (`--no-screen-outside-window` to opt out). It is a
+**second lane, never a merge**: hollow grey against the fit's solid grey, its
+own printed count, and the record — `n_rejected`, `--commit`, everything stored
+— is untouched. RHOF flags [31, 16, 10] out there and north's out-of-window
+range falls 73 → 27 mm. Masked because a *view* verdict masks (the cleaned
+view's rule), not because "not in the fit" — no out-of-window epoch is.
+
+Two seams make the lanes agree rather than argue: `timesmatplt.view_flags` is
+now the single detector call site (`_mask_outliers` is its plotting half),
+taking `restrict=` — detection still runs on the FULL series, only the verdict
+narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.csv ∪
+fit-catalog ∪ `--step`). `record["step_epochs"]` is the wrong source and
+instructively so: it keeps only epochs *inside* the window. Expect these flags
+to differ from `--view cleaned` — `uncert` screens σ at read time and the
+workbench defaults to 10 against the plot driver's 15.
+
+Gold DOES appear out there, bounded by `--provisional-days` (same meaning as in
+the plot driver; the bound matters more here, since a decade of screened epochs
+holds old mid-series indeterminate clusters that would otherwise dominate the
+lane). "A fit has no provisional category" is a statement about *fit* verdicts;
+the view detector has one, and with a pre-unrest window the newest epochs are
+exactly the out-of-window ones — rendering a genuinely undecided recent epoch
+red would be the one claim nobody can make. Gold survives `--hide-outliers`;
+both greys do not. The dashed royalblue window edges stay essential — they are
+what says which grey is which, which is also why `--donor` skips the screen
+outright and says so: the edges would then be the donor's window while the
+unjudged epochs are the station's own.
+
+`--out` shares the scratch figdir with `tools/local-plot/figview.sh`: a bare
+filename lands in `$FIGDIR`, else the checkout's gitignored `tmp-figdir/`, else
+CWD. A path with a separator is honoured verbatim, so an exported `FIGDIR` can
+never relocate an explicit `--out`. `--max-gap-years` is effectively required —
+the 0.5 default rejects every station in the working set.
+
+Every event line is **clipped to the plotted span** by `render` itself
+(`clip_events_to_span`), and `main` prints what that dropped. Not cosmetic:
+`axvline` clips to the axes but `Text` does not, so an out-of-span event loses
+its line and keeps its caption, stranded in the margin beside an axis it does
+not mark. BJTV is the case — installed 2021-08-09, solution starts 2024.09.
+The clip lives in `render` so a direct call (test, REPL) cannot skip it; an
+empty or all-NaN `yearf` keeps everything, since with no span nothing can be
+outside it.
+
+Events are **declared, never detected** (tier A), in three colours: `darkgreen`
+new antenna / receiver installs (live `tostools`), `darkred` seismic
+(`steps.csv` rows whose `kind` is
+earthquake/coseismic/seismic, plus `--event YYYYMMDD[,LABEL]`), `royalblue` the
+fit. Seismic lines read `steps.csv` via `gps_parser.outlier_catalogs.read_steps`,
+**not** `gps_views.station_step_epochs` — that one drops `kind`, so it cannot
+separate an earthquake from an antenna swap. No skjálftalísa client exists
+anywhere in the ecosystem (planned only, in `analysis.yaml` + the CSV header).
+
+A green line claims the phase centre may have MOVED, so three filters stand
+between a TOS row and one. Subtype: `EQUIPMENT_SUBTYPES` = `antenna` +
+`gnss_receiver` only, verified against the canonical 153 — `children_connections`
+is one row per device join of any kind, and RHOF's 2023-08-16 line was a GSM
+modem plus a SIM card drawn across all three components. Resolving the device
+takes one entity call each (`resolve_devices` → `DeviceInfo`, ~30 ms,
+process-cached): the join row carries only `id_entity_child`, which is why
+labels read "2 devices", then "(antenna, receiver)", and now name the
+instrument — `2010-06-03 (rx TRIMBLE NETRS)`. Installs only — `time_to` is read
+by nothing, a removal is not a line. **Actually new**: a join continuing the
+same model AND serial it replaces is a re-registration, caught by
+`is_same_unit`. SELF 2010-06-03 is the case — antenna TRM29659.00/263955
+re-joins the day it closes, so the day claimed an antenna change when only the
+receiver moved (5700 → NETRS); invisible until labels named the unit. Plus the
+`1000-01-01` sentinel. **`MIN_DEPLOYMENT_DAYS = 30`**: a campaign measurement is
+registered exactly like a permanent install, so only duration separates them —
+SELF's 2001-07-01/-07-16/-09-14 are 3–4 day deployments against installs of
+3040 days and open, four lines in a two-year span where two belong. An OPEN join
+always counts however young, else the newest equipment on every station is
+invisible. Survivors coalesce per day, always one line (RHOF's 13:20 and 15:30
+are one visit). Net: RHOF 4 lines → 3, **SELF 6 → 2**. A whitelist fails
+SILENT, so a lookup that resolves
+nothing raises rather than returning an empty list — bare and "never swapped"
+render identically. `monument` is excluded per the operator rule and is the one
+excluded subtype that physically could matter.
+
+Offsets are declare-and-fit: epochs FIXED, amplitudes estimated and shown at
+once. Epoch detection is absent deliberately — it is *circular* today: a jump
+detector needs clean data, the outlier detector needs declared jumps to make it
+(SELF: 9.1 % candidates and abort until one step was declared).
+
+Round-trip fidelity — what you judged is what gets stored — is enforced, not
+assumed. `--terms` still does NOT round-trip (`model=` is stored at fit time,
+`terms=` is per-call and unstored — two different decisions, 16.48 mm max
+divergence), so `--commit` under a non-default `--terms` is **refused** before
+any data is read (exit 5), naming `--model` as the lever that is stored.
+Looking under `--terms` stays free. `uncert` screens sigma at READ time, so it
+changes which epochs were fitted while leaving no trace in any fitted
+quantity: both sides now carry it in `refs` and both expose the flag
+(`gps-estimate-detrend --uncert`, default 15 = `getData`'s own; workbench
+default 10), and a commit that used a non-default prints the batch invocation
+that reproduces it.
+
+Remaining gaps: `--donor` copies rather than points, so it will not follow a
+re-estimated donor; the `max_gap_years=0.5` gate fails every station in the
+working set, so pass `--max-gap-years` (0.5 is the *shared* default — it also
+lives in `gps_analysis.estimate_detrend` and `gps_api`'s precompute config, so
+changing it is a fleet decision, not a CLI default).
+
+Fractional-year epochs are at **noon** — 2008-05-29 is `149.5/366 = 2008.40847`,
+not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
+
+## Qt picker (`gps-detrend-picker-qt`)
+
+Layered ON TOP of the workbench CLI, never replacing it, and its whole
+promise is one invariant: **the emitted command reproduces the figure.**
+Every divergence found so far has been a second place that assembled the
+same decision — so settings are built by the workbench's own
+`_override_settings` (one assembly site), and every run parameter that
+changes the data is emitted.
+
+Four ways it broke that invariant, all fixed 2026-08-09/16 and worth knowing
+because the shape recurs: a picked step REPLACED the declared ones while
+`--step` MERGES (on SELF the difference between an aborted fit and a clean
+one); the domain region opened on the DATA SPAN and emitted `--segment` only
+when moved off it, so an untouched region on a station with a
+`fit_windows.csv` window fitted everything and emitted a command reproducing
+the window; `--tot-dir` was never emitted (a different series, not a
+different fit); `--uncert` was float here and int there, so any non-default
+screen emitted a command that will not parse.
+
+An UNTOUCHED domain region passes `segments=None` rather than its own hull —
+a catalog row may declare a UNION and one region cannot draw one, so the
+header says `shown as hull of N catalog segments` instead of silently
+re-including an excision. `load_session` runs at LAUNCH and parses the whole
+payload before touching a widget: a corrupt session degrades to the declared
+defaults and names the file (it is somebody's curation), where it used to
+take the application down before the window appeared.

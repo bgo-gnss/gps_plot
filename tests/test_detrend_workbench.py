@@ -1246,3 +1246,51 @@ def test_open_bounds_are_expressible_from_the_cli(tmp_path, monkeypatch):
     )
     assert rc == 0
     assert seen["segments"] == ((None, 2008.35), (2008.7, None))
+
+
+def test_commit_stores_model_and_terms_where_the_batch_will_find_them(tmp_path):
+    """`--commit` must store the FIT-time decisions, not just the record.
+
+    The batch RECOMPUTES the record, so a model or a transient living only
+    inside it is invisible to `gps-estimate-detrend` — exactly the hole the
+    stage plans were in until e6dd887. This is the write half of
+    geo_dataread's `detrend.estimation.models` block.
+    """
+    import yaml
+
+    from geo_dataread.analysis_yaml import (
+        StationModel,
+        read_station_models,
+        write_station_model,
+    )
+
+    path = tmp_path / "analysis.yaml"
+    # what `--commit` assembles from the parsed flags
+    entry = StationModel(model="periodic", terms=("log@2008.4085,tau=1.0",))
+    write_station_model(path, "SELF", entry)
+    assert read_station_models(path) == {"SELF": entry}
+
+    # and it must coexist with a stage plan for the same station in one file
+    from geo_dataread.stage_plan import (
+        build_stage_plan,
+        read_stage_plans,
+        write_stage_plan,
+    )
+
+    plan = build_stage_plan(["fit:periodic,step"], [])
+    write_stage_plan(path, "SELF", plan)
+    doc = yaml.safe_load(path.read_text())["detrend"]["estimation"]
+    assert set(doc) == {"models", "stage_plans"}
+    assert read_station_models(path) == {"SELF": entry}
+    assert read_stage_plans(path) == {"SELF": plan}
+
+
+def test_commit_writes_model_terms_only_when_the_operator_set_them(tmp_path):
+    """No flags, no entry: the 37 deployed stations must gain nothing."""
+    import inspect
+
+    from gps_plot import detrend_workbench as wb
+
+    src = inspect.getsource(wb.main)
+    assert "if args.model is not None or args.term:" in src
+    assert "write_station_model(yaml_path, sta, entry)" in src
