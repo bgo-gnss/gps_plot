@@ -481,3 +481,103 @@ class TestQtPickerBorrowedFeatures:
             round(v, 4) for v in w.span
         )
         assert "--segment" not in w.command.text()
+
+    def test_the_emitted_command_carries_every_run_parameter(self) -> None:
+        """A flag that changes the data but not the command is a divergence.
+
+        Three, all in the same family as the picked-step bug:
+        ``--tot-dir`` was never emitted, so a picker run against a
+        non-default TOT directory emitted a command reading the DEFAULT one
+        — a different series entirely. ``--uncert`` was a float here and an
+        int in the workbench, so ``str(12.0)`` produced a command
+        ``gps-detrend-workbench`` REFUSES to parse. And ``--provisional-days``
+        was never emitted at all.
+        """
+        w = self._window()
+        w.tot_dir = "/data/alt-tot"
+        w.uncert = 12
+        w.provisional_days = 30.0
+        w.refit()
+        cmd = w.command.text()
+        assert "--tot-dir /data/alt-tot" in cmd
+        assert "--uncert 12" in cmd and "--uncert 12.0" not in cmd
+        assert "--provisional-days 30.0" in cmd
+
+        # and it must actually PARSE on the workbench side
+        import shlex
+
+        from gps_plot.detrend_workbench import _build_parser
+
+        argv = shlex.split(cmd)
+        assert argv[0] == "gps-detrend-workbench"
+        ns = _build_parser().parse_args(argv[1:])
+        assert ns.uncert == 12 and ns.tot_dir == "/data/alt-tot"
+        assert ns.provisional_days == 30.0
+
+    def test_provisional_days_reaches_the_window(self) -> None:
+        """The flag was parsed and then dropped on the floor.
+
+        `main` never passed it to `PickerWindow`, so the gold lane always used
+        geo_dataread's default and the header said so regardless of what was
+        typed — a flag that documents a behaviour it does not have.
+        """
+        import inspect
+
+        from gps_plot import detrend_picker_qt as dp
+
+        src = inspect.getsource(dp.main)
+        assert "provisional_days=args.provisional_days" in src
+        assert "tot_dir=args.tot_dir" in src
+
+        w = self._window()
+        w.provisional_days = 0.0
+        w.refit()
+        assert "prov 0.0 d" in w.header.text()
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "[]",
+            '{"domain": "2009:2019"}',
+            '{"domain": [2009.0]}',
+            '{"domain": [2019.0, 2009.0]}',
+            '{"steps": ["soon"]}',
+            '{"steps": 2015.5}',
+            '{"stage": [1, 2]}',
+            '{"term": {"on": true, "epoch": "later"}}',
+            "not json at all",
+        ],
+    )
+    def test_a_corrupt_session_never_takes_the_window_down(self, payload: str) -> None:
+        """`load_session` runs at LAUNCH, so nothing in it may raise.
+
+        Only a JSON syntax error was caught. A structurally wrong session —
+        a list at top level, a two-element domain that is not, a step epoch
+        that is not a number — crashed the application before the window
+        appeared, leaving no way in to clear the file that was killing it.
+        """
+        w = self._window()
+        w._session_path().parent.mkdir(parents=True, exist_ok=True)
+        w._session_path().write_text(payload)
+        assert w.load_session() is False
+        assert "NOT restored" in w.summary.toPlainText()
+        # and nothing half-applied: the domain is still the declared one
+        assert tuple(round(v, 4) for v in w.domain_regions[0].getRegion()) == tuple(
+            round(v, 4) for v in w.default_domain
+        )
+
+    def test_a_good_session_still_round_trips_after_the_hardening(self) -> None:
+        w = self._window()
+        for r in w.domain_regions:
+            r.blockSignals(True)
+            r.setRegion((2005.0, 2015.0))
+            r.blockSignals(False)
+        w._add_step(2011.25)
+        w.save_session()
+        w2 = self._window()
+        assert w2.load_session() is True
+        assert tuple(round(v, 4) for v in w2.domain_regions[0].getRegion()) == (
+            2005.0,
+            2015.0,
+        )
+        assert [round(g[0].value(), 4) for g in w2.step_lines] == [2011.25]

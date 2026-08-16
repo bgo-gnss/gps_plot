@@ -80,6 +80,13 @@ __all__ = ["main"]
 KEPT_COLOR = (214, 39, 40)  # red   — in the fit
 FLAG_COLOR = (150, 150, 150)  # grey  — flagged outlier, masked
 FIT_COLOR = (31, 119, 180)  # blue  — the fitted trajectory
+WORKBENCH_UNCERT_DEFAULT = 10
+"""``gps-detrend-workbench``'s own ``--uncert`` default, mirrored so the
+emitted command omits the flag exactly when the workbench would default to
+the same screen. An int, like the workbench's, because it is the same
+quantity: it selects which epochs are READ, so the two sides must be able to
+spell it identically."""
+
 DOMAIN_COLOR = (31, 119, 180, 40)
 STAGE_COLOR = (255, 127, 14, 55)
 OUTSIDE_COLOR = (105, 105, 105)  # dimgrey — view-flagged OUTSIDE the fit window
@@ -119,8 +126,9 @@ class PickerWindow:  # pragma: no cover - GUI
         settings: Any,
         *,
         max_gap_years: float | None,
-        uncert: float,
+        uncert: int,
         provisional_days: float | None = None,
+        tot_dir: str | None = None,
     ) -> None:
         pg, QtWidgets = _require_qt()
         import numpy as np
@@ -131,6 +139,10 @@ class PickerWindow:  # pragma: no cover - GUI
         self.base_settings = settings
         self.max_gap_years, self.uncert = max_gap_years, uncert
         self.provisional_days = provisional_days
+        # Kept only so the emitted command can carry it: a picker run against
+        # a non-default TOT directory used to emit a command that reads the
+        # DEFAULT one, i.e. a different series entirely.
+        self.tot_dir = tot_dir
         self.span = (float(np.nanmin(yearf)), float(np.nanmax(yearf)))
         # The domain region opens on the CATALOG's fit window, not on the data
         # span.  Starting at the span asserted "fit everything" over a station
@@ -495,42 +507,118 @@ class PickerWindow:  # pragma: no cover - GUI
         self._session_path().write_text(json.dumps(payload, indent=2))
         self.summary.setPlainText(f"session saved -> {self._session_path()}")
 
+    def _parse_session(self, d: Any) -> dict[str, Any]:
+        """Validate a session payload into plain values, touching no widget.
+
+        Separate from :meth:`load_session` so a malformed field cannot
+        HALF-apply: every field is parsed first, and only a payload that
+        parses in full is allowed to move anything on screen. Applying as it
+        went would leave the picker in a state that is neither the session
+        nor the defaults, with a fit on screen matching no command.
+
+        Raises:
+            ValueError: naming the offending field.
+        """
+
+        def pair(v: Any, field: str) -> tuple[float, float]:
+            if not isinstance(v, (list, tuple)) or len(v) != 2:
+                raise ValueError(f"{field}: expected two numbers, got {v!r}")
+            try:
+                lo, hi = float(v[0]), float(v[1])
+            except (TypeError, ValueError):
+                raise ValueError(f"{field}: not numeric: {v!r}") from None
+            if not (lo < hi):
+                raise ValueError(f"{field}: {lo} is not below {hi}")
+            return lo, hi
+
+        if not isinstance(d, dict):
+            raise ValueError(f"top level must be an object, got {type(d).__name__}")
+        stage = d.get("stage") or {}
+        term = d.get("term") or {}
+        if not isinstance(stage, dict) or not isinstance(term, dict):
+            raise ValueError("'stage' and 'term' must be objects")
+        steps_raw = d.get("steps") or []
+        if not isinstance(steps_raw, (list, tuple)):
+            raise ValueError(f"'steps' must be a list, got {steps_raw!r}")
+        try:
+            steps = [float(e) for e in steps_raw]
+        except (TypeError, ValueError):
+            raise ValueError(f"'steps': not all numeric: {steps_raw!r}") from None
+
+        out: dict[str, Any] = {
+            "domain": (
+                pair(d["domain"], "domain")
+                if d.get("domain") is not None
+                else self.default_domain
+            ),
+            "stage_window": (
+                pair(stage["window"], "stage.window")
+                if stage.get("window") is not None
+                else self.span
+            ),
+            "stage_on": bool(stage.get("on")),
+            "term_on": bool(term.get("on")),
+            "steps": steps,
+            "kind": term.get("kind") if term.get("kind") in ("log", "exp") else None,
+        }
+        for key, field in (("epoch", "term.epoch"), ("tau", "term.tau")):
+            raw = term.get(key)
+            if raw in (None, 0, 0.0):
+                out[key] = None
+                continue
+            try:
+                out[key] = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"{field}: not numeric: {raw!r}") from None
+        return out
+
     def load_session(self) -> bool:
-        """Restore picks written by :meth:`save_session`. Returns True if any."""
+        """Restore picks written by :meth:`save_session`. Returns True if any.
+
+        Called at launch, which is why nothing here may raise: a session file
+        that is unreadable OR structurally wrong used to take the whole
+        application down before the window appeared — leaving the operator no
+        way in to clear the very file that was killing it. A bad session now
+        degrades to the defaults and says where the file is, because the file
+        is somebody's curation and deleting it unasked is the worse failure.
+        """
         import json
 
         path = self._session_path()
         if not path.exists():
             return False
         try:
-            d = json.loads(path.read_text())
-        except (OSError, ValueError):
+            d = self._parse_session(json.loads(path.read_text()))
+        except (OSError, ValueError, TypeError) as exc:
+            self.summary.setPlainText(
+                f"session NOT restored — {path} is unusable ({exc}).\n"
+                f"Starting from the declared defaults; the file is left as is."
+            )
             return False
         for r in self.domain_regions:
             r.blockSignals(True)
             # a session with no stored domain falls back to the DECLARED one,
             # for the same reason the initial region does
-            r.setRegion(tuple(d.get("domain", self.default_domain)))
+            r.setRegion(d["domain"])
             r.blockSignals(False)
         for r in self.stage_regions:
             r.blockSignals(True)
-            r.setRegion(tuple(d.get("stage", {}).get("window", self.span)))
+            r.setRegion(d["stage_window"])
             r.blockSignals(False)
-        self.cb_stage.setChecked(bool(d.get("stage", {}).get("on")))
-        term = d.get("term", {})
-        self.cb_term.setChecked(bool(term.get("on")))
-        if term.get("kind") in ("log", "exp"):
-            self.kind.setCurrentText(term["kind"])
-        if term.get("epoch") is not None:
+        self.cb_stage.setChecked(d["stage_on"])
+        self.cb_term.setChecked(d["term_on"])
+        if d["kind"] is not None:
+            self.kind.setCurrentText(d["kind"])
+        if d["epoch"] is not None:
             for ln in self.onset_lines:
                 ln.blockSignals(True)
-                ln.setValue(float(term["epoch"]))
+                ln.setValue(d["epoch"])
                 ln.blockSignals(False)
-        if term.get("tau"):
-            self.tau.setValue(float(term["tau"]))
+        if d["tau"] is not None:
+            self.tau.setValue(d["tau"])
         self._clear_steps_quiet()
-        for e in d.get("steps", []):
-            self.step_lines.append(self._add_line(float(e), STEP_COLOR))
+        for e in d["steps"]:
+            self.step_lines.append(self._add_line(e, STEP_COLOR))
         self.refit()
         return True
 
@@ -905,10 +993,20 @@ class PickerWindow:  # pragma: no cover - GUI
         from gps_plot.detrend_picker import render_command
 
         flags = list(extra)
+        if self.tot_dir is not None:
+            flags += ["--tot-dir", self.tot_dir]
         if self.max_gap_years is not None:
             flags += ["--max-gap-years", str(self.max_gap_years)]
-        if self.uncert != 10.0:
+        if self.uncert != WORKBENCH_UNCERT_DEFAULT:
+            # `str(self.uncert)` on a float emitted "--uncert 12.0", which the
+            # workbench's `type=int` REFUSES -- so any non-default screen
+            # produced a command that does not run. The screen is now an int
+            # on this side too, because it must be the same quantity: it
+            # decides which epochs are read, so a picker and a workbench that
+            # could not spell it the same way could not fit the same series.
             flags += ["--uncert", str(self.uncert)]
+        if self.provisional_days is not None:
+            flags += ["--provisional-days", str(self.provisional_days)]
         if plan is None:
             parts = ["gps-detrend-workbench", self.sta]
             for t in terms:
@@ -927,7 +1025,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
     )
     p.add_argument("station")
     p.add_argument("--tot-dir", default=None)
-    p.add_argument("--uncert", type=float, default=10.0)
+    p.add_argument(
+        "--uncert",
+        type=int,
+        default=WORKBENCH_UNCERT_DEFAULT,
+        help=f"formal-sigma screen [mm] applied at READ time (default: "
+        f"{WORKBENCH_UNCERT_DEFAULT}, the workbench's own). int, not float, "
+        f"because the emitted command has to be executable by "
+        f"gps-detrend-workbench",
+    )
     p.add_argument("--max-gap-years", type=float, default=None)
     p.add_argument(
         "--provisional-days",
@@ -989,6 +1095,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
         settings,
         max_gap_years=args.max_gap_years,
         uncert=args.uncert,
+        provisional_days=args.provisional_days,
+        tot_dir=args.tot_dir,
     )
     window.win.show()
     return int(app.exec())
