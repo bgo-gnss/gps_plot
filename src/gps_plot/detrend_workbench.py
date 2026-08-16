@@ -654,7 +654,13 @@ def tos_equipment_epochs(
     on RHOF's 2023-08-16, two rows timestamped 13:20 and 15:30 that are
     plainly the same visit.  One day is one line, always.
 
-    Net effect on the working set: RHOF 4 lines -> 3, SELF 6 -> 5.
+    Net effect on the working set: RHOF 4 lines -> 3, SELF 6 -> 2.
+    (This said 6 -> 5 until 2026-08-16, which was true when the line was
+    written and stopped being true at ed9d2c5: MIN_DEPLOYMENT_DAYS drops
+    SELF's three 2001 campaign joins, and that commit updated CLAUDE.md
+    without updating here.  Verified against the tos_SELF.json fixture --
+    17 rows -> 6 candidate days after the sentinel -> 5 after the subtype
+    filter -> 2 after the campaign filter.)
 
     Args:
         sta: station code.

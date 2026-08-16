@@ -375,7 +375,7 @@ def _mask_outliers(
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
     provisional_days: float | None = None,
-) -> tuple[Any, tuple[Any, Any] | None, tuple[Any, Any] | None]:
+) -> tuple[Any, tuple[Any, Any] | None, tuple[Any, Any] | None, list[bool] | None]:
     """Split a series into a cleaned main series and an outlier overlay.
 
     The station-aware resolution chain lives in :func:`view_flags` (which
@@ -402,16 +402,24 @@ def _mask_outliers(
             resolves the deployed catalog.
 
     Returns:
-        ``(data, overlay, provisional)`` — ``overlay`` is
+        ``(data, overlay, provisional, aborted)`` — ``overlay`` is
         ``(out_data, out_Ddata)`` NaN everywhere except the flagged
         epochs, or None when nothing was flagged.  ``provisional`` has the
         same shape convention for the epochs the detector could not rule
         on yet (recent + indeterminate step evidence), or None.
+        ``aborted`` is :func:`view_flags`' per-component abort list, passed
+        through so the caller can draw the badge.
 
-        The two are disjoint and behave differently on purpose: flagged
-        epochs are REMOVED from the returned series, provisional ones are
-        KEPT in it.  A provisional marker annotates a point that is still
-        part of the data.
+        overlay and provisional are disjoint and behave differently on
+        purpose: flagged epochs are REMOVED from the returned series,
+        provisional ones are KEPT in it.  A provisional marker annotates a
+        point that is still part of the data.
+
+        The fourth member is not decoration: a component whose detection
+        aborted is served RAW with only a ``UserWarning``, so without it an
+        aborted axis is indistinguishable from a clean one.  It was missing
+        from this annotation while both ``return`` statements and every
+        caller had four members.
     """
     flags, pflags, aborted = view_flags(
         sta,

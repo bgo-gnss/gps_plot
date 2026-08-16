@@ -823,3 +823,20 @@ def test_raw_view_never_touches_the_outlier_chain(monkeypatch, tmp_path):
     tplt.plotTime(
         "RHOF", save="png", figDir=str(tmp_path), logo=False, outlier_params="PARAMS"
     )
+
+
+def test_mask_outliers_annotation_matches_what_it_returns() -> None:
+    """The return annotation said three members; both returns give four.
+
+    The missing one is ``aborted``, and it is the one that matters most: a
+    component whose detection aborted is served RAW with only a
+    ``UserWarning``, so without it an aborted axis is indistinguishable from
+    a clean one. A wrong annotation on the seam that carries that signal is
+    how a caller comes to drop it.
+    """
+    import typing
+
+    from gps_plot import timesmatplt as tplt
+
+    hints = typing.get_type_hints(tplt._mask_outliers)
+    assert len(typing.get_args(hints["return"])) == 4
