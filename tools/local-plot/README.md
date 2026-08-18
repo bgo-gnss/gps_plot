@@ -46,9 +46,20 @@ Output filenames are siblings: `{STA}-plate.png`, `{STA}-plate-cleaned.png`,
 **Why it matters, not just how.** The production archive `/mnt_data/gpsdata`
 holds *raw* GLOBK segments — overlapping in time, with per-segment datums that
 are not reconciled. HVER's Up wraps by 10 m there (1746 epochs off-datum);
-`geo_dataread.globk_join` de-wraps and min-σ-dedupes them, leaving 1. The fix
-is **local only** until it ships to production, so `postprocess.cfg`
-`totDir` points at the joined output and this refresh is a MANUAL step.
+`geo_dataread.globk_join` de-wraps and min-σ-dedupes them, leaving 1. So
+`postprocess.cfg` `totDir` points at the joined output and this refresh is a
+MANUAL step.
+
+**The local join is kept on purpose, not pending anything** (BGÓ, 2026-08-18).
+This used to read "local only until it ships to production" — it shipped on
+2026-08-17 (`globk_join` runs in okada's `tododaily`, layered after
+`compGLOBK`), and `/mnt_data/gps_gmt_data/TOT` now carries joined series for
+the `stations.cfg` stations. Do NOT switch to it: `gpslibrary` development
+stays **isolated from production**, so the analysis lane keeps re-joining into
+`~/gps-data/TOT` from the segments and nothing here depends on a production
+pipeline that can change under it. A production-fed `totDir` would also make
+every local figure irreproducible the moment okada's join is reverted — which
+is one deleted line in `tododaily`.
 
 ```bash
 mamba activate gpslibrary
