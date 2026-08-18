@@ -89,6 +89,15 @@ station into `detrend_params.json`, preserving the rest; without it nothing is
 stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
 renders from that record.
 
+**Per-station curation is config, not just a record.** `--commit` writes three
+things a batch re-run must find, all merge-written one station at a time into
+the deployed files: the record → `detrend_params.json`; the stage plan →
+`analysis.yaml` `detrend.estimation.stage_plans`; the model + `--term`
+transients → `analysis.yaml` `detrend.estimation.models`. A fit-time decision
+living only inside the record is invisible to `gps-estimate-detrend`, which
+RECOMPUTES the record — that was true of stage plans until 2026-08-16 and of
+model/terms until the same day.
+
 ```bash
 # catalogs deployed to ~/.config/gpsconfig 2026-07-29 — no GPS_CONFIG_PATH needed
 gps-detrend-workbench SELF --max-gap-years 2.0 --out SELF-iter1.pdf
