@@ -45,6 +45,8 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from gps_plot.detrend_workbench import WORKBENCH_UNCERT_DEFAULT, run_flags
+
 __all__ = ["pick_stage_plan", "populated_groups", "render_command", "main"]
 
 #: Shading for accepted stage spans, cycled in declaration order.
@@ -334,7 +336,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("station")
     p.add_argument("--tot-dir", default=None)
-    p.add_argument("--uncert", type=float, default=10.0)
+    p.add_argument(
+        "--uncert",
+        type=int,
+        default=WORKBENCH_UNCERT_DEFAULT,
+        help=f"formal-sigma screen [mm] applied at READ time (default: "
+        f"{WORKBENCH_UNCERT_DEFAULT}, the workbench's own). int, not float, "
+        f"because the emitted command has to be executable by "
+        f"gps-detrend-workbench, whose --uncert is type=int and refuses "
+        f"'12.0'",
+    )
     p.add_argument("--max-gap-years", type=float, default=None)
     args = p.parse_args(argv)
     sta = args.station.upper()
@@ -360,11 +371,18 @@ def main(argv: list[str] | None = None) -> int:
         print("nothing picked.")
         return 1
 
-    extra: list[str] = []
-    if args.max_gap_years is not None:
-        extra += ["--max-gap-years", str(args.max_gap_years)]
-    if args.uncert != 10.0:
-        extra += ["--uncert", str(args.uncert)]
+    # Every run parameter that changes the DATA has to reach the command --
+    # the same invariant the Qt picker states, and the same two ways of
+    # breaking it, both of which were live here: `--tot-dir` was read but
+    # never emitted, so the command reproduced the figure off a different
+    # series entirely; and `--uncert` was a float against the workbench's
+    # int, so any non-default screen emitted a line argparse refuses. Both
+    # pickers now assemble this list through the workbench's `run_flags`.
+    extra = run_flags(
+        tot_dir=args.tot_dir,
+        max_gap_years=args.max_gap_years,
+        uncert=args.uncert,
+    )
 
     print("\n" + "=" * 70)
     print(render_command(sta, plan, extra))

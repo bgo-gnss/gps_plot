@@ -289,15 +289,66 @@ same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
 changes the data is emitted.
 
-Four ways it broke that invariant, all fixed 2026-08-09/16 and worth knowing
-because the shape recurs: a picked step REPLACED the declared ones while
-`--step` MERGES (on SELF the difference between an aborted fit and a clean
-one); the domain region opened on the DATA SPAN and emitted `--segment` only
-when moved off it, so an untouched region on a station with a
+Five ways it broke that invariant, all fixed 2026-08-09/16/17 and worth
+knowing because the shape recurs: a picked step REPLACED the declared ones
+while `--step` MERGES (on SELF the difference between an aborted fit and a
+clean one); the domain region opened on the DATA SPAN and emitted `--segment`
+only when moved off it, so an untouched region on a station with a
 `fit_windows.csv` window fitted everything and emitted a command reproducing
 the window; `--tot-dir` was never emitted (a different series, not a
 different fit); `--uncert` was float here and int there, so any non-default
-screen emitted a command that will not parse.
+screen emitted a command that will not parse; and the stage lane's final-stage
+free-group list was built from the PICKED steps.
+
+That fifth one is the same lever as the first. `steps.csv` is a floor that
+`_override_settings` merges in, so on a station with a declared step an
+untouched stage plan freed only `secular` while the fit still carried
+`step_amp_1` — refused, every time, with *"never estimated and not held in
+the final stage"*. Both sides refused identically, so the emitted command
+still reproduced the figure; what broke was the **feature**: the stage lane
+was unusable on exactly the two stations in `steps.csv` (SELF, HOFN), and
+nothing said that re-declaring the already-declared step was the way out.
+`free2` now asks `_declared_step_epochs(sta, settings.steps)` — the merged
+set, the same function `_override_settings` uses. Conditional, not blanket:
+RHOF has no declared step and its plan is byte-identical to before
+(`--stage long:secular`).
+
+**One assembly site for the run flags, because there are two pickers.**
+`detrend_workbench.run_flags()` builds the `--tot-dir` / `--max-gap-years` /
+`--uncert` / `--provisional-days` tail for both. The marimo picker
+(`gps-detrend-picker`) had TWO of the four violations above still live after
+the Qt picker was fixed — `--tot-dir` read and never emitted, and `--uncert`
+as `type=float` emitting `12.0` at a `type=int` parser — while printing
+*"the workbench re-parses this line, so every refusal still applies."*
+Two pickers assembling the same list is two places to forget the same flag.
+`WORKBENCH_UNCERT_DEFAULT` now lives in `detrend_workbench` beside
+`BATCH_UNCERT_DEFAULT` and is imported by both; omission is only correct
+because it is the workbench's own default, not a number restated.
+**Breaking, deliberately:** `gps-detrend-picker --uncert 12.5` used to be
+accepted and now hard-errors, because what it accepted it could not emit.
+`run_flags` RAISES on a non-integral `uncert` rather than rounding — rounding
+is the same bug in disguise, trading a loud argparse refusal for a command
+that parses and then reads a different set of epochs than the figure was
+fitted on.
+
+Measured 2026-08-17 by driving `PickerWindow` offscreen and diffing the
+picker's record against the one the emitted command produces, elementwise:
+**11 cases, fitted quantities identical in all of them** (untouched, moved
+domain, picked step, `--term`, stage, stage+step, stage+term, RHOF stage
+baseline, `--uncert 12`, `--provisional-days`+`--tot-dir`, catalog union).
+Two divergences remain and are provenance-only, neither able to reach a
+stored record because the picker has no `--commit`: `refs.uncert` is absent
+picker-side (deliberate — `estimate_record`'s docstring states the picker
+passes a subset), and `refs.window_source` reads `defaults` picker-side
+against `workbench-cli(+defaults)` CLI-side, because the picker folds
+`--max-gap-years` into `FitDefaults` where the workbench routes it through
+`_override_settings`.
+
+The union case is verified against a SYNTHETIC catalog injected via
+`--fit-catalog`, not deployed config: the deployed `fit_windows.csv` has
+exactly one row (DYNG, no window, no segments), so no deployed row declares a
+union. Note also that the picker has no `--fit-catalog` flag — it always
+reads the deployed catalog, and so does the command it emits.
 
 An UNTOUCHED domain region passes `segments=None` rather than its own hull —
 a catalog row may declare a UNION and one region cannot draw one, so the

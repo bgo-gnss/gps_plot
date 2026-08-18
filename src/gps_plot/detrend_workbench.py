@@ -84,6 +84,75 @@ APPLY_TERMS_DEFAULT: str = "all"
 #: commit says how to reproduce the record in batch rather than assuming it.
 BATCH_UNCERT_DEFAULT: int = 15
 
+#: The workbench's OWN ``--uncert`` default, screening harder than the batch
+#: one above.  It lives here rather than in either picker because both of
+#: them have to decide whether to EMIT ``--uncert``, and they may only omit
+#: it when this side would default to the same screen.  An int, because
+#: ``--uncert`` is ``type=int``: a picker that spelled it ``12.0`` emitted a
+#: command argparse refuses.
+WORKBENCH_UNCERT_DEFAULT: int = 10
+
+
+def run_flags(
+    *,
+    tot_dir: str | None = None,
+    max_gap_years: float | None = None,
+    uncert: int = WORKBENCH_UNCERT_DEFAULT,
+    provisional_days: float | None = None,
+) -> list[str]:
+    """The run parameters a picker must emit, assembled in ONE place.
+
+    Both pickers promise the same thing -- the emitted command reproduces
+    the figure -- and both broke it the same way: a run parameter that
+    changed the DATA was read but never emitted, so the copied command
+    fitted a different series.  ``--tot-dir`` did it in each of them
+    independently, which is the argument for this function existing: two
+    pickers assembling the same list is two places to forget the same flag.
+
+    A parameter is omitted only when this side would default to the same
+    value, so ``uncert`` is compared against
+    :data:`WORKBENCH_UNCERT_DEFAULT` -- the workbench's OWN default, not a
+    number restated here.
+
+    A non-integral ``uncert`` RAISES rather than rounding.  Rounding would
+    be the fixed bug wearing a disguise: emitting ``--uncert 12`` for a
+    figure fitted at 12.5 gives a command that parses, runs, and screens a
+    different set of epochs -- the loud failure (argparse refusing
+    ``'12.5'``) traded for a silent one.  The screen selects which epochs
+    are READ, so a value the workbench cannot spell is a value no command
+    can reproduce.
+
+    Args:
+        tot_dir: TOT directory, or None for the configured one.
+        max_gap_years: Per-segment gap gate, or None to defer.
+        uncert: Formal-sigma read screen [mm]; must be integral.
+        provisional_days: Recency bound of the gold lane, or None to defer.
+
+    Returns:
+        Flags in a fixed order, ready to append to an invocation.
+
+    Raises:
+        ValueError: If ``uncert`` is not integral.
+    """
+    flags: list[str] = []
+    if tot_dir is not None:
+        flags += ["--tot-dir", str(tot_dir)]
+    if max_gap_years is not None:
+        flags += ["--max-gap-years", str(max_gap_years)]
+    if uncert != WORKBENCH_UNCERT_DEFAULT:
+        if int(uncert) != uncert:
+            raise ValueError(
+                f"uncert={uncert!r} is not integral, and --uncert is "
+                f"type=int: no command can reproduce this screen. Rounding "
+                f"it here would emit --uncert {int(uncert)}, which parses "
+                f"and then reads a DIFFERENT set of epochs than the figure "
+                f"was fitted on. Pick a whole number of mm."
+            )
+        flags += ["--uncert", str(int(uncert))]
+    if provisional_days is not None:
+        flags += ["--provisional-days", str(provisional_days)]
+    return flags
+
 
 def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     """``OutlierParams`` for a stage selection, via the CLI's own mapping.
@@ -311,7 +380,7 @@ def build_record(
     sta: str,
     *,
     tot_dir: str | None = None,
-    uncert: int = 10,
+    uncert: int = WORKBENCH_UNCERT_DEFAULT,
     outlier_param: list[str] | None = None,
     fit_catalog: str | Path | None = None,
     model: str | None = None,
@@ -1659,7 +1728,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("station", help="four-letter station code")
     p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
-    p.add_argument("--uncert", type=int, default=10, help="sigma screen [mm]")
+    p.add_argument(
+        "--uncert",
+        type=int,
+        default=WORKBENCH_UNCERT_DEFAULT,
+        help="sigma screen [mm]",
+    )
     p.add_argument(
         "--out",
         default=None,

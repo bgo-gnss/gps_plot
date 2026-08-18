@@ -73,6 +73,11 @@ import shlex
 import sys
 from typing import Any
 
+# ``gps-detrend-workbench``'s own ``--uncert`` default, IMPORTED rather than
+# mirrored so the emitted command omits the flag exactly when the workbench
+# would default to the same screen. A copy could drift; this cannot.
+from gps_plot.detrend_workbench import WORKBENCH_UNCERT_DEFAULT
+
 __all__ = ["main"]
 
 # The cleaned-view vocabulary, kept deliberately in step with
@@ -80,13 +85,6 @@ __all__ = ["main"]
 KEPT_COLOR = (214, 39, 40)  # red   — in the fit
 FLAG_COLOR = (150, 150, 150)  # grey  — flagged outlier, masked
 FIT_COLOR = (31, 119, 180)  # blue  — the fitted trajectory
-WORKBENCH_UNCERT_DEFAULT = 10
-"""``gps-detrend-workbench``'s own ``--uncert`` default, mirrored so the
-emitted command omits the flag exactly when the workbench would default to
-the same screen. An int, like the workbench's, because it is the same
-quantity: it selects which epochs are READ, so the two sides must be able to
-spell it identically."""
-
 DOMAIN_COLOR = (31, 119, 180, 40)
 STAGE_COLOR = (255, 127, 14, 55)
 OUTSIDE_COLOR = (105, 105, 105)  # dimgrey — view-flagged OUTSIDE the fit window
@@ -759,12 +757,27 @@ class PickerWindow:  # pragma: no cover - GUI
         plan = None
         note = ""
         if stage_specs:
+            # The long stage must free `step` whenever the fit CARRIES a step
+            # column, and the picked lines are only half of where those come
+            # from: `steps.csv` is a FLOOR that `_override_settings` merges
+            # in, so ask the merged settings, never the picks.  Reading
+            # `self.step_lines` here meant that on a station with a declared
+            # step (SELF, 2008 Ölfus) an untouched stage plan freed only
+            # `secular` and EVERY fit was refused -- `step_amp_1` estimated
+            # in no stage and held in none -- with no hint that
+            # re-declaring the already-declared step was the way out. The
+            # same shape as the picked-step bug one lever over: a second
+            # place reasoning about steps that knew only about the picked
+            # ones.
+            from gps_plot.detrend_workbench import _declared_step_epochs
+
+            has_step = bool(_declared_step_epochs(self.sta, settings.steps))
             groups = ("secular", "periodic", "step", "transient")
             free2 = [
                 g
                 for g in groups
                 if g == "secular"
-                or (g == "step" and self.step_lines)
+                or (g == "step" and has_step)
                 or (g == "transient" and terms)
             ]
             stage_specs = [stage_specs[0], f"long:{','.join(free2)}"]
@@ -991,22 +1004,20 @@ class PickerWindow:  # pragma: no cover - GUI
 
     def _command(self, plan: Any, extra: list[str], terms: list[str]) -> str:
         from gps_plot.detrend_picker import render_command
+        from gps_plot.detrend_workbench import run_flags
 
-        flags = list(extra)
-        if self.tot_dir is not None:
-            flags += ["--tot-dir", self.tot_dir]
-        if self.max_gap_years is not None:
-            flags += ["--max-gap-years", str(self.max_gap_years)]
-        if self.uncert != WORKBENCH_UNCERT_DEFAULT:
-            # `str(self.uncert)` on a float emitted "--uncert 12.0", which the
-            # workbench's `type=int` REFUSES -- so any non-default screen
-            # produced a command that does not run. The screen is now an int
-            # on this side too, because it must be the same quantity: it
-            # decides which epochs are read, so a picker and a workbench that
-            # could not spell it the same way could not fit the same series.
-            flags += ["--uncert", str(self.uncert)]
-        if self.provisional_days is not None:
-            flags += ["--provisional-days", str(self.provisional_days)]
+        # Assembled by the workbench's own `run_flags`, shared with the
+        # marimo picker: two pickers building this list independently is two
+        # places to forget the same flag, and each of them forgot
+        # `--tot-dir`. It also formats `--uncert` as the int the workbench's
+        # `type=int` will accept -- "12.0" emitted a command that does not
+        # parse.
+        flags = list(extra) + run_flags(
+            tot_dir=self.tot_dir,
+            max_gap_years=self.max_gap_years,
+            uncert=self.uncert,
+            provisional_days=self.provisional_days,
+        )
         if plan is None:
             parts = ["gps-detrend-workbench", self.sta]
             for t in terms:

@@ -83,8 +83,10 @@ behaviour that belong one level down. Read it before touching any of them.
   segment.
 - **Qt picker** (`gps-detrend-picker-qt`) — layered ON TOP of the CLI, and its
   whole promise is one invariant: **the emitted command reproduces the
-  figure.** Four violations of it are catalogued there, all the same shape —
-  a second place assembling the same decision.
+  figure.** Five violations of it are catalogued there, all the same shape —
+  a second place assembling the same decision. Both pickers now build their
+  run-flag tail with `detrend_workbench.run_flags`, because two pickers
+  assembling it independently forgot the same flag independently.
 
 **Per-station curation is config, not just a record.** `--commit` writes three
 things a batch re-run must find, all merge-written one station at a time into
@@ -173,7 +175,13 @@ on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
 ---
 
-*Last reviewed: 2026-08-16 (detrend lane routed out to `docs/detrend-lane.md` — this file was 453 lines against the 150-line subdir budget; moved VERBATIM, since every measured number in it was expensive to obtain. `--commit` now stores the model + `--term` transients to `analysis.yaml` `detrend.estimation.models` as well as the stage plan, because the batch RECOMPUTES the record and a fit-time decision living only inside it cannot be found; earlier — Qt picker section added — the emitted command reproduces the figure, and the four ways that broke; `_mask_outliers` returns FOUR members (the fourth, `aborted`, is what makes an aborted axis distinguishable from a clean one) — the annotation said three; the equipment-line count in `tos_equipment_epochs` was stale at 6 → 5 from before `MIN_DEPLOYMENT_DAYS`, verified 6 → 2 against the fixture; earlier — workbench `--show-outliers`: inverted emphasis —
+*Last reviewed: 2026-08-17 (the fifth invariant violation, measured by driving
+`PickerWindow` offscreen and diffing its record against the emitted command's,
+elementwise, over 11 cases: the stage lane's final-stage free-group list was
+built from the PICKED steps, so on SELF/HOFN — the only two stations in
+`steps.csv` — every staged fit was refused; and the marimo picker still
+carried two of the four already-fixed violations, so the run-flag tail is now
+assembled once, in `detrend_workbench.run_flags`. Earlier — detrend lane routed out to `docs/detrend-lane.md` — this file was 453 lines against the 150-line subdir budget; moved VERBATIM, since every measured number in it was expensive to obtain. `--commit` now stores the model + `--term` transients to `analysis.yaml` `detrend.estimation.models` as well as the stage plan, because the batch RECOMPUTES the record and a fit-time decision living only inside it cannot be found; earlier — Qt picker section added — the emitted command reproduces the figure, and the four ways that broke; `_mask_outliers` returns FOUR members (the fourth, `aborted`, is what makes an aborted axis distinguishable from a clean one) — the annotation said three; the equipment-line count in `tos_equipment_epochs` was stale at 6 → 5 from before `MIN_DEPLOYMENT_DAYS`, verified 6 → 2 against the fixture; earlier — workbench `--show-outliers`: inverted emphasis —
 flagged red, the rest grey — display-only, exclusive with `--hide-outliers`,
 lanes still countable; makes an aborted component legible as an all-grey axis
 (NYLA); earlier — workbench out-of-window screen: the view detector

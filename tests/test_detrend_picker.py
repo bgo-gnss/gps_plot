@@ -581,3 +581,164 @@ class TestQtPickerBorrowedFeatures:
             2015.0,
         )
         assert [round(g[0].value(), 4) for g in w2.step_lines] == [2011.25]
+
+
+class TestStageLaneKnowsTheDeclaredSteps:
+    """The long stage must free `step` when the FIT carries a step column.
+
+    Fifth violation of the picker's one invariant, and the same shape as the
+    four before it: a second place reasoning about steps that knew only
+    about the PICKED ones. ``refit`` built the final stage's free-group list
+    from ``self.step_lines``, but ``steps.csv`` is a FLOOR that
+    ``_override_settings`` merges in -- so on a station with a declared step
+    an untouched stage plan freed only ``secular`` while the fit still
+    carried ``step_amp_1``, and every fit was refused with "never estimated
+    and not held in the final stage".
+
+    Both sides refused identically, so the emitted command still reproduced
+    the figure -- but the stage lane was unusable on exactly the two
+    stations in ``steps.csv`` (SELF, HOFN), and nothing on screen said that
+    re-declaring the already-declared step was the way out.
+    """
+
+    @staticmethod
+    def _staged(sta: str):
+        w = TestQtPickerBorrowedFeatures._window(sta=sta)
+        w.cb_stage.setChecked(True)
+        w.stage_regions[0].setRegion(
+            (round(w.span[0] + 0.5, 4), round(w.span[0] + 6.0, 4))
+        )
+        w.refit()
+        return w
+
+    def test_a_declared_step_frees_the_step_group(self) -> None:
+        w = self._staged("SELF")
+        assert w.record is not None, (
+            "the long stage did not free `step`, so the declared 2008 "
+            f"coseismic is estimated nowhere: {w.summary.toPlainText()[:200]}"
+        )
+        cmd = w.command.text()
+        assert "--stage long:secular,step" in cmd
+        # The declared step is fitted without ever being picked or emitted.
+        assert not w.step_lines
+        assert "--step" not in cmd
+        assert any(abs(float(v) - 2008.4085) < 0.01 for v in w.record["step_epochs"])
+
+    def test_a_station_with_no_declared_step_does_not_free_it(self) -> None:
+        """The fix has to be CONDITIONAL, or every plan frees a dead group."""
+        from gps_plot.detrend_workbench import _declared_step_epochs
+
+        w = self._staged("RHOF")
+        if _declared_step_epochs("RHOF", w.base_settings.steps):  # pragma: no cover
+            pytest.skip("RHOF gained a declared step; pick another station")
+        cmd = w.command.text()
+        assert "--stage long:secular " in cmd + " "
+        assert "step" not in cmd.split("--stage long:")[1].split(" ")[0]
+
+    def test_the_emitted_stage_plan_reproduces_the_picker_fit(self) -> None:
+        """Round-trip the NEW emission path, not just its exit code."""
+        import shlex
+
+        from geo_dataread.stage_plan import build_stage_plan
+        from gps_plot.detrend_workbench import (
+            _build_parser,
+            _override_settings,
+            estimate_record,
+        )
+
+        w = self._staged("SELF")
+        assert w.record is not None
+        ns = _build_parser().parse_args(shlex.split(w.command.text())[1:])
+        plan = build_stage_plan(ns.stage, ns.hold)
+        cli = _override_settings(w.base_settings, "SELF", quiet=True)
+        est = estimate_record(
+            "SELF", w.yearf, w.data, w.sigma, settings=cli, stage_plan=plan
+        )
+        assert est is not None
+        assert est.record["step_epochs"] == w.record["step_epochs"]
+        assert est.record["n_rejected"] == w.record["n_rejected"]
+        for a, b in zip(est.record["components"], w.record["components"]):
+            assert a["params"] == pytest.approx(b["params"])
+
+
+class TestBothPickersEmitTheSameRunFlags:
+    """`run_flags` exists because two pickers forgot the same flag.
+
+    ``--tot-dir`` was read and never emitted in the Qt picker (fixed
+    2026-08-16) and independently in the marimo one, and ``--uncert`` was a
+    float against the workbench's ``type=int`` in both. One assembly site is
+    the only thing that makes a third picker safe.
+    """
+
+    def test_uncert_is_spelled_the_way_the_workbench_parses_it(self) -> None:
+        from gps_plot.detrend_workbench import _build_parser, run_flags
+
+        flags = run_flags(uncert=12)
+        assert flags == ["--uncert", "12"], flags
+        # the float spelling is what argparse refused
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["SELF", "--uncert", "12.0"])
+        ns = _build_parser().parse_args(["SELF", *flags])
+        assert ns.uncert == 12
+
+    def test_the_default_screen_is_omitted_not_restated(self) -> None:
+        from gps_plot.detrend_workbench import (
+            WORKBENCH_UNCERT_DEFAULT,
+            _build_parser,
+            run_flags,
+        )
+
+        assert run_flags(uncert=WORKBENCH_UNCERT_DEFAULT) == []
+        # omission is only correct because the workbench defaults to the same
+        assert _build_parser().parse_args(["SELF"]).uncert == WORKBENCH_UNCERT_DEFAULT
+
+    def test_tot_dir_reaches_the_command(self) -> None:
+        from gps_plot.detrend_workbench import _build_parser, run_flags
+
+        flags = run_flags(tot_dir="/data/alt-tot", max_gap_years=1.5)
+        assert flags[:2] == ["--tot-dir", "/data/alt-tot"]
+        ns = _build_parser().parse_args(["SELF", *flags])
+        assert ns.tot_dir == "/data/alt-tot" and ns.max_gap_years == 1.5
+
+    def test_both_pickers_declare_uncert_as_the_same_type(self) -> None:
+        """A float here and an int there is how the spelling diverged."""
+        from gps_plot import detrend_picker, detrend_picker_qt
+        from gps_plot.detrend_workbench import WORKBENCH_UNCERT_DEFAULT
+
+        for mod in (detrend_picker, detrend_picker_qt):
+            assert mod.WORKBENCH_UNCERT_DEFAULT is WORKBENCH_UNCERT_DEFAULT
+
+    def test_the_marimo_picker_parses_uncert_as_an_int(self) -> None:
+        import subprocess
+        import sys
+
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import gps_plot.detrend_picker as m; m.main()",
+                "SELF",
+                "--uncert",
+                "12.5",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert out.returncode != 0
+        assert "invalid int value" in out.stderr
+
+    def test_a_non_integral_screen_raises_rather_than_rounding(self) -> None:
+        """Rounding would be the fixed bug wearing a disguise.
+
+        `--uncert 12.5` used to emit a command argparse REFUSES -- loud, and
+        the operator knew. Silently emitting `--uncert 12` instead would give
+        a command that parses, runs, and screens a different set of epochs
+        than the figure was fitted on. `PickerWindow(uncert=...)` is only an
+        annotation, so a float can still reach here.
+        """
+        from gps_plot.detrend_workbench import run_flags
+
+        with pytest.raises(ValueError, match="not integral"):
+            run_flags(uncert=12.5)
+        # an integral float is the same screen, and stays spellable
+        assert run_flags(uncert=12.0) == ["--uncert", "12"]
