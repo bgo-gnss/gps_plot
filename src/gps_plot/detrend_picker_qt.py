@@ -838,9 +838,20 @@ class PickerWindow:  # pragma: no cover - GUI
                 else np.atleast_2d(np.asarray(outside, dtype=bool))
             )
             prov = None if prov is None else np.atleast_2d(np.asarray(prov, dtype=bool))
+            # The CURVE is drawn on its own dense grid, while `fit` above
+            # stays at the data epochs because the residual spectrum needs
+            # data minus model at the SAME epochs. Two samplings, two
+            # purposes -- joining the data epochs drew a straight chord over
+            # every gap, which claims linear motion the model never fitted.
+            from gps_plot.detrend_workbench import trajectory_curve
+
+            fit_x, fit_y = trajectory_curve(est.record, self.yearf)
             for c in range(3):
-                good = np.isfinite(self.yearf) & np.isfinite(fit[c])
-                self.fit_curves[c].setData(self.yearf[good], fit[c][good])
+                # connect="finite" so a component the model cannot evaluate
+                # breaks the line instead of being joined across. The step
+                # epochs do NOT rely on it -- trajectory_curve brackets those
+                # so the jump draws vertical.
+                self.fit_curves[c].setData(fit_x, fit_y[c], connect="finite")
                 finite = np.isfinite(self.data[c])
                 flagged = outl[c] & finite
                 out_c = outside[c] & finite if outside is not None else empty

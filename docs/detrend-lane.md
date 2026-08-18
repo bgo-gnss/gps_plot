@@ -108,6 +108,35 @@ gps-detrend-workbench SELF --segment 2002.1:2008.35 --segment 2008.7:2019.5 \
     --max-gap-years 1.5          # excise the transient, estimate the offset
 ```
 
+### The drawn trajectory is the model, not the data epochs
+
+`trajectory_curve` (in `detrend_workbench`, used by BOTH the PDF's page 1 and
+the Qt picker) evaluates the record on its own dense daily grid. Evaluating at
+`yearf` and joining the dots drew a straight chord across every data gap —
+and that chord is the one part of the blue line that is not the model: it
+says the station moved linearly, while the record says the secular trend
+continued and the seasonal kept oscillating. SELF's widest gap is **268 days
+with 0 samples inside it** under the old sampling. `evaluate_record` is
+documented valid at arbitrary epochs, so nothing was being avoided by not
+doing this.
+
+Two things it deliberately does NOT change. **Extent** stays exactly
+`[nanmin(yearf), nanmax(yearf)]` — sampling density is cosmetic, a wider
+domain would be a new claim, and the dashed window edges already say where
+the fit was constrained. **Steps** stay vertical: each `step_epochs` entry is
+bracketed by a sample pair at ±`STEP_BRACKET_YEARS` (1e-6 yr ≈ 32 s), so the
+jump renders vertical at any zoom. A NaN break would arguably be more honest
+about a discontinuity, but it changes how every stepped figure in this
+package has always looked, and the ask was about gaps. Bracketing also fixes
+a case the old sampling got wrong: a step epoch *inside* a gap — SELF's 2008
+Ölfus under a segmented fit — would otherwise ramp across the whole outage.
+
+The picker keeps a SECOND evaluation at the data epochs, because the residual
+periodogram needs data minus model at the same epochs. Two samplings, two
+purposes; only the drawn curve moved. No fitted quantity changes — verified
+on SELF (`step_amp_1 [-150.8, 148.0, 55.6]` segmented, unchanged) and by a
+test that re-serializes the record around the call.
+
 ## Segments (`--segment START:END`, repeatable)
 
 The fit domain is a **union of intervals**, not one window. That single

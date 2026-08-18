@@ -1294,3 +1294,101 @@ def test_commit_writes_model_terms_only_when_the_operator_set_them(tmp_path):
     src = inspect.getsource(wb.main)
     assert "if args.model is not None or args.term:" in src
     assert "write_station_model(yaml_path, sta, entry)" in src
+
+
+class TestTrajectoryCurveSpansGaps:
+    """The drawn curve is the MODEL, sampled densely — not the data epochs.
+
+    Evaluating at ``yearf`` and joining the dots put a straight chord across
+    every data gap. On SEYD's 2022.5→2023 outage that chord was the most
+    prominent feature of the figure and it was the one part of the blue line
+    that was not the model: it says the station moved linearly, while the
+    fitted record says the secular trend continued and the seasonal kept
+    oscillating. ``evaluate_record`` is documented valid at arbitrary epochs,
+    so the honest curve is the model on its own grid.
+    """
+
+    @staticmethod
+    def _record(**kw):
+        from gps_plot.detrend_workbench import build_record
+
+        record, yearf, *_ = build_record(
+            STA_SELF, tot_dir=str(TOT), max_gap_years=1.5, **kw
+        )
+        return record, yearf
+
+    def test_the_curve_is_denser_than_the_data_and_fills_gaps(self) -> None:
+        from gps_plot.detrend_workbench import trajectory_curve
+
+        record, yearf = self._record()
+        gx, gy = trajectory_curve(record, yearf)
+        assert gx.size > np.asarray(yearf).size, "not resampled"
+        assert np.isfinite(gx).all() and (np.diff(gx) > 0).all(), "sorted, strict"
+        assert gy.shape == (3, gx.size)
+
+        # find the widest gap in the DATA and assert the curve samples inside it
+        y = np.sort(np.asarray(yearf, float))
+        i = int(np.argmax(np.diff(y)))
+        lo, hi = float(y[i]), float(y[i + 1])
+        if hi - lo < 0.05:  # pragma: no cover - station-dependent
+            pytest.skip("no gap wide enough to be meaningful")
+        inside = (gx > lo) & (gx < hi)
+        assert inside.sum() > 5, "the gap is still a straight chord"
+        assert np.isfinite(gy[:, inside]).all(), "model undefined across the gap"
+
+    def test_the_extent_is_the_data_span_and_nothing_more(self) -> None:
+        """Denser sampling is cosmetic; a wider domain would be a new claim."""
+        from gps_plot.detrend_workbench import trajectory_curve
+
+        record, yearf = self._record()
+        gx, _ = trajectory_curve(record, yearf)
+        y = np.asarray(yearf, float)
+        assert gx[0] == pytest.approx(np.nanmin(y))
+        assert gx[-1] == pytest.approx(np.nanmax(y))
+
+    def test_a_step_stays_a_vertical_jump(self) -> None:
+        """Bracketed, so the discontinuity cannot ramp across a gap.
+
+        On a bare uniform grid the two samples flanking a step are joined by
+        one sloped segment. Normally that is a day wide and invisible — but a
+        step epoch inside a data gap would ramp across the whole outage and
+        read as slow motion that never happened. SELF's 2008 Ölfus coseismic
+        is the case: ~150 mm north, and it sits in a gap under a segmented
+        fit.
+        """
+        from gps_plot.detrend_workbench import STEP_BRACKET_YEARS, trajectory_curve
+
+        record, yearf = self._record(steps=(2015.5,))
+        steps = [float(s) for s in record["step_epochs"]]
+        assert 2008.4085 in [round(s, 4) for s in steps]
+
+        gx, gy = trajectory_curve(record, yearf)
+        for s in steps:
+            before = gx[gx < s]
+            after = gx[gx > s]
+            assert before.size and after.size
+            # the samples that straddle the step are the bracket pair
+            width = float(after.min() - before.max())
+            assert width <= 2.5 * STEP_BRACKET_YEARS, (
+                f"step {s} is not bracketed: nearest samples {width:.6f} yr "
+                f"apart, so the jump draws as a ramp"
+            )
+        # and the jump is actually resolved: north moves ~150 mm across it
+        big = float(np.nanmax(np.abs(np.diff(gy[0]))))
+        assert big > 100.0, "the 2008 coseismic is not rendered as a jump"
+
+    def test_no_finite_epoch_is_a_non_event(self) -> None:
+        from gps_plot.detrend_workbench import trajectory_curve
+
+        record, yearf = self._record()
+        gx, gy = trajectory_curve(record, np.full(5, np.nan))
+        assert gx.size == 0 and gy.shape == (3, 0)
+
+    def test_sampling_does_not_touch_any_fitted_quantity(self) -> None:
+        """The curve is a view. Nothing here may move a stored number."""
+        from gps_plot.detrend_workbench import trajectory_curve
+
+        record, yearf = self._record()
+        before = json.dumps(record, sort_keys=True, default=str)
+        trajectory_curve(record, yearf)
+        assert json.dumps(record, sort_keys=True, default=str) == before
