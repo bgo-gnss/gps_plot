@@ -591,8 +591,8 @@ def _span_days(start: str, until: str) -> int | None:
     from datetime import date
 
     try:
-        a = date(*(int(v) for v in start.split("-")))  # type: ignore[arg-type]
-        b = date(*(int(v) for v in until.split("-")))  # type: ignore[arg-type]
+        a = date(*(int(v) for v in start.split("-")))
+        b = date(*(int(v) for v in until.split("-")))
     except (TypeError, ValueError):
         return None  # unparseable end -> treat as open, never as instant
     return (b - a).days
@@ -973,7 +973,7 @@ def declared_event_epochs(
 
     seismic: dict[float, str] = {}
     other: dict[float, str] = {}
-    for row in catalog.get(sta.upper(), ()):  # type: ignore[union-attr]
+    for row in catalog.get(sta.upper(), ()):
         epoch = float(row.epoch_yearf)
         kind = (row.kind or "").strip().lower()
         note = (row.comment or "").strip()
@@ -2062,7 +2062,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         from geo_dataread.stage_plan import resolve_stage_plan
 
-        def _donor(code: str) -> dict:
+        def _donor(code: str) -> dict[str, Any]:
             doc = read_detrend_params(args.params or default_params_path())
             rec, _src = station_detrend_record(doc, code)
             if rec is None:

@@ -1,99 +1,129 @@
-# gps_plot — where mypy actually stands
+# gps_plot — the typing gate
 
-Measured 2026-08-18. `gps_plot/CLAUDE.md` described the modern lane as
-"typed, mypy-strict/ruff/black clean" — a claim nothing in this checkout could
-check, because **`mypy` appears nowhere in `pyproject.toml`**: not in the dev
-group, and there is no `[tool.mypy]` section. `uv run mypy` dies with
-`Failed to spawn: mypy`.
+Adopted 2026-08-18. `uv run mypy src` is **clean** under the scope declared in
+`pyproject.toml`'s typing policy, and `.github/workflows/ci.yml` enforces it
+alongside ruff.
 
-Six siblings do run it (`gps_analysis`, `geo_dataread`, `gtimes`, `gps_api`,
-`receivers`, `aflogun`), so `gps_plot` is the ecosystem outlier, not the norm.
+Before this, `mypy` appeared nowhere in `pyproject.toml` — not in the dev
+group, no `[tool.mypy]` section — while `CLAUDE.md` described the modern lane
+as "typed, mypy-strict/ruff/black clean". That claim was never checkable here.
 
-## What it says today
+## What the gate covers, and what it does not
 
-Run against the ruff-scoped modern lane (legacy `gasmatplt*` and `gmtplot`
-excluded, as they are for ruff):
+`strict = true`, scoped to the same modern lane as the ruff excludes:
 
-```bash
-uv run --with mypy mypy --strict --python-version 3.13 \
-    --exclude 'gasmatplt.*' --exclude 'gmtplot' src/gps_plot/
-```
+- **Checked:** `detrend_workbench.py`, `detrend_picker.py`,
+  `detrend_picker_qt.py`, `dev_viz.py`, `maps.py`, `__init__.py`.
+- **`ignore_errors`:** `gasmatplt`, `gmtplot`, `timesmatplt`,
+  `plot_gps_timeseries` — golden-pinned plotting code. Widening the scope
+  means typing those two big modules, which is a project, not a drive-by.
+- **`exclude` (not `ignore_errors`):** the two dated snapshots. They are
+  Python-2 source, so mypy fails at the *parser* and aborts the whole run
+  before any per-module setting applies. `ignore_errors` cannot reach a file
+  that will not parse — that distinction cost one debugging round.
+- **`tests/` is out of the gate on purpose.** The Qt picker tests poke widget
+  attributes that are `Any` all the way down; strict typing there would
+  measure pyqtgraph's missing stubs, not this package's correctness.
+- **`ignore_missing_imports`** for `geo_dataread`, `gps_parser`, `gtimes`,
+  `tostools`, `pygmt`, `pyqtgraph`, `scipy` — none ship a `py.typed` marker,
+  so mypy can check nothing inside them either way. That is ~30 of the
+  original 137 errors: declining to report one fact 30 times, not lost
+  coverage.
 
-**137 errors in 7 files.** The distribution is the whole point — it is not a
-uniformly untyped package:
+## Getting from 137 to 0
 
-| file | errors | character |
-|---|---|---|
-| `timesmatplt.py` | 75 | never typed; 44 are one repeated pattern (below) |
-| `plot_gps_timeseries.py` | 31 | never typed |
-| `detrend_workbench.py` | 20 | mostly untyped sibling imports + calls into legacy |
-| `detrend_picker_qt.py` | 8 | `pyqtgraph`, `scipy.signal`, `geo_dataread` stubs |
-| `maps.py` | 4 | 2 missing stubs, 2 `no-any-return` |
-| `detrend_picker.py` | 2 | missing stubs |
-| `dev_viz.py` | 1 | missing `gtimes` stub |
+The baseline was **137 errors in 7 files**. Scoping removed 125 of them; 12
+were real and fixed:
 
-By code: 57 `attr-defined`, 28 `import-untyped`, 23 `no-untyped-call`,
-20 `no-untyped-def`, 3 `unused-ignore`, 3 `no-any-return`, 2
-`import-not-found`, 1 `type-arg`.
+- 3 stale `# type: ignore` comments, now unused under this config.
+- 2 `no-any-return` in `maps.py::_resolve_slip_component` — `product` is
+  `Mapping[str, Any]`, so the key type stayed `Any` through `totals` and both
+  `max(...)` returns silently widened the declared `str`. One annotation on
+  `available` fixed both.
+- 1 `dict` → `dict[str, Any]`.
+- **6 `no-untyped-call` at the modern↔legacy seam** — the interesting ones.
+  `detrend_workbench` is strict-checked and cannot call an untyped function,
+  so four legacy helpers gained signatures: `timesmatplt.addEvent` and
+  `plot_gps_timeseries._build_outlier_params` / `outlier_param_help` /
+  `_stage_overrides`. Those four live in `ignore_errors` modules, so **mypy
+  does not verify their bodies against the signatures** — a wrong annotation
+  on `addEvent` (3 call sites here, more in the plot driver) would typecheck
+  and fail at runtime. The full pytest suite is the check that matters there,
+  and it was run.
 
-**~30 of the 137 are not defects in this package.** `geo_dataread`,
-`gps_parser`, `gtimes`, `tostools`, `pyqtgraph`, `pygmt` and `scipy.signal`
-ship no `py.typed` marker or stubs. `gps_analysis` handles exactly this with
+## What the gate is not for
 
-```toml
-[[tool.mypy.overrides]]
-module = ["scipy.*", "gtimes.*"]
-ignore_missing_imports = true
-```
-
-**`dev_viz.py` and `maps.py` — the modules the "mypy-strict clean" line was
-really about — are effectively clean** (1 and 4 errors, all stubs or trivial
-`no-any-return`). The claim was roughly true of them and false of the sentence
-it was written in.
-
-## One finding worth acting on regardless
-
-44 of `timesmatplt.py`'s 75 errors are the same line shape:
+It would not have caught any of the five invariant violations in the picker
+lane (`detrend-lane.md`). "A second place assembling the same decision" is a
+design shape, invisible to a type checker — the picked-vs-declared steps bug
+typechecks perfectly. Over 137 errors it found exactly one latent defect:
 
 ```python
-import matplotlib as mpl        # line 51
-...
+import matplotlib as mpl        # timesmatplt.py:51
 mpl.dates.HourLocator(...)      # line 1223 and 43 more
 ```
 
 `import matplotlib` does **not** import the `dates` submodule. Verified:
+bare `import matplotlib` → `hasattr(mpl, "dates")` is `False`; after
+`import matplotlib.pyplot` it is `True`. It works only because line 54
+imports pyplot, which pulls `matplotlib.dates` in as a side effect — an
+undeclared dependency on another module's import order. Dormant, not broken.
+Left alone here (`timesmatplt` is `ignore_errors`); one-line fix when someone
+is in that file.
 
-```
-bare import matplotlib -> has .dates? False
-after importing pyplot -> has .dates? True
-```
+## CI
 
-It works today only because line 54 imports `matplotlib.pyplot`, which pulls
-`matplotlib.dates` in as a side effect. That is an undeclared dependency on
-another module's import order — dormant, not broken, and a one-line fix
-(`import matplotlib.dates as mdates`). It is a fair example of what the gate
-would buy: nothing here is failing, and nothing here is guaranteed either.
+`.github/workflows/ci.yml` runs ruff check, ruff format --check and
+`mypy src`. Two things it does differently from `gps_analysis`'s workflow,
+which was the template:
 
-## Adopting it, if wanted
+- **`uv sync --all-groups --no-sources`.** `[tool.uv.sources]` overrides the
+  sibling deps with editable paths (`../geo_dataread`, `../gps_analysis`,
+  `../gps_parser`) that exist only in a local `gpslibrary` checkout. Without
+  `--no-sources` the resolve fails outright in a single-repo CI checkout.
+- **No pytest job.** 6 of 8 test files read real GLOBK station data and the
+  deployed `~/.config/gpsconfig` catalogs; only 11 tests guard with
+  `pytest.skip`. A test job that cannot pass trains everyone to ignore red —
+  the same failure as a doc claiming a gate that was never installed.
 
-The path `geo_dataread` already took, which is the closest analogue (a typed
-new lane beside golden-pinned legacy):
+All five sibling repos are public, so CI needs no token.
 
-1. `mypy>=1.13` into `[dependency-groups] dev`.
-2. `[tool.mypy] strict = true`.
-3. `ignore_missing_imports` overrides for the untyped siblings and GUI libs —
-   removes ~30 errors that are not this package's to fix.
-4. Per-module `ignore_errors` for `timesmatplt` + `plot_gps_timeseries`, with
-   the same scope rationale as the existing `[tool.ruff] extend-exclude` —
-   removes ~106 more, and stops the gate from demanding a rewrite of
-   golden-pinned plotting code.
+## Open blocker: `gps_analysis` on GitHub
 
-That lands the modern lane at a real, enforceable near-zero without touching
-legacy. It is a dependency-metadata change, so it needs a decision rather than
-a drive-by commit.
+Testing the CI path surfaced a real production bug, unrelated to typing.
+
+`gps_analysis`'s GitHub **default branch is `analysis-lane-base`**, which
+predates the entire detrend API. An unpinned `git+https://` URL resolves to
+that default, so a production or container install of `gps_plot` received a
+`gps_analysis` with no `detrend`, no `staged`, no `trajectory_from_record` —
+i.e. the detrend lane and both pickers could not import. Invisible locally,
+because `[tool.uv.sources]` substitutes the editable checkout. The dependency
+is now pinned `@main` explicitly, which fixes most of it (7 CI-faithful mypy
+errors → 3).
+
+**The remaining 3 are a cross-package gap, not a `gps_plot` defect.**
+`gps_analysis`'s `main` is **37 commits behind** the working branch
+`outlier-step-protection-flanks`, and `detrend_picker.py` imports three things
+that exist only on that branch:
+
+| needed by `detrend_picker.py` | on `main`? |
+|---|---|
+| `gps_analysis.staged` (module) | no |
+| `GROUP_ORDER` | not exported |
+| `TrajectoryModel` | not exported |
+
+So `mypy src` is clean locally (editable siblings) and would be **red in CI**
+until that branch reaches `main`. CI triggers only on push-to-`main` and pull
+requests, so nothing is red yet — but this must be cleared before a PR:
+
+1. merge `outlier-step-protection-flanks` → `main` in `gps_analysis`, and
+2. set that repo's GitHub default branch to `main`, after which `gps_plot`'s
+   `@main` pin could go back to being implicit (leaving it explicit is safer).
 
 ## Cross-References
 
-- `../CLAUDE.md` — package summary and the Status section this backs
-- `../pyproject.toml` — `[tool.ruff] extend-exclude`, the existing scope precedent
-- `../../geo_dataread/pyproject.toml` — the typing-policy comment worth copying
+- `../pyproject.toml` — `[tool.mypy]`, and the `[tool.ruff] extend-exclude`
+  whose scope it mirrors
+- `../.github/workflows/ci.yml` — the enforcement, and why there is no
+  pytest job
+- `../../geo_dataread/pyproject.toml` — the typing-policy precedent this copies

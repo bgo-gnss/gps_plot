@@ -6,17 +6,18 @@ Legacy maintenance — used for research plots and dashboard exports — plus th
 
 ## Status
 
-Legacy modules: maintenance only, ~3362 LOC; two dated source snapshots are kept
-as historical reference (do not delete without coordinating). Modern lane
-(2026-07→): `dev_viz.py`, `maps.py`, `detrend_workbench.py` + the two pickers —
-each routed to its own doc below.
+Legacy modules: maintenance only, ~3362 LOC; two dated snapshots are kept as
+historical reference (do not delete without coordinating). Modern lane
+(2026-07→): `dev_viz.py`, `maps.py`, `detrend_workbench.py` + the two
+pickers — each routed to its own doc below.
 
-**Quality gates, honestly.** `uv run pytest` and `uv run ruff check` /
-`ruff format` are the gates that exist here; ruff's scope covers the modern
-lane only. **`mypy` is NOT installed and there is no `[tool.mypy]` section**,
-unlike six siblings that run `--strict` — so "mypy-strict clean" was never
-checkable in this checkout. What `--strict` actually reports, and the
-adoption path: `docs/mypy-status.md`.
+**Quality gates.** `uv run ruff check` / `ruff format --check` / `mypy src`
+are enforced by `.github/workflows/ci.yml`; `uv run pytest` is local-only
+(the suite reads real station data and deployed catalogs, so it cannot run on
+a stock runner). mypy is `strict`, scoped to the same modern lane as the ruff
+excludes — legacy plotting modules are `ignore_errors`, `tests/` is out. Scope
+rationale, the 137 → 0 path, and an **open cross-package blocker** (CI is red
+until `gps_analysis`'s branch reaches `main`): `docs/mypy-status.md`.
 
 ## Layout
 
@@ -131,10 +132,9 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
   segments, Qt picker (the deep lane; read before touching any of them)
 - **[`docs/map-lane.md`](docs/map-lane.md)** 📄 — the four PyGMT map functions,
   their `gps_api` inputs, and the GMT install story
-- **[`docs/dev-viz.md`](docs/dev-viz.md)** 📄 — `--break-input`, the MCMC dev
-  defaults and the pre-H3 cost warning
-- **[`docs/mypy-status.md`](docs/mypy-status.md)** 📄 — why there is no mypy gate
-  here, what `--strict` actually reports, and the adoption path
+- **[`docs/dev-viz.md`](docs/dev-viz.md)** 📄 — `--break-input`, MCMC dev defaults
+- **[`docs/mypy-status.md`](docs/mypy-status.md)** 📄 — the typing gate's scope,
+  the 137 → 0 path, and the open `gps_analysis` blocker
 - `tools/local-plot/README.md` — local figure workflow, TOT join, epoch/shell traps
 - `.interrogate-detrend-workbench.md` — workbench destination doc (gitignored)
 - `../PLAN-analysis-lane.md` — thread C / task L5 (dev-viz), task H6 (speed pass)

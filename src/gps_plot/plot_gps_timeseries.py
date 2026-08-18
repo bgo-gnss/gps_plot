@@ -10,6 +10,13 @@ import sys
 import textwrap
 import traceback
 
+# Only the three helpers the MODERN lane calls are annotated below. This
+# module is `ignore_errors` for mypy (see pyproject's typing policy), so
+# these signatures type the SEAM, not the module: detrend_workbench is
+# strict-checked and cannot call an untyped function.
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 # from gtimes.timefunc import TimefromYearf, currTime, TimetoYearf
 from gtimes.timefunc import currDatetime
 
@@ -139,7 +146,9 @@ def _coerce_outlier_param(name, typ, raw):
         ) from None
 
 
-def _build_outlier_params(assignments, base=None):
+def _build_outlier_params(
+    assignments: Sequence[str], base: Mapping[str, Any] | None = None
+) -> Any:
     """Build an ``OutlierParams`` from repeated ``NAME=VALUE`` CLI args.
 
     Field names and types are read off the dataclass itself, so this flag
@@ -237,7 +246,7 @@ OUTLIER_PARAM_GROUPS = (
 )
 
 
-def outlier_param_help(width=78):
+def outlier_param_help(width: int = 78) -> str:
     """The ``--outlier-param`` NAME list, for a parser epilog.
 
     Generated from ``gps_analysis.OutlierParams`` at parse time rather
@@ -317,7 +326,7 @@ STAGE_FLAGS = {
 STAGE_ALWAYS_ON = ("S1", "S2")
 
 
-def _stage_overrides(spec):
+def _stage_overrides(spec: str | None) -> dict[str, bool] | None:
     """``--stages`` -> OutlierParams field overrides, or None if unset.
 
     Named stages are ON, unnamed ones OFF.  This replaces the sentinel-

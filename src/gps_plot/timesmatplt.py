@@ -44,7 +44,7 @@ __version__ = "$Revision: 0.2 $"[11:-2]
 import dataclasses
 import datetime
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
@@ -992,7 +992,12 @@ def addAbortBadge(fig: Figure, component_abort: Sequence[bool]) -> Figure:
     return fig
 
 
-def addEvent(eventDict, fig, dstr="%Y%m%d", **kwargs):
+def addEvent(
+    eventDict: Mapping[Any, Sequence[Any]],
+    fig: Figure,
+    dstr: str = "%Y%m%d",
+    **kwargs: Any,
+) -> Figure:
     """
     Adding events
     """

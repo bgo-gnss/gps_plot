@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Static gates only. Deliberately NOT running pytest here -- see the note at
+  # the bottom of this file before adding it.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      # --no-sources is what makes this resolve at all. [tool.uv.sources]
+      # overrides the sibling deps with editable paths (../geo_dataread,
+      # ../gps_analysis, ../gps_parser) that exist only in a local gpslibrary
+      # checkout, never in a single-repo CI one. --no-sources falls back to
+      # the git+https URLs in [project.dependencies] -- exactly what pip and
+      # the container build already do, as that pyproject comment says.
+      - name: Install package + dev tools
+        run: uv sync --all-groups --no-sources
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      # ruff format, not black: this package has no black. Same formatter the
+      # modern lane is already written against.
+      - name: Format check (ruff)
+        run: uv run ruff format --check src tests
+
+      # src only. tests/ is out of the typing gate on purpose -- the Qt picker
+      # tests poke widget attributes that are Any all the way down, so strict
+      # typing there would measure pyqtgraph's missing stubs rather than this
+      # package's correctness. Scope rationale: pyproject [tool.mypy].
+      - name: Type check (mypy)
+        run: uv run mypy src
+
+# Why there is no pytest job
+# -------------------------
+# The suite is not hermetic: 6 of 8 test files read real GLOBK station data
+# (mb_<STA>_TOT.dat{1,2,3}) and the deployed catalogs in ~/.config/gpsconfig
+# (steps.csv, fit_windows.csv, detrend_params.json). A stock GitHub runner has
+# neither, and only 11 of the tests guard with pytest.skip -- so a pytest job
+# here would be red on every run.
+#
+# A test job that cannot pass is worse than an absent one: it trains everyone
+# to ignore red, which is the same failure this repo already had when
+# CLAUDE.md claimed a mypy gate that was never installed.
+#
+# To add one, the data has to come first -- either a self-hosted runner with
+# the TOT tree and a deployed gpsconfig (gate it with
+# `if: ${{ vars.HAS_GPS_DATA }}`), or fixtures that make the suite hermetic.
+# Until then `uv run pytest` stays a local gate, documented in CLAUDE.md.
