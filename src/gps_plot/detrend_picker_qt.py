@@ -67,7 +67,6 @@ them; a production install is unaffected).
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import shlex
 import sys
@@ -95,6 +94,21 @@ SEISMIC_EVENT_COLOR = (139, 0, 0)  # darkred — declared seismic step
 STEP_COLOR = (140, 20, 20)  # dark red   — declared step
 ONSET_COLOR = (44, 120, 44)  # dark green — transient onset
 COMPONENTS = ("North", "East", "Up")
+
+
+def _provisional_days_default() -> float:
+    """geo_dataread's own gold-lane recency bound, for the spinbox's start.
+
+    Imported rather than restated: the spinbox is only showing what the fit
+    would use anyway, and a number copied here would be a second definition
+    of the same default that could drift from the leaf's.
+    """
+    try:
+        from geo_dataread.gps_views import PROVISIONAL_DAYS
+
+        return float(PROVISIONAL_DAYS)
+    except Exception:  # pragma: no cover - leaf rename/removal
+        return 14.0
 
 
 def _require_qt() -> tuple[Any, Any]:
@@ -520,7 +534,144 @@ class PickerWindow:  # pragma: no cover - GUI
         pcol.addWidget(hint)
         col.addWidget(picks_box)
 
+        # --- run: parameters that were command-line-only ------------------
+        # Each writes the SAME attribute `run_flags` emits, so a control cannot
+        # move the figure without moving the command with it.
+        run_box = QtWidgets.QGroupBox("run")
+        rgrid = QtWidgets.QFormLayout(run_box)
+
+        self.sp_gap = QtWidgets.QDoubleSpinBox()
+        self.sp_gap.setRange(0.1, 50.0)
+        self.sp_gap.setSingleStep(0.5)
+        self.sp_gap.setDecimals(2)
+        # Show the EFFECTIVE gate, not the flag: with no --max-gap-years the
+        # resolved settings carry the catalog's value (or the spec default),
+        # and a spinbox reading 0.5 while the fit ran at 1.0 would be a third
+        # place disagreeing about the same number.
+        self.sp_gap.setValue(
+            float(
+                self.max_gap_years
+                if self.max_gap_years is not None
+                else getattr(self.base_settings, "max_gap_years", 0.5)
+            )
+        )
+        self.sp_gap.setToolTip(
+            "Per-segment gap gate [yr]. The 0.5 spec default rejects every "
+            "station in the working set, so this is effectively required"
+        )
+        self.sp_gap.editingFinished.connect(self._set_max_gap)
+        rgrid.addRow("max-gap [yr]", self.sp_gap)
+
+        self.sp_prov = QtWidgets.QDoubleSpinBox()
+        self.sp_prov.setRange(0.0, 400.0)
+        self.sp_prov.setSingleStep(7.0)
+        self.sp_prov.setDecimals(0)
+        self.sp_prov.setValue(
+            float(
+                _provisional_days_default()
+                if self.provisional_days is None
+                else self.provisional_days
+            )
+        )
+        self.sp_prov.setToolTip(
+            "Recency bound of the GOLD provisional lane [days]; 0 disables. "
+            "Display only -- it moves no fitted quantity"
+        )
+        self.sp_prov.editingFinished.connect(self._set_provisional_days)
+        rgrid.addRow("provisional [d]", self.sp_prov)
+
+        self.sp_uncert = QtWidgets.QSpinBox()
+        self.sp_uncert.setRange(1, 200)
+        self.sp_uncert.setValue(self.uncert)
+        self.sp_uncert.setToolTip(
+            "Formal-sigma screen [mm], applied at READ time. Unlike the others "
+            "this RE-READS the series from disk — it changes which epochs "
+            "exist, not how they are fitted"
+        )
+        self.sp_uncert.editingFinished.connect(self._set_uncert)
+        rgrid.addRow("uncert [mm]", self.sp_uncert)
+        col.addWidget(run_box)
+
         return box
+
+    # -- run parameters ------------------------------------------------
+    # These were command-line-only. Each sets the attribute that `_command`
+    # already reads, so the emitted command follows the control by
+    # construction rather than by remembering to update it in two places.
+
+    def _set_max_gap(self) -> None:
+        value = round(float(self.sp_gap.value()), 4)
+        if value == self.max_gap_years:
+            return
+        self.max_gap_years = value
+        self.refit()
+
+    def _set_provisional_days(self) -> None:
+        value = round(float(self.sp_prov.value()), 4)
+        if value == self.provisional_days:
+            return
+        self.provisional_days = value
+        self.refit()
+
+    def _set_uncert(self) -> None:
+        """Re-READ the series under a new sigma screen, then refit.
+
+        The odd one out: ``uncert`` is applied by ``getData`` when the file is
+        read, so it decides which epochs EXIST rather than how they are
+        fitted. A refit alone would move the emitted command while the figure
+        kept showing the old series -- this window's recurring bug wearing a
+        new hat -- so the data is re-read here.
+
+        The picks are deliberately left where they are. Screening sigma is not
+        a statement about which window to fit, so the domain region, steps and
+        onset stay put; only the underlying series changes. A failed read
+        keeps the current data and says so, because a picker that silently
+        empties itself is worse than one that refuses.
+        """
+        value = int(self.sp_uncert.value())
+        if value == self.uncert:
+            return
+
+        import geo_dataread.gps_read as gpsr
+
+        np = self.np
+        try:
+            yearf, data, sigma, _off = gpsr.getData(
+                self.sta, ref="plate", Dir=self.tot_dir, tType="TOT", uncert=value
+            )
+            yearf = np.asarray(yearf, float)
+            if yearf.size == 0:
+                raise ValueError("no epochs survive that screen")
+        except Exception as exc:
+            self.sp_uncert.setValue(self.uncert)  # keep widget and state in step
+            self.summary.setPlainText(
+                f"uncert {value} mm: re-read failed, keeping {self.uncert} mm\n{exc}"
+            )
+            return
+
+        before = self.yearf.size
+        self.yearf = yearf
+        self.data = np.atleast_2d(np.asarray(data, float))
+        self.sigma = np.atleast_2d(np.asarray(sigma, float))
+        self.span = (float(np.nanmin(yearf)), float(np.nanmax(yearf)))
+        self.uncert = value
+        self.refit()
+        self._note_epoch_change(before, yearf.size, value)
+
+    def _note_epoch_change(self, before: int, after: int, uncert: int) -> None:
+        """Say how many epochs the screen took, above the record.
+
+        The count is the whole point of the control and it is invisible
+        otherwise: a tighter screen that drops 40 of 4713 epochs looks
+        identical on a plot of 4673.
+        """
+        delta = after - before
+        if not delta:
+            return
+        self.summary.setPlainText(
+            f"uncert {uncert} mm: {before} -> {after} epochs ({delta:+d})\n\n"
+            + self.summary.toPlainText()
+        )
 
     # -- session (TSAnalyzer's reloadable pick file) --------------------
     def _session_path(self) -> Any:
@@ -790,12 +941,16 @@ class PickerWindow:  # pragma: no cover - GUI
         for e in steps:
             extra += ["--step", str(e)]
 
+        # max_gap_years goes through the SAME override the workbench applies,
+        # from the same live attribute the emitted command reads -- so the
+        # spinbox cannot change the command without changing the fit.
         settings = _override_settings(
             self.base_settings,
             self.sta,
             quiet=True,
             segments=segments,
             steps=steps or None,
+            max_gap_years=self.max_gap_years,
         )
 
         terms: list[str] = []
@@ -1172,10 +1327,15 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
     path = default_fit_catalog_path()
     if path and Path(path).is_file():
         catalog, source = read_fit_catalog(path), str(path)
-    defaults = FitDefaults()
-    if args.max_gap_years is not None:
-        defaults = dataclasses.replace(defaults, max_gap_years=args.max_gap_years)
-    settings = resolve_fit_settings(sta, catalog, defaults, catalog_source=source)
+    # PLAIN FitDefaults, with --max-gap-years applied later as an OVERRIDE in
+    # `_current` -- the order the workbench uses (`build_record`). Baking it
+    # into the defaults here instead put it BELOW the catalog row, so on a
+    # station whose fit_windows.csv sets its own gate the flag was silently
+    # discarded: `gps-detrend-picker-qt DYNG --max-gap-years 2.0` fitted at the
+    # catalog's 1.0 while emitting a command that fits at 2.0. The sixth
+    # instance of this window's one recurring bug, and the same shape as the
+    # rest -- a second place assembling the same decision.
+    settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     # Pin the Wayland app_id rather than letting Qt derive one from argv[0]:

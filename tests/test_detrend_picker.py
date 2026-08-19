@@ -797,3 +797,107 @@ class TestSplitLayout:
         assert rms_line, w.summary.toPlainText()[:200]
         # 2 dp, matching the PDF's summarise()
         assert "0000" not in rms_line[0] and len(rms_line[0]) < 60, rms_line[0]
+
+
+class TestRunParameterControls:
+    """`uncert`, `max-gap` and `provisional-days` as live controls.
+
+    Each writes the attribute `_command` already reads, so a control cannot
+    move the figure without moving the emitted command with it — which is the
+    only way to add a knob to this window without adding a sixth way to break
+    its one invariant.
+    """
+
+    @staticmethod
+    def _window(gap=1.5, catalog_gap=None):
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import numpy as np
+
+        import geo_dataread.gps_read as gpsr
+        from geo_dataread.detrend_estimate import (
+            FitCatalogRow,
+            FitDefaults,
+            resolve_fit_settings,
+        )
+        from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
+
+        _pg, qtw = _require_qt()
+        qtw.QApplication.instance() or qtw.QApplication([])
+        try:
+            yearf, data, sigma, _ = gpsr.getData(
+                "SELF", ref="plate", Dir=None, tType="TOT", uncert=10
+            )
+        except Exception:  # pragma: no cover
+            pytest.skip("SELF data not available")
+        catalog = (
+            {"SELF": FitCatalogRow(max_gap_years=catalog_gap)}
+            if catalog_gap is not None
+            else None
+        )
+        settings = resolve_fit_settings(
+            "SELF", catalog, FitDefaults(), catalog_source="test.csv"
+        )
+        return PickerWindow(
+            "SELF",
+            np.asarray(yearf, float),
+            np.atleast_2d(np.asarray(data, float)),
+            np.atleast_2d(np.asarray(sigma, float)),
+            settings,
+            max_gap_years=gap,
+            uncert=10,
+        )
+
+    def test_the_gap_flag_beats_the_catalog_row(self) -> None:
+        """Regression: --max-gap-years used to be discarded by the catalog.
+
+        `main` baked the flag into `FitDefaults` BEFORE `resolve_fit_settings`,
+        which puts it BELOW the catalog row — so on a station whose
+        fit_windows.csv sets its own gate, the picker fitted the catalog's
+        value while emitting a command that fits the flag's. Measured on DYNG
+        (catalog 1.0): `--max-gap-years 2.0` fitted at 1.0. The workbench
+        applies it as an override AFTER resolving, and the picker must match.
+        """
+        w = self._window(gap=2.0, catalog_gap=1.0)
+        assert w.base_settings.max_gap_years == 1.0, "catalog row not in play"
+
+        # the settings the picker FITS with -- not a re-derivation of them,
+        # which is what made the first version of this test pass against the
+        # bug it was written for
+        settings, _extra, _terms, _stages = w._current()
+        assert settings.max_gap_years == 2.0, "the flag lost to the catalog again"
+        # ... and the command the operator would copy says the same number
+        assert "--max-gap-years 2.0" in w.command.text()
+
+    def test_the_gap_control_moves_fit_and_command_together(self) -> None:
+        w = self._window(gap=1.5)
+        w.sp_gap.setValue(3.0)
+        w._set_max_gap()
+        assert w.max_gap_years == 3.0
+        assert "--max-gap-years 3.0" in w.command.text()
+
+    def test_uncert_rereads_the_series_rather_than_refitting(self) -> None:
+        """It screens sigma at READ time, so it changes which epochs exist.
+
+        A refit alone would move the command while the figure kept the old
+        series — the same divergence one lever over.
+        """
+        w = self._window()
+        before = w.yearf.size
+        w.sp_uncert.setValue(8)
+        w._set_uncert()
+        assert w.yearf.size != before, "the series was not re-read"
+        assert w.uncert == 8
+        assert "--uncert 8" in w.command.text()
+        assert f"{before} -> {w.yearf.size}" in w.summary.toPlainText()
+
+    def test_a_failed_reread_keeps_the_series_and_says_so(self) -> None:
+        """A picker that silently empties itself is worse than one that refuses."""
+        w = self._window()
+        before, kept = w.yearf.size, w.uncert
+        w.sp_uncert.setValue(1)  # screens essentially everything away
+        w._set_uncert()
+        if w.yearf.size == before:  # the read was refused
+            assert w.uncert == kept, "state and widget drifted apart"
+            assert w.sp_uncert.value() == kept

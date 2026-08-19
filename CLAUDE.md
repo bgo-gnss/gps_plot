@@ -82,7 +82,7 @@ belongs one level down. Read it before touching any of them.
   segment.
 - **Qt picker** (`gps-detrend-picker-qt`) — layered ON TOP of the CLI, and its
   whole promise is one invariant: **the emitted command reproduces the
-  figure.** Five violations of it are catalogued there, all the same shape —
+  figure.** Six violations of it are catalogued there, all the same shape —
   a second place assembling the same decision. Both pickers now build their
   run-flag tail with `detrend_workbench.run_flags`, because two pickers
   assembling it independently forgot the same flag independently.

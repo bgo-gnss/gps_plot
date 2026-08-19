@@ -327,7 +327,8 @@ same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
 changes the data is emitted.
 
-Five ways it broke that invariant, all fixed 2026-08-09/16/17 and worth
+Six ways it broke that invariant (the sixth is the `--max-gap-years` ordering,
+above), all fixed 2026-08-09/16/17/19 and worth
 knowing because the shape recurs: a picked step REPLACED the declared ones
 while `--step` MERGES (on SELF the difference between an aborted fit and a
 clean one); the domain region opened on the DATA SPAN and emitted `--segment`
@@ -387,6 +388,31 @@ The union case is verified against a SYNTHETIC catalog injected via
 exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
+
+**Run parameters are live controls** (2026-08-19) — `max-gap [yr]`,
+`provisional [d]` and `uncert [mm]` in a `run` group, previously
+command-line-only. Each writes the SAME attribute `run_flags` emits, so a
+control cannot move the figure without moving the command with it; that is the
+only way to add a knob here without adding another way to break the invariant.
+
+`uncert` is the odd one and is treated differently: it screens sigma at READ
+time, so it **re-reads the series from disk** rather than refitting. A refit
+alone would have moved the command while the figure kept the old series — the
+same divergence one lever over. The picks are deliberately left where they are
+(screening sigma is not a statement about which window to fit), a failed read
+keeps the current data and says so, and the epoch delta is printed above the
+record because it is otherwise invisible: SELF 10 → 8 mm drops 377 of 4902
+epochs and looks identical on a plot of 4525.
+
+Adding the gap control surfaced the **sixth** violation, pre-existing.
+`main` baked `--max-gap-years` into `FitDefaults` BEFORE `resolve_fit_settings`,
+which puts it *below* the catalog row, while the workbench applies it as an
+override AFTER resolving. So on a station whose `fit_windows.csv` sets its own
+gate the flag was silently discarded: `gps-detrend-picker-qt DYNG
+--max-gap-years 2.0` fitted at the catalog's 1.0 and emitted a command that
+fits at 2.0. Same shape as the other five — a second place assembling the same
+decision. The picker now uses plain `FitDefaults` and passes the gate through
+`_override_settings`, exactly as `build_record` does.
 
 **Layout: plots left, controls right, command full width** (2026-08-19).
 Everything used to stack vertically, which spent HEIGHT — the scarce dimension,
