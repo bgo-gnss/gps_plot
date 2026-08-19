@@ -101,6 +101,9 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
         "--name",
         "--outlier-param",
         "--outlier-overrides",
+        "--hide-outliers",
+        "--stages",
+        "--provisional-days",
     ],
 )
 def test_legacy_flag_surface_present(flag: str) -> None:
@@ -110,3 +113,69 @@ def test_legacy_flag_surface_present(flag: str) -> None:
     assert flag in proc.stdout, (
         f"{flag} missing from the CLI — the gpsplot port depends on it"
     )
+
+
+def test_stage_overrides_maps_named_stages_on_unnamed_off() -> None:
+    from gps_plot.plot_gps_timeseries import _stage_overrides
+
+    assert _stage_overrides(None) is None
+    assert _stage_overrides("all") == {
+        "despike": True,
+        "enable_global": True,
+        "enable_window": True,
+        "enable_protection": True,
+    }
+    # named ON, unnamed OFF -- the whole point of isolation
+    assert _stage_overrides("S0") == {
+        "despike": True,
+        "enable_global": False,
+        "enable_window": False,
+        "enable_protection": False,
+    }
+    assert _stage_overrides("s0, S4")["enable_window"] is True
+    # S1/S2 are structural: accepted, but they toggle nothing
+    assert _stage_overrides("S1,S2") == {
+        "despike": False,
+        "enable_global": False,
+        "enable_window": False,
+        "enable_protection": False,
+    }
+
+
+def test_workbench_refuses_to_commit_a_non_default_terms(capsys) -> None:
+    """`--terms` is apply-time and unstored, so committing under it is a trap.
+
+    The operator judges a figure rendered with the terms they asked for, the
+    record has no field to carry that choice, and production reads it back at
+    the default — measured up to 16.48 mm apart on RHOF. Refused BEFORE any
+    data is read, which is also why this test needs no station data: reaching
+    the read at all would already be the bug.
+    """
+    from gps_plot.detrend_workbench import APPLY_TERMS_DEFAULT, main
+
+    assert main(["RHOF", "--terms", "secular", "--commit"]) == 5
+    err = capsys.readouterr().err
+    assert "--terms secular cannot be committed" in err
+    assert "--model" in err, "the refusal must name the lever that DOES round-trip"
+    # ...and the default terms are not refused: only the mismatch is.
+    assert APPLY_TERMS_DEFAULT == "all"
+
+
+@requires_installed_cli
+def test_workbench_help_advertises_the_commit_refusal() -> None:
+    """The trap must be visible before the operator falls into it."""
+    cli = shutil.which("gps-detrend-workbench")
+    if cli is None:
+        pytest.skip("gps-detrend-workbench console script not on PATH")
+    proc = subprocess.run([cli, "--help"], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "refused with --commit" in proc.stdout
+
+
+def test_stage_overrides_rejects_unknown_stage() -> None:
+    import pytest as _pytest
+
+    from gps_plot.plot_gps_timeseries import _stage_overrides
+
+    with _pytest.raises(SystemExit, match="unknown stage"):
+        _stage_overrides("S0,S9")

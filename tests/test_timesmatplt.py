@@ -187,6 +187,7 @@ def _install_gps_views_stub(
     windows=(),
     catalog_params="CATALOG",
     catalog_floor=None,
+    provisional=None,
 ):
     """Stub the whole gps_views cleaning chain and record what it received.
 
@@ -230,6 +231,10 @@ def _install_gps_views_stub(
             "degraded": False,
             "degrade_reason": None,
             "n_flagged": int(np.count_nonzero(flags)),
+            "provisional": np.asarray(provisional, dtype=bool)
+            if provisional is not None
+            else np.zeros_like(np.asarray(flags), dtype=bool),
+            "n_provisional": 0 if provisional is None else int(np.sum(provisional)),
         }
 
     gps_views.station_step_epochs = station_step_epochs
@@ -257,7 +262,9 @@ def test_mask_outliers_masks_and_overlays(monkeypatch):
     flags[0, 2] = flags[2, 7] = True
     _install_gps_views_stub(monkeypatch, flags)
 
-    cleaned, overlay = tplt._mask_outliers("RHOF", yearf, data.copy(), ddata)
+    cleaned, overlay, _prov, _ab = tplt._mask_outliers(
+        "RHOF", yearf, data.copy(), ddata
+    )
     assert overlay is not None
     out_data, out_ddata = overlay
     # mask only: flagged epochs NaN in the main series, present in overlay
@@ -278,7 +285,7 @@ def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
     ddata = np.full((3, n), 0.5)
     _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
 
-    cleaned, overlay = tplt._mask_outliers("RHOF", yearf, data, ddata)
+    cleaned, overlay, _prov, _ab = tplt._mask_outliers("RHOF", yearf, data, ddata)
     assert overlay is None
     assert cleaned is data  # raw path: same object, no copy, no mask
 
@@ -536,6 +543,244 @@ def test_without_name_the_legacy_filename_is_unchanged(monkeypatch, tmp_path):
     assert saved == [str(tmp_path / "RHOF-itrf2008-90d")]
 
 
+def _grey_overlay_lines(fig):
+    """Overlay marker series drawn with the outlier face colour."""
+    return [
+        ln
+        for ax in fig.axes[:3]
+        for ln in ax.get_lines()
+        if ln.get_markerfacecolor() == tplt.OUTLIER_FACE_COLOR
+    ]
+
+
+def _cleaned_fig(monkeypatch, tmp_path, *, hide):
+    """Render the cleaned view with one flagged epoch per component."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+    return tplt.plotTime(
+        "RHOF",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        hide_outliers=hide,
+    )
+
+
+def test_outlier_overlay_drawn_by_default(monkeypatch, tmp_path):
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=False)
+    assert len(_grey_overlay_lines(fig)) == 3  # one per component axis
+
+
+def test_hide_outliers_suppresses_the_overlay(monkeypatch, tmp_path):
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=True)
+    assert _grey_overlay_lines(fig) == []
+
+
+def test_hide_outliers_does_not_restore_the_masked_epochs(monkeypatch, tmp_path):
+    """Display-only: the flagged epoch stays NaN in the plotted series.
+
+    The whole point of the flag is that it changes what is SHOWN, never
+    what is plotted as data -- a hidden overlay must not smuggle the
+    outlier back into the main series.
+    """
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=True)
+    for ax in fig.axes[:3]:
+        main = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 30]
+        assert main, "main series not drawn"
+        assert np.isnan(np.asarray(main[0].get_ydata(), dtype=float)[7])
+
+
+def test_hide_outliers_is_inert_on_the_raw_view(monkeypatch, tmp_path):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    fig = tplt.plotTime(
+        "RHOF", save="png", figDir=str(tmp_path), logo=False, hide_outliers=True
+    )
+    for ax in fig.axes[:3]:
+        main = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 30]
+        assert main and np.all(np.isfinite(np.asarray(main[0].get_ydata(), float)))
+
+
+def _provisional_lines(fig):
+    return [
+        ln
+        for ax in fig.axes[:3]
+        for ln in ax.get_lines()
+        if ln.get_markerfacecolor() == tplt.PROVISIONAL_FACE_COLOR
+    ]
+
+
+def _fig_with_provisional(monkeypatch, tmp_path, *, hide_outliers=False):
+    """Cleaned view: epoch 7 flagged, epoch 25 provisional (recent)."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    prov = np.zeros((3, 30), dtype=bool)
+    prov[:, 25] = True
+    _install_gps_views_stub(monkeypatch, flags, provisional=prov)
+    return tplt.plotTime(
+        "RHOF",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        hide_outliers=hide_outliers,
+    )
+
+
+def test_provisional_epochs_get_their_own_marker(monkeypatch, tmp_path):
+    fig = _fig_with_provisional(monkeypatch, tmp_path)
+    assert len(_provisional_lines(fig)) == 3  # one per component axis
+
+
+def test_provisional_epochs_stay_in_the_main_series(monkeypatch, tmp_path):
+    """The core invariant: provisional ANNOTATES, it never removes.
+
+    A flagged epoch is NaN in the plotted series; a provisional one must
+    still be finite there -- otherwise the marker would silently do the
+    masking it exists to avoid.
+    """
+    fig = _fig_with_provisional(monkeypatch, tmp_path)
+    for ax in fig.axes[:3]:
+        main = [ln for ln in ax.get_lines() if len(ln.get_ydata()) == 30]
+        y = np.asarray(main[0].get_ydata(), dtype=float)
+        assert np.isnan(y[7]), "flagged epoch must be masked"
+        assert np.isfinite(y[25]), "provisional epoch must be kept"
+
+
+def test_hide_outliers_does_not_hide_provisional(monkeypatch, tmp_path):
+    """Decluttering removes DECIDED outliers, never undecided ones."""
+    fig = _fig_with_provisional(monkeypatch, tmp_path, hide_outliers=True)
+    assert _grey_overlay_lines(fig) == []
+    assert len(_provisional_lines(fig)) == 3
+
+
+def test_no_provisional_marker_when_none_reported(monkeypatch, tmp_path):
+    fig = _cleaned_fig(monkeypatch, tmp_path, hide=False)
+    assert _provisional_lines(fig) == []
+
+
+def test_missing_provisional_key_degrades_quietly(monkeypatch, tmp_path):
+    """An older geo_dataread has no 'provisional' key -- must not break."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    import geo_dataread.gps_views as stub
+
+    inner = stub.detect_view_outliers
+
+    def legacy(yearf, data, Ddata=None, **kwargs):
+        kwargs.pop("provisional_days", None)
+        f, prov = inner(yearf, data, Ddata, **kwargs)
+        prov.pop("provisional", None)
+        prov.pop("n_provisional", None)
+        return f, prov
+
+    stub.detect_view_outliers = legacy
+    fig = tplt.plotTime(
+        "RHOF", save="png", figDir=str(tmp_path), logo=False, view="cleaned"
+    )
+    assert _provisional_lines(fig) == []
+    assert len(_grey_overlay_lines(fig)) == 3  # cleaning itself still works
+
+
+def _badge_axes(fig):
+    """Indices of axes carrying the abort badge."""
+    out = []
+    for i, ax in enumerate(fig.axes[:3]):
+        for t in ax.texts:
+            if tplt.ABORT_BADGE_TEXT in t.get_text():
+                out.append(i)
+                break
+    return out
+
+
+def _fig_with_abort(monkeypatch, tmp_path, mask, *, hide_outliers=False):
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    import geo_dataread.gps_views as stub
+
+    inner = stub.detect_view_outliers
+
+    def with_abort(yearf, data, Ddata=None, **kwargs):
+        f, prov = inner(yearf, data, Ddata, **kwargs)
+        prov["component_abort"] = list(mask)
+        prov["n_aborted_components"] = int(sum(mask))
+        return f, prov
+
+    stub.detect_view_outliers = with_abort
+    return tplt.plotTime(
+        "SAUD",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        view="cleaned",
+        hide_outliers=hide_outliers,
+    )
+
+
+def test_abort_badge_marks_only_the_aborted_axis(monkeypatch, tmp_path):
+    """SAUD's shape: north pathological, east and up fine."""
+    fig = _fig_with_abort(monkeypatch, tmp_path, [True, False, False])
+    assert _badge_axes(fig) == [0]
+
+
+def test_abort_badge_absent_when_nothing_aborted(monkeypatch, tmp_path):
+    fig = _fig_with_abort(monkeypatch, tmp_path, [False, False, False])
+    assert _badge_axes(fig) == []
+
+
+def test_abort_badge_survives_hide_outliers(monkeypatch, tmp_path):
+    """Decluttering removes DECIDED outliers; an abort is the opposite."""
+    fig = _fig_with_abort(
+        monkeypatch, tmp_path, [False, True, False], hide_outliers=True
+    )
+    assert _badge_axes(fig) == [1]
+    assert _grey_overlay_lines(fig) == []
+
+
+def test_abort_badge_on_every_aborted_axis(monkeypatch, tmp_path):
+    fig = _fig_with_abort(monkeypatch, tmp_path, [True, True, True])
+    assert _badge_axes(fig) == [0, 1, 2]
+
+
+def test_missing_component_abort_key_degrades_quietly(monkeypatch, tmp_path):
+    """Older geo_dataread has no component_abort -- must not break a plot."""
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: None)
+    flags = np.zeros((3, 30), dtype=bool)
+    flags[:, 7] = True
+    _install_gps_views_stub(monkeypatch, flags)
+
+    import geo_dataread.gps_views as stub
+
+    inner = stub.detect_view_outliers
+
+    def legacy(yearf, data, Ddata=None, **kwargs):
+        f, prov = inner(yearf, data, Ddata, **kwargs)
+        prov.pop("component_abort", None)
+        return f, prov
+
+    stub.detect_view_outliers = legacy
+    fig = tplt.plotTime(
+        "SAUD", save="png", figDir=str(tmp_path), logo=False, view="cleaned"
+    )
+    assert _badge_axes(fig) == []
+    assert len(_grey_overlay_lines(fig)) == 3
+
+
 def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     """plotTime -> _mask_outliers: sta first, both levers as keywords."""
     _stub_gps_read(monkeypatch, _yesterday_noon())
@@ -545,7 +790,7 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     def spy(sta, yearf, data, Ddata, **kwargs):
         seen["sta"] = sta
         seen.update(kwargs)
-        return data, None
+        return data, None, None, None
 
     monkeypatch.setattr(tplt, "_mask_outliers", spy)
     tplt.plotTime(
@@ -556,11 +801,13 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
         view="cleaned",
         outlier_params="PARAMS",
         outlier_overrides="/tmp/ov.csv",
+        provisional_days=7.0,
     )
     assert seen == {
         "sta": "RHOF",
         "outlier_params": "PARAMS",
         "outlier_overrides": "/tmp/ov.csv",
+        "provisional_days": 7.0,
     }
 
 
@@ -576,3 +823,20 @@ def test_raw_view_never_touches_the_outlier_chain(monkeypatch, tmp_path):
     tplt.plotTime(
         "RHOF", save="png", figDir=str(tmp_path), logo=False, outlier_params="PARAMS"
     )
+
+
+def test_mask_outliers_annotation_matches_what_it_returns() -> None:
+    """The return annotation said three members; both returns give four.
+
+    The missing one is ``aborted``, and it is the one that matters most: a
+    component whose detection aborted is served RAW with only a
+    ``UserWarning``, so without it an aborted axis is indistinguishable from
+    a clean one. A wrong annotation on the seam that carries that signal is
+    how a caller comes to drop it.
+    """
+    import typing
+
+    from gps_plot import timesmatplt as tplt
+
+    hints = typing.get_type_hints(tplt._mask_outliers)
+    assert len(typing.get_args(hints["return"])) == 4

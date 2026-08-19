@@ -7,7 +7,15 @@ import datetime as dt
 import functools
 import os
 import sys
+import textwrap
 import traceback
+
+# Only the three helpers the MODERN lane calls are annotated below. This
+# module is `ignore_errors` for mypy (see pyproject's typing policy), so
+# these signatures type the SEAM, not the module: detrend_workbench is
+# strict-checked and cannot call an untyped function.
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 # from gtimes.timefunc import TimefromYearf, currTime, TimetoYearf
 from gtimes.timefunc import currDatetime
@@ -138,7 +146,9 @@ def _coerce_outlier_param(name, typ, raw):
         ) from None
 
 
-def _build_outlier_params(assignments):
+def _build_outlier_params(
+    assignments: Sequence[str], base: Mapping[str, Any] | None = None
+) -> Any:
     """Build an ``OutlierParams`` from repeated ``NAME=VALUE`` CLI args.
 
     Field names and types are read off the dataclass itself, so this flag
@@ -151,7 +161,7 @@ def _build_outlier_params(assignments):
     default-valued object) is what lets the per-station
     ``outlier_overrides.csv`` row win downstream.
     """
-    if not assignments:
+    if not assignments and not base:
         return None
 
     import dataclasses
@@ -160,8 +170,8 @@ def _build_outlier_params(assignments):
     from gps_analysis import OutlierParams
 
     hints = typing.get_type_hints(OutlierParams)
+    values = dict(base or {})
     valid = sorted(f.name for f in dataclasses.fields(OutlierParams))
-    values = {}
     for item in assignments:
         name, sep, raw = item.partition("=")
         name = name.strip()
@@ -180,6 +190,162 @@ def _build_outlier_params(assignments):
         return OutlierParams(**values)
     except (ValueError, TypeError) as exc:
         raise SystemExit("--outlier-param: %s" % (exc,)) from None
+
+
+#: ``--outlier-param`` NAMEs grouped by the stage each acts on, so ``--help``
+#: reads as something an operator can navigate rather than 31 alphabetical
+#: fields.  Only the ORDERING lives here -- names, types and defaults are read
+#: off the dataclass, and any field this map does not know lands in a trailing
+#: "other" group.  So the listing can go stale in arrangement, never in
+#: COVERAGE: a leaf that adds a threshold still documents it.
+OUTLIER_PARAM_GROUPS = (
+    (
+        "S0 despike",
+        ("despike", "despike_n_sigma", "despike_return_sigma", "despike_gap_days"),
+    ),
+    (
+        "S1/S2 fit+whiten",
+        ("loss", "f_scale", "whiten_sigma_clip", "scale_estimator", "scale_floor"),
+    ),
+    ("S3 global", ("enable_global", "global_n_sigma")),
+    (
+        "S4 windowed",
+        (
+            "enable_window",
+            "window_days",
+            "window_n_sigma",
+            "window_min_count",
+            "window_order",
+            "window_robust_iterations",
+        ),
+    ),
+    (
+        "S5 protection",
+        (
+            "enable_protection",
+            "min_outlier",
+            "max_run_days",
+            "cluster_gap_days",
+            "run_sign_fraction",
+            "step_evidence_sigma",
+            "step_window_days",
+            "step_flank_max_reach_days",
+            "step_magnitude_ratio",
+            "protect_on_indeterminate",
+        ),
+    ),
+    (
+        "iteration/abort",
+        (
+            "max_iterations",
+            "max_flag_fraction",
+            "min_abort_candidates",
+            "epoch_policy",
+        ),
+    ),
+)
+
+
+def outlier_param_help(width: int = 78) -> str:
+    """The ``--outlier-param`` NAME list, for a parser epilog.
+
+    Generated from ``gps_analysis.OutlierParams`` at parse time rather
+    than written down, for the same reason
+    :func:`_build_outlier_params` reads the dataclass: a help text that
+    restated the fields would drift from the detector the moment the leaf
+    gained one, and it would do so SILENTLY -- an operator would read a
+    name that no longer exists, or never learn about one that does.
+
+    The shown values are the SPEC defaults, and are labelled as such
+    because they are not necessarily what a given station gets: an unset
+    field defers to that station's ``outlier_overrides.csv`` row first.
+    Booleans print as ``true``/``false``, one of the spellings
+    :func:`_coerce_outlier_param` accepts, so a line can be copied
+    straight onto the command line.
+
+    Returns:
+        The block, or "" if ``gps_analysis`` cannot be imported --
+        ``--help`` must never be the thing that fails.
+    """
+    import dataclasses
+
+    try:
+        from gps_analysis import OutlierParams
+    except Exception:
+        return ""
+
+    fields = {f.name: f for f in dataclasses.fields(OutlierParams)}
+    grouped = [
+        (title, [n for n in names if n in fields])
+        for title, names in OUTLIER_PARAM_GROUPS
+    ]
+    known = {n for _t, names in grouped for n in names}
+    other = [n for n in fields if n not in known]
+    if other:
+        grouped.append(("other", other))
+
+    def _shown(name):
+        default = fields[name].default
+        if isinstance(default, bool):
+            return "%s=%s" % (name, str(default).lower())
+        return "%s=%s" % (name, default)
+
+    label_w = max(len(t) for t, _n in grouped) + 2
+    lines = textwrap.wrap(
+        "--outlier-param NAME=VALUE, repeatable. Valid NAMEs, shown with "
+        "the SPEC default (a station's outlier_overrides.csv row wins "
+        "wherever a NAME is left unset, and is REPLACED wholesale by any "
+        "override):",
+        width=width,
+    ) + [""]
+    for title, names in grouped:
+        if not names:
+            continue
+        body = ", ".join(_shown(n) for n in names)
+        lines.extend(
+            textwrap.wrap(
+                body,
+                width=width,
+                initial_indent="  %-*s" % (label_w, title),
+                subsequent_indent="  " + " " * label_w,
+            )
+        )
+    return "\n".join(lines)
+
+
+#: Detection stages selectable with ``--stages`` (§14).  S1/S2 (the robust
+#: trajectory fit and the whitening) are STRUCTURAL — every later stage is
+#: defined on their residuals — so they are always on and are accepted only
+#: for documentation symmetry.
+STAGE_FLAGS = {
+    "S0": "despike",
+    "S3": "enable_global",
+    "S4": "enable_window",
+    "S5": "enable_protection",
+}
+STAGE_ALWAYS_ON = ("S1", "S2")
+
+
+def _stage_overrides(spec: str | None) -> dict[str, bool] | None:
+    """``--stages`` -> OutlierParams field overrides, or None if unset.
+
+    Named stages are ON, unnamed ones OFF.  This replaces the sentinel-
+    threshold idiom (``global_n_sigma=1e9``), which could not express intent,
+    could not be asserted on, and for the protection stage could not express
+    "off" at all -- its indeterminate arm ignored every threshold (§3.4.2a).
+    """
+    if not spec:
+        return None
+    if spec.strip().lower() == "all":
+        return {v: True for v in STAGE_FLAGS.values()}
+    want = [x.strip().upper() for x in spec.split(",") if x.strip()]
+    bad = [x for x in want if x not in STAGE_FLAGS and x not in STAGE_ALWAYS_ON]
+    if bad:
+        raise SystemExit(
+            "--stages: unknown stage(s) %s; valid: %s (S1/S2 are structural "
+            "and always run)" % (", ".join(bad), ", ".join(sorted(STAGE_FLAGS)))
+        )
+    return {field: (name in want) for name, field in STAGE_FLAGS.items()}
 
 
 def exit_gracefully(signum, frame):
@@ -243,9 +409,25 @@ def main():
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
     view_allow = ["raw", "cleaned", "detrended"]
 
+    # Raw*Description* leaves the epilog alone (argument help is still
+    # auto-wrapped), which is what lets the generated NAME table keep its
+    # columns instead of being reflowed into a comma wall.
     parser = argparse.ArgumentParser(
         description="Plot tool for GPS time series.",
-        epilog="For any issues regarding this program or the GPS system contact, Benni, gsm: 847 4985, email: bgo@vedur.is, or Hildur email: hildur@vedur.is",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="\n\n".join(
+            block
+            for block in (
+                outlier_param_help(),
+                textwrap.fill(
+                    "For any issues regarding this program or the GPS system "
+                    "contact, Benni, gsm: 847 4985, email: bgo@vedur.is, or "
+                    "Hildur email: hildur@vedur.is",
+                    width=78,
+                ),
+            )
+            if block
+        ),
     )
 
     parser.add_argument("Stations", nargs="+", help="List of stations")
@@ -366,7 +548,8 @@ def main():
         help="override one gps_analysis.OutlierParams detection threshold of "
         "the '--view cleaned' detector; repeatable (e.g. --outlier-param "
         "window_n_sigma=3.5 --outlier-param despike=true). Names/types are "
-        "read off the dataclass, so an unknown NAME lists the valid ones. "
+        "read off the dataclass: every valid NAME with its spec default is "
+        "listed at the END of this help, and an unknown one lists them too. "
         "ANY override replaces the station's outlier_overrides.csv row "
         "wholesale; leave it unset to let that catalog (else the spec "
         "defaults) decide. Careful: min_outlier= is the SCALAR floor, a "
@@ -381,6 +564,42 @@ def main():
         help="read per-station outlier overrides from this CSV instead of the "
         "deployed one -- the lever that reproduces a production cleaned "
         "view locally. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--stages",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help="run only the named detection stages, e.g. --stages S0 or "
+        "--stages S0,S4 ('all' restores everything). S0 gross-blunder "
+        "despike, S3 global identifier, S4 windowed Hampel, S5 signal "
+        "protection; S1 (robust fit) and S2 (whitening) are structural and "
+        "always run. Named stages are ON, unnamed OFF. Isolation is an "
+        "ATTRIBUTION tool -- with S5 off every candidate becomes a flag, "
+        "which is never a production setting. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--hide-outliers",
+        action="store_true",
+        help="drop the grey outlier overlay from the figure. The flagged "
+        "epochs are ALREADY absent from the plotted series (--view cleaned "
+        "masks them); this only decides whether the plot still shows what "
+        "was set aside. Side effect: the y-axis tightens to the cleaned "
+        "series, since the overlay no longer stretches the autoscale. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--provisional-days",
+        type=float,
+        default=None,
+        metavar="DAYS",
+        help="recency bound [days] of the PROVISIONAL marker (gold): recent "
+        "candidates the detector could not rule on because the step evidence "
+        "is indeterminate -- no data follows them yet, so a blunder and the "
+        "onset of real deformation look identical. They stay IN the series; "
+        "the marker only says the verdict is pending. 0 disables the marker; "
+        "unset uses the geo_dataread default (14). Ignored unless "
+        "--view cleaned",
     )
     parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
@@ -432,7 +651,12 @@ def main():
     kwargs["events"] = eventDict
     # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
     # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
-    kwargs["outlier_params"] = _build_outlier_params(kwargs.pop("outlier_param"))
+    # --stages sets the enable flags; an explicit --outlier-param still wins,
+    # so the two compose rather than one silently overriding the other.
+    stage_over = _stage_overrides(kwargs.pop("stages"))
+    kwargs["outlier_params"] = _build_outlier_params(
+        kwargs.pop("outlier_param"), base=stage_over
+    )
 
     stations = args.Stations  # station list
     del kwargs["Stations"]

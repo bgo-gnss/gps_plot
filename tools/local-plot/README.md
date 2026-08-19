@@ -39,7 +39,62 @@ Output filenames are siblings: `{STA}-plate.png`, `{STA}-plate-cleaned.png`,
 - **gps-config-data analysis-lane catalogs** including `segment_exclusions.csv`
   and `fit_windows.csv`. `setup-testcfg.sh` copies them from `GCD`
   (default `~/git/gps-config-data`, `main`).
-- `~/gps-data/TOT` populated by `gps-globk-tot` (192 stations as of 2026-07-21).
+- `~/gps-data/TOT` populated by `gps-globk-tot` (194 stations as of 2026-07-28).
+
+## Refreshing `~/gps-data/TOT` (the joined dataset)
+
+**Why it matters, not just how.** The production archive `/mnt_data/gpsdata`
+holds *raw* GLOBK segments — overlapping in time, with per-segment datums that
+are not reconciled. HVER's Up wraps by 10 m there (1746 epochs off-datum);
+`geo_dataread.globk_join` de-wraps and min-σ-dedupes them, leaving 1. So
+`postprocess.cfg` `totDir` points at the joined output and this refresh is a
+MANUAL step.
+
+**The local join is kept on purpose, not pending anything** (BGÓ, 2026-08-18).
+This used to read "local only until it ships to production" — it shipped on
+2026-08-17 (`globk_join` runs in okada's `tododaily`, layered after
+`compGLOBK`), and `/mnt_data/gps_gmt_data/TOT` now carries joined series for
+the `stations.cfg` stations. Do NOT switch to it: `gpslibrary` development
+stays **isolated from production**, so the analysis lane keeps re-joining into
+`~/gps-data/TOT` from the segments and nothing here depends on a production
+pipeline that can change under it. A production-fed `totDir` would also make
+every local figure irreproducible the moment okada's join is reverted — which
+is one deleted line in `tododaily`.
+
+```bash
+mamba activate gpslibrary
+cd ~/gps-data/TOT && ls | sed 's/^mb_//; s/_TOT.*//' | sort -u > /tmp/sta.txt
+xargs -a /tmp/sta.txt gps-globk-tot \
+    --pre /mnt_data/gps_gmt_data/pre \
+    --rap /mnt_data/gps_gmt_data/rap \
+    --out ~/gps-data/TOT
+```
+
+- **Use `xargs`, not `$(cat …)`** — this is zsh, where an unquoted parameter
+  does NOT word-split, so the whole station list arrives as one argument and
+  the join errors out on every component (harmlessly: it writes nothing).
+- Segment exclusions (SEY1 name-clash, SUND rap-subset) resolve from the
+  deployed `~/.config/gpsconfig/segment_exclusions.csv`. If that is missing the
+  join warns and proceeds **without** them — copy it from
+  `~/git/gps-config-data/analysis-lane/`.
+- The station list above is inherited from what is already joined. Stations
+  present in `pre`/`rap` but never joined locally stay missing; `pre` carries
+  378 codes and `rap` 394, though most extras are global reference sites.
+- Verify after: a joined series keeps its true height (RHOF Up sits near
+  6.9 m, REYK 3.0 m), so `|U| > 1 m` is NOT a wrap test — check deviation from
+  each station's own median instead.
+
+## Fractional-year epochs are at NOON
+
+`gtimes.TimetoYearf` returns the **daily-solution reference epoch**, i.e. noon:
+May 29 2008 is `149.5/366 = 2008.40847`, not the naive midnight `149/366 =
+2008.4071`. Everything in the lane agrees on noon — `steps.csv` rows,
+`fit_windows.csv`, `detrend_params.json`, the workbench's `--event`. A
+hand-computed midnight fractional year therefore sits **half a day early**,
+which is enough to fail an epoch-coincidence check while changing nothing
+visible: on daily data both values fall between the same pair of observations,
+so a step term fitted at either epoch is identical. Convert dates with
+`TimetoYearf`; never divide day-of-year by the year length yourself.
 
 ## Config knobs
 
@@ -53,6 +108,50 @@ Every path is env-overridable — see the header of each script. Common:
 | `SAVE` | `png` | `--save` formats (`pdf`, `eps,pdf,png`, …) |
 | `VIEWS` | `raw cleaned detrended` | which views to render |
 | `GCD` | `~/git/gps-config-data` | config-data checkout (setup only) |
+
+### Where the deployed catalogs come from (2026-08-19)
+
+`~/.config/gpsconfig` now has a deploy pipeline instead of being hand-populated:
+
+```bash
+cd ~/git/gps-config-data
+python3 deploy.py --env laptop-bgo --target ~/.config/gpsconfig --dry-run  # look first
+python3 deploy.py --env laptop-bgo --target ~/.config/gpsconfig --sync     # fetch + deploy
+```
+
+It renders `postprocess.cfg` from the template (so the `[PATHS]` analysis-lane
+directories — `tot_dir`, `pre_path`, `rap_path`, `fig_dir` — are this host's)
+and copies the analysis-lane catalogs, `detrend_itrf2008.csv`, `station-plate`
+and `station_coord.xyz`. It does NOT touch receivers' development config, and
+**never** writes `detrend_params.json` — that is curated output.
+
+This overlaps `setup-testcfg.sh`, which copies the same catalogs from `$GCD`
+into `$TESTCFG`. Both still work; the deploy is now the way the *deployed* dir
+gets them, `setup-testcfg.sh` the way the layered test dir does.
+
+### `GPS_CONFIG_PATH` is no longer needed (2026-07-29)
+
+The analysis-lane catalogs — `steps.csv`, `protect_windows.csv`,
+`outlier_overrides.csv`, `fit_windows.csv`, `analysis.yaml` — plus the
+generated `detrend_params.json` are now **deployed to `~/.config/gpsconfig/`**,
+which is where `gps_parser.catalog_path()` looks by default. `TESTCFG` survives
+as an all-symlink mirror, so `plot-views.sh` still works, but a bare
+`gps-detrend-workbench` / `plot-gps-timeseries` in any shell now resolves them.
+
+Before this, forgetting the export was silent-but-costly rather than an error:
+each catalog degrades to "nothing declared" with a warning, so SELF's 2008
+Ölfus step went undeclared, full detection tripped the excess-candidate abort,
+and the S0 fallback fitted a 150 mm step with a sinusoid — rms
+`[34.1, 32.0, 20.8]` instead of `[1.97, 3.49, 6.54]` mm, seasonal inflated
+~10×, north rate sign-flipped. If you ever see `no step catalog` or
+`stages S0` on a station you know has a declared step, the catalogs are not
+resolving.
+
+> ⚠️ **Do not run `gps-config-data/deploy.py` against `~/.config/gpsconfig` on
+> this laptop without re-checking `totDir`.** The repo's `postprocess.cfg` still
+> has the production `totDir = /mnt_data/gpsdata/`, while the deployed copy is
+> pointed at `~/gps-data/TOT` for the local join (HVER 10 m Up wraps). A deploy
+> would silently revert that and put every plot back on unjoined segments.
 
 ## fit_windows.csv — per-station detrend windows
 

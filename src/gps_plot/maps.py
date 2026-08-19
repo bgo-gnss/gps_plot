@@ -1389,7 +1389,10 @@ def _resolve_slip_component(product: Mapping[str, Any], component: str | None) -
     patches = product.get("patches") or []
     if not patches:
         raise ValueError("slip product carries no patches")
-    available = set(patches[0]["slip_m"])
+    # Annotated because `product` is Mapping[str, Any]: without it the key
+    # type stays Any all the way through `totals`, and both `max(...)`
+    # returns below silently widen this function's declared `str`.
+    available: set[str] = set(patches[0]["slip_m"])
     if component is not None:
         if component not in available:
             raise ValueError(
@@ -1397,7 +1400,7 @@ def _resolve_slip_component(product: Mapping[str, Any], component: str | None) -
                 f"components {sorted(available)}"
             )
         return component
-    potency = product.get("potency_m3")
+    potency: Mapping[str, Any] | None = product.get("potency_m3")
     if potency:
         return max(potency, key=lambda k: abs(float(potency[k])))
     totals = {c: sum(abs(float(p["slip_m"][c])) for p in patches) for c in available}

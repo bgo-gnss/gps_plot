@@ -25,7 +25,14 @@ dependencies = [
     # below overrides them with editable sibling paths for local development.
     "geo_dataread@git+https://github.com/bgo-gnss/geo_dataread.git",
     "geofunc@git+https://github.com/bgo-gnss/geofunc.git",
-    "gps_analysis@git+https://github.com/bgo-gnss/gps_analysis.git",
+    # Pinned to @main EXPLICITLY, unlike the siblings above. This repo's
+    # GitHub default branch is `analysis-lane-base`, which predates the whole
+    # detrend API — no `gps_analysis.detrend`, no `gps_analysis.staged`, no
+    # `trajectory_from_record`. An unpinned URL resolves to that default, so
+    # a production/container install got a gps_analysis the detrend lane and
+    # both pickers cannot import. Invisible locally, because
+    # [tool.uv.sources] below substitutes the editable checkout.
+    "gps_analysis@git+https://github.com/bgo-gnss/gps_analysis.git@main",
     "gps_parser@git+https://github.com/bgo-gnss/gps_parser.git",
 ]
 
@@ -39,6 +46,9 @@ maps = ["pygmt>=0.19"]
 gps_plot = "gps_plot:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
 gps-analysis-devviz = "gps_plot.dev_viz:main"
+gps-detrend-workbench = "gps_plot.detrend_workbench:main"
+gps-detrend-picker = "gps_plot.detrend_picker:main"
+gps-detrend-picker-qt = "gps_plot.detrend_picker_qt:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -49,6 +59,10 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "marimo>=0.23.16",
+    "mypy>=1.13",
+    "pyqtgraph>=0.14.0",
+    "pyside6>=6.11.1",
     "pytest>=8.0",
     "ruff>=0.8",
 ]
@@ -69,6 +83,7 @@ gps_analysis = { path = "../gps_analysis", editable = true }
 gps_parser = { path = "../gps_parser", editable = true }
 
 [tool.pytest.ini_options]
+markers = ["network: needs live TOS (skipped by default)"]
 testpaths = ["tests"]
 
 # Lint/format scope: the modern lane (maps, dev_viz, timesmatplt, tests).
@@ -84,3 +99,52 @@ extend-exclude = [
     "src/gps_plot/gmtplot.py",                     # legacy velomap recipe (maintenance)
     "bin/timesmatplt-test.py",                     # legacy smoke script
 ]
+
+# Typing policy: `mypy --strict src/` is the gate, scoped to the SAME modern
+# lane as the ruff excludes above — the pre-typing plotting modules are
+# per-module ignore_errors rather than rewritten, because they are
+# golden-pinned (a changed figure is a changed scientific product) and two of
+# them are Python-2 snapshots that do not parse. Widening this scope means
+# typing `timesmatplt` / `plot_gps_timeseries`, which is a project, not a
+# drive-by. Baseline, per-file counts and the adoption path that produced
+# this config: docs/mypy-status.md.
+#
+# `tests/` is deliberately NOT in the gate: the Qt picker tests poke widget
+# attributes that are `Any` all the way down, so strict typing there would
+# measure pyqtgraph's missing stubs rather than this package's correctness.
+[tool.mypy]
+strict = true
+
+# The two dated snapshots need EXCLUDE, not the ignore_errors below: they are
+# Python-2 source, so mypy fails at the parser and stops before any per-module
+# setting applies ("Missing parentheses in call to 'print'" aborts the run).
+exclude = [
+    "src/gps_plot/gasmatplt_bgo_15May17\\.py$",
+    "src/gps_plot/gasmatplt_workingon15May17\\.py$",
+]
+
+# None of these ship a py.typed marker or stubs, so mypy can check nothing
+# inside them either way. Suppressing the import error is not a loss of
+# coverage — it is declining to report the same fact 30 times.
+[[tool.mypy.overrides]]
+module = [
+    "geo_dataread.*",
+    "gps_parser.*",
+    "gtimes.*",
+    "tostools.*",
+    "pygmt.*",
+    "pyqtgraph.*",
+    "scipy.*",
+]
+ignore_missing_imports = true
+
+# Same scope rationale as [tool.ruff] extend-exclude, plus the two modules
+# that are in ruff scope but were never typed.
+[[tool.mypy.overrides]]
+module = [
+    "gps_plot.gasmatplt",
+    "gps_plot.gmtplot",
+    "gps_plot.timesmatplt",
+    "gps_plot.plot_gps_timeseries",
+]
+ignore_errors = true
