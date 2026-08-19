@@ -109,6 +109,26 @@ Every path is env-overridable — see the header of each script. Common:
 | `VIEWS` | `raw cleaned detrended` | which views to render |
 | `GCD` | `~/git/gps-config-data` | config-data checkout (setup only) |
 
+### Where the deployed catalogs come from (2026-08-19)
+
+`~/.config/gpsconfig` now has a deploy pipeline instead of being hand-populated:
+
+```bash
+cd ~/git/gps-config-data
+python3 deploy.py --env laptop-bgo --target ~/.config/gpsconfig --dry-run  # look first
+python3 deploy.py --env laptop-bgo --target ~/.config/gpsconfig --sync     # fetch + deploy
+```
+
+It renders `postprocess.cfg` from the template (so the `[PATHS]` analysis-lane
+directories — `tot_dir`, `pre_path`, `rap_path`, `fig_dir` — are this host's)
+and copies the analysis-lane catalogs, `detrend_itrf2008.csv`, `station-plate`
+and `station_coord.xyz`. It does NOT touch receivers' development config, and
+**never** writes `detrend_params.json` — that is curated output.
+
+This overlaps `setup-testcfg.sh`, which copies the same catalogs from `$GCD`
+into `$TESTCFG`. Both still work; the deploy is now the way the *deployed* dir
+gets them, `setup-testcfg.sh` the way the layered test dir does.
+
 ### `GPS_CONFIG_PATH` is no longer needed (2026-07-29)
 
 The analysis-lane catalogs — `steps.csv`, `protect_windows.csv`,
