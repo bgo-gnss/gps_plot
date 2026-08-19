@@ -327,8 +327,9 @@ same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
 changes the data is emitted.
 
-Six ways it broke that invariant (the sixth is the `--max-gap-years` ordering,
-above), all fixed 2026-08-09/16/17/19 and worth
+Seven ways it broke that invariant — the sixth is the `--max-gap-years`
+ordering and the seventh the missing abort fallback, both described above —
+all fixed 2026-08-09/16/17/19 and worth
 knowing because the shape recurs: a picked step REPLACED the declared ones
 while `--step` MERGES (on SELF the difference between an aborted fit and a
 clean one); the domain region opened on the DATA SPAN and emitted `--segment`
@@ -388,6 +389,37 @@ The union case is verified against a SYNTHETIC catalog injected via
 exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
+
+**Three-state term controls** (2026-08-19, slice 1 of the composition work —
+alignment in `.interrogate-picker-terms.md`). `secular` and `periodic` each get
+**estimate here / hold from window / not in the model**, because those are three
+CLAIMS and not two: a seasonal *held* from the quiet window asserts it continues
+across the span, a seasonal *absent* asserts there is none. Three states are
+expressible at all only because `--model` and the stage plan are **orthogonal**
+in the estimator — one decides which terms are in the design matrix, the other
+where each is estimated.
+
+The two states compose the stored `--model` (`lineperiodic` / `linear` /
+`periodic`) in `_current()`, the same place the flags are built, so the design
+matrix the picker fits and the model the copied command asks for cannot come
+apart. Both absent has no spelling — every model in the vocabulary carries at
+least one — so it is refused there rather than sent to the estimator. `hold` is
+greyed until staging exists to hold *from*, not hidden: removing the item would
+renumber the rest and silently move a stored pick.
+
+Making `--model periodic` reachable exposed the **seventh** violation. The leaf
+RETURNS None on an outlier abort (recoverable — retry S0-only) and RAISES on a
+failed gate (not). `build_record` handled that; the picker called
+`estimate_record` directly and did not, so the same command rendered a figure
+from the CLI and "no record" in the window. A periodic-only model leaves the
+trend in the residuals, the candidate fraction trips `max_flag_fraction`, and
+detection aborts — invisible while the model was always `lineperiodic`. Both
+now go through `estimate_with_abort_fallback` and report with
+`abort_fallback_note`, so an S0 record is announced as one in either tool.
+
+Verified by the sweep that is this work's definition of done: 12 unstaged
+combinations (secular × periodic × term × step), picker record vs the emitted
+command's record, diffed elementwise — 0 divergences.
 
 **Run parameters are live controls** (2026-08-19) — `max-gap [yr]`,
 `provisional [d]` and `uncert [mm]` in a `run` group, previously

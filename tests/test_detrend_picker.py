@@ -901,3 +901,84 @@ class TestRunParameterControls:
         if w.yearf.size == before:  # the read was refused
             assert w.uncert == kept, "state and widget drifted apart"
             assert w.sp_uncert.value() == kept
+
+
+class TestTermStateControls:
+    """Three-state term controls, and the invariant across every combination.
+
+    `--model` and the stage plan are orthogonal in the estimator: one decides
+    which terms are in the design matrix, the other where each is estimated.
+    That is what makes three states meaningful rather than two.
+    """
+
+    @staticmethod
+    def _window():
+        return TestQtPickerBorrowedFeatures._window()
+
+    def test_the_states_compose_the_stored_model(self) -> None:
+        from gps_plot.detrend_picker_qt import STATE_ABSENT, STATE_ESTIMATE
+
+        w = self._window()
+        for sec, per, expected in (
+            (STATE_ESTIMATE, STATE_ESTIMATE, "lineperiodic"),
+            (STATE_ESTIMATE, STATE_ABSENT, "linear"),
+            (STATE_ABSENT, STATE_ESTIMATE, "periodic"),
+        ):
+            w.grp["secular"].setCurrentText(sec)
+            w.grp["periodic"].setCurrentText(per)
+            w.refit()
+            assert w.model == expected, (sec, per)
+            assert w.record is not None and w.record["model"] == expected
+            # the default stays out of the command; anything else is emitted
+            if expected == "lineperiodic":
+                assert "--model" not in w.command.text()
+            else:
+                assert f"--model {expected}" in w.command.text()
+
+    def test_both_absent_is_refused_not_crashed(self) -> None:
+        """No --model value carries neither term, so there is nothing to emit."""
+        from gps_plot.detrend_picker_qt import STATE_ABSENT
+
+        w = self._window()
+        w.refit()
+        good = w.record
+        assert good is not None
+        w.grp["secular"].setCurrentText(STATE_ABSENT)
+        w.grp["periodic"].setCurrentText(STATE_ABSENT)
+        w.refit()
+        assert w.model is None
+        assert "refused" in w.summary.toPlainText().lower()
+
+    def test_hold_is_disabled_until_there_is_a_window_to_hold_from(self) -> None:
+        """Greyed, not hidden: removing the item would renumber the rest."""
+        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_HOLD
+
+        w = self._window()
+        for name in ("secular", "periodic"):
+            combo = w.grp[name]
+            item = combo.model().item(GROUP_STATES.index(STATE_HOLD))
+            assert not item.isEnabled(), f"{name}: hold reachable with no stage"
+            assert combo.count() == len(GROUP_STATES), "an item was removed"
+
+    def test_the_abort_fallback_is_shared_with_the_workbench(self) -> None:
+        """Regression: the picker gave up where the CLI produced a figure.
+
+        The leaf RETURNS None on an outlier abort (recoverable, retry S0) and
+        RAISES on a failed gate (not). `build_record` handled that; the picker
+        called `estimate_record` directly and did not — so the same command
+        rendered fine from the CLI and showed 'no record' in the window.
+        Reachable the moment `--model periodic` became selectable, since a
+        periodic-only model leaves the trend in the residuals and the
+        candidate fraction trips the abort.
+        """
+        from gps_plot.detrend_picker_qt import STATE_ABSENT
+
+        w = self._window()
+        w.grp["secular"].setCurrentText(STATE_ABSENT)  # -> --model periodic
+        w.cb_term.setChecked(True)
+        w.refit()
+        assert w.record is not None, (
+            "the picker refused a model the workbench fits: "
+            + w.summary.toPlainText()[:120]
+        )
+        assert w.model == "periodic"

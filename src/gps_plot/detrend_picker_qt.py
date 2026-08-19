@@ -95,6 +95,30 @@ STEP_COLOR = (140, 20, 20)  # dark red   — declared step
 ONSET_COLOR = (44, 120, 44)  # dark green — transient onset
 COMPONENTS = ("North", "East", "Up")
 
+#: The three things a term group can be, and they are three CLAIMS, not two.
+#: A seasonal HELD from the quiet window asserts it continues across the whole
+#: span; a seasonal ABSENT asserts there is none. A two-state toggle collapses
+#: that distinction, and it is the distinction the background model rests on.
+#: ``--model`` and the stage plan are orthogonal in the estimator -- one
+#: decides which terms are in the design matrix, the other where each is
+#: estimated -- which is what makes three states expressible at all.
+STATE_ESTIMATE = "estimate here"
+STATE_HOLD = "hold from window"
+STATE_ABSENT = "not in the model"
+GROUP_STATES = (STATE_ESTIMATE, STATE_HOLD, STATE_ABSENT)
+
+#: ``(secular, periodic)`` states -> the stored ``--model``.  Both absent has
+#: no spelling: every model in the vocabulary carries at least one of them.
+MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
+    (True, True): "lineperiodic",
+    (True, False): "linear",
+    (False, True): "periodic",
+}
+
+#: ``station_record_from_arrays``' own default, so the emitted command stays
+#: clean when the operator has not moved away from it.
+DEFAULT_MODEL = "lineperiodic"
+
 
 def _provisional_days_default() -> float:
     """geo_dataread's own gold-lane recency bound, for the spinbox's start.
@@ -171,6 +195,9 @@ class PickerWindow:  # pragma: no cover - GUI
         self.step_lines: list[Any] = []
         self._prov_counts: list[int] = [0, 0, 0]
         self.record: dict[str, Any] | None = None
+        # Composed from the group states on every `_current()`; seeded here so
+        # the attribute exists before the first refit.
+        self.model: str | None = DEFAULT_MODEL
 
         pg.setConfigOptions(antialias=False, background="w", foreground="k")
         self.win = QtWidgets.QMainWindow()
@@ -454,6 +481,43 @@ class PickerWindow:  # pragma: no cover - GUI
         for item in group:
             item.setVisible(on)
 
+    def _state_combo(self, name: str) -> Any:
+        """A three-state control for one term group.
+
+        ``hold`` starts disabled rather than hidden: an operator should be able
+        to SEE that holding a group from the clean window is a thing this
+        window does, and why it is currently unavailable, instead of the
+        option appearing from nowhere when staging is switched on.
+        """
+        QtWidgets = self.QtWidgets
+        combo = QtWidgets.QComboBox()
+        combo.addItems(GROUP_STATES)
+        combo.setCurrentText(STATE_ESTIMATE)
+        combo.setToolTip(
+            f"{name}: estimate it here, hold it from the clean window "
+            f"(needs 'stage the fit'), or leave it out of the model entirely"
+        )
+        self._set_state_enabled(combo, STATE_HOLD, False)
+        combo.currentIndexChanged.connect(self.refit)
+        return combo
+
+    @staticmethod
+    def _set_state_enabled(combo: Any, state: str, on: bool) -> None:
+        """Grey out one state rather than removing it.
+
+        Removing an item would renumber the rest and silently move whatever
+        the operator had selected -- a control changing meaning underneath a
+        stored pick is this window's whole family of bugs.
+        """
+        item = combo.model().item(GROUP_STATES.index(state))
+        if item is not None:
+            item.setEnabled(on)
+
+    def _group_state(self, name: str) -> str:
+        """The selected state for a group, or ``estimate`` when absent."""
+        combo = self.grp.get(name)
+        return combo.currentText() if combo is not None else STATE_ESTIMATE
+
     def _controls(self) -> Any:
         """The right-hand control column.
 
@@ -485,6 +549,16 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.cb_stage.toggled.connect(self._toggle_stage)
         mcol.addWidget(self.cb_stage)
+
+        # Per-group state. `secular` and `periodic` compose the stored
+        # --model; `hold` needs a second stage to hold FROM, so it is disabled
+        # until staging is on (slice 2 wires it, along with step/transient).
+        self.grp: dict[str, Any] = {}
+        grid = QtWidgets.QFormLayout()
+        for name in ("secular", "periodic"):
+            self.grp[name] = self._state_combo(name)
+            grid.addRow(name, self.grp[name])
+        mcol.addLayout(grid)
 
         self.cb_term = QtWidgets.QCheckBox("transient")
         self.cb_term.setToolTip(
@@ -953,6 +1027,18 @@ class PickerWindow:  # pragma: no cover - GUI
             max_gap_years=self.max_gap_years,
         )
 
+        # The stored --model is COMPOSED from the group states, in the same
+        # place the flags are built, so the design matrix the picker fits and
+        # the model the copied command asks for cannot come apart.
+        self.model = MODEL_BY_STATE.get(
+            (
+                self._group_state("secular") != STATE_ABSENT,
+                self._group_state("periodic") != STATE_ABSENT,
+            )
+        )
+        if self.model is not None and self.model != DEFAULT_MODEL:
+            extra += ["--model", self.model]
+
         terms: list[str] = []
         if self.cb_term.isChecked():
             terms.append(
@@ -968,14 +1054,28 @@ class PickerWindow:  # pragma: no cover - GUI
 
     def refit(self, *_: Any) -> None:
         from geo_dataread.stage_plan import build_stage_plan
-        from gps_plot.detrend_workbench import estimate_record
+        from gps_plot.detrend_workbench import (
+            abort_fallback_note,
+            estimate_with_abort_fallback,
+        )
 
         np = self.np
         settings, extra, terms, stage_specs = self._current()
 
         plan = None
         note = ""
-        if stage_specs:
+        if self.model is None:
+            # Both secular and periodic absent. There is no --model spelling
+            # for it -- every value in the vocabulary carries at least one --
+            # so this is refused HERE rather than sent to the estimator, which
+            # would fail later and less clearly. Refused loudly, previous
+            # curve kept, per the composer's own convention.
+            note = (
+                "fit refused: secular and periodic are both 'not in the "
+                "model', which no --model value can express. Leave at least "
+                "one of them in."
+            )
+        if stage_specs and not note:
             # The long stage must free `step` whenever the fit CARRIES a step
             # column, and the picked lines are only half of where those come
             # from: `steps.csv` is a FLOOR that `_override_settings` merges
@@ -1008,7 +1108,14 @@ class PickerWindow:  # pragma: no cover - GUI
         est = None
         if not note:
             try:
-                est = estimate_record(
+                # The SAME fallback the workbench applies: a full-detection
+                # abort is recoverable (retry S0-only), a failed gate is not.
+                # Calling estimate_record directly meant the picker gave up
+                # where the emitted command produced a perfectly good figure --
+                # reachable as soon as `--model periodic` became selectable,
+                # since a periodic-only model leaves the trend in the residuals
+                # and the candidate fraction trips the abort.
+                est, fell_back = estimate_with_abort_fallback(
                     self.sta,
                     self.yearf,
                     self.data,
@@ -1016,6 +1123,7 @@ class PickerWindow:  # pragma: no cover - GUI
                     settings=settings,
                     terms=terms or None,
                     stage_plan=plan,
+                    model=self.model,
                 )
             except (ValueError, RuntimeError) as exc:
                 # A refused fit is a RESULT -- rank-deficient stage, an
@@ -1086,7 +1194,13 @@ class PickerWindow:  # pragma: no cover - GUI
                 self.prov_scatters[c].setData(self.yearf[prov_c], self.data[c][prov_c])
                 self._prov_counts[c] = int(prov_c.sum())
             self._update_spectrum(fit)
-            self.summary.setPlainText(self._summary(est.record))
+            text = self._summary(est.record)
+            if fell_back:
+                # Same words the CLI prints to stderr -- an S0 record is
+                # not the same object as a full-detection one, and the
+                # operator has to know which one they are judging.
+                text = f"note: {abort_fallback_note(self.sta)}\n\n{text}"
+            self.summary.setPlainText(text)
         else:
             for group in (
                 self.flag_scatters,

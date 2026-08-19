@@ -154,6 +154,82 @@ def run_flags(
     return flags
 
 
+def abort_fallback_note(sta: str) -> str:
+    """Why an S0 record is not the same thing as a full-detection one."""
+    return (
+        f"{sta}: full detection aborted (excess-candidate rule); falling back "
+        f"to S0-only. An S0 record leaves model-visible outliers in the fit, "
+        f"so its parameters are biased relative to a full-detection record. "
+        f"If this station has an undeclared step, --step is the better fix: "
+        f"declaring it usually stops the abort."
+    )
+
+
+def estimate_with_abort_fallback(
+    sta: str,
+    yearf: Any,
+    data: Any,
+    sigma: Any,
+    *,
+    settings: Any,
+    stages: str | None = None,
+    outlier_param: list[str] | None = None,
+    stage_plan: object | None = None,
+    lookup_donor: object | None = None,
+    terms: Sequence[str] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, bool]:
+    """Estimate, falling back to S0-only when the full pipeline ABORTS.
+
+    The leaf distinguishes two refusals that look identical to an operator: a
+    failed validity gate RAISES, an outlier abort RETURNS None. Only the
+    second is recoverable, and recovering it is what keeps a station estimable
+    at all.
+
+    Shared because it was not: the workbench had this fallback and the Qt
+    picker called :func:`estimate_record` directly, so the same command
+    produced a figure from the CLI and "no record" in the picker. It surfaced
+    the moment ``--model periodic`` became selectable — a periodic-only model
+    leaves the trend in the residuals, the candidate fraction passes
+    ``max_flag_fraction`` and detection aborts. The seventh instance of this
+    window's one recurring bug, and the same shape: a second place deciding
+    the same thing.
+
+    An explicit ``stages`` is an operator override and is NEVER second-guessed
+    — they asked for that stage set.
+
+    Returns:
+        ``(estimate, fell_back)``. Reporting is the caller's job, so the CLI
+        can warn on stderr and the GUI in its summary; both use
+        :func:`abort_fallback_note` so they say the same thing.
+    """
+
+    def _estimate(params: Any) -> Any:
+        return estimate_record(
+            sta,
+            yearf,
+            data,
+            sigma,
+            settings=settings,
+            outlier_params=params,
+            stage_plan=stage_plan,
+            lookup_donor=lookup_donor,
+            terms=terms,
+            **kwargs,
+        )
+
+    if stages:
+        return _estimate(_stage_params(stages, outlier_param)), False
+
+    estimate = _estimate(_stage_params(None, outlier_param))
+    if estimate is not None:
+        return estimate, False
+    # REBIND rather than keeping the aborted run's estimate: the mask that
+    # reaches the figure must be the one the SURVIVING record was fitted with,
+    # or the plot greys out epochs this record never rejected.
+    return _estimate(_stage_params("S0", outlier_param)), True
+
+
 def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     """``OutlierParams`` for a stage selection, via the CLI's own mapping.
 
@@ -455,43 +531,22 @@ def build_record(
         f"min_span_years={settings.min_span_years}"
     )
 
-    def _estimate(params: Any) -> Any:
-        return estimate_record(
+    try:
+        estimate, fell_back = estimate_with_abort_fallback(
             sta,
             yearf,
             data,
             sigma,
             settings=settings,
-            outlier_params=params,
+            stages=stages,
+            outlier_param=outlier_param,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
             terms=terms_spec,
             **kwargs,
         )
-
-    try:
-        if stages:
-            # explicit operator override -- no fallback, they asked for this
-            estimate = _estimate(_stage_params(stages, outlier_param))
-        else:
-            estimate = _estimate(_stage_params(None, outlier_param))
-            if estimate is None:
-                # Outlier ABORT, not a gate failure. Fall back to S0 so the
-                # station is estimable at all -- but say so, because an S0
-                # record carries absorbed-outlier bias the full one does not.
-                print(
-                    f"note: {sta}: full detection aborted (excess-candidate "
-                    f"rule); falling back to S0-only. An S0 record leaves "
-                    f"model-visible outliers in the fit, so its parameters "
-                    f"are biased relative to a full-detection record. If this "
-                    f"station has an undeclared step, --step is the better "
-                    f"fix: declaring it usually stops the abort.",
-                    file=sys.stderr,
-                )
-                # REBIND, so the mask that reaches the figure is the one the
-                # surviving record was fitted with -- keeping the aborted run's
-                # estimate here would grey out epochs this record never rejected.
-                estimate = _estimate(_stage_params("S0", outlier_param))
+        if fell_back:
+            print(f"note: {abort_fallback_note(sta)}", file=sys.stderr)
     except ValueError as exc:
         # The leaf RAISES on a failed validity gate and RETURNS None on an
         # outlier abort -- two different refusals for the same operator
