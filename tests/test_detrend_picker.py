@@ -742,3 +742,58 @@ class TestBothPickersEmitTheSameRunFlags:
             run_flags(uncert=12.5)
         # an integral float is the same screen, and stays spellable
         assert run_flags(uncert=12.0) == ["--uncert", "12"]
+
+
+class TestSplitLayout:
+    """Plots left, controls right, command full width along the bottom.
+
+    Everything used to stack vertically, which spent height -- the scarce
+    dimension, with three component panels plus a periodogram -- on a one-line
+    control strip that had itself run out of width.
+    """
+
+    @staticmethod
+    def _window():
+        return TestQtPickerBorrowedFeatures._window()
+
+    def test_plots_are_left_of_the_controls(self) -> None:
+        w = self._window()
+        assert w.split.orientation() == w.pg.QtCore.Qt.Horizontal
+        assert w.split.count() == 2
+        assert w.split.widget(0) is w.glw, "the plots must be the left pane"
+        # the control column carries the controls AND the record
+        right = w.split.widget(1)
+        assert w.summary in right.findChildren(type(w.summary))
+
+    def test_the_command_spans_the_full_width(self) -> None:
+        """It is the window's output and runs past 200 chars on a staged fit.
+
+        Putting it in the right column would make the one thing you copy the
+        least readable widget on screen.
+        """
+        w = self._window()
+        right = w.split.widget(1)
+        assert w.command not in right.findChildren(type(w.command))
+        assert w.command.parent() is w.split.parent()
+
+    def test_every_control_survived_the_move(self) -> None:
+        """Re-parenting must not drop a widget or its signal."""
+        w = self._window()
+        for name in ("cb_stage", "cb_term", "kind", "tau"):
+            assert hasattr(w, name), f"{name} lost in the layout change"
+        # and they still drive a refit: toggling the term changes the command
+        before = w.command.text()
+        w.cb_term.setChecked(True)
+        assert w.command.text() != before
+        assert "--term" in w.command.text()
+
+    def test_rms_is_rounded_for_the_narrow_column(self) -> None:
+        """Raw floats wrapped over three lines and buried the comparison."""
+        w = self._window()
+        w.refit()
+        rms_line = [
+            ln for ln in w.summary.toPlainText().splitlines() if ln.startswith("rms")
+        ]
+        assert rms_line, w.summary.toPlainText()[:200]
+        # 2 dp, matching the PDF's summarise()
+        assert "0000" not in rms_line[0] and len(rms_line[0]) < 60, rms_line[0]

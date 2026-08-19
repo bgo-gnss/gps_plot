@@ -290,19 +290,45 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self._set_visible(self.onset_lines, False)
 
-        layout.addWidget(self._controls())
         self.summary = QtWidgets.QPlainTextEdit()
         self.summary.setReadOnly(True)
-        self.summary.setMaximumHeight(150)
+        self.summary.setMinimumHeight(190)
         self.summary.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.summary)
+
+        # Controls and record go in a right-hand column, the plots on the left,
+        # with a draggable divider between them. Stacking everything vertically
+        # spent the scarcest dimension -- height -- on a one-line control strip,
+        # while three stacked component panels plus the periodogram need every
+        # bit of it. A column also gives the controls somewhere to GROW: as a
+        # single row they were already running out of width.
+        right = QtWidgets.QWidget()
+        rcol = QtWidgets.QVBoxLayout(right)
+        rcol.setContentsMargins(0, 0, 0, 0)
+        rcol.addWidget(self._controls())
+        rcol.addWidget(self.summary, stretch=1)
+
+        self.split = QtWidgets.QSplitter(self.pg.QtCore.Qt.Horizontal)
+        self.split.addWidget(self.glw)
+        self.split.addWidget(right)
+        # Plots take the space when the window resizes; the control column is
+        # sized to its contents and stays put.
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        self.split.setSizes([880, 370])
+        self.split.setChildrenCollapsible(False)
+        layout.addWidget(self.split, stretch=1)
+
+        # The command stays FULL WIDTH along the bottom rather than joining the
+        # right column. It is the output of the whole window -- a staged fit
+        # with a term and a segment runs past 200 characters -- and it exists to
+        # be read and copied, which a third of the window cannot do.
         self.command = QtWidgets.QLineEdit()
         self.command.setReadOnly(True)
         self.command.setStyleSheet("font-family: monospace;")
         layout.addWidget(self.command)
 
         self.win.setCentralWidget(central)
-        self.win.resize(1250, 950)
+        self.win.resize(1420, 950)
         self.glw.scene().sigMouseClicked.connect(self._on_click)
         if not self.load_session():
             self.refit()
@@ -415,47 +441,85 @@ class PickerWindow:  # pragma: no cover - GUI
             item.setVisible(on)
 
     def _controls(self) -> Any:
+        """The right-hand control column.
+
+        Grouped by what a control DECIDES, not by widget type: "model" changes
+        what is fitted and therefore the record, "picks" only moves what is
+        already on the plot. That split is the one an operator needs when
+        deciding whether an action is curation or navigation -- the same
+        distinction the workbench draws between a stored decision and a
+        look-only one.
+
+        Laid out as a column because the old single row had run out of width;
+        every widget below is the same object with the same signal as before,
+        only re-parented.
+        """
         QtWidgets = self.QtWidgets
         box = QtWidgets.QWidget()
-        row = QtWidgets.QHBoxLayout(box)
+        col = QtWidgets.QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+
+        # --- model: these change the FIT, and so the emitted command ------
+        model_box = QtWidgets.QGroupBox("model")
+        mcol = QtWidgets.QVBoxLayout(model_box)
 
         self.cb_stage = QtWidgets.QCheckBox("stage the fit")
+        self.cb_stage.setToolTip(
+            "Fit the seasonal on a clean sub-window and hold it for the long "
+            "stage (emits --stage/--hold)"
+        )
         self.cb_stage.toggled.connect(self._toggle_stage)
-        row.addWidget(self.cb_stage)
+        mcol.addWidget(self.cb_stage)
 
         self.cb_term = QtWidgets.QCheckBox("transient")
+        self.cb_term.setToolTip(
+            "Add a log/exp transient at the green onset line (emits --term)"
+        )
         self.cb_term.toggled.connect(self._toggle_term)
-        row.addWidget(self.cb_term)
+        mcol.addWidget(self.cb_term)
 
+        trow = QtWidgets.QHBoxLayout()
         self.kind = QtWidgets.QComboBox()
         self.kind.addItems(["log", "exp"])
         self.kind.currentIndexChanged.connect(self.refit)
-        row.addWidget(self.kind)
-
-        row.addWidget(QtWidgets.QLabel("tau [yr]"))
+        trow.addWidget(self.kind)
+        trow.addWidget(QtWidgets.QLabel("tau [yr]"))
         self.tau = QtWidgets.QDoubleSpinBox()
         self.tau.setRange(0.05, 50.0)
         self.tau.setSingleStep(0.1)
         self.tau.setValue(2.0)
         self.tau.editingFinished.connect(self.refit)
-        row.addWidget(self.tau)
+        trow.addWidget(self.tau)
+        mcol.addLayout(trow)
+        col.addWidget(model_box)
 
+        # --- picks: these move what is on the plot, and nothing else ------
+        picks_box = QtWidgets.QGroupBox("picks")
+        pcol = QtWidgets.QVBoxLayout(picks_box)
         reset = QtWidgets.QPushButton("reset domain")
+        reset.setToolTip("Back to the catalog's fit window, not the data span")
         reset.clicked.connect(self._reset_domain)
-        row.addWidget(reset)
+        pcol.addWidget(reset)
         clear = QtWidgets.QPushButton("clear steps")
+        clear.setToolTip(
+            "Remove the PICKED steps. Steps declared in steps.csv are a floor "
+            "and stay in the fit"
+        )
         clear.clicked.connect(self._clear_steps)
-        row.addWidget(clear)
+        pcol.addWidget(clear)
         save = QtWidgets.QPushButton("save session")
         save.clicked.connect(self.save_session)
-        row.addWidget(save)
+        pcol.addWidget(save)
 
-        row.addWidget(
-            QtWidgets.QLabel(
-                "  double-click a jump to declare a step · right-click it to remove"
-            )
+        hint = QtWidgets.QLabel(
+            "double-click a jump to declare a step · right-click it to remove"
         )
-        row.addStretch(1)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666;")
+        pcol.addWidget(hint)
+        col.addWidget(picks_box)
+
         return box
 
     # -- session (TSAnalyzer's reloadable pick file) --------------------
@@ -1006,8 +1070,18 @@ class PickerWindow:  # pragma: no cover - GUI
             self.spec_curves[c].setData(freqs, np.asarray(power, dtype=float))
 
     def _summary(self, rec: dict[str, Any]) -> str:
+        # `rms` is rounded for DISPLAY, to 2 dp like the PDF's `summarise`.
+        # Raw it prints as [1.8299068022476694, 2.8976389308583466, ...], which
+        # wrapped over three lines in the control column and buried the values
+        # that are actually being compared between iterations. Sub-micrometre
+        # digits on a millimetre residual are noise either way.
         keys = ("model", "window", "n_epochs", "n_rejected", "rms", "step_epochs")
-        lines = [f"{k:14s} {rec.get(k)}" for k in keys]
+        lines = []
+        for k in keys:
+            value = rec.get(k)
+            if k == "rms" and value is not None:
+                value = [round(float(v), 2) for v in value]
+            lines.append(f"{k:14s} {value}")
         rate = [round(float(c["params"][1]), 2) for c in rec["components"]]
         lines.append(f"{'rate [mm/yr]':14s} {rate}")
         lines.append(f"{'record_version':14s} {rec.get('record_version')}")

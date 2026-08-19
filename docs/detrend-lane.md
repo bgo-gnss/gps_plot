@@ -388,6 +388,26 @@ exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
 
+**Layout: plots left, controls right, command full width** (2026-08-19).
+Everything used to stack vertically, which spent HEIGHT — the scarce dimension,
+with three component panels plus a periodogram — on a one-line control strip
+that had itself run out of width. The divider is a `QSplitter`, so the share is
+draggable; the plots take the space on resize and the control column stays put.
+
+Two details that are deliberate. The **command stays full width along the
+bottom** rather than joining the right column: it is the window's output, runs
+past 200 characters on a staged fit with a term and a segment, and exists to be
+read and copied — which a third of the window cannot do. And the controls are
+grouped by **what a control decides**, not by widget type: *model* changes what
+is fitted and therefore the record, *picks* only moves what is already on the
+plot. That is the distinction an operator needs to tell curation from
+navigation, the same one the workbench draws between a stored decision and a
+look-only one.
+
+`rms` is now rounded to 2 dp in the summary, matching the PDF's `summarise`.
+Raw it printed as `[1.8299068022476694, …]` and wrapped over three lines in the
+narrower column, burying the number actually being compared between iterations.
+
 An UNTOUCHED domain region passes `segments=None` rather than its own hull —
 a catalog row may declare a UNION and one region cannot draw one, so the
 header says `shown as hull of N catalog segments` instead of silently
