@@ -1064,7 +1064,20 @@ class PickerWindow:  # pragma: no cover - GUI
         # AFTER cb_stage: `_toggle_stage` rewrites the group states (it
         # defaults the background to held, and clears an unreachable hold when
         # staging goes off), so restoring them first would simply be undone.
-        for name, state in d["groups"].items():
+        restored = d["groups"] or (
+            # A session predating per-group hold recorded a staged fit under
+            # the OLD plan, which held `periodic` only. Restoring it under the
+            # current default (hold the whole background) does not reproduce
+            # the fit it described -- and on a station with no step and no
+            # transient it leaves the long stage with nothing to estimate, so
+            # a session that used to work comes back refused. Sessions outlive
+            # the code that reads them; this one gets the meaning it was
+            # written with.
+            {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD}
+            if d["stage_on"]
+            else {}
+        )
+        for name, state in restored.items():
             combo = self.grp.get(name)
             if combo is None:
                 continue

@@ -1206,6 +1206,35 @@ class TestGroupStatePersistence:
         assert w2.grp["periodic"].currentText() == STATE_ABSENT
         assert w2.model == "linear"
 
+    def test_a_legacy_session_restores_the_plan_it_described(self) -> None:
+        """Sessions outlive the code that reads them.
+
+        A session written before per-group hold recorded a staged fit under
+        the OLD plan, which held `periodic` only. Restoring it under the
+        current default (hold the whole background) does not reproduce that
+        fit -- and on a station with no declared step and no transient it
+        leaves the long stage with nothing to estimate, so a session that used
+        to work comes back REFUSED. Measured on a real SEYD session from
+        2026-08-16.
+        """
+        import json
+
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE, STATE_HOLD
+
+        w = self._window()
+        w.save_session()
+        path = w._session_path()
+        d = json.loads(path.read_text())
+        d["stage"]["on"] = True
+        d.pop("groups")  # as a pre-slice-2 file has it
+        path.write_text(json.dumps(d))
+
+        w2 = self._window()
+        assert w2.grp["secular"].currentText() == STATE_ESTIMATE
+        assert w2.grp["periodic"].currentText() == STATE_HOLD
+        assert "--hold long:periodic=stage:clean" in w2.command.text()
+        assert "--hold long:secular=stage:clean" not in w2.command.text()
+
     def test_a_hold_is_not_restored_without_a_window_to_hold_from(self) -> None:
         """Restoring an unreachable state would show a value the fit cannot use."""
         from gps_plot.detrend_picker_qt import STATE_HOLD
