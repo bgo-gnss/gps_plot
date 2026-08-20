@@ -204,6 +204,8 @@ class PickerWindow:  # pragma: no cover - GUI
         # Composed from the group states on every `_current()`; seeded here so
         # the attribute exists before the first refit.
         self.model: str | None = DEFAULT_MODEL
+        # The fit the refine action seeds from; set on every successful refit.
+        self._est: Any = None
 
         pg.setConfigOptions(antialias=False, background="w", foreground="k")
         self.win = QtWidgets.QMainWindow()
@@ -582,10 +584,23 @@ class PickerWindow:  # pragma: no cover - GUI
         self.tau = QtWidgets.QDoubleSpinBox()
         self.tau.setRange(0.05, 50.0)
         self.tau.setSingleStep(0.1)
+        # 3 dp: refining solves tau to better than a hundredth of a year,
+        # and rounding it back to 2 would discard precision the VARPRO fit
+        # just earned -- and put the command a step away from the figure.
+        self.tau.setDecimals(3)
         self.tau.setValue(2.0)
         self.tau.editingFinished.connect(self.refit)
         trow.addWidget(self.tau)
         mcol.addLayout(trow)
+
+        self.btn_refine = QtWidgets.QPushButton("refine \u03c4 (VARPRO)")
+        self.btn_refine.setToolTip(
+            "Solve \u03c4 from the fit on screen instead of eyeballing it. "
+            "Reports all three components and applies the best-constrained; "
+            "the spinbox stays the single source, so the command follows"
+        )
+        self.btn_refine.clicked.connect(self._refine_tau)
+        mcol.addWidget(self.btn_refine)
         col.addWidget(model_box)
 
         # --- picks: these move what is on the plot, and nothing else ------
@@ -673,6 +688,125 @@ class PickerWindow:  # pragma: no cover - GUI
         col.addWidget(run_box)
 
         return box
+
+    def _refine_tau(self) -> None:
+        """Solve τ by VARPRO, seeded by the fit currently on screen.
+
+        The visual fit fixes everything except the one genuinely nonlinear
+        parameter, which the operator has been setting by eye. ``τ`` is
+        exactly what :func:`gps_analysis.profile_transient_tau` exists to
+        refine — "the opt-in nonlinear refinement of an operator-fixed τ" —
+        so this is a seed-and-solve, not a new estimator.
+
+        Per COMPONENT, because the profiler takes one series, while the CLI's
+        ``--term …,tau=X`` applies ONE τ to all three. All three are therefore
+        reported and the best-constrained one (tightest relative interval) is
+        written into the spinbox. That rule is stated rather than hidden, and
+        it is overridable by typing: the spinbox stays the single source the
+        fit and the command both read, so refining cannot move one without
+        the other.
+
+        The profiler WARNS when its identification conditions fail (T_post ≳
+        5τ̂, amplitude SNR ≥ 5); those warnings are surfaced verbatim, because
+        a τ that is really only a bound must not read as a measurement.
+        """
+        import warnings
+
+        np = self.np
+        est = getattr(self, "_est", None)
+        if not self.cb_term.isChecked() or est is None:
+            self.summary.setPlainText(
+                "refine τ: needs a transient and a fitted record on screen."
+            )
+            return
+
+        spec = getattr(est.estimate, "term_spec", None)
+        if not spec:
+            self.summary.setPlainText(
+                "refine τ: this record carries no composed term spec, so "
+                "there is no transient to profile."
+            )
+            return
+
+        from gps_analysis import TrajectoryModel, profile_transient_tau
+
+        model = TrajectoryModel.from_spec(spec)
+        outl = np.atleast_2d(np.asarray(est.outliers, dtype=bool))
+        lines: list[str] = ["refine τ (VARPRO, seeded by the visual fit)", ""]
+        best: tuple[float, float, str] | None = None
+
+        for c, name in enumerate(COMPONENTS):
+            keep = est.in_window & np.isfinite(self.data[c]) & ~outl[c]
+            t, y = self.yearf[keep], self.data[c][keep]
+            s = self.sigma[c][keep]
+            s = s if np.all(np.isfinite(s)) and np.all(s > 0) else None
+            try:
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    # Bounds come from the SPINBOX, so a solved τ is always
+                    # representable. Profiling over a wider range than the
+                    # control can hold silently clamps on the way back: SELF
+                    # returned τ = 0.020 and the spinbox took 0.05, so the
+                    # summary and the command disagreed about the number the
+                    # figure was drawn with.
+                    fit = profile_transient_tau(
+                        model,
+                        t,
+                        y,
+                        sigma=s,
+                        tau_bounds=(self.tau.minimum(), self.tau.maximum()),
+                    )
+            except Exception as exc:  # a refusal is a RESULT, per this lane
+                lines.append(f"  {name:5s} refused — {exc}")
+                continue
+
+            lo, hi = fit.tau_interval
+            # An interval that did not close is a BOUND, not a measurement --
+            # the profiler's own words. Applying it would turn "τ is at least
+            # this" into "τ is this" silently, which is the one thing this
+            # action must not do, so such a component is reported and skipped.
+            open_side = fit.interval_open_lower or fit.interval_open_upper
+            flag = " ⚠ BOUND, not applied" if open_side else ""
+            lines.append(
+                f"  {name:5s} τ = {fit.tau:.3f} ± {fit.tau_sigma:.3f} yr   "
+                f"[{lo:.2f}, {hi:.2f}]{flag}"
+            )
+            for w in caught:
+                lines.append(f"         {str(w.message)[:88]}")
+            if open_side:
+                continue
+            rel = abs(fit.tau_sigma / fit.tau) if fit.tau else float("inf")
+            if best is None or rel < best[0]:
+                best = (rel, float(fit.tau), name)
+
+        if best is None:
+            lines += [
+                "",
+                "  No component gave a CLOSED interval, so τ is a bound here",
+                "  and the spinbox is unchanged. The usual cause is that the",
+                "  transient is not identifiable against the rest of the",
+                "  model — an onset at a declared step epoch makes the two",
+                "  collinear, and too little post-onset data (T_post ≲ 5τ)",
+                "  does the same. Move the onset, or keep τ as your own.",
+            ]
+            self.summary.setPlainText("\n".join(lines))
+            return
+
+        _rel, tau, name = best
+        lines += [
+            "",
+            f"  applied {name}'s τ = {tau:.3f} yr — the tightest relative",
+            "  interval of the three. One τ is shared by all components, so",
+            "  one had to be chosen; type over it to use another.",
+        ]
+        self.summary.setPlainText("\n".join(lines))
+        # Setting the spinbox is what makes the refinement REAL: it refits and
+        # re-emits, so the figure and the command move together.
+        self.tau.setValue(tau)
+        self.refit()
+        self.summary.setPlainText(
+            "\n".join(lines) + "\n\n" + self.summary.toPlainText()
+        )
 
     # -- run parameters ------------------------------------------------
     # These were command-line-only. Each sets the attribute that `_command`
@@ -1200,6 +1334,9 @@ class PickerWindow:  # pragma: no cover - GUI
 
         if est is not None:
             self.record = est.record
+            # Kept for the refine action: it needs the fit's own masks and
+            # the estimator's own term spec, not a re-derivation of either.
+            self._est = est
             fit = np.asarray(
                 __import__("gps_analysis").evaluate_record(est.record, self.yearf)
             )

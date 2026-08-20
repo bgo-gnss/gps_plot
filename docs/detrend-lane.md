@@ -391,6 +391,35 @@ exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
 
+**Refine τ from the visual seed** (2026-08-20, slice 3). The visual fit fixes
+everything except the one genuinely nonlinear parameter, which the operator has
+been setting by eye — and `gps_analysis.profile_transient_tau` exists for
+exactly that, "the opt-in nonlinear refinement of an operator-fixed τ". The
+button solves it by VARPRO, seeded by the fit on screen. Verified on a
+synthetic series with a known τ = 1.50: seeded deliberately wrong at 4.0, it
+recovers 1.505 ± 0.020 with a closed interval.
+
+Per COMPONENT, because the profiler takes one series while `--term …,tau=X`
+applies one τ to all three. All three are reported and the best-constrained
+(tightest relative interval) is applied — a stated rule, overridable by typing.
+Applying it means writing the **spinbox**, which is the single source the fit
+and the command both read, so a refinement cannot move one without the other.
+
+**An unclosed interval is a BOUND and is never applied.** The profiler's own
+guidance is to publish a bound when its identification conditions fail
+(T_post ≳ 5τ̂, amplitude SNR ≥ 5), and applying one would silently turn "τ is at
+least this" into "τ is this". SELF is the real case: a transient placed on its
+declared 2008 coseismic is collinear with the step, so τ runs to the bound and
+the spinbox is left alone with the reason printed.
+
+Two things the first version got wrong, both caught by running it rather than
+reading it. The profiler was given bounds (0.02, 40) wider than the spinbox's
+(0.05, 50), so a solved τ = 0.020 came back and the control clamped to 0.05 —
+the summary and the command then disagreed about the number the figure was
+drawn with; bounds now come FROM the spinbox. And τ gained a third decimal,
+because refinement resolves it to better than a hundredth of a year and
+rounding back to 2 dp would discard precision the fit had just earned.
+
 **Per-group hold — the background model** (2026-08-20, slice 2). The stage plan
 is now COMPOSED from the group states rather than hardcoded: whatever is *held*
 is estimated on the clean window and carried across the full span, and what

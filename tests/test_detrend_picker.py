@@ -1099,3 +1099,88 @@ class TestPerGroupHold:
         w.refit()
         # ... but still free in clean, so the held seasonal is unbiased
         assert "--stage clean:secular,periodic@" in w.command.text()
+
+
+class TestRefineTau:
+    """Slice 3: solve the one nonlinear parameter instead of eyeballing it.
+
+    The visual fit fixes everything except tau, which is exactly what
+    `gps_analysis.profile_transient_tau` exists to refine. The spinbox stays
+    the single source the fit and the command both read, so a refinement
+    cannot move one without the other.
+    """
+
+    @staticmethod
+    def _synthetic(tau=1.5, t0=2012.0, seed=7):
+        """A series with a KNOWN tau — the only honest way to test recovery."""
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import numpy as np
+
+        from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
+        from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
+
+        _pg, qtw = _require_qt()
+        qtw.QApplication.instance() or qtw.QApplication([])
+        rng = np.random.default_rng(seed)
+        t = np.arange(2010.0, 2020.0, 1 / 365.25)
+        post = np.maximum(t - t0, 0.0)
+        sig = (
+            3.0 * t - 6000.0 + 4.0 * np.sin(2 * np.pi * t) + 25.0 * np.log1p(post / tau)
+        )
+        y = np.vstack([sig + rng.normal(0, 1.0, t.size) for _ in range(3)])
+        settings = resolve_fit_settings(
+            "SYNT", None, FitDefaults(max_gap_years=2.0), catalog_source="test"
+        )
+        w = PickerWindow(
+            "SYNT", t, y, np.full_like(y, 1.0), settings, max_gap_years=2.0, uncert=10
+        )
+        w.onset_lines[0].setValue(t0)
+        return w
+
+    def test_it_recovers_a_known_tau_and_applies_it(self) -> None:
+        w = self._synthetic(tau=1.5)
+        w.tau.setValue(4.0)  # a deliberately wrong seed
+        w.cb_term.setChecked(True)
+        w._refine_tau()
+        assert w.tau.value() == pytest.approx(1.5, abs=0.1), w.summary.toPlainText()
+        # and the command moved with the figure
+        assert f"tau={w.tau.value()}" in w.command.text(), w.command.text()
+
+    def test_an_unclosed_interval_is_a_bound_and_is_not_applied(self) -> None:
+        """The profiler's own words: publish a BOUND then, not a measurement.
+
+        Applying it would silently turn "tau is at least this" into "tau is
+        this". SELF's transient placed on its declared 2008 coseismic is the
+        real case — onset and step are collinear, so tau runs to the bound.
+        """
+        w = TestQtPickerBorrowedFeatures._window()
+        w.onset_lines[0].setValue(2008.4085)  # the declared step epoch
+        w.cb_term.setChecked(True)
+        before = w.tau.value()
+        w._refine_tau()
+        text = w.summary.toPlainText()
+        assert "BOUND, not applied" in text, text[:200]
+        assert w.tau.value() == before, "a bound was applied as a measurement"
+
+    def test_the_profiler_cannot_return_a_tau_the_spinbox_cannot_hold(self) -> None:
+        """Regression: bounds wider than the control silently clamp.
+
+        Profiling over (0.02, 40) while the spinbox held (0.05, 50) made the
+        summary report tau = 0.020 and the command carry 0.05 — the reported
+        number and the fitted one disagreed.
+        """
+        w = self._synthetic()
+        w.cb_term.setChecked(True)
+        w._refine_tau()
+        for line in w.summary.toPlainText().splitlines():
+            if " τ = " in line:
+                value = float(line.split("τ = ")[1].split()[0])
+                assert w.tau.minimum() <= value <= w.tau.maximum(), line
+
+    def test_it_needs_a_transient_and_says_so(self) -> None:
+        w = self._synthetic()
+        w.cb_term.setChecked(False)
+        w._refine_tau()
+        assert "needs a transient" in w.summary.toPlainText()
