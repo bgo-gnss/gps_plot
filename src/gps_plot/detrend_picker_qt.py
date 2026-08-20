@@ -563,9 +563,21 @@ class PickerWindow:  # pragma: no cover - GUI
         # until staging is on (slice 2 wires it, along with step/transient).
         self.grp: dict[str, Any] = {}
         grid = QtWidgets.QFormLayout()
-        for name in ("secular", "periodic"):
+        for name in ("secular", "periodic", "step"):
             self.grp[name] = self._state_combo(name)
             grid.addRow(name, self.grp[name])
+        # `step` has no ABSENT: there is no CLI spelling for un-declaring one.
+        # steps.csv is a FLOOR that merges in, and a PICKED step is removed by
+        # removing the pick ("clear steps", or right-click the line) -- so a
+        # control offering "not in the model" would promise something no
+        # emitted command could carry out.
+        self._set_state_enabled(self.grp["step"], STATE_ABSENT, False)
+        self.grp["step"].setToolTip(
+            "step: estimate the offsets on the full span, or hold them from "
+            "the clean window (only possible if the step epoch is inside it). "
+            "There is no 'absent' — steps.csv is a floor, and a picked step is "
+            "removed by removing the pick"
+        )
         mcol.addLayout(grid)
 
         self.cb_term = QtWidgets.QCheckBox("transient")
@@ -925,6 +937,7 @@ class PickerWindow:  # pragma: no cover - GUI
                 "epoch": round(self.onset_lines[0].value(), 4),
                 "tau": round(self.tau.value(), 3),
             },
+            "groups": {n: c.currentText() for n, c in self.grp.items()},
             "params": {
                 "uncert": self.uncert,
                 "max_gap_years": self.max_gap_years,
@@ -972,7 +985,22 @@ class PickerWindow:  # pragma: no cover - GUI
         except (TypeError, ValueError):
             raise ValueError(f"'steps': not all numeric: {steps_raw!r}") from None
 
+        groups_raw = d.get("groups") or {}
+        if not isinstance(groups_raw, dict):
+            raise ValueError(f"'groups' must be an object, got {groups_raw!r}")
+        # An unrecognised group or state is DROPPED rather than fatal: this
+        # key is newer than the files already in the field, and a session
+        # written by a build that knows one more term group must not make the
+        # whole payload unusable -- the rest of it is still somebody's
+        # curation.
+        groups = {
+            k: v
+            for k, v in groups_raw.items()
+            if k in GROUP_ORDER and v in GROUP_STATES
+        }
+
         out: dict[str, Any] = {
+            "groups": groups,
             "domain": (
                 pair(d["domain"], "domain")
                 if d.get("domain") is not None
@@ -1033,6 +1061,18 @@ class PickerWindow:  # pragma: no cover - GUI
             r.setRegion(d["stage_window"])
             r.blockSignals(False)
         self.cb_stage.setChecked(d["stage_on"])
+        # AFTER cb_stage: `_toggle_stage` rewrites the group states (it
+        # defaults the background to held, and clears an unreachable hold when
+        # staging goes off), so restoring them first would simply be undone.
+        for name, state in d["groups"].items():
+            combo = self.grp.get(name)
+            if combo is None:
+                continue
+            if state == STATE_HOLD and not d["stage_on"]:
+                continue  # unreachable without a window to hold from
+            combo.blockSignals(True)
+            combo.setCurrentText(state)
+            combo.blockSignals(False)
         self.cb_term.setChecked(d["term_on"])
         if d["kind"] is not None:
             self.kind.setCurrentText(d["kind"])
@@ -1245,14 +1285,10 @@ class PickerWindow:  # pragma: no cover - GUI
             "transient": bool(terms),
         }
         held = [
-            g
-            for g in GROUP_ORDER
-            if in_model[g] and self._group_state(g) == STATE_HOLD
+            g for g in GROUP_ORDER if in_model[g] and self._group_state(g) == STATE_HOLD
         ]
         free_long = [
-            g
-            for g in GROUP_ORDER
-            if in_model[g] and self._group_state(g) != STATE_HOLD
+            g for g in GROUP_ORDER if in_model[g] and self._group_state(g) != STATE_HOLD
         ]
         clean_free = list(held)
         if in_model["secular"] and "secular" not in clean_free:

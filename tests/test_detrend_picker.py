@@ -1184,3 +1184,87 @@ class TestRefineTau:
         w.cb_term.setChecked(False)
         w._refine_tau()
         assert "needs a transient" in w.summary.toPlainText()
+
+
+class TestGroupStatePersistence:
+    """Group states survive a save/reload, and cannot come back unreachable."""
+
+    @staticmethod
+    def _window():
+        return TestQtPickerBorrowedFeatures._window()
+
+    def test_states_round_trip_through_a_session(self) -> None:
+        from gps_plot.detrend_picker_qt import STATE_ABSENT
+
+        w = self._window()
+        w.grp["periodic"].setCurrentText(STATE_ABSENT)
+        w.refit()
+        assert w.model == "linear"
+        w.save_session()
+
+        w2 = self._window()  # __init__ auto-loads the session
+        assert w2.grp["periodic"].currentText() == STATE_ABSENT
+        assert w2.model == "linear"
+
+    def test_a_hold_is_not_restored_without_a_window_to_hold_from(self) -> None:
+        """Restoring an unreachable state would show a value the fit cannot use."""
+        from gps_plot.detrend_picker_qt import STATE_HOLD
+
+        w = self._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        assert w.grp["secular"].currentText() == STATE_HOLD
+        w.save_session()
+        # hand-edit the payload to claim staging was off while a hold persists
+        import json
+
+        path = w._session_path()
+        d = json.loads(path.read_text())
+        d["stage"]["on"] = False
+        path.write_text(json.dumps(d))
+
+        w2 = self._window()
+        assert w2.grp["secular"].currentText() != STATE_HOLD
+
+    def test_an_unknown_group_or_state_is_dropped_not_fatal(self) -> None:
+        """This key is newer than the files already in the field."""
+        import json
+
+        w = self._window()
+        w.save_session()
+        path = w._session_path()
+        d = json.loads(path.read_text())
+        d["groups"]["gravitational_wave"] = "estimate here"
+        d["groups"]["secular"] = "wobble"
+        path.write_text(json.dumps(d))
+
+        w2 = self._window()
+        assert w2.record is not None, "a forward-compatible session was rejected"
+        assert "NOT restored" not in w2.summary.toPlainText()
+
+
+class TestStepGroupControl:
+    """`step` has free/held but no ABSENT — there is no way to un-declare one."""
+
+    def test_absent_is_disabled_for_step(self) -> None:
+        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_ABSENT
+
+        w = TestQtPickerBorrowedFeatures._window()
+        item = w.grp["step"].model().item(GROUP_STATES.index(STATE_ABSENT))
+        assert not item.isEnabled(), (
+            "offering 'not in the model' for step promises something no "
+            "emitted command can carry out: steps.csv is a floor"
+        )
+
+    def test_holding_a_step_reaches_the_command(self) -> None:
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE, STATE_HOLD
+
+        w = TestQtPickerBorrowedFeatures._window()
+        # a window that CONTAINS SELF's 2008 step, so clean can estimate it
+        w.stage_regions[0].setRegion((2005.0, 2015.0))
+        w.cb_stage.setChecked(True)
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.grp["periodic"].setCurrentText(STATE_HOLD)
+        w.grp["step"].setCurrentText(STATE_HOLD)
+        w.refit()
+        assert "--hold long:step=stage:clean" in w.command.text(), w.command.text()

@@ -391,6 +391,37 @@ exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
 
+**Group states persist; `step` joins them; `transient` and MLE σ do not**
+(2026-08-20, closing the composition work's open points).
+
+Group states are saved with the session, restored AFTER `cb_stage` — because
+`_toggle_stage` rewrites them, so restoring first is simply undone — and a
+`hold` is *not* restored when the payload says staging was off, since that
+would show a value the fit cannot use. An unknown group or state is DROPPED
+rather than fatal: this key is newer than the files already in the field, and
+a session written by a build that knows one more term group must not make the
+rest of somebody's curation unusable.
+
+`step` gets free/held but **no ABSENT**: there is no CLI spelling for
+un-declaring a step. `steps.csv` is a floor that merges in, and a picked step
+is removed by removing the pick — so the state would promise something no
+emitted command could carry out.
+
+`transient` deliberately stays a checkbox. Its third state would be "hold from
+the clean window", i.e. a transient estimated inside the window chosen for
+being quiet — a state that is nearly always wrong, so converting a hardened,
+session-coupled control to gain it buys uniformity and nothing else.
+
+**MLE σ was attempted and NOT shipped.** `estimate_noise_mle` would give
+honest (white + power-law) uncertainties where the record carries optimistic
+WLS formal σ, and reporting it in the refine panel was the plan. Wired up, it
+failed its known-truth check: on a synthetic with a true 3.00 mm/yr trend the
+record recovers 2.98/2.93/3.05 while the MLE call returned 1.96/1.80/1.95 with
+κ pinned at the −2.5 bound — a misspecified design or a `t_ref` convention
+mismatch. A rate 35 % low under the label "honest σ" is worse than the absence
+of the feature, so it was removed rather than shipped. Redo it by establishing
+the estimator's own centering convention first.
+
 **Refine τ from the visual seed** (2026-08-20, slice 3). The visual fit fixes
 everything except the one genuinely nonlinear parameter, which the operator has
 been setting by eye — and `gps_analysis.profile_transient_tau` exists for
