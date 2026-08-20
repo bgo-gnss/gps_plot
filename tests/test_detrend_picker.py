@@ -437,7 +437,7 @@ class TestQtPickerBorrowedFeatures:
         # untouched -> defer to the catalog entirely: no flag, and the fit is
         # the one `gps-detrend-workbench SELF` would produce with no flags
         assert "--segment" not in w.command.text()
-        settings, _extra, _terms, _stages = w._current()
+        settings, _extra, _terms, _stages, _holds = w._current()
         assert settings.segments == w.base_settings.segments
 
         from gps_plot.detrend_workbench import estimate_record
@@ -618,7 +618,13 @@ class TestStageLaneKnowsTheDeclaredSteps:
             f"coseismic is estimated nowhere: {w.summary.toPlainText()[:200]}"
         )
         cmd = w.command.text()
-        assert "--stage long:secular,step" in cmd
+        # `step` must be FREE in the long stage. The exact spelling moved when
+        # the default became "hold the background" (secular is now held, so
+        # long frees only step) -- what this asserts is the freedom, not the
+        # literal, because the default is allowed to change and the freedom
+        # is not.
+        long_free = cmd.split("--stage long:")[1].split(" ")[0].split(",")
+        assert "step" in long_free, cmd
         # The declared step is fitted without ever being picked or emitted.
         assert not w.step_lines
         assert "--step" not in cmd
@@ -632,8 +638,41 @@ class TestStageLaneKnowsTheDeclaredSteps:
         if _declared_step_epochs("RHOF", w.base_settings.steps):  # pragma: no cover
             pytest.skip("RHOF gained a declared step; pick another station")
         cmd = w.command.text()
-        assert "--stage long:secular " in cmd + " "
         assert "step" not in cmd.split("--stage long:")[1].split(" ")[0]
+        # RHOF has no step and no term, so holding the whole background leaves
+        # the long stage with nothing to estimate and the plan is refused. The
+        # command must still SAY what was asked for -- emitting the unstaged
+        # spelling here made the window show a refusal while the command
+        # described a different, perfectly fittable fit.
+        assert w.record is None
+        assert "--stage clean:secular,periodic@" in cmd
+        assert "--hold long:secular=stage:clean" in cmd
+
+    def test_a_refused_plan_is_still_emitted(self) -> None:
+        """Violation eight, introduced while building slice 2 and caught here.
+
+        When the stage plan would not build, `_command` fell through to the
+        UNSTAGED spelling — so the window showed a refusal while the command
+        described a different, perfectly fittable fit. On RHOF (no declared
+        step, nothing left free once the whole background is held) that was
+        `gps-detrend-workbench RHOF --max-gap-years 1.5`: copy it and you get
+        the figure the picker had just refused to show.
+
+        The command must say what was ASKED FOR, so the workbench refuses it
+        for the same reason — which it does, with the same message.
+        """
+        from gps_plot.detrend_workbench import _build_parser
+
+        w = self._staged("RHOF")
+        assert w.record is None, "RHOF unexpectedly fittable; pick another case"
+        cmd = w.command.text()
+        assert "--stage" in cmd and "--hold" in cmd, cmd
+        # and it is a command the workbench can at least PARSE, so its refusal
+        # is the plan's refusal rather than a syntax error
+        import shlex
+
+        ns = _build_parser().parse_args(shlex.split(cmd)[1:])
+        assert ns.stage and ns.hold
 
     def test_the_emitted_stage_plan_reproduces_the_picker_fit(self) -> None:
         """Round-trip the NEW emission path, not just its exit code."""
@@ -865,7 +904,7 @@ class TestRunParameterControls:
         # the settings the picker FITS with -- not a re-derivation of them,
         # which is what made the first version of this test pass against the
         # bug it was written for
-        settings, _extra, _terms, _stages = w._current()
+        settings, _extra, _terms, _stages, _holds = w._current()
         assert settings.max_gap_years == 2.0, "the flag lost to the catalog again"
         # ... and the command the operator would copy says the same number
         assert "--max-gap-years 2.0" in w.command.text()
@@ -982,3 +1021,81 @@ class TestTermStateControls:
             + w.summary.toPlainText()[:120]
         )
         assert w.model == "periodic"
+
+
+class TestPerGroupHold:
+    """Slice 2: what carries from the clean window to the full span.
+
+    This is the background model — whatever is HELD is estimated on the quiet
+    window and extended across the span, and what stays free is estimated
+    against that background. Removing it leaves residuals in which short-term
+    deviations can be read.
+    """
+
+    @staticmethod
+    def _staged():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        return w
+
+    def test_staging_defaults_to_holding_the_background(self) -> None:
+        """Regression: the plan hardcoded 'hold periodic' only.
+
+        The trend was therefore re-estimated over the whole span including the
+        unrest it was supposed to be a background FOR.
+        """
+        from gps_plot.detrend_picker_qt import STATE_HOLD
+
+        w = self._staged()
+        assert w.grp["secular"].currentText() == STATE_HOLD
+        assert w.grp["periodic"].currentText() == STATE_HOLD
+        cmd = w.command.text()
+        assert "--hold long:secular=stage:clean" in cmd
+        assert "--hold long:periodic=stage:clean" in cmd
+        assert w.record is not None
+
+    def test_the_old_periodic_only_plan_is_still_reachable(self) -> None:
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
+
+        w = self._staged()
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.refit()
+        cmd = w.command.text()
+        assert "--hold long:periodic=stage:clean" in cmd
+        assert "--hold long:secular=stage:clean" not in cmd
+        assert "--stage long:secular,step" in cmd
+
+    def test_holding_nothing_is_refused_with_a_reason(self) -> None:
+        """Staging exists to carry something; carrying nothing is not staging."""
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
+
+        w = self._staged()
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.grp["periodic"].setCurrentText(STATE_ESTIMATE)
+        w.refit()
+        assert w.record is None
+        assert "no group is held" in w.summary.toPlainText()
+
+    def test_unstaging_clears_an_unreachable_hold(self) -> None:
+        """A control showing a value the fit cannot use is the divergence."""
+        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_HOLD
+
+        w = self._staged()
+        assert w.grp["secular"].currentText() == STATE_HOLD
+        w.cb_stage.setChecked(False)
+        for name in ("secular", "periodic"):
+            combo = w.grp[name]
+            assert combo.currentText() != STATE_HOLD, f"{name} left holding"
+            item = combo.model().item(GROUP_STATES.index(STATE_HOLD))
+            assert not item.isEnabled()
+
+    def test_the_clean_stage_keeps_secular_as_a_nuisance(self) -> None:
+        """A seasonal fitted on a window that ignores the trend absorbs it."""
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
+
+        w = self._staged()
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)  # free in the long stage
+        w.refit()
+        # ... but still free in clean, so the held seasonal is unbiased
+        assert "--stage clean:secular,periodic@" in w.command.text()

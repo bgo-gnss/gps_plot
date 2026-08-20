@@ -327,9 +327,10 @@ same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
 changes the data is emitted.
 
-Seven ways it broke that invariant — the sixth is the `--max-gap-years`
-ordering and the seventh the missing abort fallback, both described above —
-all fixed 2026-08-09/16/17/19 and worth
+Eight ways it broke that invariant — the sixth is the `--max-gap-years`
+ordering, the seventh the missing abort fallback and the eighth a refused stage
+plan emitted as an unstaged command, all three described above —
+all fixed 2026-08-09/16/17/19/20 and worth
 knowing because the shape recurs: a picked step REPLACED the declared ones
 while `--step` MERGES (on SELF the difference between an aborted fit and a
 clean one); the domain region opened on the DATA SPAN and emitted `--segment`
@@ -389,6 +390,41 @@ The union case is verified against a SYNTHETIC catalog injected via
 exactly one row (DYNG, no window, no segments), so no deployed row declares a
 union. Note also that the picker has no `--fit-catalog` flag — it always
 reads the deployed catalog, and so does the command it emits.
+
+**Per-group hold — the background model** (2026-08-20, slice 2). The stage plan
+is now COMPOSED from the group states rather than hardcoded: whatever is *held*
+is estimated on the clean window and carried across the full span, and what
+stays free is estimated against that background. Turning `stage the fit` on
+defaults `secular` and `periodic` to held, which is the background model —
+trend and seasonal from the quiet window, extended, leaving residuals in which
+short-term deviations can be read.
+
+That default is a change of scientific claim. The old plan hardcoded *hold
+`periodic` only*, so the trend was silently re-estimated over the whole span
+including the unrest it was meant to be a background FOR. The old behaviour is
+still reachable — set `secular` back to `estimate here` and the command returns
+to `--stage long:secular,step --hold long:periodic=stage:clean`.
+
+The clean stage still frees `secular` as a NUISANCE even when the trend is
+estimated later, because a seasonal fitted on a window that ignores the trend
+inside that window absorbs part of it. Turning staging off puts any held group
+back to `estimate here` rather than leaving an unreachable state selected.
+
+Holding *everything* is refused, not corrected: with nothing free the long
+stage estimates nothing, and the grammar's own answer is that "a stage that
+estimates nothing is not a stage". On a station with no declared step and no
+transient — RHOF — the default therefore refuses, and that is the honest
+outcome rather than a silently different plan.
+
+Which is how **violation eight** appeared, introduced while building this
+slice and caught by an existing test. When the plan would not build,
+`_command` fell through to the UNSTAGED spelling, so the window showed a
+refusal while the command described a different, perfectly fittable fit
+(`gps-detrend-workbench RHOF --max-gap-years 1.5`). Copying it produced the
+figure the picker had just refused to show. A refused plan is now emitted as
+asked, and the workbench refuses it with the same message.
+
+Sweep at this slice: 12 unstaged + 7 staged combinations, 0 divergences.
 
 **Three-state term controls** (2026-08-19, slice 1 of the composition work —
 alignment in `.interrogate-picker-terms.md`). `secular` and `periodic` each get

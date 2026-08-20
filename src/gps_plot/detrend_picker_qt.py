@@ -107,6 +107,12 @@ STATE_HOLD = "hold from window"
 STATE_ABSENT = "not in the model"
 GROUP_STATES = (STATE_ESTIMATE, STATE_HOLD, STATE_ABSENT)
 
+#: Term groups in the order the stage grammar lists them. This is the STAGED
+#: vocabulary, deliberately not ``select_terms``' apply-time one, which folds
+#: steps into ``secular`` -- 37 deployed records depend on that folding, and
+#: staged estimation must not inherit it.
+GROUP_ORDER = ("secular", "periodic", "step", "transient")
+
 #: ``(secular, periodic)`` states -> the stored ``--model``.  Both absent has
 #: no spelling: every model in the vocabulary carries at least one of them.
 MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
@@ -917,7 +923,27 @@ class PickerWindow:  # pragma: no cover - GUI
 
     # -- interaction ----------------------------------------------------
     def _toggle_stage(self, on: bool) -> None:
+        """Staging on/off also decides whether `hold` is reachable at all.
+
+        Turning it ON defaults ``secular`` and ``periodic`` to held: that IS
+        the background model — trend and seasonal estimated on the quiet
+        window and carried across the span, leaving residuals in which
+        short-term deviations can be read. Before this the plan was hardcoded
+        to hold `periodic` only, so the trend was silently re-estimated over
+        everything including the unrest it was meant to be a background for.
+
+        Turning it OFF puts any held group back to `estimate here` rather
+        than leaving an unreachable state selected — a control showing a
+        value the fit cannot use is the divergence this window keeps having.
+        """
         self._set_visible(self.stage_regions, on)
+        for name, combo in self.grp.items():
+            self._set_state_enabled(combo, STATE_HOLD, on)
+            if on:
+                if name in ("secular", "periodic"):
+                    combo.setCurrentText(STATE_HOLD)
+            elif combo.currentText() == STATE_HOLD:
+                combo.setCurrentText(STATE_ESTIMATE)
         self.refit()
 
     def _toggle_term(self, on: bool) -> None:
@@ -978,7 +1004,9 @@ class PickerWindow:  # pragma: no cover - GUI
         self.refit()
 
     # -- the fit --------------------------------------------------------
-    def _current(self) -> tuple[Any, list[str], list[str], list[str]]:
+    def _current(
+        self,
+    ) -> tuple[Any, list[str], list[str], list[str], list[str]]:
         """Read the picks off the plot into settings + CLI flags.
 
         Settings and flags are assembled by the SAME function the workbench
@@ -1046,11 +1074,61 @@ class PickerWindow:  # pragma: no cover - GUI
                 f",tau={round(self.tau.value(), 3)}"
             )
 
-        stages: list[str] = []
-        if self.cb_stage.isChecked():
-            s_lo, s_hi = (round(v, 4) for v in self.stage_regions[0].getRegion())
-            stages = [f"clean:secular,periodic@{s_lo}:{s_hi}", "long:secular"]
-        return settings, extra, terms, stages
+        stages, holds = self._compose_stages(terms, settings)
+        return settings, extra, terms, stages, holds
+
+    def _compose_stages(
+        self, terms: list[str], settings: Any
+    ) -> tuple[list[str], list[str]]:
+        """Build the stage plan from the group states.
+
+        This is the background model made explicit: whatever is **held** is
+        estimated on the clean window and carried across the full span, and
+        what remains free is estimated against that background. Removing it
+        leaves residuals in which short-term deviations can be read.
+
+        The clean stage also frees ``secular`` as a NUISANCE even when the
+        trend is estimated later, because a seasonal fitted on a window that
+        ignores the trend inside that window absorbs part of it. The previous
+        hardcoded plan did the same thing; here it follows from the states
+        instead of from a literal.
+
+        ``step`` membership is the MERGED declaration (``steps.csv`` floor ∪
+        picked), not the picked lines — the same source ``_override_settings``
+        uses, because a declared step has parameters whether or not anyone
+        clicked it.
+        """
+        if not self.cb_stage.isChecked():
+            return [], []
+
+        from gps_plot.detrend_workbench import _declared_step_epochs
+
+        s_lo, s_hi = (round(v, 4) for v in self.stage_regions[0].getRegion())
+        in_model = {
+            "secular": self.model in ("linear", "lineperiodic"),
+            "periodic": self.model in ("periodic", "lineperiodic"),
+            "step": bool(_declared_step_epochs(self.sta, settings.steps)),
+            "transient": bool(terms),
+        }
+        held = [
+            g
+            for g in GROUP_ORDER
+            if in_model[g] and self._group_state(g) == STATE_HOLD
+        ]
+        free_long = [
+            g
+            for g in GROUP_ORDER
+            if in_model[g] and self._group_state(g) != STATE_HOLD
+        ]
+        clean_free = list(held)
+        if in_model["secular"] and "secular" not in clean_free:
+            clean_free.insert(0, "secular")
+
+        specs = [
+            f"clean:{','.join(clean_free)}@{s_lo}:{s_hi}",
+            f"long:{','.join(free_long)}",
+        ]
+        return specs, [f"long:{g}=stage:clean" for g in held]
 
     def refit(self, *_: Any) -> None:
         from geo_dataread.stage_plan import build_stage_plan
@@ -1060,7 +1138,7 @@ class PickerWindow:  # pragma: no cover - GUI
         )
 
         np = self.np
-        settings, extra, terms, stage_specs = self._current()
+        settings, extra, terms, stage_specs, holds = self._current()
 
         plan = None
         note = ""
@@ -1076,34 +1154,23 @@ class PickerWindow:  # pragma: no cover - GUI
                 "one of them in."
             )
         if stage_specs and not note:
-            # The long stage must free `step` whenever the fit CARRIES a step
-            # column, and the picked lines are only half of where those come
-            # from: `steps.csv` is a FLOOR that `_override_settings` merges
-            # in, so ask the merged settings, never the picks.  Reading
-            # `self.step_lines` here meant that on a station with a declared
-            # step (SELF, 2008 Ölfus) an untouched stage plan freed only
-            # `secular` and EVERY fit was refused -- `step_amp_1` estimated
-            # in no stage and held in none -- with no hint that
-            # re-declaring the already-declared step was the way out. The
-            # same shape as the picked-step bug one lever over: a second
-            # place reasoning about steps that knew only about the picked
-            # ones.
-            from gps_plot.detrend_workbench import _declared_step_epochs
-
-            has_step = bool(_declared_step_epochs(self.sta, settings.steps))
-            groups = ("secular", "periodic", "step", "transient")
-            free2 = [
-                g
-                for g in groups
-                if g == "secular"
-                or (g == "step" and has_step)
-                or (g == "transient" and terms)
-            ]
-            stage_specs = [stage_specs[0], f"long:{','.join(free2)}"]
-            try:
-                plan = build_stage_plan(stage_specs, ["long:periodic=stage:clean"])
-            except ValueError as exc:
-                note = f"stage plan refused: {exc}"
+            # The plan now COMES FROM the group states (_compose_stages); this
+            # only turns it into a plan object. Deriving the free list here as
+            # well was the sixth-violation shape -- a second place composing
+            # the same decision -- and it hardcoded "hold periodic", which is
+            # exactly the choice the operator is now making.
+            if not holds:
+                note = (
+                    "stage plan refused: staging is on but no group is held "
+                    "from the window. Staging exists to carry something "
+                    "across the span — set at least one group to "
+                    f"'{STATE_HOLD}'."
+                )
+            else:
+                try:
+                    plan = build_stage_plan(stage_specs, holds)
+                except ValueError as exc:
+                    note = f"stage plan refused: {exc}"
 
         est = None
         if not note:
@@ -1221,7 +1288,7 @@ class PickerWindow:  # pragma: no cover - GUI
         if note:
             self.summary.setPlainText(note)
 
-        self.command.setText(self._command(plan, extra, terms))
+        self.command.setText(self._command(plan, extra, terms, stage_specs, holds))
         self._update_header(terms, plan)
 
     def _update_header(self, terms: list[str], plan: Any) -> None:
@@ -1356,7 +1423,14 @@ class PickerWindow:  # pragma: no cover - GUI
         lines.append(f"{'record_version':14s} {rec.get('record_version')}")
         return "\n".join(lines)
 
-    def _command(self, plan: Any, extra: list[str], terms: list[str]) -> str:
+    def _command(
+        self,
+        plan: Any,
+        extra: list[str],
+        terms: list[str],
+        stage_specs: list[str] | None = None,
+        holds: list[str] | None = None,
+    ) -> str:
         from gps_plot.detrend_picker import render_command
         from gps_plot.detrend_workbench import run_flags
 
@@ -1372,12 +1446,25 @@ class PickerWindow:  # pragma: no cover - GUI
             uncert=self.uncert,
             provisional_days=self.provisional_days,
         )
-        if plan is None:
-            parts = ["gps-detrend-workbench", self.sta]
-            for t in terms:
-                parts += ["--term", t]
-            return shlex.join(parts + flags)
-        return render_command(self.sta, plan, flags, terms=terms)
+        if plan is not None:
+            return render_command(self.sta, plan, flags, terms=terms)
+
+        parts = ["gps-detrend-workbench", self.sta]
+        for t in terms:
+            parts += ["--term", t]
+        # A REFUSED plan must still be emitted. Falling through to the
+        # unstaged spelling here meant that when the stage plan would not
+        # build, the window showed a refusal while the command said something
+        # else entirely -- on RHOF (no declared step, nothing left free once
+        # the background is held) it emitted a plain unstaged command that
+        # fits perfectly well. Copying it would have produced a figure the
+        # picker had just refused to show. Emitting what was ASKED FOR keeps
+        # the promise: the workbench then refuses it too, for the same reason.
+        for spec in stage_specs or ():
+            parts += ["--stage", spec]
+        for hold in holds or ():
+            parts += ["--hold", hold]
+        return shlex.join(parts + flags)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
