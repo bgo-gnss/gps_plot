@@ -15,9 +15,10 @@ pickers — each routed to its own doc below.
 are enforced by `.github/workflows/ci.yml`; `uv run pytest` is local-only
 (the suite reads real station data and deployed catalogs, so it cannot run on
 a stock runner). mypy is `strict`, scoped to the same modern lane as the ruff
-excludes — legacy plotting modules are `ignore_errors`, `tests/` is out. Scope
-rationale, the 137 → 0 path, and an **open cross-package blocker** (CI is red
-until `gps_analysis`'s branch reaches `main`): `docs/mypy-status.md`.
+excludes — legacy plotting modules are `ignore_errors`, `tests/` is out. All
+three CI steps pass in a CI-faithful install as of 2026-08-20, when the
+`gps_analysis` blocker cleared. Scope rationale and the 137 → 0 path:
+`docs/mypy-status.md`.
 
 ## Layout
 
@@ -134,7 +135,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
   their `gps_api` inputs, and the GMT install story
 - **[`docs/dev-viz.md`](docs/dev-viz.md)** 📄 — `--break-input`, MCMC dev defaults
 - **[`docs/mypy-status.md`](docs/mypy-status.md)** 📄 — the typing gate's scope,
-  the 137 → 0 path, and the open `gps_analysis` blocker
+  the 137 → 0 path, and the (now cleared) `gps_analysis` blocker
 - `tools/local-plot/README.md` — local figure workflow, TOT join, epoch/shell traps
 - `.interrogate-detrend-workbench.md` — workbench destination doc (gitignored)
 - `../PLAN-analysis-lane.md` — thread C / task L5 (dev-viz), task H6 (speed pass)

@@ -88,7 +88,27 @@ which was the template:
 
 All five sibling repos are public, so CI needs no token.
 
-## Open blocker: `gps_analysis` on GitHub
+## RESOLVED 2026-08-20: the `gps_analysis` blocker
+
+`outlier-step-protection-flanks` (37 commits) merged to `gps_analysis` main as
+`eec3b5b`, bringing `staged.py` and the `GROUP_ORDER` / `TrajectoryModel` /
+`with_steps` exports with it; `geo_dataread` (`bc78527`) and `gps_parser`
+(`cd2a6a2`) followed. Verified the way it matters — a CI-faithful install,
+siblings resolved from `git+https` rather than the editable checkouts:
+
+```bash
+UV_PROJECT_ENVIRONMENT=/tmp/ci-venv uv sync --all-groups --no-sources
+/tmp/ci-venv/bin/python -m ruff check src tests      # All checks passed
+/tmp/ci-venv/bin/python -m ruff format --check src tests
+/tmp/ci-venv/bin/python -m mypy src                  # Success, 10 files
+```
+
+All three CI steps pass. The `@main` pin on `gps_analysis` stays explicit: the
+repo's GitHub **default branch is still `analysis-lane-base`**, so an unpinned
+URL would go back to resolving a package without the detrend API. The history
+below is kept because that trap is still live.
+
+## How the blocker looked (history)
 
 Testing the CI path surfaced a real production bug, unrelated to typing.
 
