@@ -8,17 +8,16 @@ Legacy maintenance — used for research plots and dashboard exports — plus th
 
 Legacy modules: maintenance only, ~3362 LOC; two dated snapshots are kept as
 historical reference (do not delete without coordinating). Modern lane
-(2026-07→): `dev_viz.py`, `maps.py`, `detrend_workbench.py` + the two
-pickers — each routed to its own doc below.
+(2026-07→): `dev_viz.py`, `maps.py`, `detrend_workbench.py` + the two pickers,
+each routed to its own doc below.
 
 **Quality gates.** `uv run ruff check` / `ruff format --check` / `mypy src`
 are enforced by `.github/workflows/ci.yml`; `uv run pytest` is local-only
 (the suite reads real station data and deployed catalogs, so it cannot run on
 a stock runner). mypy is `strict`, scoped to the same modern lane as the ruff
 excludes — legacy plotting modules are `ignore_errors`, `tests/` is out. All
-three CI steps pass in a CI-faithful install as of 2026-08-20, when the
-`gps_analysis` blocker cleared. Scope rationale and the 137 → 0 path:
-`docs/mypy-status.md`.
+three CI steps pass in a CI-faithful install since 2026-08-20. Scope rationale
+and the 137 → 0 path: `docs/mypy-status.md`.
 
 ## Layout
 
