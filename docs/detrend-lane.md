@@ -433,6 +433,20 @@ wants to keep, scroll and paste. Components are ANSI-coloured red/green/blue to
 match the residual periodogram's three curves, so a component is the same
 colour in both places.
 
+**A refused fit must LOOK refused** (2026-08-21). The trajectory goes grey and
+dashed when the fit is refused, because the previous configuration's curve
+stayed on screen solid and blue and was read as a result. Measured: RHOF staged
+with the whole background held has nothing free in the long stage, so the plan
+is refused — the header said `NO RECORD`, the curve said otherwise, and the
+curve won. An operator spent a session believing they were looking at a fit
+"within the orange window" that had never been computed.
+
+**Parameters go in the PANEL, not only stdout** (2026-08-21). The picker is
+normally launched from a sway keybinding, which `exec`s it with no terminal
+attached — so printing the parameter table to stdout put it nowhere anyone
+could see. It is in the panel under the record now, and still on stdout for the
+times it is run from a shell.
+
 **Compare unstaged, then adopt** (2026-08-21). Unchecking `stage the fit` to
 look at the plain fit is DESTRUCTIVE — the toggle rewrites the group states on
 the way out and again on the way back, so peeking costs you the setup.
@@ -441,7 +455,7 @@ draws it as a **magenta dashed overlay** beside the trajectory, printing both
 parameter sets to the terminal. The figure, the emitted command and the group
 states are all untouched: the blue line remains the only thing the command
 describes, which is what keeps the overlay from becoming violation nine.
-`adopt comparison` then makes it real, by turning staging off and refitting —
+`switch to the unstaged fit` then makes it real, by turning staging off and refitting —
 so the record, the figure and the command all come from one refit, as they do
 for every other control. The overlay clears on any refit, because a comparison
 is a snapshot of a DIFFERENT configuration and leaving it up after the blue

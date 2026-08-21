@@ -12,6 +12,7 @@ import pytest
 
 from geo_dataread.stage_plan import build_stage_plan
 from gps_plot.detrend_picker import render_command
+from gps_plot.detrend_picker_qt import FIT_COLOR as FIT_COLOR_RGB
 
 
 @pytest.fixture(autouse=True)
@@ -1376,4 +1377,59 @@ class TestCompareAndAdopt:
         w.sp_gap.setValue(3.0)
         w._set_max_gap()
         assert len(w.compare_curves[0].getData()[0] or []) == 0
+        assert not w.btn_adopt.isEnabled()
+
+
+class TestRefusedFitLooksRefused:
+    """A stale trajectory must not read as a result.
+
+    Measured on RHOF 2026-08-21: staging with the whole background held leaves
+    the long stage nothing to estimate, so the plan is refused — but the
+    previous configuration's blue line stayed on screen, solid, and was read
+    as "the fit within the orange window". The header said NO RECORD; the
+    curve said otherwise, and the curve wins.
+    """
+
+    def test_a_refused_fit_greys_and_dashes_the_trajectory(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        w.stage_regions[0].setRegion((2001.7327, 2016.2057))
+        w.cb_stage.setChecked(True)  # both held; RHOF has no step or transient
+        assert w.record is None, "RHOF unexpectedly fittable; pick another case"
+        pen = w.fit_curves[0].opts["pen"]
+        assert pen.color().getRgb()[:3] != FIT_COLOR_RGB, "still drawn as a fit"
+        assert pen.style().name == "DashLine"
+
+    def test_a_good_fit_restores_the_live_pen(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        w.stage_regions[0].setRegion((2001.7327, 2016.2057))
+        w.cb_stage.setChecked(True)
+        w.cb_stage.setChecked(False)  # back to a fit that works
+        assert w.record is not None
+        pen = w.fit_curves[0].opts["pen"]
+        assert pen.color().getRgb()[:3] == FIT_COLOR_RGB
+        assert pen.style().name == "SolidLine"
+
+
+class TestParametersAreVisible:
+    """The picker is launched from a sway binding — stdout reaches nobody."""
+
+    def test_the_panel_carries_the_parameter_table(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window()
+        w.refit()
+        text = w.summary.toPlainText()
+        assert "parameters" in text, text[:200]
+        assert "rate" in text and "cos_annual" in text
+        # one column per component
+        header = [ln for ln in text.splitlines() if "North" in ln and "Up" in ln]
+        assert header, "no per-component header"
+
+    def test_dismiss_keeps_the_configured_fit(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window()
+        w.refit()
+        before = w.command.text()
+        w.compare_unstaged()
+        assert w.btn_dismiss.isEnabled()
+        w._dismiss_comparison()
+        assert len(w.compare_curves[0].getData()[0] or []) == 0
+        assert w.command.text() == before, "dismissing changed the command"
         assert not w.btn_adopt.isEnabled()

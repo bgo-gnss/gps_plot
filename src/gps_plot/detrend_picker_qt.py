@@ -136,6 +136,11 @@ DEFAULT_MODEL = "lineperiodic"
 #: darkgreen equipment, darkred seismic) and it is drawn dashed on top.
 COMPARE_COLOR = (170, 40, 170)
 
+#: A trajectory left on screen after its fit was REFUSED. Drawn grey and
+#: dashed because a solid blue line reads as a result whatever the header
+#: says -- and a staged fit that never happened was being read as one.
+STALE_COLOR = (150, 150, 150)
+
 #: Per-component ANSI colours for the terminal parameter dump, matching the
 #: residual periodogram's three curves so the same component is the same
 #: colour in both places.
@@ -692,14 +697,24 @@ class PickerWindow:  # pragma: no cover - GUI
         self.btn_compare.clicked.connect(self.compare_unstaged)
         mcol.addWidget(self.btn_compare)
 
-        self.btn_adopt = QtWidgets.QPushButton("adopt comparison")
+        self.btn_adopt = QtWidgets.QPushButton("switch to the unstaged fit")
         self.btn_adopt.setToolTip(
-            "Make the overlaid fit the real one: staging goes off and the "
-            "emitted command follows, so it again describes what is drawn"
+            "REPLACE your fit with the overlaid unstaged one: staging goes "
+            "off and the command follows. To keep the fit you configured, "
+            "just dismiss the overlay instead"
         )
         self.btn_adopt.setEnabled(False)
         self.btn_adopt.clicked.connect(self.adopt_comparison)
         mcol.addWidget(self.btn_adopt)
+
+        self.btn_dismiss = QtWidgets.QPushButton("dismiss comparison")
+        self.btn_dismiss.setToolTip(
+            "Remove the overlay and keep the fit you configured — the "
+            "default outcome, since comparing never changed it"
+        )
+        self.btn_dismiss.setEnabled(False)
+        self.btn_dismiss.clicked.connect(self._dismiss_comparison)
+        mcol.addWidget(self.btn_dismiss)
         col.addWidget(model_box)
 
         # --- picks: these move what is on the plot, and nothing else ------
@@ -788,6 +803,27 @@ class PickerWindow:  # pragma: no cover - GUI
 
         return box
 
+    def params_block(self, record: dict[str, Any]) -> str:
+        """The parameter table as text, for the panel.
+
+        The picker is normally launched from a sway keybinding, which `exec`s
+        it with no terminal attached -- so printing to stdout alone put the
+        numbers nowhere an operator could see them. They go in the panel, and
+        still to stdout for the times it IS run from a shell.
+        """
+        names = list(record.get("param_names") or [])
+        comps = record.get("components") or []
+        if not names or not comps:
+            return ""
+        width = max(len(n) for n in names)
+        lines = ["  " + " " * width + "".join(f"{c:>10s}" for c in COMPONENTS)]
+        for i, name in enumerate(names):
+            row = f"  {name:<{width}s}"
+            for comp in comps[:3]:
+                row += f"{float(comp['params'][i]):10.3f}"
+            lines.append(row)
+        return "\n".join(lines)
+
     def print_params(self, record: dict[str, Any], tag: str) -> None:
         """Dump the full parameter vector to the TERMINAL, one row per term.
 
@@ -853,6 +889,7 @@ class PickerWindow:  # pragma: no cover - GUI
             self.compare_curves[c].setData(fit_x, fit_y[c], connect="finite")
         self._comparison = est.record
         self.btn_adopt.setEnabled(True)
+        self.btn_dismiss.setEnabled(True)
         self.print_params(est.record, "UNSTAGED comparison (not the record)")
         if self.record is not None:
             self.print_params(self.record, "current fit (what the command emits)")
@@ -876,6 +913,14 @@ class PickerWindow:  # pragma: no cover - GUI
         self._clear_comparison()
         self.refit()
 
+    def _dismiss_comparison(self) -> None:
+        """Drop the overlay, keep the configured fit. Nothing else moves."""
+        self._clear_comparison()
+        self.summary.setPlainText(
+            "comparison dismissed — your fit and its command are unchanged.\n\n"
+            + self.summary.toPlainText()
+        )
+
     def _clear_comparison(self) -> None:
         """Drop the overlay. Called on every refit.
 
@@ -888,6 +933,7 @@ class PickerWindow:  # pragma: no cover - GUI
             curve.setData([], [])
         if hasattr(self, "btn_adopt"):
             self.btn_adopt.setEnabled(False)
+            self.btn_dismiss.setEnabled(False)
 
     def _refine_tau(self) -> None:
         """Solve τ by VARPRO, seeded by the fit currently on screen.
@@ -1613,6 +1659,8 @@ class PickerWindow:  # pragma: no cover - GUI
             from gps_plot.detrend_workbench import trajectory_curve
 
             fit_x, fit_y = trajectory_curve(est.record, self.yearf)
+            for curve in self.fit_curves:
+                curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
             for c in range(3):
                 # connect="finite" so a component the model cannot evaluate
                 # breaks the line instead of being joined across. The step
@@ -1636,6 +1684,10 @@ class PickerWindow:  # pragma: no cover - GUI
             self._update_spectrum(fit)
             text = model_equation(est.record.get("param_names") or []) + "\n\n"
             text += self._summary(est.record)
+            block = self.params_block(est.record)
+            if block:
+                text += "\n\nparameters\n" + block
+            self.print_params(est.record, "current fit")
             if fell_back:
                 # Same words the CLI prints to stderr -- an S0 record is
                 # not the same object as a full-detection one, and the
@@ -1643,6 +1695,16 @@ class PickerWindow:  # pragma: no cover - GUI
                 text = f"note: {abort_fallback_note(self.sta)}\n\n{text}"
             self.summary.setPlainText(text)
         else:
+            # Grey and dashed: the header already says NO RECORD, but a solid
+            # blue trajectory reads as a fit no matter what the header says,
+            # and this curve belongs to a configuration that is no longer on
+            # screen.
+            for curve in self.fit_curves:
+                curve.setPen(
+                    self.pg.mkPen(
+                        STALE_COLOR, width=1, style=self.pg.QtCore.Qt.DashLine
+                    )
+                )
             for group in (
                 self.flag_scatters,
                 self.outside_scatters,
