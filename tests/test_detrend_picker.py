@@ -1433,3 +1433,68 @@ class TestParametersAreVisible:
         assert len(w.compare_curves[0].getData()[0] or []) == 0
         assert w.command.text() == before, "dismissing changed the command"
         assert not w.btn_adopt.isEnabled()
+
+
+class TestDetrendedView:
+    """data − f(t), display only.
+
+    Same convention as --hide-outliers: the masks, the record and the emitted
+    command are untouched. It subtracts the model that was already fitted; it
+    does not fit anything different.
+    """
+
+    def test_it_shows_residuals_and_changes_nothing_else(self) -> None:
+        import numpy as np
+
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        raw = w.kept_scatters[1].getData()[1]
+        cmd, rec = w.command.text(), w.record
+        assert abs(float(np.mean(raw))) > 1.0, "RHOF East is already centred?"
+
+        w.cb_detrend.setChecked(True)
+        res = w.kept_scatters[1].getData()[1]
+        assert abs(float(np.mean(res))) < 1.0, "residuals are not centred on zero"
+        assert w.command.text() == cmd, "a display toggle moved the command"
+        assert w.record == rec, "a display toggle moved the record"
+
+    def test_the_axis_says_which_quantity_is_drawn(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        assert w.plots[0].getAxis("left").labelText == "North [mm]"
+        w.cb_detrend.setChecked(True)
+        assert w.plots[0].getAxis("left").labelText == "North residual [mm]"
+
+    def test_the_trajectory_is_not_drawn_over_its_own_residuals(self) -> None:
+        """Subtracted, the model IS the zero line."""
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        assert len(w.fit_curves[0].getData()[0]) > 0
+        w.cb_detrend.setChecked(True)
+        assert len(w.fit_curves[0].getData()[0] or []) == 0
+
+
+class TestGroupLabels:
+    """The GUI says `linear`; every emitted flag still says `secular`.
+
+    The stage grammar's `secular` names the linear term alone, but "secular"
+    properly names the long-term background as a whole — linear AND periodic,
+    which is what `lineperiodic` composes. Showing the grammar's word invites
+    reading it as the whole background.
+    """
+
+    def test_the_row_is_labelled_linear_but_the_flag_is_secular(self) -> None:
+        from gps_plot.detrend_picker_qt import GROUP_LABELS, STATE_ESTIMATE
+
+        assert GROUP_LABELS["secular"] == "linear"
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2003.0, 2015.0))
+        w.cb_stage.setChecked(True)
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.refit()
+        # the grammar is unchanged where it matters — in the command
+        assert "secular" in w.command.text()
+        assert "linear" not in w.command.text()
+
+    def test_the_tooltip_names_both(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window()
+        tip = w.grp["secular"].toolTip()
+        assert "linear" in tip and "secular" in tip
+        assert "secular background" in tip

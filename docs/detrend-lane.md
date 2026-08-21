@@ -433,6 +433,36 @@ wants to keep, scroll and paste. Components are ANSI-coloured red/green/blue to
 match the residual periodogram's three curves, so a component is the same
 colour in both places.
 
+**`secular` is called `linear` on screen** (2026-08-21, BGÓ). The stage
+grammar's `secular` names the LINEAR term alone, but "secular" properly names
+the long-term background as a whole — linear *and* periodic, which is what
+`lineperiodic` composes. Showing the grammar's word invites reading one row as
+the whole background. The row therefore reads `linear`, every emitted flag
+still says `secular`, and the tooltip names both so the command stays traceable
+to the control. `GROUP_LABELS` is display-only: renaming the group itself would
+reach into `gps_analysis`'s `GROUP_ORDER` and the 37 deployed records.
+
+**Detrended view** (`detrended (data − f(t))`, 2026-08-21). Plots the residuals
+instead of the series, relabels each axis (`North residual [mm]`) and stops
+drawing the trajectory — subtracted, the model IS the zero line. DISPLAY ONLY,
+the same convention as `--hide-outliers`: the masks, the record and the emitted
+command are untouched, because it subtracts a model that was already fitted
+rather than fitting a different one. This is where a signal departing from the
+background becomes readable — RHOF's 2020–22 unrest is unmistakable in Up once
+the background is gone.
+
+**To fit on a window and see it extended, move the DOMAIN, not the stage.**
+A recurring confusion, and the tool invited it: the blue domain region already
+restricts which epochs are fitted while `trajectory_curve` still draws the
+model across `[nanmin(yearf), nanmax(yearf)]`. Measured on RHOF: dragging the
+domain to 2001.7327–2016.2057 fits 1718 of 4812 epochs (rate
+`[-0.672, -0.759, -0.119]` against the full `[-0.707, -1.185, 0.105]`) and
+emits `--segment 2001.7327:2016.2057`, with the curve still drawn to 2026.63.
+Staging is for something else — carrying part of the model across a span while
+estimating the rest against it — and holding the WHOLE background needs
+something left free, which a station with no step and no transient does not
+have.
+
 **A refused fit must LOOK refused** (2026-08-21). The trajectory goes grey and
 dashed when the fit is refused, because the previous configuration's curve
 stayed on screen solid and blue and was read as a result. Measured: RHOF staged

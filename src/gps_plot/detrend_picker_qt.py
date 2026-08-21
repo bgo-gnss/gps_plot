@@ -118,6 +118,20 @@ GROUP_STATES = (STATE_ESTIMATE, STATE_HOLD, STATE_ABSENT)
 #: staged estimation must not inherit it.
 GROUP_ORDER = ("secular", "periodic", "step", "transient")
 
+#: What each group is CALLED on screen. The stage grammar's `secular` means
+#: the linear term alone, but "secular" properly names the long-term
+#: background as a whole -- linear AND periodic together, which is what
+#: `lineperiodic` composes. Showing the grammar's word for the linear term
+#: invites reading it as the whole background, so the label says `linear`
+#: while every emitted flag keeps saying `secular`; the tooltip names both so
+#: the command stays traceable to the control.
+GROUP_LABELS = {
+    "secular": "linear",
+    "periodic": "periodic",
+    "step": "step",
+    "transient": "transient",
+}
+
 #: ``(secular, periodic)`` states -> the stored ``--model``.  Both absent has
 #: no spelling: every model in the vocabulary carries at least one of them.
 MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
@@ -575,9 +589,17 @@ class PickerWindow:  # pragma: no cover - GUI
         combo = QtWidgets.QComboBox()
         combo.addItems(GROUP_STATES)
         combo.setCurrentText(STATE_ESTIMATE)
+        label = GROUP_LABELS.get(name, name)
+        flag = f" (emitted as '{name}')" if label != name else ""
+        extra = (
+            "  linear + periodic together are the secular background."
+            if name in ("secular", "periodic")
+            else ""
+        )
         combo.setToolTip(
-            f"{name}: estimate it here, hold it from the clean window "
-            f"(needs 'stage the fit'), or leave it out of the model entirely"
+            f"{label}{flag}: estimate it here, hold it from the clean window "
+            f"(needs 'stage the fit'), or leave it out of the model "
+            f"entirely.{extra}"
         )
         self._set_state_enabled(combo, STATE_HOLD, False)
         combo.currentIndexChanged.connect(self.refit)
@@ -639,7 +661,7 @@ class PickerWindow:  # pragma: no cover - GUI
         grid = QtWidgets.QFormLayout()
         for name in ("secular", "periodic", "step"):
             self.grp[name] = self._state_combo(name)
-            grid.addRow(name, self.grp[name])
+            grid.addRow(GROUP_LABELS.get(name, name), self.grp[name])
         # `step` has no ABSENT: there is no CLI spelling for un-declaring one.
         # steps.csv is a FLOOR that merges in, and a PICKED step is removed by
         # removing the pick ("clear steps", or right-click the line) -- so a
@@ -742,6 +764,19 @@ class PickerWindow:  # pragma: no cover - GUI
         hint.setStyleSheet("color: #666;")
         pcol.addWidget(hint)
         col.addWidget(picks_box)
+
+        view_box = QtWidgets.QGroupBox("view")
+        vcol = QtWidgets.QVBoxLayout(view_box)
+        self.cb_detrend = QtWidgets.QCheckBox("detrended (data − f(t))")
+        self.cb_detrend.setToolTip(
+            "Subtract the fitted model from the data and plot the residuals. "
+            "DISPLAY ONLY — the record, the fit and the emitted command are "
+            "unchanged, exactly like --hide-outliers. This is where a signal "
+            "departing from the background becomes readable"
+        )
+        self.cb_detrend.toggled.connect(self.refit)
+        vcol.addWidget(self.cb_detrend)
+        col.addWidget(view_box)
 
         # --- run: parameters that were command-line-only ------------------
         # Each writes the SAME attribute `run_flags` emits, so a control cannot
@@ -1658,9 +1693,24 @@ class PickerWindow:  # pragma: no cover - GUI
             # every gap, which claims linear motion the model never fitted.
             from gps_plot.detrend_workbench import trajectory_curve
 
+            # DISPLAY ONLY: the masks, the record and the emitted command are
+            # the same either way -- this subtracts the model that was already
+            # fitted, it does not fit anything different. Same convention as
+            # --hide-outliers.
+            detrended = self.cb_detrend.isChecked()
+            shown = self.data - fit if detrended else self.data
+
             fit_x, fit_y = trajectory_curve(est.record, self.yearf)
+            if detrended:
+                # Subtracted, the model IS the zero line; drawing it again
+                # would just be y=0 over the grid's own axis.
+                fit_x, fit_y = fit_x[:0], fit_y[:, :0]
             for curve in self.fit_curves:
                 curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
+            for c, name in enumerate(COMPONENTS):
+                self.plots[c].setLabel(
+                    "left", f"{name} residual [mm]" if detrended else f"{name} [mm]"
+                )
             for c in range(3):
                 # connect="finite" so a component the model cannot evaluate
                 # breaks the line instead of being joined across. The step
@@ -1674,12 +1724,10 @@ class PickerWindow:  # pragma: no cover - GUI
                 # Both greys MASK; gold does not. So gold stays in the kept
                 # series and is only overlaid.
                 kept = finite & ~outl[c] & ~out_c
-                self.kept_scatters[c].setData(self.yearf[kept], self.data[c][kept])
-                self.flag_scatters[c].setData(
-                    self.yearf[flagged], self.data[c][flagged]
-                )
-                self.outside_scatters[c].setData(self.yearf[out_c], self.data[c][out_c])
-                self.prov_scatters[c].setData(self.yearf[prov_c], self.data[c][prov_c])
+                self.kept_scatters[c].setData(self.yearf[kept], shown[c][kept])
+                self.flag_scatters[c].setData(self.yearf[flagged], shown[c][flagged])
+                self.outside_scatters[c].setData(self.yearf[out_c], shown[c][out_c])
+                self.prov_scatters[c].setData(self.yearf[prov_c], shown[c][prov_c])
                 self._prov_counts[c] = int(prov_c.sum())
             self._update_spectrum(fit)
             text = model_equation(est.record.get("param_names") or []) + "\n\n"
