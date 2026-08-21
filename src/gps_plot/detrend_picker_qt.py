@@ -70,12 +70,17 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 # ``gps-detrend-workbench``'s own ``--uncert`` default, IMPORTED rather than
 # mirrored so the emitted command omits the flag exactly when the workbench
 # would default to the same screen. A copy could drift; this cannot.
-from gps_plot.detrend_workbench import WORKBENCH_UNCERT_DEFAULT
+from gps_plot.detrend_workbench import (
+    WORKBENCH_UNCERT_DEFAULT,
+    estimate_with_abort_fallback,
+    trajectory_curve,
+)
 
 __all__ = ["main"]
 
@@ -124,6 +129,57 @@ MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
 #: ``station_record_from_arrays``' own default, so the emitted command stays
 #: clean when the operator has not moved away from it.
 DEFAULT_MODEL = "lineperiodic"
+
+#: The comparison overlay: a fit the emitted command does NOT describe, so it
+#: must not be mistakable for the trajectory. Magenta is unused by every other
+#: lane here (red kept, grey flagged, gold provisional, blue trajectory,
+#: darkgreen equipment, darkred seismic) and it is drawn dashed on top.
+COMPARE_COLOR = (170, 40, 170)
+
+#: Per-component ANSI colours for the terminal parameter dump, matching the
+#: residual periodogram's three curves so the same component is the same
+#: colour in both places.
+ANSI = ("\033[31m", "\033[32m", "\033[34m")  # N red, E green, U blue
+ANSI_OFF = "\033[0m"
+
+#: Symbolic spelling of each parameter family, keyed by the prefix
+#: ``param_names`` uses. Built from the record's OWN names so the equation
+#: cannot drift from the model that was actually fitted.
+TERM_FORMS: tuple[tuple[str, str], ...] = (
+    ("offset", "a₀"),
+    ("rate", "a₁·(t−t₀)"),
+    ("cos_annual", "c₁·cos(2πt)"),
+    ("sin_annual", "s₁·sin(2πt)"),
+    ("cos_semiannual", "c₂·cos(4πt)"),
+    ("sin_semiannual", "s₂·sin(4πt)"),
+)
+
+
+def model_equation(param_names: Sequence[str]) -> str:
+    """The GENERAL model form, as symbols rather than fitted numbers.
+
+    Read off ``param_names``, so it always describes the model that was
+    actually estimated -- including however many steps and transients the
+    record happens to carry -- instead of a formula written down once and
+    left to rot.
+    """
+    parts: list[str] = []
+    n_step = n_trans = 0
+    for name in param_names:
+        form = dict(TERM_FORMS).get(name)
+        if form is not None:
+            parts.append(form)
+        elif name.startswith("step_amp"):
+            n_step += 1
+            parts.append(f"h{n_step}·H(t−t{n_step})")
+        elif name.endswith("_amp_1") or "_amp" in name:
+            n_trans += 1
+            kind = name.split("_")[0]
+            inner = "ln(1+(t−tₑ)/τ)" if kind == "log" else "(1−e^(−(t−tₑ)/τ))"
+            parts.append(f"A{n_trans}·{inner}")
+        else:  # pragma: no cover - a family this display does not know yet
+            parts.append(name)
+    return "x(t) = " + " + ".join(parts) if parts else "x(t) = (no terms)"
 
 
 def _provisional_days_default() -> float:
@@ -224,6 +280,7 @@ class PickerWindow:  # pragma: no cover - GUI
         layout.addWidget(self.glw, stretch=1)
         self.plots: list[Any] = []
         self.fit_curves: list[Any] = []
+        self.compare_curves: list[Any] = []
         self.kept_scatters: list[Any] = []
         self.flag_scatters: list[Any] = []
         self.outside_scatters: list[Any] = []
@@ -293,6 +350,18 @@ class PickerWindow:  # pragma: no cover - GUI
                 )
             )
             self.fit_curves.append(p.plot([], [], pen=pg.mkPen(FIT_COLOR, width=2)))
+            # The comparison overlay. Dashed and magenta because the emitted
+            # command does NOT describe it -- it must never be mistakable for
+            # the trajectory, which is the one thing the command reproduces.
+            self.compare_curves.append(
+                p.plot(
+                    [],
+                    [],
+                    pen=pg.mkPen(
+                        COMPARE_COLOR, width=2, style=self.pg.QtCore.Qt.DashLine
+                    ),
+                )
+            )
             self.plots.append(p)
         self.plots[-1].setLabel("bottom", "fractional year")
         self._draw_declared_events()
@@ -613,6 +682,24 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.btn_refine.clicked.connect(self._refine_tau)
         mcol.addWidget(self.btn_refine)
+
+        self.btn_compare = QtWidgets.QPushButton("compare unstaged")
+        self.btn_compare.setToolTip(
+            "Fit the same setup without the stage plan and overlay it "
+            "(magenta dashed). The figure and the command are untouched — "
+            "no need to uncheck 'stage the fit', which would reset the states"
+        )
+        self.btn_compare.clicked.connect(self.compare_unstaged)
+        mcol.addWidget(self.btn_compare)
+
+        self.btn_adopt = QtWidgets.QPushButton("adopt comparison")
+        self.btn_adopt.setToolTip(
+            "Make the overlaid fit the real one: staging goes off and the "
+            "emitted command follows, so it again describes what is drawn"
+        )
+        self.btn_adopt.setEnabled(False)
+        self.btn_adopt.clicked.connect(self.adopt_comparison)
+        mcol.addWidget(self.btn_adopt)
         col.addWidget(model_box)
 
         # --- picks: these move what is on the plot, and nothing else ------
@@ -700,6 +787,107 @@ class PickerWindow:  # pragma: no cover - GUI
         col.addWidget(run_box)
 
         return box
+
+    def print_params(self, record: dict[str, Any], tag: str) -> None:
+        """Dump the full parameter vector to the TERMINAL, one row per term.
+
+        The panel shows the general model form; the numbers go here, because
+        a parameter vector with steps and transients is wider than the control
+        column and is something an operator wants to keep, scroll and paste.
+        Components are ANSI-coloured to match the residual periodogram's three
+        curves, so the same component is the same colour in both places.
+        """
+        names = list(record.get("param_names") or [])
+        comps = record.get("components") or []
+        if not names or not comps:
+            return
+        colour = sys.stdout.isatty()
+        print(f"\n{self.sta} — {tag}")
+        print(f"  {model_equation(names)}")
+        width = max(len(n) for n in names)
+        head = "  " + " " * width + "".join(f"{c:>12s}" for c in COMPONENTS)
+        print(head)
+        for i, name in enumerate(names):
+            row = f"  {name:<{width}s}"
+            for c, comp in enumerate(comps[:3]):
+                value = float(comp["params"][i])
+                cell = f"{value:12.3f}"
+                row += f"{ANSI[c]}{cell}{ANSI_OFF}" if colour else cell
+            print(row)
+        rms = record.get("rms")
+        if rms is not None:
+            print(f"  {'rms':<{width}s}" + "".join(f"{float(v):12.2f}" for v in rms))
+
+    def compare_unstaged(self) -> None:
+        """Fit the same setup WITHOUT the stage plan and overlay the result.
+
+        The figure and the emitted command are left alone: the blue
+        trajectory stays the thing the command reproduces, and this is drawn
+        dashed in magenta beside it. Unchecking 'stage the fit' to get the
+        same look is destructive -- the toggle rewrites the group states on
+        the way out and again on the way back -- so the setup survives here.
+        """
+        settings, _extra, terms, _stage_specs, _holds = self._current()
+        try:
+            est, _fell = estimate_with_abort_fallback(
+                self.sta,
+                self.yearf,
+                self.data,
+                self.sigma,
+                settings=settings,
+                terms=terms or None,
+                stage_plan=None,
+                model=self.model,
+            )
+        except (ValueError, RuntimeError) as exc:
+            self.summary.setPlainText(f"comparison refused: {exc}")
+            return
+        if est is None:
+            self.summary.setPlainText(
+                "comparison refused: the unstaged fit produced no record."
+            )
+            return
+
+        fit_x, fit_y = trajectory_curve(est.record, self.yearf)
+        for c in range(3):
+            self.compare_curves[c].setData(fit_x, fit_y[c], connect="finite")
+        self._comparison = est.record
+        self.btn_adopt.setEnabled(True)
+        self.print_params(est.record, "UNSTAGED comparison (not the record)")
+        if self.record is not None:
+            self.print_params(self.record, "current fit (what the command emits)")
+        rate = [round(float(c["params"][1]), 2) for c in est.record["components"]]
+        self.summary.setPlainText(
+            "comparison drawn (magenta dashed) — parameters printed to the "
+            f"terminal.\nunstaged rate {rate}\n\nThe command and the blue "
+            "trajectory are UNCHANGED. Press 'adopt comparison' to make this "
+            "the fit.\n\n" + self.summary.toPlainText()
+        )
+
+    def adopt_comparison(self) -> None:
+        """Make the comparison the actual fit, so the command describes it."""
+        if getattr(self, "_comparison", None) is None:
+            return
+        # Turning staging off IS the configuration the comparison was fitted
+        # under, so this routes through the normal toggle rather than pasting
+        # the record in -- the figure, the record and the command then all
+        # come from one refit, as they do for every other control.
+        self.cb_stage.setChecked(False)
+        self._clear_comparison()
+        self.refit()
+
+    def _clear_comparison(self) -> None:
+        """Drop the overlay. Called on every refit.
+
+        A comparison is a snapshot of a DIFFERENT configuration; leaving it on
+        screen after the blue line has moved would invite reading the two as
+        the same fit.
+        """
+        self._comparison = None
+        for curve in self.compare_curves:
+            curve.setData([], [])
+        if hasattr(self, "btn_adopt"):
+            self.btn_adopt.setEnabled(False)
 
     def _refine_tau(self) -> None:
         """Solve τ by VARPRO, seeded by the fit currently on screen.
@@ -1073,9 +1261,7 @@ class PickerWindow:  # pragma: no cover - GUI
             # a session that used to work comes back refused. Sessions outlive
             # the code that reads them; this one gets the meaning it was
             # written with.
-            {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD}
-            if d["stage_on"]
-            else {}
+            {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD} if d["stage_on"] else {}
         )
         for name, state in restored.items():
             combo = self.grp.get(name)
@@ -1321,6 +1507,7 @@ class PickerWindow:  # pragma: no cover - GUI
         )
 
         np = self.np
+        self._clear_comparison()
         settings, extra, terms, stage_specs, holds = self._current()
 
         plan = None
@@ -1447,7 +1634,8 @@ class PickerWindow:  # pragma: no cover - GUI
                 self.prov_scatters[c].setData(self.yearf[prov_c], self.data[c][prov_c])
                 self._prov_counts[c] = int(prov_c.sum())
             self._update_spectrum(fit)
-            text = self._summary(est.record)
+            text = model_equation(est.record.get("param_names") or []) + "\n\n"
+            text += self._summary(est.record)
             if fell_back:
                 # Same words the CLI prints to stderr -- an S0 record is
                 # not the same object as a full-detection one, and the

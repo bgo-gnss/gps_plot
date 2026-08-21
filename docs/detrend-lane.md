@@ -422,6 +422,35 @@ mismatch. A rate 35 % low under the label "honest σ" is worse than the absence
 of the feature, so it was removed rather than shipped. Redo it by establishing
 the estimator's own centering convention first.
 
+**The model form on screen, the numbers in the terminal** (2026-08-21). The
+panel leads with the general equation — `x(t) = a₀ + a₁·(t−t₀) + c₁·cos(2πt) +
+…` — read off the record's own `param_names`, so it always describes the model
+that was actually fitted, however many steps and transients it carries, rather
+than a formula written down once and left to rot. The full per-component
+parameter vector is printed to the **terminal** instead: with steps and
+transients it is wider than the control column, and it is something an operator
+wants to keep, scroll and paste. Components are ANSI-coloured red/green/blue to
+match the residual periodogram's three curves, so a component is the same
+colour in both places.
+
+**Compare unstaged, then adopt** (2026-08-21). Unchecking `stage the fit` to
+look at the plain fit is DESTRUCTIVE — the toggle rewrites the group states on
+the way out and again on the way back, so peeking costs you the setup.
+`compare unstaged` instead fits the same configuration with no stage plan and
+draws it as a **magenta dashed overlay** beside the trajectory, printing both
+parameter sets to the terminal. The figure, the emitted command and the group
+states are all untouched: the blue line remains the only thing the command
+describes, which is what keeps the overlay from becoming violation nine.
+`adopt comparison` then makes it real, by turning staging off and refitting —
+so the record, the figure and the command all come from one refit, as they do
+for every other control. The overlay clears on any refit, because a comparison
+is a snapshot of a DIFFERENT configuration and leaving it up after the blue
+line moves invites reading the two as one fit.
+
+Worth knowing what it shows: on RHOF with `periodic` held from 2003–2015, Up's
+`cos_annual` is **1.818** staged against **1.086** unstaged — the held seasonal
+comes from the clean window and genuinely differs from the all-data one.
+
 **Refine τ from the visual seed** (2026-08-20, slice 3). The visual fit fixes
 everything except the one genuinely nonlinear parameter, which the operator has
 been setting by eye — and `gps_analysis.profile_transient_tau` exists for

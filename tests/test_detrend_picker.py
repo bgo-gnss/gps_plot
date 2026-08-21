@@ -1297,3 +1297,83 @@ class TestStepGroupControl:
         w.grp["step"].setCurrentText(STATE_HOLD)
         w.refit()
         assert "--hold long:step=stage:clean" in w.command.text(), w.command.text()
+
+
+class TestModelEquation:
+    """The panel shows the general FORM; the numbers go to the terminal."""
+
+    def test_the_equation_is_read_off_the_record(self) -> None:
+        """Written down once, it would rot; derived, it cannot."""
+        from gps_plot.detrend_picker_qt import model_equation
+
+        eq = model_equation(
+            ["offset", "rate", "cos_annual", "sin_annual", "step_amp_1", "log_amp_1"]
+        )
+        assert eq.startswith("x(t) = a₀ + a₁·(t−t₀)")
+        assert "c₁·cos(2πt)" in eq and "s₁·sin(2πt)" in eq
+        assert "h1·H(t−t1)" in eq, "a declared step has no symbol"
+        assert "ln(1+(t−tₑ)/τ)" in eq, "the log transient is not spelled out"
+
+    def test_a_linear_model_says_so(self) -> None:
+        from gps_plot.detrend_picker_qt import model_equation
+
+        eq = model_equation(["offset", "rate"])
+        assert "cos" not in eq and "sin" not in eq
+
+    def test_the_panel_leads_with_the_form(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window()
+        w.refit()
+        assert w.summary.toPlainText().startswith("x(t) = ")
+
+
+class TestCompareAndAdopt:
+    """Compare is an OVERLAY; only adopt moves the command.
+
+    Unchecking 'stage the fit' to peek at the plain fit is destructive — the
+    toggle rewrites the group states on the way out and again on the way back
+    — so the comparison exists to leave the setup alone.
+    """
+
+    @staticmethod
+    def _staged():
+        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
+
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2003.0, 2015.0))
+        w.cb_stage.setChecked(True)
+        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.refit()
+        return w
+
+    def test_comparing_leaves_the_command_and_setup_alone(self) -> None:
+        w = self._staged()
+        before_cmd = w.command.text()
+        before_state = w.grp["periodic"].currentText()
+        w.compare_unstaged()
+        assert len(w.compare_curves[0].getData()[0]) > 0, "no overlay drawn"
+        assert w.command.text() == before_cmd, "the command moved without the figure"
+        assert "--stage" in w.command.text(), "the staged setup was lost"
+        assert w.grp["periodic"].currentText() == before_state
+        assert w.btn_adopt.isEnabled()
+
+    def test_adopting_makes_the_command_describe_what_is_drawn(self) -> None:
+        w = self._staged()
+        w.compare_unstaged()
+        w.adopt_comparison()
+        assert "--stage" not in w.command.text(), w.command.text()
+        assert not w.cb_stage.isChecked()
+        assert w.record is not None
+        assert len(w.compare_curves[0].getData()[0] or []) == 0, "overlay left behind"
+
+    def test_a_stale_overlay_is_cleared_on_the_next_refit(self) -> None:
+        """It is a snapshot of a DIFFERENT configuration.
+
+        Left on screen after the blue line moves, the two read as one fit.
+        """
+        w = self._staged()
+        w.compare_unstaged()
+        assert len(w.compare_curves[0].getData()[0]) > 0
+        w.sp_gap.setValue(3.0)
+        w._set_max_gap()
+        assert len(w.compare_curves[0].getData()[0] or []) == 0
+        assert not w.btn_adopt.isEnabled()
