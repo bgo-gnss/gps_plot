@@ -451,6 +451,13 @@ rather than fitting a different one. This is where a signal departing from the
 background becomes readable — RHOF's 2020–22 unrest is unmistakable in Up once
 the background is gone.
 
+**The header says how many epochs the domain kept** (2026-08-21) — `fitting
+1718 of 4812 epochs`. The blue region IS the control that decides which epochs
+are fitted, but shaded background does not read as a control, and the plots
+show the whole series either way — so a fit restricted to a window looked
+identical to a fit over everything, and the same confusion recurred across a
+whole session.
+
 **To fit on a window and see it extended, move the DOMAIN, not the stage.**
 A recurring confusion, and the tool invited it: the blue domain region already
 restricts which epochs are fitted while `trajectory_curve` still draws the

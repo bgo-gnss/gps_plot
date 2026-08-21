@@ -1794,6 +1794,20 @@ class PickerWindow:  # pragma: no cover - GUI
             f"prov {self.provisional_days if self.provisional_days is not None else 'default 14'} d",
             f"domain {lo}:{hi}",
         ]
+        # How many epochs the DOMAIN actually kept. The blue region is the
+        # control that decides which epochs are fitted, but shaded background
+        # does not read as a control, and the plots always show the whole
+        # series either way -- so a fit restricted to a window looked exactly
+        # like a fit over everything. Saying "1718 of 4812" makes the
+        # restriction visible at the moment it takes effect.
+        if rec is not None:
+            n_fitted = int(rec.get("n_epochs") or 0)
+            n_total = int(self.np.isfinite(self.yearf).sum())
+            bits.append(
+                f"fitting <b>{n_fitted} of {n_total}</b> epochs"
+                if n_fitted < n_total
+                else f"fitting all {n_total} epochs"
+            )
         # One region cannot draw a union, so when the catalog declares several
         # segments and the region is untouched, the picture is the HULL while
         # the fit is the union. Say so rather than let the excision be

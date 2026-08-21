@@ -1498,3 +1498,18 @@ class TestGroupLabels:
         tip = w.grp["secular"].toolTip()
         assert "linear" in tip and "secular" in tip
         assert "secular background" in tip
+
+    def test_the_header_says_how_many_epochs_the_domain_kept(self) -> None:
+        """The blue region is a CONTROL, but shaded background does not read
+        as one — and the plots show the whole series either way, so a fit
+        restricted to a window looked identical to a fit over everything.
+        """
+        import re
+
+        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
+        strip = lambda t: re.sub("<[^>]+>", "", t)  # noqa: E731
+        assert "fitting all" in strip(w.header.text())
+        w.domain_regions[0].setRegion((2001.7327, 2016.2057))
+        w.refit()
+        head = strip(w.header.text())
+        assert "fitting 1718 of 4812 epochs" in head, head
