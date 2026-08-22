@@ -30,6 +30,22 @@ def _isolated_session_store(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
 
+def _estimated_groups(cmd: str) -> set[str]:
+    """Every group estimated by SOME stage of an emitted command.
+
+    Which stage estimates what is a layout decision the preset is allowed to
+    change; that a group is estimated at all is not. Asserting on the union
+    keeps the tests measuring the science.
+    """
+    parts = shlex.split(cmd)
+    out: set[str] = set()
+    for i, arg in enumerate(parts):
+        if arg == "--stage":
+            spec = parts[i + 1].split("@")[0]
+            out.update(g for g in spec.split(":", 1)[1].split(",") if g)
+    return out
+
+
 def _roundtrip(stages: list[str], holds: list[str]):
     plan = build_stage_plan(stages, holds)
     cmd = shlex.split(render_command("SELF", plan))
@@ -702,13 +718,12 @@ class TestStageLaneKnowsTheDeclaredSteps:
             f"coseismic is estimated nowhere: {w.summary.toPlainText()[:200]}"
         )
         cmd = w.command.text()
-        # `step` must be FREE in the long stage. The exact spelling moved when
-        # the default became "hold the background" (secular is now held, so
-        # long frees only step) -- what this asserts is the freedom, not the
-        # literal, because the default is allowed to change and the freedom
-        # is not.
-        long_free = cmd.split("--stage long:")[1].split(" ")[0].split(",")
-        assert "step" in long_free, cmd
+        # `step` must be estimated SOMEWHERE. Which stage moved when the
+        # preset opened out into the compositional build (steps now get their
+        # own stage against the held background) -- what this asserts is that
+        # the group is fitted at all, not the literal, because the layout is
+        # allowed to change and the freedom is not.
+        assert "step" in _estimated_groups(cmd), cmd
         # The declared step is fitted without ever being picked or emitted.
         assert not w.step_lines
         assert "--step" not in cmd
@@ -722,41 +737,50 @@ class TestStageLaneKnowsTheDeclaredSteps:
         if _declared_step_epochs("RHOF", w.base_settings.steps):  # pragma: no cover
             pytest.skip("RHOF gained a declared step; pick another station")
         cmd = w.command.text()
-        assert "step" not in cmd.split("--stage long:")[1].split(" ")[0]
-        # RHOF has no step and no term, so holding the whole background leaves
-        # the long stage with nothing to estimate and the plan is refused. The
-        # command must still SAY what was asked for -- emitting the unstaged
-        # spelling here made the window show a refusal while the command
-        # described a different, perfectly fittable fit.
-        assert w.record is None
+        assert "step" not in _estimated_groups(cmd), cmd
+        # RHOF has no step and no transient, so the preset lays out the
+        # background stage and nothing else. ONE windowed stage is a real
+        # fit -- the model is estimated inside the window and evaluated
+        # across the whole span, which is what "hold the background from the
+        # quiet window" means when there is nothing else to estimate. The
+        # two-stage default used to refuse this, and once the grammar began
+        # accepting the single-stage spelling that refusal broke the
+        # invariant: the window said refused, the emitted command fitted.
+        assert [c.name for c in w.stage_cards] == ["clean"]
         assert "--stage clean:secular,periodic@" in cmd
-        assert "--hold long:secular=stage:clean" in cmd
+        assert "--hold" not in cmd
+        assert w.record is not None, w.summary.toPlainText()[:200]
 
     def test_a_refused_plan_is_still_emitted(self) -> None:
         """Violation eight, introduced while building slice 2 and caught here.
 
         When the stage plan would not build, `_command` fell through to the
         UNSTAGED spelling — so the window showed a refusal while the command
-        described a different, perfectly fittable fit. On RHOF (no declared
-        step, nothing left free once the whole background is held) that was
-        `gps-detrend-workbench RHOF --max-gap-years 1.5`: copy it and you get
+        described a different, perfectly fittable fit: copy it and you get
         the figure the picker had just refused to show.
 
-        The command must say what was ASKED FOR, so the workbench refuses it
-        for the same reason — which it does, with the same message.
+        The command must say what was ASKED FOR. The case moved when the
+        preset opened out into N stages — RHOF now lays out ONE windowed
+        stage, which is a perfectly good fit and no longer refused — so the
+        refusal exercised here is the one that survives: two stages neither
+        of which carries anything from the other.
         """
-        from gps_plot.detrend_workbench import _build_parser
-
-        w = self._staged("RHOF")
-        assert w.record is None, "RHOF unexpectedly fittable; pick another case"
-        cmd = w.command.text()
-        assert "--stage" in cmd and "--hold" in cmd, cmd
-        # and it is a command the workbench can at least PARSE, so its refusal
-        # is the plan's refusal rather than a syntax error
         import shlex
 
+        from gps_plot.detrend_workbench import _build_parser
+
+        w = self._staged("SELF")
+        for group in ("secular", "periodic"):
+            w.stage_cards[-1].groups[group].setChecked(True)
+        w.refit()
+        assert w.record is None, "expected a refusal to emit"
+        cmd = w.command.text()
+        assert "--stage clean:" in cmd and "--stage st:" in cmd, cmd
+        assert "--hold" not in cmd, "nothing is held — that IS the refusal"
+        # and it is a command the workbench can at least PARSE, so its refusal
+        # is the plan's refusal rather than a syntax error
         ns = _build_parser().parse_args(shlex.split(cmd)[1:])
-        assert ns.stage and ns.hold
+        assert len(ns.stage) == 2 and not ns.hold
 
     def test_the_emitted_stage_plan_reproduces_the_picker_fit(self) -> None:
         """Round-trip the NEW emission path, not just its exit code."""
@@ -1039,16 +1063,14 @@ class TestTermStateControls:
         return TestQtPickerBorrowedFeatures._window()
 
     def test_the_states_compose_the_stored_model(self) -> None:
-        from gps_plot.detrend_picker_qt import STATE_ABSENT, STATE_ESTIMATE
-
         w = self._window()
         for sec, per, expected in (
-            (STATE_ESTIMATE, STATE_ESTIMATE, "lineperiodic"),
-            (STATE_ESTIMATE, STATE_ABSENT, "linear"),
-            (STATE_ABSENT, STATE_ESTIMATE, "periodic"),
+            (True, True, "lineperiodic"),
+            (True, False, "linear"),
+            (False, True, "periodic"),
         ):
-            w.grp["secular"].setCurrentText(sec)
-            w.grp["periodic"].setCurrentText(per)
+            w.model_in["secular"].setChecked(sec)
+            w.model_in["periodic"].setChecked(per)
             w.refit()
             assert w.model == expected, (sec, per)
             assert w.record is not None and w.record["model"] == expected
@@ -1060,28 +1082,28 @@ class TestTermStateControls:
 
     def test_both_absent_is_refused_not_crashed(self) -> None:
         """No --model value carries neither term, so there is nothing to emit."""
-        from gps_plot.detrend_picker_qt import STATE_ABSENT
-
         w = self._window()
         w.refit()
         good = w.record
         assert good is not None
-        w.grp["secular"].setCurrentText(STATE_ABSENT)
-        w.grp["periodic"].setCurrentText(STATE_ABSENT)
+        w.model_in["secular"].setChecked(False)
+        w.model_in["periodic"].setChecked(False)
         w.refit()
         assert w.model is None
         assert "refused" in w.summary.toPlainText().lower()
 
-    def test_hold_is_disabled_until_there_is_a_window_to_hold_from(self) -> None:
-        """Greyed, not hidden: removing the item would renumber the rest."""
-        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_HOLD
+    def test_nothing_can_be_held_without_a_stage_to_hold_from(self) -> None:
+        """Unstaged means no cards at all, not one card covering everything.
 
+        A single stage over the whole domain would be `--segment` spelled a
+        second way, and it would make `hold` look reachable when there is
+        nothing above to hold from.
+        """
         w = self._window()
-        for name in ("secular", "periodic"):
-            combo = w.grp[name]
-            item = combo.model().item(GROUP_STATES.index(STATE_HOLD))
-            assert not item.isEnabled(), f"{name}: hold reachable with no stage"
-            assert combo.count() == len(GROUP_STATES), "an item was removed"
+        assert w.stage_cards == []
+        assert not w.stages_box.isVisible()
+        assert "--hold" not in w.command.text()
+        assert "--stage" not in w.command.text()
 
     def test_the_abort_fallback_is_shared_with_the_workbench(self) -> None:
         """Regression: the picker gave up where the CLI produced a figure.
@@ -1094,10 +1116,8 @@ class TestTermStateControls:
         periodic-only model leaves the trend in the residuals and the
         candidate fraction trips the abort.
         """
-        from gps_plot.detrend_picker_qt import STATE_ABSENT
-
         w = self._window()
-        w.grp["secular"].setCurrentText(STATE_ABSENT)  # -> --model periodic
+        w.model_in["secular"].setChecked(False)  # -> --model periodic
         w.cb_term.setChecked(True)
         w.refit()
         assert w.record is not None, (
@@ -1129,57 +1149,54 @@ class TestPerGroupHold:
         The trend was therefore re-estimated over the whole span including the
         unrest it was supposed to be a background FOR.
         """
-        from gps_plot.detrend_picker_qt import STATE_HOLD
-
         w = self._staged()
-        assert w.grp["secular"].currentText() == STATE_HOLD
-        assert w.grp["periodic"].currentText() == STATE_HOLD
+        assert [c.name for c in w.stage_cards] == ["clean", "st"], (
+            "SELF has a declared step, so the preset is background then steps"
+        )
+        assert w.stage_cards[0].estimates() == ["secular", "periodic"]
         cmd = w.command.text()
-        assert "--hold long:secular=stage:clean" in cmd
-        assert "--hold long:periodic=stage:clean" in cmd
+        assert "--hold st:secular=stage:clean" in cmd
+        assert "--hold st:periodic=stage:clean" in cmd
         assert w.record is not None
 
     def test_the_old_periodic_only_plan_is_still_reachable(self) -> None:
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
-
+        # Re-estimating the trend in the later stage is now spelled by ticking
+        # it there, rather than by a state that meant it implicitly.
         w = self._staged()
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.stage_cards[-1].groups["secular"].setChecked(True)
         w.refit()
         cmd = w.command.text()
-        assert "--hold long:periodic=stage:clean" in cmd
-        assert "--hold long:secular=stage:clean" not in cmd
-        assert "--stage long:secular,step" in cmd
+        assert "--hold st:periodic=stage:clean" in cmd
+        assert "--hold st:secular=stage:clean" not in cmd
+        assert "--stage st:secular,step" in cmd
 
     def test_holding_nothing_is_refused_with_a_reason(self) -> None:
         """Staging exists to carry something; carrying nothing is not staging."""
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
-
         w = self._staged()
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
-        w.grp["periodic"].setCurrentText(STATE_ESTIMATE)
+        for group in ("secular", "periodic"):
+            w.stage_cards[-1].groups[group].setChecked(True)
         w.refit()
         assert w.record is None
-        assert "no group is held" in w.summary.toPlainText()
+        assert "did no work" in w.summary.toPlainText()
 
-    def test_unstaging_clears_an_unreachable_hold(self) -> None:
-        """A control showing a value the fit cannot use is the divergence."""
-        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_HOLD
-
+    def test_unstaging_drops_the_cards(self) -> None:
+        """Cards left on screen would describe a plan that no longer runs."""
         w = self._staged()
-        assert w.grp["secular"].currentText() == STATE_HOLD
+        assert w.stage_cards
         w.cb_stage.setChecked(False)
-        for name in ("secular", "periodic"):
-            combo = w.grp[name]
-            assert combo.currentText() != STATE_HOLD, f"{name} left holding"
-            item = combo.model().item(GROUP_STATES.index(STATE_HOLD))
-            assert not item.isEnabled()
+        assert w.stage_cards == []
+        assert not w.stages_box.isVisible()
+        assert "--hold" not in w.command.text()
 
     def test_the_clean_stage_keeps_secular_as_a_nuisance(self) -> None:
-        """A seasonal fitted on a window that ignores the trend absorbs it."""
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
+        """A seasonal fitted on a window that ignores the trend absorbs it.
 
+        So a group may be estimated in TWO stages — which the three-state
+        combo could not express, and is why membership and assignment had to
+        come apart.
+        """
         w = self._staged()
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)  # free in the long stage
+        w.stage_cards[-1].groups["secular"].setChecked(True)
         w.refit()
         # ... but still free in clean, so the held seasonal is unbiased
         assert "--stage clean:secular,periodic@" in w.command.text()
@@ -1278,17 +1295,29 @@ class TestGroupStatePersistence:
         return TestQtPickerBorrowedFeatures._window()
 
     def test_states_round_trip_through_a_session(self) -> None:
-        from gps_plot.detrend_picker_qt import STATE_ABSENT
-
         w = self._window()
-        w.grp["periodic"].setCurrentText(STATE_ABSENT)
+        w.model_in["periodic"].setChecked(False)
         w.refit()
         assert w.model == "linear"
         w.save_session()
 
         w2 = self._window()  # __init__ auto-loads the session
-        assert w2.grp["periodic"].currentText() == STATE_ABSENT
+        assert not w2.model_in["periodic"].isChecked()
         assert w2.model == "linear"
+
+    def test_an_assignment_round_trips_through_a_session(self) -> None:
+        w = self._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        w.stage_cards[-1].groups["secular"].setChecked(True)
+        w.refit()
+        before = w.command.text()
+        w.save_session()
+
+        w2 = self._window()
+        assert w2.cb_stage.isChecked()
+        assert w2.stage_cards[-1].groups["secular"].isChecked()
+        assert w2.command.text() == before
 
     def test_a_legacy_session_restores_the_plan_it_described(self) -> None:
         """Sessions outlive the code that reads them.
@@ -1303,32 +1332,31 @@ class TestGroupStatePersistence:
         """
         import json
 
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE, STATE_HOLD
-
         w = self._window()
         w.save_session()
         path = w._session_path()
         d = json.loads(path.read_text())
         d["stage"]["on"] = True
-        d.pop("groups")  # as a pre-slice-2 file has it
+        for key in ("groups", "in_model", "assignments"):
+            d.pop(key, None)  # as a pre-slice-2 file has it
         path.write_text(json.dumps(d))
 
         w2 = self._window()
-        assert w2.grp["secular"].currentText() == STATE_ESTIMATE
-        assert w2.grp["periodic"].currentText() == STATE_HOLD
-        assert "--hold long:periodic=stage:clean" in w2.command.text()
-        assert "--hold long:secular=stage:clean" not in w2.command.text()
+        assert w2.stage_cards[0].estimates() == ["periodic"], (
+            "the old plan held periodic only; restoring it under today's "
+            "default would not reproduce the fit the session described"
+        )
+        assert "--hold st:periodic=stage:clean" in w2.command.text()
+        assert "--hold st:secular=stage:clean" not in w2.command.text()
 
     def test_a_hold_is_not_restored_without_a_window_to_hold_from(self) -> None:
-        """Restoring an unreachable state would show a value the fit cannot use."""
-        from gps_plot.detrend_picker_qt import STATE_HOLD
-
+        """Restoring an unreachable assignment would show a plan that cannot run."""
         w = self._window()
         w.stage_regions[0].setRegion((2009.5443, 2021.0394))
         w.cb_stage.setChecked(True)
-        assert w.grp["secular"].currentText() == STATE_HOLD
+        assert w.stage_cards
         w.save_session()
-        # hand-edit the payload to claim staging was off while a hold persists
+        # hand-edit the payload to claim staging was off while cards persist
         import json
 
         path = w._session_path()
@@ -1337,18 +1365,22 @@ class TestGroupStatePersistence:
         path.write_text(json.dumps(d))
 
         w2 = self._window()
-        assert w2.grp["secular"].currentText() != STATE_HOLD
+        assert w2.stage_cards == []
+        assert "--hold" not in w2.command.text()
 
     def test_an_unknown_group_or_state_is_dropped_not_fatal(self) -> None:
         """This key is newer than the files already in the field."""
         import json
 
         w = self._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
         w.save_session()
         path = w._session_path()
         d = json.loads(path.read_text())
-        d["groups"]["gravitational_wave"] = "estimate here"
-        d["groups"]["secular"] = "wobble"
+        d["in_model"]["gravitational_wave"] = True
+        d["assignments"]["clean"].append("wobble")
+        d["assignments"]["a_stage_that_never_existed"] = ["secular"]
         path.write_text(json.dumps(d))
 
         w2 = self._window()
@@ -1357,30 +1389,35 @@ class TestGroupStatePersistence:
 
 
 class TestStepGroupControl:
-    """`step` has free/held but no ABSENT — there is no way to un-declare one."""
+    """`step` is assignable but has no membership control.
 
-    def test_absent_is_disabled_for_step(self) -> None:
-        from gps_plot.detrend_picker_qt import GROUP_STATES, STATE_ABSENT
+    There is no CLI spelling for un-declaring a step: ``steps.csv`` is a
+    FLOOR that merges in, and a picked step is removed by removing the pick.
+    A "not in the model" control for it would promise something no emitted
+    command could carry out.
+    """
 
+    def test_step_has_no_membership_checkbox(self) -> None:
         w = TestQtPickerBorrowedFeatures._window()
-        item = w.grp["step"].model().item(GROUP_STATES.index(STATE_ABSENT))
-        assert not item.isEnabled(), (
-            "offering 'not in the model' for step promises something no "
-            "emitted command can carry out: steps.csv is a floor"
-        )
+        assert "step" not in w.model_in
+        assert set(w.model_in) == {"secular", "periodic"}
+
+    def test_step_is_assignable_on_every_card(self) -> None:
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2005.0, 2015.0))
+        w.cb_stage.setChecked(True)
+        assert all("step" in c.groups for c in w.stage_cards)
 
     def test_holding_a_step_reaches_the_command(self) -> None:
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE, STATE_HOLD
-
         w = TestQtPickerBorrowedFeatures._window()
         # a window that CONTAINS SELF's 2008 step, so clean can estimate it
         w.stage_regions[0].setRegion((2005.0, 2015.0))
         w.cb_stage.setChecked(True)
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
-        w.grp["periodic"].setCurrentText(STATE_HOLD)
-        w.grp["step"].setCurrentText(STATE_HOLD)
+        w.stage_cards[0].groups["step"].setChecked(True)
+        w.stage_cards[-1].groups["step"].setChecked(False)
+        w.stage_cards[-1].groups["secular"].setChecked(True)
         w.refit()
-        assert "--hold long:step=stage:clean" in w.command.text(), w.command.text()
+        assert "--hold st:step=stage:clean" in w.command.text(), w.command.text()
 
 
 class TestModelEquation:
@@ -1420,24 +1457,22 @@ class TestCompareAndAdopt:
 
     @staticmethod
     def _staged():
-        from gps_plot.detrend_picker_qt import STATE_ESTIMATE
-
         w = TestQtPickerBorrowedFeatures._window()
         w.stage_regions[0].setRegion((2003.0, 2015.0))
         w.cb_stage.setChecked(True)
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        w.stage_cards[-1].groups["secular"].setChecked(True)
         w.refit()
         return w
 
     def test_comparing_leaves_the_command_and_setup_alone(self) -> None:
         w = self._staged()
         before_cmd = w.command.text()
-        before_state = w.grp["periodic"].currentText()
+        before_cards = [(c.name, c.estimates()) for c in w.stage_cards]
         w.compare_unstaged()
         assert len(w.compare_curves[0].getData()[0]) > 0, "no overlay drawn"
         assert w.command.text() == before_cmd, "the command moved without the figure"
         assert "--stage" in w.command.text(), "the staged setup was lost"
-        assert w.grp["periodic"].currentText() == before_state
+        assert [(c.name, c.estimates()) for c in w.stage_cards] == before_cards
         assert w.btn_adopt.isEnabled()
 
     def test_adopting_makes_the_command_describe_what_is_drawn(self) -> None:
@@ -1471,13 +1506,20 @@ class TestRefusedFitLooksRefused:
     previous configuration's blue line stayed on screen, solid, and was read
     as "the fit within the orange window". The header said NO RECORD; the
     curve said otherwise, and the curve wins.
+
+    RHOF is no longer that case — one windowed stage is a real fit — so the
+    refusal driven here is the surviving one: a later stage that re-estimates
+    everything the earlier one did, leaving the earlier stage no work.
     """
 
     def test_a_refused_fit_greys_and_dashes_the_trajectory(self) -> None:
-        w = TestQtPickerBorrowedFeatures._window(sta="RHOF", gap=2.0)
-        w.stage_regions[0].setRegion((2001.7327, 2016.2057))
-        w.cb_stage.setChecked(True)  # both held; RHOF has no step or transient
-        assert w.record is None, "RHOF unexpectedly fittable; pick another case"
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        for group in ("secular", "periodic"):
+            w.stage_cards[-1].groups[group].setChecked(True)
+        w.refit()
+        assert w.record is None, "expected a refusal; pick another case"
         pen = w.fit_curves[0].opts["pen"]
         assert pen.color().getRgb()[:3] != FIT_COLOR_RGB, "still drawn as a fit"
         assert pen.style().name == "DashLine"
@@ -1564,13 +1606,14 @@ class TestGroupLabels:
     """
 
     def test_the_row_is_labelled_linear_but_the_flag_is_secular(self) -> None:
-        from gps_plot.detrend_picker_qt import GROUP_LABELS, STATE_ESTIMATE
+        from gps_plot.detrend_picker_qt import GROUP_LABELS
 
         assert GROUP_LABELS["secular"] == "linear"
         w = TestQtPickerBorrowedFeatures._window()
         w.stage_regions[0].setRegion((2003.0, 2015.0))
         w.cb_stage.setChecked(True)
-        w.grp["secular"].setCurrentText(STATE_ESTIMATE)
+        assert w.stage_cards[0].groups["secular"].text() == "linear"
+        w.stage_cards[-1].groups["secular"].setChecked(True)
         w.refit()
         # the grammar is unchanged where it matters — in the command
         assert "secular" in w.command.text()
@@ -1578,7 +1621,7 @@ class TestGroupLabels:
 
     def test_the_tooltip_names_both(self) -> None:
         w = TestQtPickerBorrowedFeatures._window()
-        tip = w.grp["secular"].toolTip()
+        tip = w.model_in["secular"].toolTip()
         assert "linear" in tip and "secular" in tip
         assert "secular background" in tip
 
@@ -1596,3 +1639,131 @@ class TestGroupLabels:
         w.refit()
         head = strip(w.header.text())
         assert "fitting 1718 of 4812 epochs" in head, head
+
+
+class TestCardsAreTheStageEditor:
+    """Slice 2: the panel is N stage cards, and the cards ARE the plan.
+
+    Two decisions the three-state combo used to fuse are separated here,
+    because the estimator already treats them as orthogonal: ``--model``
+    decides which terms are in the design matrix, the stage plan decides
+    where each is estimated. So membership is one control that works staged
+    or not, and assignment is a checkbox per stage.
+
+    A group may be estimated in MORE than one stage on purpose: the clean
+    stage frees ``secular`` as a nuisance even when the kept value comes from
+    a later stage, because a seasonal fitted on a window that ignores the
+    trend inside it absorbs part of that trend.
+    """
+
+    @staticmethod
+    def _staged():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        return w
+
+    # -- 1. --model composed from membership, read off _current() ---------
+
+    def test_model_follows_membership_not_assignment(self) -> None:
+        """Read ``_current()``'s own output, never a re-derivation.
+
+        Violation 6 was a control that moved the figure without moving the
+        command, and the first test written for it PASSED against the bug
+        because it re-derived the value instead of asking the method that
+        assembles it.
+        """
+        w = self._staged()
+        assert w._current()[0] is not None
+        assert w.model == "lineperiodic"
+
+        w.model_in["secular"].setChecked(False)
+        w._current()
+        assert w.model == "periodic"
+
+        w.model_in["secular"].setChecked(True)
+        w.model_in["periodic"].setChecked(False)
+        w._current()
+        assert w.model == "linear"
+
+    def test_both_out_is_refused_not_guessed(self) -> None:
+        # No --model value carries neither, so it must refuse rather than
+        # send something the estimator would fail on later and less clearly.
+        w = self._staged()
+        w.model_in["secular"].setChecked(False)
+        w.model_in["periodic"].setChecked(False)
+        w.refit()
+        assert w.model is None
+        assert w.record is None
+        assert "both" in w.summary.toPlainText()
+
+    def test_an_unassigned_group_is_still_in_the_model(self) -> None:
+        """Absent-from-every-card is NOT absent-from-the-model.
+
+        This is the regression the split exists to prevent: a freshly added
+        empty stage, and an unstaged picker, both have a group assigned
+        nowhere -- and neither means the term should leave the design matrix.
+        """
+        w = self._staged()
+        for card in w.stage_cards:
+            card.groups["periodic"].setChecked(False)
+        w._current()
+        assert w.model == "lineperiodic", "membership must not follow assignment"
+
+    # -- 2. session restore is a migration, not a rename ------------------
+
+    def test_a_legacy_group_state_session_migrates(self) -> None:
+        """Sessions outlive the code that reads them.
+
+        The states map onto the new pair exactly: ABSENT is out of the model,
+        HOLD is estimated in the FIRST stage (and so carried by the later
+        ones), ESTIMATE is estimated in the LAST.
+        """
+        from gps_plot.detrend_picker_qt import (
+            STATE_ABSENT,
+            STATE_ESTIMATE,
+            STATE_HOLD,
+        )
+
+        from gps_plot.detrend_picker_qt import migrate_group_states
+
+        w = self._staged()
+        parsed = w._parse_session(
+            {
+                "station": "SELF",
+                "stage": {"on": True, "window": [2009.5443, 2021.0394]},
+                "groups": {
+                    "secular": STATE_ESTIMATE,
+                    "periodic": STATE_HOLD,
+                    "step": STATE_ABSENT,
+                },
+            }
+        )
+        assert parsed["in_model"] == {
+            "secular": True,
+            "periodic": True,
+            "step": False,
+        }
+        # The names are resolved against the REAL cards, which do not exist
+        # while the payload is being parsed -- reading them off an empty card
+        # list collapsed `first` and `last` onto one stage and put a held
+        # group in the same place as a freely estimated one.
+        assert parsed["assignments"] is None
+        assignments = migrate_group_states(parsed["legacy_groups"], "clean", "st")
+        assert "periodic" in assignments["clean"]
+        assert "secular" in assignments["st"]
+        assert "periodic" not in assignments["st"]
+
+    def test_a_session_with_no_groups_keeps_its_old_meaning(self) -> None:
+        # Predates per-group hold: that build held `periodic` only, and
+        # restoring it under the current default would not reproduce the fit
+        # it described.
+        from gps_plot.detrend_picker_qt import migrate_group_states
+
+        w = self._staged()
+        parsed = w._parse_session(
+            {"station": "SELF", "stage": {"on": True, "window": [2009.0, 2021.0]}}
+        )
+        assignments = migrate_group_states(parsed["legacy_groups"], "clean", "st")
+        assert assignments["clean"] == ["periodic"]
+        assert "secular" in assignments["st"]

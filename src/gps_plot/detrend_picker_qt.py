@@ -71,7 +71,7 @@ import dataclasses
 import os
 import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 # ``gps-detrend-workbench``'s own ``--uncert`` default, IMPORTED rather than
@@ -204,6 +204,101 @@ class StageDraft:
     groups: list[str] = dataclasses.field(default_factory=list)
     window: tuple[float, float] | None = None
     holds: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class StageCard:
+    """Widgets for one stage card, and the window it owns.
+
+    Deliberately holds no holds: those are derived from the card ORDER by
+    :func:`compose_drafts`. The card is a view onto one
+    :class:`StageDraft`, never a parallel copy of the plan.
+    """
+
+    box: Any
+    name_edit: Any
+    groups: dict[str, Any]
+    inherit: Any
+    window: tuple[float, float] | None = None
+
+    @property
+    def name(self) -> str:
+        return str(self.name_edit.text()).strip()
+
+    def estimates(self) -> list[str]:
+        """Groups checked on this card, in ``GROUP_ORDER``."""
+        return [g for g in GROUP_ORDER if self.groups[g].isChecked()]
+
+
+def migrate_group_states(
+    legacy: Mapping[str, str], first: str, last: str
+) -> dict[str, list[str]]:
+    """Turn a session's group→state map into a per-stage assignment.
+
+    Sessions outlive the code that reads them, and the three states map onto
+    the new pair exactly — which is the evidence that splitting membership
+    from assignment factored what was already there rather than inventing
+    something:
+
+    ===================  ============================================
+    ``not in the model`` out of the model (handled by the caller)
+    ``hold from window`` estimated in the FIRST stage, so every later
+                         stage holds it
+    ``estimate here``    estimated in the LAST stage
+    ===================  ============================================
+
+    Pure, and takes the stage names as arguments, because the names are not
+    known until the cards exist: reading them off a not-yet-built card list
+    silently collapsed ``first`` and ``last`` onto the same stage, which put
+    a held group and a freely-estimated one in the same place.
+    """
+    assignments: dict[str, list[str]] = {first: [], last: []}
+    for group, state in legacy.items():
+        if state == STATE_HOLD:
+            assignments[first].append(group)
+        elif state == STATE_ESTIMATE:
+            assignments[last].append(group)
+    return assignments
+
+
+def compose_drafts(
+    stages: Sequence[tuple[str, Sequence[str], tuple[float, float] | None]],
+) -> list[StageDraft]:
+    """Fill in each stage's holds from the order of the stages.
+
+    A stage holds every group it does not itself estimate at the value of the
+    LAST earlier stage that did. Nothing else needs saying: that rule IS the
+    compositional build — lin+per on a quiet window, steps against that
+    background, transients against both — and deriving it means the operator
+    cannot leave a hold behind that contradicts the assignment above it.
+
+    A group estimated in more than one stage is legal and deliberate: the
+    clean stage frees ``secular`` as a NUISANCE even when the kept value
+    comes from a later stage, because a seasonal fitted on a window that
+    ignores the trend inside that window absorbs part of it. Under this rule
+    the later stage simply does not hold what it re-estimates.
+
+    Groups already excluded from the model must be filtered out before
+    calling: this function has no opinion about membership, only order.
+    """
+    drafts: list[StageDraft] = []
+    for index, (name, groups, window) in enumerate(stages):
+        holds: dict[str, str] = {}
+        for group in GROUP_ORDER:
+            if group in groups:
+                continue
+            source = next(
+                (
+                    earlier
+                    for earlier, earlier_groups, _ in reversed(list(stages[:index]))
+                    if group in earlier_groups
+                ),
+                None,
+            )
+            if source is not None:
+                holds[group] = f"stage:{source}"
+        drafts.append(StageDraft(name, list(groups), window, holds))
+    return drafts
 
 
 def render_stage_flags(stages: Sequence[StageDraft]) -> tuple[list[str], list[str]]:
@@ -342,6 +437,10 @@ class PickerWindow:  # pragma: no cover - GUI
         # The stage plan as an AST, rebuilt on every `_current()`. Empty means
         # unstaged, which is what an unchecked "stage the fit" produces.
         self.stages: list[StageDraft] = []
+        # Seeded before `_controls()` builds anything: `_card_expanded` reads
+        # the list from a signal handler, and a card can be added before the
+        # window has finished constructing itself.
+        self.stage_cards: list[StageCard] = []
         # The fit the refine action seeds from; set on every successful refit.
         self._est: Any = None
 
@@ -640,50 +739,203 @@ class PickerWindow:  # pragma: no cover - GUI
         for item in group:
             item.setVisible(on)
 
-    def _state_combo(self, name: str) -> Any:
-        """A three-state control for one term group.
+    # -- stage cards ----------------------------------------------------
+    def _new_card(
+        self,
+        name: str,
+        groups: Sequence[str],
+        window: tuple[float, float] | None,
+    ) -> StageCard:
+        """One collapsible stage card.
 
-        ``hold`` starts disabled rather than hidden: an operator should be able
-        to SEE that holding a group from the clean window is a thing this
-        window does, and why it is currently unavailable, instead of the
-        option appearing from nowhere when staging is switched on.
+        The card carries only what a stage IS — its name, which groups it
+        estimates, and its window. Its holds are DERIVED from the order of
+        the cards (:func:`compose_drafts`), because a hold the operator could
+        set independently of the assignment above it would be a second place
+        deciding the same thing.
         """
         QtWidgets = self.QtWidgets
-        combo = QtWidgets.QComboBox()
-        combo.addItems(GROUP_STATES)
-        combo.setCurrentText(STATE_ESTIMATE)
-        label = GROUP_LABELS.get(name, name)
-        flag = f" (emitted as '{name}')" if label != name else ""
-        extra = (
-            "  linear + periodic together are the secular background."
-            if name in ("secular", "periodic")
-            else ""
-        )
-        combo.setToolTip(
-            f"{label}{flag}: estimate it here, hold it from the clean window "
-            f"(needs 'stage the fit'), or leave it out of the model "
-            f"entirely.{extra}"
-        )
-        self._set_state_enabled(combo, STATE_HOLD, False)
-        combo.currentIndexChanged.connect(self.refit)
-        return combo
+        box = QtWidgets.QGroupBox()
+        box.setCheckable(True)
+        box.setChecked(True)
+        inner = QtWidgets.QVBoxLayout(box)
+        inner.setContentsMargins(8, 4, 8, 4)
 
-    @staticmethod
-    def _set_state_enabled(combo: Any, state: str, on: bool) -> None:
-        """Grey out one state rather than removing it.
+        edit = QtWidgets.QLineEdit(name)
+        edit.setToolTip(
+            "Stage name, as it appears in --stage NAME:... and on the left of "
+            "any --hold NAME:GROUP=..."
+        )
+        edit.editingFinished.connect(self.refit)
+        inner.addWidget(edit)
 
-        Removing an item would renumber the rest and silently move whatever
-        the operator had selected -- a control changing meaning underneath a
-        stored pick is this window's whole family of bugs.
+        row = QtWidgets.QHBoxLayout()
+        checks: dict[str, Any] = {}
+        for group in GROUP_ORDER:
+            cb = QtWidgets.QCheckBox(GROUP_LABELS.get(group, group))
+            cb.setChecked(group in groups)
+            cb.setToolTip(
+                f"Estimate {GROUP_LABELS.get(group, group)} (emitted as "
+                f"'{group}') in this stage. Unchecked here, it is held at "
+                f"whatever the last earlier stage fitted"
+            )
+            cb.toggled.connect(self.refit)
+            checks[group] = cb
+            row.addWidget(cb)
+        inner.addLayout(row)
+
+        inherit = QtWidgets.QCheckBox("inherit the domain")
+        inherit.setChecked(window is None)
+        inherit.setToolTip(
+            "Fit this stage over the caller's domain instead of its own "
+            "window. Omitting the window is NOT the same as asking for the "
+            "full span -- they differ whenever --segment is set"
+        )
+        inherit.toggled.connect(self.refit)
+        inner.addWidget(inherit)
+
+        card = StageCard(box=box, name_edit=edit, groups=checks, inherit=inherit)
+        card.window = window
+        box.toggled.connect(lambda on, c=card: self._card_expanded(c, on))
+        return card
+
+    def _card_expanded(self, card: StageCard, on: bool) -> None:
+        """Expanding a card makes it ACTIVE — the orange region is its window.
+
+        One window on screen at a time, and never a question of which stage
+        it belongs to. Collapsing the active card leaves it active: the
+        alternative is a plot whose region silently belongs to nothing.
         """
-        item = combo.model().item(GROUP_STATES.index(state))
-        if item is not None:
-            item.setEnabled(on)
+        if not on:
+            return
+        for other in self.stage_cards:
+            if other is not card and other.box.isChecked():
+                other.box.blockSignals(True)
+                other.box.setChecked(False)
+                other.box.blockSignals(False)
+        self._show_active_window()
 
-    def _group_state(self, name: str) -> str:
-        """The selected state for a group, or ``estimate`` when absent."""
-        combo = self.grp.get(name)
-        return combo.currentText() if combo is not None else STATE_ESTIMATE
+    def _show_active_window(self) -> None:
+        """Point the orange region at the active card's window."""
+        card = self.active_card()
+        if card is None:
+            return
+        window = card.window or self.default_domain
+        for region in self.stage_regions:
+            region.blockSignals(True)
+            region.setRegion(window)
+            region.blockSignals(False)
+        self._set_visible(self.stage_regions, self.cb_stage.isChecked())
+
+    def active_card(self) -> StageCard | None:
+        """The expanded card, or the first one; None when unstaged."""
+        for card in self.stage_cards:
+            if card.box.isChecked():
+                return card
+        return self.stage_cards[0] if self.stage_cards else None
+
+    def _set_cards(
+        self,
+        spec: Sequence[tuple[str, Sequence[str], tuple[float, float] | None]],
+    ) -> None:
+        """Replace every card. The ONLY way the card list changes shape."""
+        for card in self.stage_cards:
+            self.stages_col.removeWidget(card.box)
+            card.box.setParent(None)
+        self.stage_cards = []
+        for name, groups, window in spec:
+            card = self._new_card(name, groups, window)
+            card.box.blockSignals(True)
+            card.box.setChecked(False)
+            card.box.blockSignals(False)
+            self.stage_cards.append(card)
+            self.stages_col.addWidget(card.box)
+        if self.stage_cards:
+            self.stage_cards[0].box.blockSignals(True)
+            self.stage_cards[0].box.setChecked(True)
+            self.stage_cards[0].box.blockSignals(False)
+        self._show_active_window()
+
+    def _preset_spec(
+        self, window: tuple[float, float]
+    ) -> list[tuple[str, list[str], tuple[float, float] | None]]:
+        """The standard compositional build, as far as the model reaches.
+
+        ``clean`` estimates the background on the window; ``st`` and ``tr``
+        appear only when there is a step or a transient to estimate, because
+        a stage that estimates nothing is refused — rightly, and it would be
+        refused on every station that has neither.
+
+        With only ``clean``, no hold is derived and the plan is refused with
+        the same message it has always used: staging exists to carry
+        something across the span, and one windowed stage carries nothing.
+        That is ``--segment``, spelled a second way.
+        """
+        background = [g for g in ("secular", "periodic") if self._in_model(g)]
+        spec: list[tuple[str, list[str], tuple[float, float] | None]] = [
+            ("clean", background, window)
+        ]
+        if self._in_model("step"):
+            spec.append(("st", ["step"], None))
+        if self._in_model("transient"):
+            spec.append(("tr", ["transient"], None))
+        return spec
+
+    def reset_preset(self) -> None:
+        window = tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
+        self._set_cards(self._preset_spec((window[0], window[1])))
+        self.refit()
+
+    def add_stage(self) -> None:
+        """Append an empty stage; it holds everything fitted above it."""
+        spec = [(c.name, c.estimates(), c.window) for c in self.stage_cards]
+        spec.append((f"s{len(spec) + 1}", [], None))
+        self._set_cards(spec)
+        self.refit()
+
+    def remove_stage(self) -> None:
+        if len(self.stage_cards) <= 1:
+            self.summary.setPlainText(
+                "a staged fit needs at least one stage — uncheck 'stage the "
+                "fit' to go back to a single unstaged solve"
+            )
+            return
+        spec = [(c.name, c.estimates(), c.window) for c in self.stage_cards[:-1]]
+        self._set_cards(spec)
+        self.refit()
+
+    def _merged_step_epochs(self, settings: Any = None) -> tuple[float, ...]:
+        """The steps the FIT will carry: the ``steps.csv`` floor ∪ the picked.
+
+        ONE definition, called from both the preset builder (which has no
+        settings yet) and the draft builder (which does). Two of these is how
+        RHOF got a step stage for a step it does not have: the preset asked
+        "is step in the model?" and got an unconditional yes.
+        """
+        from gps_plot.detrend_workbench import _declared_step_epochs, _override_settings
+
+        if settings is None:
+            settings = _override_settings(
+                self.base_settings,
+                self.sta,
+                quiet=True,
+                steps=tuple(round(g[0].value(), 4) for g in self.step_lines) or None,
+            )
+        return tuple(_declared_step_epochs(self.sta, settings.steps))
+
+    def _in_model(self, group: str) -> bool:
+        """Membership, from whichever control owns it for that group."""
+        if group in self.model_in:
+            return bool(self.model_in[group].isChecked())
+        if group == "transient":
+            return bool(self.cb_term.isChecked())
+        if group == "step":
+            return bool(self._merged_step_epochs())
+        return True
+
+    def _preset_names(self) -> list[str]:
+        """Stage names the preset would lay out, without building it."""
+        return [name for name, _, _ in self._preset_spec((0.0, 1.0))]
 
     def _controls(self) -> Any:
         """The right-hand control column.
@@ -717,27 +969,66 @@ class PickerWindow:  # pragma: no cover - GUI
         self.cb_stage.toggled.connect(self._toggle_stage)
         mcol.addWidget(self.cb_stage)
 
-        # Per-group state. `secular` and `periodic` compose the stored
-        # --model; `hold` needs a second stage to hold FROM, so it is disabled
-        # until staging is on (slice 2 wires it, along with step/transient).
-        self.grp: dict[str, Any] = {}
-        grid = QtWidgets.QFormLayout()
-        for name in ("secular", "periodic", "step"):
-            self.grp[name] = self._state_combo(name)
-            grid.addRow(GROUP_LABELS.get(name, name), self.grp[name])
-        # `step` has no ABSENT: there is no CLI spelling for un-declaring one.
-        # steps.csv is a FLOOR that merges in, and a PICKED step is removed by
-        # removing the pick ("clear steps", or right-click the line) -- so a
-        # control offering "not in the model" would promise something no
-        # emitted command could carry out.
-        self._set_state_enabled(self.grp["step"], STATE_ABSENT, False)
-        self.grp["step"].setToolTip(
-            "step: estimate the offsets on the full span, or hold them from "
-            "the clean window (only possible if the step epoch is inside it). "
-            "There is no 'absent' — steps.csv is a floor, and a picked step is "
-            "removed by removing the pick"
+        # MEMBERSHIP, which is not the same question as assignment: --model
+        # decides which terms are in the design matrix, the stage plan decides
+        # where each is estimated, and the estimator has always treated the two
+        # as orthogonal. The old three-state combo fused them, so a group could
+        # not be estimated in two stages -- which the nuisance rule requires.
+        #
+        # Only `secular` and `periodic` get a control. `step` membership comes
+        # from the declarations (steps.csv is a FLOOR, and a picked step is
+        # removed by removing the pick), and `transient` from the checkbox
+        # below -- offering "not in the model" for either would promise
+        # something no emitted command could carry out.
+        self.model_in: dict[str, Any] = {}
+        mrow = QtWidgets.QHBoxLayout()
+        mrow.addWidget(QtWidgets.QLabel("in the model:"))
+        for name in ("secular", "periodic"):
+            cb = QtWidgets.QCheckBox(GROUP_LABELS.get(name, name))
+            cb.setChecked(True)
+            cb.setToolTip(
+                f"Keep {GROUP_LABELS.get(name, name)} (emitted as '{name}') in "
+                f"the design matrix. Unchecked, it leaves --model entirely; "
+                f"linear + periodic together are the secular background"
+            )
+            cb.toggled.connect(self.refit)
+            self.model_in[name] = cb
+            mrow.addWidget(cb)
+        mrow.addStretch(1)
+        mcol.addLayout(mrow)
+
+        # The stage cards. Empty until staging is on, because an unstaged fit
+        # has no stages -- not one stage covering everything, which would be a
+        # different (and refusable) plan.
+        self.stages_box = QtWidgets.QWidget()
+        self.stages_col = QtWidgets.QVBoxLayout(self.stages_box)
+        self.stages_col.setContentsMargins(0, 0, 0, 0)
+        self.stages_box.setVisible(False)
+        mcol.addWidget(self.stages_box)
+
+        self.stage_buttons = QtWidgets.QWidget()
+        srow = QtWidgets.QHBoxLayout(self.stage_buttons)
+        srow.setContentsMargins(0, 0, 0, 0)
+        btn_add = QtWidgets.QPushButton("+ stage")
+        btn_add.setToolTip(
+            "Append a stage. It starts estimating nothing and holding "
+            "everything the stages above it fitted"
         )
-        mcol.addLayout(grid)
+        btn_add.clicked.connect(self.add_stage)
+        srow.addWidget(btn_add)
+        btn_del = QtWidgets.QPushButton("− stage")
+        btn_del.setToolTip("Remove the last stage")
+        btn_del.clicked.connect(self.remove_stage)
+        srow.addWidget(btn_del)
+        btn_preset = QtWidgets.QPushButton("reset to preset")
+        btn_preset.setToolTip(
+            "Back to the standard build: linear+periodic on the window, then "
+            "steps against that background, then transients against both"
+        )
+        btn_preset.clicked.connect(self.reset_preset)
+        srow.addWidget(btn_preset)
+        self.stage_buttons.setVisible(False)
+        mcol.addWidget(self.stage_buttons)
 
         self.cb_term = QtWidgets.QCheckBox("transient")
         self.cb_term.setToolTip(
@@ -1269,7 +1560,8 @@ class PickerWindow:  # pragma: no cover - GUI
                 "epoch": round(self.onset_lines[0].value(), 4),
                 "tau": round(self.tau.value(), 3),
             },
-            "groups": {n: c.currentText() for n, c in self.grp.items()},
+            "in_model": {n: c.isChecked() for n, c in self.model_in.items()},
+            "assignments": {c.name: c.estimates() for c in self.stage_cards},
             "params": {
                 "uncert": self.uncert,
                 "max_gap_years": self.max_gap_years,
@@ -1325,14 +1617,38 @@ class PickerWindow:  # pragma: no cover - GUI
         # written by a build that knows one more term group must not make the
         # whole payload unusable -- the rest of it is still somebody's
         # curation.
-        groups = {
+        legacy = {
             k: v
             for k, v in groups_raw.items()
             if k in GROUP_ORDER and v in GROUP_STATES
         }
+        if not legacy and stage.get("on"):
+            # Predates per-group hold: that build held `periodic` only, and
+            # restoring it under today's default (hold the whole background)
+            # would not reproduce the fit the session described -- on a station
+            # with no step and no transient it leaves the later stage nothing
+            # to estimate, so a session that used to work comes back REFUSED.
+            legacy = {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD}
+
+        in_model = {g: state != STATE_ABSENT for g, state in legacy.items()}
+        raw_in_model = d.get("in_model")
+        if isinstance(raw_in_model, dict):
+            in_model = {k: bool(v) for k, v in raw_in_model.items() if k in GROUP_ORDER}
+        # Resolved against the real card names in `load_session`, once the
+        # cards exist; `legacy` alone cannot name a stage.
+        assignments: dict[str, list[str]] | None = None
+        raw_assign = d.get("assignments")
+        if isinstance(raw_assign, dict):
+            assignments = {
+                str(name): [g for g in groups if g in GROUP_ORDER]
+                for name, groups in raw_assign.items()
+                if isinstance(groups, (list, tuple))
+            }
 
         out: dict[str, Any] = {
-            "groups": groups,
+            "in_model": in_model,
+            "assignments": assignments,
+            "legacy_groups": legacy,
             "domain": (
                 pair(d["domain"], "domain")
                 if d.get("domain") is not None
@@ -1392,30 +1708,31 @@ class PickerWindow:  # pragma: no cover - GUI
             r.blockSignals(True)
             r.setRegion(d["stage_window"])
             r.blockSignals(False)
+        for name, wanted in d["in_model"].items():
+            cb = self.model_in.get(name)
+            if cb is None:
+                continue  # membership this build does not control (step)
+            cb.blockSignals(True)
+            cb.setChecked(wanted)
+            cb.blockSignals(False)
+        # AFTER membership: `_toggle_stage` lays out the preset from what is
+        # in the model, so restoring the cards first would simply be undone.
         self.cb_stage.setChecked(d["stage_on"])
-        # AFTER cb_stage: `_toggle_stage` rewrites the group states (it
-        # defaults the background to held, and clears an unreachable hold when
-        # staging goes off), so restoring them first would simply be undone.
-        restored = d["groups"] or (
-            # A session predating per-group hold recorded a staged fit under
-            # the OLD plan, which held `periodic` only. Restoring it under the
-            # current default (hold the whole background) does not reproduce
-            # the fit it described -- and on a station with no step and no
-            # transient it leaves the long stage with nothing to estimate, so
-            # a session that used to work comes back refused. Sessions outlive
-            # the code that reads them; this one gets the meaning it was
-            # written with.
-            {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD} if d["stage_on"] else {}
-        )
-        for name, state in restored.items():
-            combo = self.grp.get(name)
-            if combo is None:
-                continue
-            if state == STATE_HOLD and not d["stage_on"]:
-                continue  # unreachable without a window to hold from
-            combo.blockSignals(True)
-            combo.setCurrentText(state)
-            combo.blockSignals(False)
+        assignments = d["assignments"]
+        if assignments is None and self.stage_cards:
+            assignments = migrate_group_states(
+                d["legacy_groups"],
+                self.stage_cards[0].name,
+                self.stage_cards[-1].name,
+            )
+        for card in self.stage_cards:
+            wanted_groups = (assignments or {}).get(card.name)
+            if wanted_groups is None:
+                continue  # a stage this session never named — leave the preset
+            for group, cb in card.groups.items():
+                cb.blockSignals(True)
+                cb.setChecked(group in wanted_groups)
+                cb.blockSignals(False)
         self.cb_term.setChecked(d["term_on"])
         if d["kind"] is not None:
             self.kind.setCurrentText(d["kind"])
@@ -1440,27 +1757,23 @@ class PickerWindow:  # pragma: no cover - GUI
 
     # -- interaction ----------------------------------------------------
     def _toggle_stage(self, on: bool) -> None:
-        """Staging on/off also decides whether `hold` is reachable at all.
+        """Staging on/off is the presence or absence of the card list.
 
-        Turning it ON defaults ``secular`` and ``periodic`` to held: that IS
-        the background model — trend and seasonal estimated on the quiet
-        window and carried across the span, leaving residuals in which
-        short-term deviations can be read. Before this the plan was hardcoded
-        to hold `periodic` only, so the trend was silently re-estimated over
-        everything including the unrest it was meant to be a background for.
-
-        Turning it OFF puts any held group back to `estimate here` rather
-        than leaving an unreachable state selected — a control showing a
-        value the fit cannot use is the divergence this window keeps having.
+        Turning it ON lays out the standard build — the background on the
+        window, then steps against it, then transients against both — which
+        is the same background model the two-stage default expressed, opened
+        out into the stages it always was. Turning it OFF drops the cards
+        entirely rather than leaving them on screen describing a plan that no
+        longer reaches the fit.
         """
         self._set_visible(self.stage_regions, on)
-        for name, combo in self.grp.items():
-            self._set_state_enabled(combo, STATE_HOLD, on)
-            if on:
-                if name in ("secular", "periodic"):
-                    combo.setCurrentText(STATE_HOLD)
-            elif combo.currentText() == STATE_HOLD:
-                combo.setCurrentText(STATE_ESTIMATE)
+        self.stages_box.setVisible(on)
+        self.stage_buttons.setVisible(on)
+        if on:
+            window = tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
+            self._set_cards(self._preset_spec((window[0], window[1])))
+        else:
+            self._set_cards([])
         self.refit()
 
     def _toggle_term(self, on: bool) -> None:
@@ -1575,11 +1888,12 @@ class PickerWindow:  # pragma: no cover - GUI
         # The stored --model is COMPOSED from the group states, in the same
         # place the flags are built, so the design matrix the picker fits and
         # the model the copied command asks for cannot come apart.
+        # Composed from MEMBERSHIP, never from assignment: a group estimated
+        # in no stage -- a freshly added empty one, or every card unticked --
+        # is still in the design matrix, and reading the model off the cards
+        # would drop terms the operator never removed.
         self.model = MODEL_BY_STATE.get(
-            (
-                self._group_state("secular") != STATE_ABSENT,
-                self._group_state("periodic") != STATE_ABSENT,
-            )
+            (self._in_model("secular"), self._in_model("periodic"))
         )
         if self.model is not None and self.model != DEFAULT_MODEL:
             extra += ["--model", self.model]
@@ -1598,58 +1912,57 @@ class PickerWindow:  # pragma: no cover - GUI
         return settings, extra, terms, stages, holds
 
     def _stage_drafts(self, terms: list[str], settings: Any) -> list[StageDraft]:
-        """Build the stage list from the group states.
+        """Read the cards into the stage list, in card order.
 
-        This is the background model made explicit: whatever is **held** is
-        estimated on the clean window and carried across the full span, and
-        what remains free is estimated against that background. Removing it
-        leaves residuals in which short-term deviations can be read.
+        Two things are applied here rather than left to the widgets, because
+        both depend on state the cards do not own:
 
-        The clean stage also frees ``secular`` as a NUISANCE even when the
-        trend is estimated later, because a seasonal fitted on a window that
-        ignores the trend inside that window absorbs part of it. The previous
-        hardcoded plan did the same thing; here it follows from the states
-        instead of from a literal.
+        **Membership filtering.** ``step`` is in the model when there is a
+        MERGED declaration (``steps.csv`` floor ∪ picked) — the same source
+        ``_override_settings`` uses, because a declared step has parameters
+        whether or not anyone clicked it — and ``transient`` when a term is
+        configured. A card may have either ticked while neither exists; the
+        tick is then simply not carried into the plan.
 
-        ``step`` membership is the MERGED declaration (``steps.csv`` floor ∪
-        picked), not the picked lines — the same source ``_override_settings``
-        uses, because a declared step has parameters whether or not anyone
-        clicked it.
-
-        Returns the drafts rather than flags: :func:`render_stage_flags` is
-        the only place that spells them, so the panel and the command read
-        the same object.
+        **The catch-all.** An in-model group estimated on NO card falls to
+        the last stage. Without it, turning on a transient while staged would
+        put a term in the design matrix that no stage estimates. It is
+        derived, not a control: there is nowhere else to put it, and leaving
+        it unestimated is never what was meant.
         """
         if not self.cb_stage.isChecked():
             return []
 
-        from gps_plot.detrend_workbench import _declared_step_epochs
-
-        s_lo, s_hi = (round(v, 4) for v in self.stage_regions[0].getRegion())
         in_model = {
             "secular": self.model in ("linear", "lineperiodic"),
             "periodic": self.model in ("periodic", "lineperiodic"),
-            "step": bool(_declared_step_epochs(self.sta, settings.steps)),
+            "step": bool(self._merged_step_epochs(settings)),
             "transient": bool(terms),
         }
-        held = [
-            g for g in GROUP_ORDER if in_model[g] and self._group_state(g) == STATE_HOLD
-        ]
-        free_long = [
-            g for g in GROUP_ORDER if in_model[g] and self._group_state(g) != STATE_HOLD
-        ]
-        clean_free = list(held)
-        if in_model["secular"] and "secular" not in clean_free:
-            clean_free.insert(0, "secular")
-
-        return [
-            StageDraft("clean", groups=clean_free, window=(s_lo, s_hi)),
-            StageDraft(
-                "long",
-                groups=free_long,
-                holds={g: "stage:clean" for g in held},
-            ),
-        ]
+        active = self.active_card()
+        spec: list[tuple[str, list[str], tuple[float, float] | None]] = []
+        for card in self.stage_cards:
+            window = None
+            if not card.inherit.isChecked():
+                window = (
+                    tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
+                    if card is active
+                    else card.window
+                )
+            spec.append(
+                (
+                    card.name,
+                    [g for g in card.estimates() if in_model[g]],
+                    None if window is None else (window[0], window[1]),
+                )
+            )
+        if spec:
+            assigned = {g for _, groups, _ in spec for g in groups}
+            orphans = [g for g in GROUP_ORDER if in_model[g] and g not in assigned]
+            if orphans:
+                name, groups, window = spec[-1]
+                spec[-1] = (name, list(groups) + orphans, window)
+        return compose_drafts(spec)
 
     def refit(self, *_: Any) -> None:
         from geo_dataread.stage_plan import build_stage_plan
@@ -1681,12 +1994,21 @@ class PickerWindow:  # pragma: no cover - GUI
             # well was the sixth-violation shape -- a second place composing
             # the same decision -- and it hardcoded "hold periodic", which is
             # exactly the choice the operator is now making.
-            if not holds:
+            if len(stage_specs) > 1 and not holds:
+                # TWO stages neither of which carries anything from the other
+                # is the unstaged fit with extra words: the earlier stages did
+                # no work. ONE windowed stage is different and must NOT be
+                # refused -- the model is fitted inside the window and
+                # evaluated across the whole span, which is exactly "hold the
+                # background from the quiet window" when there is nothing else
+                # to estimate. Refusing it broke the invariant the moment the
+                # grammar started accepting it: the window said refused while
+                # the emitted command fitted perfectly well.
                 note = (
-                    "stage plan refused: staging is on but no group is held "
-                    "from the window. Staging exists to carry something "
-                    "across the span — set at least one group to "
-                    f"'{STATE_HOLD}'."
+                    "stage plan refused: no stage carries anything from an "
+                    "earlier one, so the stages above the last did no work. "
+                    "Untick a group in the later stage to hold it, or remove "
+                    "the stage."
                 )
             else:
                 try:
