@@ -1929,3 +1929,99 @@ class TestGroupContribution:
         names = rec["param_names"]
         mask = group_param_mask(rec, ["periodic"])
         assert "offset" not in [n for n, m in zip(names, mask) if m]
+
+
+class TestUseFlaggedEpochs:
+    """Slice 6: the screened epochs can go back INTO the fit.
+
+    Two controls that look alike and are not: drawing the grey points is
+    `--hide-outliers`-shaped (same masks, same counts, same record), while
+    fitting them changes all three. They sit on opposite sides of the
+    view-only divider for that reason.
+    """
+
+    @staticmethod
+    def _window():
+        return TestQtPickerBorrowedFeatures._window()
+
+    def test_it_emits_the_stage_set_the_cli_already_has(self) -> None:
+        """No new grammar: S1/S2 are structural, so naming only those is
+        exactly "flag nothing" -- inventing a flag would have been a second
+        spelling for a state the CLI could already reach."""
+        from gps_plot.detrend_picker_qt import USE_FLAGGED_STAGES
+
+        w = self._window()
+        assert "--stages" not in w.command.text()
+        w.cb_use_flagged.setChecked(True)
+        assert f"--stages {USE_FLAGGED_STAGES}" in w.command.text()
+
+    def test_the_emitted_stage_set_is_the_one_the_fit_ran(self) -> None:
+        from gps_plot.detrend_picker_qt import USE_FLAGGED_STAGES
+
+        w = self._window()
+        w.cb_use_flagged.setChecked(True)
+        assert w.stages_spec == USE_FLAGGED_STAGES
+        assert f"--stages {w.stages_spec}" in w.command.text()
+
+    def test_nothing_is_flagged_and_the_record_moves(self) -> None:
+        w = self._window()
+        w.refit()
+        before = w.record
+        assert before is not None
+        assert sum(before["n_rejected"]) > 0, "no screening to switch off here"
+
+        w.cb_use_flagged.setChecked(True)
+        assert w.record is not None
+        assert sum(w.record["n_rejected"]) == 0, w.record["n_rejected"]
+        assert w.record["rms"] != before["rms"], (
+            "putting the screened epochs back changed nothing — this control "
+            "is supposed to move the estimate"
+        )
+
+    def test_the_command_reproduces_the_figure(self) -> None:
+        """The invariant, on the new flag."""
+        import shlex
+
+        from gps_plot.detrend_workbench import (
+            _build_parser,
+            _override_settings,
+            estimate_with_abort_fallback,
+        )
+
+        w = self._window()
+        w.cb_use_flagged.setChecked(True)
+        ns = _build_parser().parse_args(shlex.split(w.command.text())[1:])
+        assert ns.stages == "S1,S2"
+        settings = _override_settings(
+            w.base_settings,
+            w.sta,
+            quiet=True,
+            max_gap_years=ns.max_gap_years,
+        )
+        est, _ = estimate_with_abort_fallback(
+            w.sta, w.yearf, w.data, w.sigma, settings=settings, stages=ns.stages
+        )
+        assert est is not None
+        assert [round(v, 9) for v in est.record["rms"]] == [
+            round(v, 9) for v in w.record["rms"]
+        ]
+
+    def test_drawing_the_grey_points_moves_no_fitted_quantity(self) -> None:
+        w = self._window()
+        w.refit()
+        before_cmd, before_rms = w.command.text(), list(w.record["rms"])
+        assert len(w.flag_scatters[0].getData()[0]) > 0, "nothing flagged to hide"
+
+        w.cb_draw_flagged.setChecked(False)
+        assert len(w.flag_scatters[0].getData()[0] or []) == 0
+        assert w.command.text() == before_cmd, "a view toggle moved the command"
+        assert list(w.record["rms"]) == before_rms, "a view toggle moved the fit"
+
+    def test_the_two_controls_are_independent(self) -> None:
+        """Hiding is not fitting, and fitting is not hiding."""
+        w = self._window()
+        w.cb_use_flagged.setChecked(True)
+        assert w.cb_draw_flagged.isChecked(), "fitting them must not hide them"
+        assert sum(w.record["n_rejected"]) == 0
+        # with nothing flagged there is nothing grey left to draw
+        assert len(w.flag_scatters[0].getData()[0] or []) == 0

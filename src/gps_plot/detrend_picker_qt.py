@@ -146,6 +146,12 @@ MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
 #: clean when the operator has not moved away from it.
 DEFAULT_MODEL = "lineperiodic"
 
+#: "Flag nothing" as the detection pipeline already spells it. S1 and S2 are
+#: structural and always run, so naming ONLY those turns despike, global,
+#: window and protection all off — no new flag was needed, and inventing one
+#: would have been a second spelling for a state the CLI could already reach.
+USE_FLAGGED_STAGES = "S1,S2"
+
 #: The comparison overlay: a fit the emitted command does NOT describe, so it
 #: must not be mistakable for the trajectory. Magenta is unused by every other
 #: lane here (red kept, grey flagged, gold provisional, blue trajectory,
@@ -443,6 +449,9 @@ class PickerWindow:  # pragma: no cover - GUI
         # the list from a signal handler, and a card can be added before the
         # window has finished constructing itself.
         self.stage_cards: list[StageCard] = []
+        # The detection stage set the fit runs with, composed in `_current()`
+        # beside the flag that spells it. None means the full pipeline.
+        self.stages_spec: str | None = None
         # The fit the refine action seeds from; set on every successful refit.
         self._est: Any = None
 
@@ -1065,6 +1074,24 @@ class PickerWindow:  # pragma: no cover - GUI
         self.stage_buttons.setVisible(False)
         mcol.addWidget(self.stage_buttons)
 
+        # ABOVE the view-only divider, because it changes the estimate: the
+        # screened epochs go back INTO the fit, the "fitting N of M" count
+        # moves, and the emitted command has to say so. `--stages S1,S2`
+        # already spells it -- S1/S2 are structural and always run, so naming
+        # only those turns despike, global, window and protection all off --
+        # which is why no new flag was invented for this. It also makes the
+        # excess-candidate abort unreachable rather than ambiguous: with no
+        # candidates there is no fraction to exceed, and an explicit stage set
+        # is an operator override the fallback never second-guesses.
+        self.cb_use_flagged = QtWidgets.QCheckBox("use flagged epochs in the fit")
+        self.cb_use_flagged.setToolTip(
+            "Put the screened epochs back into the estimation (emits "
+            "--stages S1,S2). This CHANGES the fit and the record — it is not "
+            "the same as drawing them, which is in the view box below"
+        )
+        self.cb_use_flagged.toggled.connect(self.refit)
+        mcol.addWidget(self.cb_use_flagged)
+
         self.cb_term = QtWidgets.QCheckBox("transient")
         self.cb_term.setToolTip(
             "Add a log/exp transient at the green onset line (emits --term)"
@@ -1165,6 +1192,16 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.cb_detrend.toggled.connect(self.refit)
         vcol.addWidget(self.cb_detrend)
+
+        self.cb_draw_flagged = QtWidgets.QCheckBox("draw flagged epochs (grey)")
+        self.cb_draw_flagged.setChecked(True)
+        self.cb_draw_flagged.setToolTip(
+            "Show or hide the screened epochs, exactly like --hide-outliers: "
+            "same masks, same counts, same record. To put them back in the "
+            "FIT, use the checkbox in the model box"
+        )
+        self.cb_draw_flagged.toggled.connect(self.refit)
+        vcol.addWidget(self.cb_draw_flagged)
         col.addWidget(view_box)
 
         # --- run: parameters that were command-line-only ------------------
@@ -1901,6 +1938,15 @@ class PickerWindow:  # pragma: no cover - GUI
         if moved:
             extra += ["--segment", f"{lo}:{hi}"]
 
+        # Assembled HERE, with every other fit-affecting flag, so the stage
+        # set the estimator receives and the one the command asks for are the
+        # same string.
+        self.stages_spec = (
+            USE_FLAGGED_STAGES if self.cb_use_flagged.isChecked() else None
+        )
+        if self.stages_spec is not None:
+            extra += ["--stages", self.stages_spec]
+
         # Only the PICKED steps become --step flags; the declared ones are
         # already the workbench's floor, so emitting them would be a no-op
         # at best and a double-declaration at worst.
@@ -2070,6 +2116,7 @@ class PickerWindow:  # pragma: no cover - GUI
                     terms=terms or None,
                     stage_plan=plan,
                     model=self.model,
+                    stages=self.stages_spec,
                 )
             except (ValueError, RuntimeError) as exc:
                 # A refused fit is a RESULT -- rank-deficient stage, an
@@ -2177,8 +2224,20 @@ class PickerWindow:  # pragma: no cover - GUI
                 # series and is only overlaid.
                 kept = finite & ~outl[c] & ~out_c
                 self.kept_scatters[c].setData(self.yearf[kept], shown[c][kept])
-                self.flag_scatters[c].setData(self.yearf[flagged], shown[c][flagged])
-                self.outside_scatters[c].setData(self.yearf[out_c], shown[c][out_c])
+                # DISPLAY ONLY, on the same terms as --hide-outliers: the
+                # masks, the counts and the record are identical either way.
+                # Hiding here is a different act from `use flagged epochs in
+                # the fit`, which moves all three.
+                draw = self.cb_draw_flagged.isChecked()
+                empty_x = self.yearf[:0]
+                self.flag_scatters[c].setData(
+                    self.yearf[flagged] if draw else empty_x,
+                    shown[c][flagged] if draw else empty_x,
+                )
+                self.outside_scatters[c].setData(
+                    self.yearf[out_c] if draw else empty_x,
+                    shown[c][out_c] if draw else empty_x,
+                )
                 self.prov_scatters[c].setData(self.yearf[prov_c], shown[c][prov_c])
                 self._prov_counts[c] = int(prov_c.sum())
             self._update_spectrum(fit)
