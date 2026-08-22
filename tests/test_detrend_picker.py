@@ -2455,3 +2455,127 @@ class TestWhereDidTheCurveGo:
             "a step estimated at ~zero must be invisible against the offset "
             "it failed to explain — that is the diagnosis"
         )
+
+
+class TestWholeModelView:
+    """Building a composition and judging one are different views.
+
+    Reported from the GUI 2026-08-22: with the background stage active, the
+    curve was lin+per extrapolated straight through the 2008 jump, and the
+    step and transient could not be drawn on the raw data at all. Making the
+    curve always the active stage's groups fixed one confusion and created
+    this one -- the composed model had nowhere to be seen while staged.
+    """
+
+    @staticmethod
+    def _pre_anchored():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2001.5, 2008.40))
+        w.cb_stage.setChecked(True)
+        w.stage_cards[1].groups["transient"].setChecked(True)
+        w.cb_term.setChecked(True)
+        w.onset_lines[0].setValue(2008.4085)
+        w.refit()
+        return w
+
+    def test_the_stage_view_draws_no_jump(self) -> None:
+        """The state that prompted this: the secular runs straight through."""
+        w = self._pre_anchored()
+        assert w.stage_cards[0].box.isChecked(), "background stage is active"
+        _, curve = w.fit_curves[0].getData()
+        assert _jump_count(curve) == 0
+
+    def test_the_whole_model_view_draws_the_jump(self) -> None:
+        w = self._pre_anchored()
+        w.cb_whole_model.setChecked(True)
+        _, curve = w.fit_curves[0].getData()
+        assert _jump_count(curve) == 1, "the composed model's step is not drawn"
+        assert "whole staged model" in w.plots[0].titleLabel.text
+
+    def test_it_shows_the_raw_data(self) -> None:
+        """A composed curve over a peeled series models data not on screen."""
+        import numpy as np
+
+        w = self._pre_anchored()
+        w.stage_cards[1].box.setChecked(True)  # peel is on: data − lin+per
+        w.refit()
+        assert "minus" in w.plots[0].getAxis("left").labelText
+        peeled = np.array(w.kept_scatters[0].getData()[1], dtype=float)
+
+        w.cb_whole_model.setChecked(True)
+        assert "minus" not in w.plots[0].getAxis("left").labelText
+        x, raw = (np.asarray(a, dtype=float) for a in w.kept_scatters[0].getData())
+        assert raw.size == peeled.size
+        assert not np.allclose(peeled, raw), "the series was not un-peeled"
+        # Not "wider than the peeled one" -- peeling the TREND leaves the
+        # 150 mm jump in, so both span about the same range. The check that
+        # means something is that the drawn values ARE the observations.
+        idx = np.searchsorted(w.yearf, x)
+        assert np.allclose(raw, w.data[0][idx], atol=1e-9, equal_nan=True), (
+            "the whole-model view is not drawing the raw series"
+        )
+
+    def test_it_moves_no_fitted_quantity(self) -> None:
+        w = self._pre_anchored()
+        before_cmd, before_rms = w.command.text(), list(w.record["rms"])
+        w.cb_whole_model.setChecked(True)
+        assert w.command.text() == before_cmd, "a view toggle moved the command"
+        assert list(w.record["rms"]) == before_rms, "a view toggle moved the fit"
+
+
+class TestTheCurveFollowsTheDraftNotTheCard:
+    """The orphan catch-all changes what a stage fits; the curve must follow.
+
+    Measured from the GUI 2026-08-22. With a single `clean` card and both a
+    declared step and a transient in the model, the catch-all folds those two
+    into the last stage's DRAFT -- so the fit estimates all four groups in
+    `clean`. The curve was read off the card's CHECKBOXES, which still said
+    linear+periodic, so the secular was drawn running straight through the
+    2008 jump while the model that explained it was invisible.
+
+    Same shape as every other violation in this lane: the card and the draft
+    are two places describing one decision, and only the draft is what the
+    emitted command carries.
+    """
+
+    @staticmethod
+    def _one_card_with_orphans():
+        w = TestQtPickerBorrowedFeatures._window()
+        # The window must CONTAIN the step and the onset: a stage cannot
+        # estimate a term whose epoch lies outside its own window, and with
+        # the orphans folded in this one stage is being asked to estimate all
+        # four. A pre-quake-only window is refused outright, which is itself
+        # the reason the operator's window reached past 2008.
+        w.stage_regions[0].setRegion((2001.5, 2010.0))
+        w.cb_stage.setChecked(True)
+        w.cb_term.setChecked(True)
+        w.onset_lines[0].setValue(2008.4085)
+        while len(w.stage_cards) > 1:
+            w.remove_stage()
+        w.refit()
+        return w
+
+    def test_the_orphans_reach_the_draft(self) -> None:
+        w = self._one_card_with_orphans()
+        assert len(w.stage_cards) == 1
+        assert w.stage_cards[0].estimates() == ["secular", "periodic"]
+        assert set(w.stages[0].groups) == {
+            "secular",
+            "periodic",
+            "step",
+            "transient",
+        }, "the catch-all did not fold the unassigned groups in"
+
+    def test_the_curve_draws_what_the_stage_actually_fits(self) -> None:
+        w = self._one_card_with_orphans()
+        assert w.record is not None and w.record["step_epochs"]
+        _, curve = w.fit_curves[0].getData()
+        assert _jump_count(curve) == 1, (
+            "the stage estimates a step but the curve drawn for it has no "
+            "discontinuity — the card was read instead of the draft"
+        )
+
+    def test_the_emitted_command_agrees(self) -> None:
+        w = self._one_card_with_orphans()
+        assert "step" in _estimated_groups(w.command.text())
+        assert "transient" in _estimated_groups(w.command.text())

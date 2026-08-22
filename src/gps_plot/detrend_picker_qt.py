@@ -1220,6 +1220,21 @@ class PickerWindow:  # pragma: no cover - GUI
         self.cb_detrend.toggled.connect(self.refit)
         vcol.addWidget(self.cb_detrend)
 
+        # Building a composition and judging one are different views, and
+        # before this only the first was reachable while staged: the curve was
+        # always the active stage's groups, so a staged model's step and
+        # transient could not be seen on the raw data at all -- the secular
+        # just ran on as a straight line through the jump.
+        self.cb_whole_model = QtWidgets.QCheckBox("curve: the whole model")
+        self.cb_whole_model.setToolTip(
+            "Draw the composed staged model over the RAW data, instead of the "
+            "active stage's own terms over what that stage sees. This is the "
+            "view for judging the result; the per-stage view is for building "
+            "it. DISPLAY ONLY — the fit and the emitted command are unchanged"
+        )
+        self.cb_whole_model.toggled.connect(self.refit)
+        vcol.addWidget(self.cb_whole_model)
+
         self.cb_draw_flagged = QtWidgets.QCheckBox("draw flagged epochs (grey)")
         self.cb_draw_flagged.setChecked(True)
         self.cb_draw_flagged.setToolTip(
@@ -2236,7 +2251,14 @@ class PickerWindow:  # pragma: no cover - GUI
             # point of it is one solve over the domain, so the honest view is
             # the whole model against the raw data.
             detrended = self.cb_detrend.isChecked()
-            peel = [] if (detrended or self.final_joint) else self._peeled_groups()
+            whole = self.cb_whole_model.isChecked()
+            # Showing the whole model REQUIRES the raw data: a composed curve
+            # over a peeled series is a model of data that is not on screen.
+            peel = (
+                []
+                if (detrended or whole or self.final_joint)
+                else self._peeled_groups()
+            )
             if detrended:
                 shown = self.data - fit
             elif peel:
@@ -2246,11 +2268,22 @@ class PickerWindow:  # pragma: no cover - GUI
 
             # Which groups the active stage estimates, or None when there is
             # no stage to speak for (unstaged, detrended, or the joint solve).
-            active = None if (detrended or self.final_joint) else self.active_card()
+            active = (
+                None if (detrended or whole or self.final_joint) else self.active_card()
+            )
+            # Read the groups off the DRAFT, not the card's checkboxes. They
+            # differ whenever the orphan catch-all has folded an in-model group
+            # that no card claims into the last stage -- delete the step stage
+            # and `clean` silently starts estimating the step and the
+            # transient. Reading the card then drew lin+per while the fit
+            # carried all four, so the secular ran straight through the 2008
+            # jump and the terms that explain it were nowhere on screen. The
+            # draft is what the command says and what the estimator ran.
+            active_index = None if active is None else self.stage_cards.index(active)
             active_groups = (
                 None
-                if active is None
-                else [g for g in active.estimates() if self._in_model(g)]
+                if active_index is None or active_index >= len(self.stages)
+                else list(self.stages[active_index].groups)
             )
 
             fit_x, fit_y = trajectory_curve(est.record, self.yearf)
@@ -2303,6 +2336,11 @@ class PickerWindow:  # pragma: no cover - GUI
                 self.plots[0].setTitle(
                     f"<span style='color:#888'>curve: stage <b>{active.name}</b> — "
                     f"{drawn or 'estimates nothing'}</span>"
+                )
+            elif whole and self.stage_cards:
+                self.plots[0].setTitle(
+                    "<span style='color:#888'>curve: the whole staged model, "
+                    "over the raw data</span>"
                 )
             else:
                 self.plots[0].setTitle(None)
