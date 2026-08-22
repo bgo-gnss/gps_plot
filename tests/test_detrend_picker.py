@@ -13,6 +13,7 @@ import pytest
 from geo_dataread.stage_plan import build_stage_plan
 from gps_plot.detrend_picker import render_command
 from gps_plot.detrend_picker_qt import FIT_COLOR as FIT_COLOR_RGB
+from gps_plot.detrend_picker_qt import StageDraft, render_stage_flags
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +89,88 @@ def test_extra_flags_are_appended() -> None:
     plan = build_stage_plan(["a:secular"], [])
     cmd = render_command("SELF", plan, ["--max-gap-years", "1.5"])
     assert cmd.endswith("--max-gap-years 1.5")
+
+
+class TestStageDraftIsTheOnlySpeller:
+    """``StageDraft`` + :func:`render_stage_flags` are the picker's plan.
+
+    These run without Qt: the drafts are plain data, which is the point of
+    lifting them out of the window class. Everything the panel will let the
+    operator build in the next slice has to survive this round trip first.
+    """
+
+    def test_no_stages_is_unstaged(self) -> None:
+        assert render_stage_flags([]) == ([], [])
+
+    def test_a_window_of_none_omits_the_at_sign(self) -> None:
+        # None means "inherit the caller's domain"; '@:' means the full span.
+        # They differ whenever --segment was passed, so the renderer must not
+        # turn one into the other.
+        specs, _ = render_stage_flags([StageDraft("long", groups=["secular"])])
+        assert specs == ["long:secular"]
+
+    def test_one_stage_leaves_the_hold_unqualified(self) -> None:
+        specs, holds = render_stage_flags(
+            [StageDraft("fit", groups=["periodic"], holds={"secular": "donor:OLAC"})]
+        )
+        assert (specs, holds) == (["fit:periodic"], ["secular=donor:OLAC"])
+
+    def test_more_than_one_stage_qualifies_every_hold(self) -> None:
+        _, holds = render_stage_flags(
+            [
+                StageDraft(
+                    "clean", groups=["secular", "periodic"], window=(2001.6, 2019.5)
+                ),
+                StageDraft("long", groups=["step"], holds={"periodic": "stage:clean"}),
+            ]
+        )
+        assert holds == ["long:periodic=stage:clean"]
+
+    def test_empty_groups_render_and_are_refused_downstream(self) -> None:
+        # The RHOF case: nothing left free once the background is held. The
+        # renderer does NOT swallow it -- the operator must meet the same
+        # refusal whether they are looking at the figure or at the command.
+        specs, holds = render_stage_flags(
+            [
+                StageDraft("clean", groups=["secular"], window=(2001.0, 2016.0)),
+                StageDraft("long", groups=[], holds={"secular": "stage:clean"}),
+            ]
+        )
+        assert specs[1] == "long:"
+        with pytest.raises(ValueError):
+            build_stage_plan(specs, holds)
+
+    def test_the_three_slot_composition_round_trips(self) -> None:
+        # lin+per on a quiet window, steps against that background, then
+        # transients against both -- the composition the redesign exists for.
+        drafts = [
+            StageDraft("lin", groups=["secular"], window=(2001.0, 2016.0)),
+            StageDraft("per", groups=["periodic"], window=(2005.0, 2012.0)),
+            StageDraft(
+                "st",
+                groups=["step"],
+                holds={"secular": "stage:lin", "periodic": "stage:per"},
+            ),
+            StageDraft(
+                "tr",
+                groups=["transient"],
+                holds={
+                    "secular": "stage:lin",
+                    "periodic": "stage:per",
+                    "step": "stage:st",
+                },
+            ),
+        ]
+        specs, holds = render_stage_flags(drafts)
+        plan = build_stage_plan(specs, holds)
+        again = shlex.split(render_command("SELF", plan))
+        assert (
+            build_stage_plan(
+                [again[i + 1] for i, a in enumerate(again) if a == "--stage"],
+                [again[i + 1] for i, a in enumerate(again) if a == "--hold"],
+            )
+            == plan
+        )
 
 
 def test_headless_backend_refuses_rather_than_hanging() -> None:

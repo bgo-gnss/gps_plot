@@ -67,6 +67,7 @@ them; a production install is unaffected).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import shlex
 import sys
@@ -82,7 +83,7 @@ from gps_plot.detrend_workbench import (
     trajectory_curve,
 )
 
-__all__ = ["main"]
+__all__ = ["StageDraft", "main", "render_stage_flags"]
 
 # The cleaned-view vocabulary, kept deliberately in step with
 # ``timesmatplt``'s constants so the two tools cannot drift apart.
@@ -172,6 +173,65 @@ TERM_FORMS: tuple[tuple[str, str], ...] = (
     ("cos_semiannual", "c₂·cos(4πt)"),
     ("sin_semiannual", "s₂·sin(4πt)"),
 )
+
+
+@dataclasses.dataclass
+class StageDraft:
+    """One stage of the picker's plan — the picker's ONLY model of a stage.
+
+    The picker's promise is that the emitted command reproduces the figure,
+    and every violation of it so far has had one shape: a second place
+    assembling the same decision. So the picker does not keep a "composed
+    model" of its own beside the plan it emits — this dataclass IS the
+    plan, in the same vocabulary
+    :func:`geo_dataread.stage_plan.build_stage_plan` parses, and
+    :func:`render_stage_flags` is the only thing that turns it into flags.
+
+    Attributes:
+        name: Stage name, as it appears in ``--stage NAME:...`` and on the
+            left of a ``--hold NAME:GROUP=...``.
+        groups: Term groups ESTIMATED in this stage, in ``GROUP_ORDER``.
+        window: ``(start, end)`` fit domain, or None to inherit the caller's.
+            None and ``(None, None)`` differ in the grammar — omitting ``@``
+            inherits, ``@:`` means the full span — and only the first is
+            expressible here, which is what the picker has always emitted.
+        holds: ``group -> "stage:NAME" | "donor:STA"``. The kind is part of
+            the value because the grammar refuses a bare one: ``stage:`` and
+            ``donor:`` produce different record provenance.
+    """
+
+    name: str
+    groups: list[str] = dataclasses.field(default_factory=list)
+    window: tuple[float, float] | None = None
+    holds: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+def render_stage_flags(stages: Sequence[StageDraft]) -> tuple[list[str], list[str]]:
+    """Render stage drafts to ``--stage`` / ``--hold`` argument values.
+
+    The ONE place drafts become flags. An empty ``groups`` list renders as a
+    trailing colon and is left for ``build_stage_plan`` to refuse: that is
+    the RHOF case — nothing free once the background is held — and the
+    refusal has to reach the operator through the same path whether they are
+    looking at the figure or at the copied command.
+
+    The ``STAGE:`` prefix on a hold is emitted whenever more than one stage
+    is declared, because the grammar makes it optional only below that.
+    """
+    if not stages:
+        return [], []
+    specs: list[str] = []
+    holds: list[str] = []
+    qualify = len(stages) > 1
+    for stage in stages:
+        spec = f"{stage.name}:{','.join(stage.groups)}"
+        if stage.window is not None:
+            spec += f"@{stage.window[0]}:{stage.window[1]}"
+        specs.append(spec)
+        for group, source in stage.holds.items():
+            prefix = f"{stage.name}:" if qualify else ""
+            holds.append(f"{prefix}{group}={source}")
+    return specs, holds
 
 
 def model_equation(param_names: Sequence[str]) -> str:
@@ -279,6 +339,9 @@ class PickerWindow:  # pragma: no cover - GUI
         # Composed from the group states on every `_current()`; seeded here so
         # the attribute exists before the first refit.
         self.model: str | None = DEFAULT_MODEL
+        # The stage plan as an AST, rebuilt on every `_current()`. Empty means
+        # unstaged, which is what an unchecked "stage the fit" produces.
+        self.stages: list[StageDraft] = []
         # The fit the refine action seeds from; set on every successful refit.
         self._est: Any = None
 
@@ -1528,13 +1591,14 @@ class PickerWindow:  # pragma: no cover - GUI
                 f",tau={round(self.tau.value(), 3)}"
             )
 
-        stages, holds = self._compose_stages(terms, settings)
+        # The drafts are kept so the panel can render the SAME objects the
+        # command is spelled from; `render_stage_flags` is the only speller.
+        self.stages = self._stage_drafts(terms, settings)
+        stages, holds = render_stage_flags(self.stages)
         return settings, extra, terms, stages, holds
 
-    def _compose_stages(
-        self, terms: list[str], settings: Any
-    ) -> tuple[list[str], list[str]]:
-        """Build the stage plan from the group states.
+    def _stage_drafts(self, terms: list[str], settings: Any) -> list[StageDraft]:
+        """Build the stage list from the group states.
 
         This is the background model made explicit: whatever is **held** is
         estimated on the clean window and carried across the full span, and
@@ -1551,9 +1615,13 @@ class PickerWindow:  # pragma: no cover - GUI
         picked), not the picked lines — the same source ``_override_settings``
         uses, because a declared step has parameters whether or not anyone
         clicked it.
+
+        Returns the drafts rather than flags: :func:`render_stage_flags` is
+        the only place that spells them, so the panel and the command read
+        the same object.
         """
         if not self.cb_stage.isChecked():
-            return [], []
+            return []
 
         from gps_plot.detrend_workbench import _declared_step_epochs
 
@@ -1574,11 +1642,14 @@ class PickerWindow:  # pragma: no cover - GUI
         if in_model["secular"] and "secular" not in clean_free:
             clean_free.insert(0, "secular")
 
-        specs = [
-            f"clean:{','.join(clean_free)}@{s_lo}:{s_hi}",
-            f"long:{','.join(free_long)}",
+        return [
+            StageDraft("clean", groups=clean_free, window=(s_lo, s_hi)),
+            StageDraft(
+                "long",
+                groups=free_long,
+                holds={g: "stage:clean" for g in held},
+            ),
         ]
-        return specs, [f"long:{g}=stage:clean" for g in held]
 
     def refit(self, *_: Any) -> None:
         from geo_dataread.stage_plan import build_stage_plan
@@ -1605,7 +1676,7 @@ class PickerWindow:  # pragma: no cover - GUI
                 "one of them in."
             )
         if stage_specs and not note:
-            # The plan now COMES FROM the group states (_compose_stages); this
+            # The plan now COMES FROM the group states (_stage_drafts); this
             # only turns it into a plan object. Deriving the free list here as
             # well was the sixth-violation shape -- a second place composing
             # the same decision -- and it hardcoded "hold periodic", which is
