@@ -2230,8 +2230,11 @@ class PickerWindow:  # pragma: no cover - GUI
             # screen is what that stage is fitted to. The checkbox is the
             # view-only override and wins: it subtracts everything, which is
             # a question about the whole model rather than about one stage.
+            # `final fit: joint` has no stage structure to peel: the whole
+            # point of it is one solve over the domain, so the honest view is
+            # the whole model against the raw data.
             detrended = self.cb_detrend.isChecked()
-            peel = [] if detrended else self._peeled_groups()
+            peel = [] if (detrended or self.final_joint) else self._peeled_groups()
             if detrended:
                 shown = self.data - fit
             elif peel:
@@ -2239,18 +2242,37 @@ class PickerWindow:  # pragma: no cover - GUI
             else:
                 shown = self.data
 
+            # Which groups the active stage estimates, or None when there is
+            # no stage to speak for (unstaged, detrended, or the joint solve).
+            active = None if (detrended or self.final_joint) else self.active_card()
+            active_groups = (
+                None
+                if active is None
+                else [g for g in active.estimates() if self._in_model(g)]
+            )
+
             fit_x, fit_y = trajectory_curve(est.record, self.yearf)
             if detrended:
                 # Subtracted, the model IS the zero line; drawing it again
                 # would just be y=0 over the grid's own axis.
                 fit_x, fit_y = fit_x[:0], fit_y[:, :0]
-            elif peel:
-                # Draw what is LEFT of the model, on the same grid: the
-                # residual series and the curve over it must be the same
-                # subtraction, or the line is a model of different data.
-                fit_y = group_contribution(
-                    est.record, fit_x, [g for g in GROUP_ORDER if g not in peel]
-                )
+            elif active_groups is not None:
+                # THE ACTIVE STAGE'S OWN CURVE, not the composed model.
+                #
+                # Drawing everything that is left instead was wrong in the way
+                # that matters: with `clean — linear, periodic` active and a
+                # step stage below it, the figure showed lin+per+step over a
+                # window that contains no step, so a stage configured to fit
+                # two groups appeared to be fitting three. The parameters were
+                # right the whole time -- stage 1's rate is identical to the
+                # same fit run standalone on its window -- but a curve that
+                # includes a term the stage never estimated is a curve of a
+                # different model, and the curve is what gets believed.
+                #
+                # Read off the FINAL record, not re-fitted: a held group keeps
+                # the earlier stage's values, so the record's lin+per ARE
+                # stage 1's. One source, no second solve.
+                fit_y = group_contribution(est.record, fit_x, active_groups)
             for curve in self.fit_curves:
                 curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
             # The axis says what was subtracted, because two peels look alike
@@ -2263,6 +2285,17 @@ class PickerWindow:  # pragma: no cover - GUI
                 suffix = ""
             for c, name in enumerate(COMPONENTS):
                 self.plots[c].setLabel("left", f"{name}{suffix} [mm]")
+            if active is not None:
+                # Say what the blue line IS. Under staging it is one stage's
+                # contribution, which is not what a trajectory curve usually
+                # means in this window.
+                drawn = ", ".join(GROUP_LABELS.get(g, g) for g in active_groups or ())
+                self.plots[0].setTitle(
+                    f"<span style='color:#888'>curve: stage <b>{active.name}</b> — "
+                    f"{drawn or 'estimates nothing'}</span>"
+                )
+            else:
+                self.plots[0].setTitle(None)
             for c in range(3):
                 # connect="finite" so a component the model cannot evaluate
                 # breaks the line instead of being joined across. The step

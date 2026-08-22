@@ -30,6 +30,25 @@ def _isolated_session_store(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
 
 
+def _jump_count(curve) -> int:
+    """Discontinuities in a drawn curve, not merely non-zero slope.
+
+    `trajectory_curve` brackets each step epoch at +/- 1e-6 yr, so a jump
+    appears between two grid points ~2e-6 yr apart while the rest are ~1/365
+    apart. The jump's difference is therefore orders of magnitude above the
+    typical one -- which is what to test for. Thresholding the raw difference
+    instead counts every point of a sloping line.
+    """
+    import numpy as np
+
+    d = np.abs(np.diff(np.asarray(curve, dtype=float)))
+    d = d[np.isfinite(d)]
+    if d.size == 0:
+        return 0
+    typical = float(np.median(d))
+    return int((d > max(20.0 * typical, 1e-9)).sum())
+
+
 def _estimated_groups(cmd: str) -> set[str]:
     """Every group estimated by SOME stage of an emitted command.
 
@@ -2270,3 +2289,100 @@ def _parse_segments(specs):
         lo, _, hi = spec.partition(":")
         out.append((float(lo) if lo else None, float(hi) if hi else None))
     return out
+
+
+class TestTheCurveIsTheActiveStage:
+    """A stage that fits two groups must not be drawn fitting three.
+
+    Reported from the GUI 2026-08-22: with `clean — linear, periodic` active
+    and a step stage below it, the figure drew lin+per+step over an orange
+    window containing no step. The PARAMETERS were right the whole time --
+    stage 1's rate is identical to the same fit run standalone on its window
+    -- but the curve is what gets believed, and it showed a model the stage
+    had not been asked for.
+    """
+
+    @staticmethod
+    def _staged():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.1188, 2020.8294))
+        w.cb_stage.setChecked(True)
+        return w
+
+    def test_stage_one_draws_no_step(self) -> None:
+
+        w = self._staged()
+        assert [c.name for c in w.stage_cards] == ["clean", "st"]
+        assert w.stage_cards[0].estimates() == ["secular", "periodic"]
+        assert "step" in w.stage_cards[1].estimates()
+        assert w.record is not None and w.record["step_epochs"], "no step in the model"
+
+        _, curve = w.fit_curves[0].getData()
+        assert _jump_count(curve) == 0, (
+            "the active stage estimates linear+periodic, but the curve drawn "
+            "for it contains a discontinuity — that is the step stage's term"
+        )
+
+    def test_stage_two_draws_only_the_step(self) -> None:
+
+        w = self._staged()
+        w.stage_cards[1].box.setChecked(True)
+        w.refit()
+        _, curve = w.fit_curves[0].getData()
+        n = _jump_count(curve)
+        assert n == 1, f"expected the step alone, got {n} jumps"
+
+    def test_the_title_names_what_is_drawn(self) -> None:
+        w = self._staged()
+        title = w.plots[0].titleLabel.text
+        assert "clean" in title and "linear" in title and "periodic" in title
+        assert "step" not in title
+
+    def test_the_joint_view_shows_the_whole_model(self) -> None:
+        """A joint solve has no stage structure, so nothing is peeled."""
+
+        w = self._staged()
+        w.cb_final_joint.setChecked(True)
+        assert "minus" not in w.plots[0].getAxis("left").labelText
+        _, curve = w.fit_curves[0].getData()
+        assert _jump_count(curve) == 1, "the joint model's step is not drawn"
+
+    def test_the_parameters_were_never_wrong(self) -> None:
+        """The bug was the curve, not the fit — pin that down.
+
+        Not bit-identical, and the reason is worth recording: the staged run
+        screens outliers over the WHOLE domain (SELF: [32, 24, 11]) while the
+        standalone windowed fit screens only inside its window ([14, 7, 1]),
+        so the two see slightly different epoch sets. The rates agree to
+        ~7e-4 mm/yr. The tolerance below is two orders of magnitude tighter
+        than the difference this test exists to catch -- stage 1 silently
+        picking up the full-span rate, which is 0.08 mm/yr away.
+        """
+        from gps_plot.detrend_workbench import _override_settings, estimate_record
+
+        w = self._staged()
+        standalone = estimate_record(
+            "SELF",
+            w.yearf,
+            w.data,
+            w.sigma,
+            settings=_override_settings(
+                w.base_settings,
+                "SELF",
+                quiet=True,
+                segments=((2009.1188, 2020.8294),),
+                max_gap_years=2.0,
+            ),
+        )
+        assert standalone is not None
+        for c in range(3):
+            staged_rate = w.record["components"][c]["params"][1]
+            alone_rate = standalone.record["components"][c]["params"][1]
+            assert staged_rate == pytest.approx(alone_rate, abs=5e-3), (
+                f"component {c}: the staged stage-1 rate is not the "
+                f"standalone fit on the same window"
+            )
+        assert w.record["n_rejected"] != standalone.record["n_rejected"], (
+            "the epoch sets are expected to differ — if they stop differing, "
+            "the tolerance above can be tightened to exact"
+        )
