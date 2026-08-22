@@ -1208,12 +1208,14 @@ class PickerWindow:  # pragma: no cover - GUI
 
         view_box = QtWidgets.QGroupBox("view")
         vcol = QtWidgets.QVBoxLayout(view_box)
-        self.cb_detrend = QtWidgets.QCheckBox("detrended (data − f(t))")
+        self.cb_detrend = QtWidgets.QCheckBox("residuals (data − the WHOLE model)")
         self.cb_detrend.setToolTip(
-            "Subtract the fitted model from the data and plot the residuals. "
-            "DISPLAY ONLY — the record, the fit and the emitted command are "
-            "unchanged, exactly like --hide-outliers. This is where a signal "
-            "departing from the background becomes readable"
+            "Subtract the entire fitted model — every group, including steps "
+            "and transients — and plot what is left. No curve is drawn, "
+            "because the model is then the zero line by construction. To see "
+            "one stage's fit against what that stage sees, leave this "
+            "unticked and expand its card instead. DISPLAY ONLY: the record, "
+            "the fit and the emitted command are unchanged"
         )
         self.cb_detrend.toggled.connect(self.refit)
         vcol.addWidget(self.cb_detrend)
@@ -2285,7 +2287,15 @@ class PickerWindow:  # pragma: no cover - GUI
                 suffix = ""
             for c, name in enumerate(COMPONENTS):
                 self.plots[c].setLabel("left", f"{name}{suffix} [mm]")
-            if active is not None:
+            if detrended:
+                # The curve is hidden here for a good reason, but a line that
+                # simply vanishes reads as a failure. Say which it is.
+                self.plots[0].setTitle(
+                    "<span style='color:#888'>curve: none — the whole model is "
+                    "subtracted, so it is y = 0. Untick to see the active "
+                    "stage's fit over what that stage sees.</span>"
+                )
+            elif active is not None:
                 # Say what the blue line IS. Under staging it is one stage's
                 # contribution, which is not what a trajectory curve usually
                 # means in this window.

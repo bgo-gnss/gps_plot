@@ -2386,3 +2386,72 @@ class TestTheCurveIsTheActiveStage:
             "the epoch sets are expected to differ — if they stop differing, "
             "the tolerance above can be tightened to exact"
         )
+
+
+class TestWhereDidTheCurveGo:
+    """A curve that vanishes must say why.
+
+    Reported from the GUI 2026-08-22: with `data − f(t)` ticked the blue line
+    disappears, which reads as a broken fit. It is correct — the whole model
+    is subtracted, so the model IS the zero line — but nothing on screen said
+    so, and the checkbox was labelled `detrended`, which in this domain
+    usually means "trend removed", not "everything removed".
+    """
+
+    @staticmethod
+    def _staged_on_step():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.1188, 2020.8294))
+        w.cb_stage.setChecked(True)
+        w.stage_cards[1].box.setChecked(True)  # the step stage
+        w.refit()
+        return w
+
+    def test_the_whole_model_view_explains_the_missing_curve(self) -> None:
+        w = self._staged_on_step()
+        w.cb_detrend.setChecked(True)
+        assert len(w.fit_curves[0].getData()[0] or []) == 0
+        title = w.plots[0].titleLabel.text
+        assert "y = 0" in title and "Untick" in title
+
+    def test_the_label_says_the_whole_model(self) -> None:
+        # `detrended` alone invited reading it as "the trend was removed".
+        w = TestQtPickerBorrowedFeatures._window()
+        assert "WHOLE" in w.cb_detrend.text()
+        assert "every group" in w.cb_detrend.toolTip()
+
+    def test_unticking_gives_the_stage_view_back(self) -> None:
+        w = self._staged_on_step()
+        w.cb_detrend.setChecked(True)
+        w.cb_detrend.setChecked(False)
+        assert len(w.fit_curves[0].getData()[0]) > 0, "no curve after unticking"
+        assert "minus linear, periodic" in w.plots[0].getAxis("left").labelText
+        assert "stage <b>st</b>" in w.plots[0].titleLabel.text
+
+    def test_a_near_zero_step_draws_as_a_flat_line(self) -> None:
+        """The diagnosis, drawn: residuals that jump, over a curve that does not.
+
+        "Flat" here means the drawn discontinuity is invisible at the scale of
+        the residuals it sits on -- not that it is exactly absent. Holding the
+        background from a post-quake window leaves the step 0.04 mm, which IS
+        a step; the point is that it is four orders of magnitude below the
+        150 mm offset the operator can see in the same panel.
+        """
+        import numpy as np
+
+        w = self._staged_on_step()
+        assert w.record is not None
+        amp = abs(float(w.record["components"][0]["params"][-1]))
+        assert amp < 1.0, f"expected a near-zero step here, got {amp}"
+        _, curve = w.fit_curves[0].getData()
+        drawn = float(np.nanmax(np.abs(np.diff(np.asarray(curve, dtype=float)))))
+        assert drawn < 1.0, f"the drawn step is {drawn:.3f} mm, not invisible"
+        residual_range = float(
+            np.nanmax(w.kept_scatters[0].getData()[1])
+            - np.nanmin(w.kept_scatters[0].getData()[1])
+        )
+        assert residual_range > 100.0, "expected the uncorrected jump in view"
+        assert drawn < residual_range / 100.0, (
+            "a step estimated at ~zero must be invisible against the offset "
+            "it failed to explain — that is the diagnosis"
+        )
