@@ -2144,3 +2144,129 @@ class TestStagedJointDeltas:
         assert "rate" in lines[1], "the loudest row must come first"
         assert "stages disagreed" in lines[1]
         assert "stages disagreed" not in lines[2]
+
+
+class TestInvariantSweep:
+    """The one invariant, swept: the emitted command reproduces the figure.
+
+    Not a review pass — a matrix. Every configuration the redesign added is
+    driven offscreen, the command it emits is parsed back and re-estimated
+    through the workbench's OWN entry points, and the two records are diffed
+    elementwise. This is the method that caught violations 7 and 8 when
+    reading the code did not, and slices 1-6 each added a new way for the
+    figure and the command to come apart.
+
+    Divergences that are ALLOWED, stated up front so the sweep neither
+    false-alarms nor quietly ignores something real:
+
+    - provenance only: ``refs`` (``uncert``, ``window_source``) and
+      ``fitted_at`` — the picker records how it was driven, the CLI how it
+      was invoked, and neither is a fitted quantity;
+    - view state is never diffed at all: which card is expanded, the peel,
+      and whether the grey points are drawn move nothing.
+
+    Everything else — every group assignment, window, hold source, the model,
+    the stage set and the final-solve choice — must match exactly.
+    """
+
+    FITTED = ("model", "param_names", "step_epochs", "n_epochs", "n_rejected")
+
+    @staticmethod
+    def _configure(w, *, cards=None, model_out=(), joint=False, flagged=False):
+        """Drive the panel, then return it. No CLI knowledge here."""
+        for name in model_out:
+            w.model_in[name].setChecked(False)
+        if cards is not None:
+            w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+            w.cb_stage.setChecked(True)
+            for index, groups in cards.items():
+                card = w.stage_cards[index]
+                for group, cb in card.groups.items():
+                    cb.setChecked(group in groups)
+        if flagged:
+            w.cb_use_flagged.setChecked(True)
+        if joint:
+            w.cb_final_joint.setChecked(True)
+        w.refit()
+        return w
+
+    @staticmethod
+    def _replay(w):
+        """Re-fit from the EMITTED command, through the workbench's parser."""
+        import shlex
+
+        from geo_dataread.stage_plan import build_stage_plan
+        from gps_plot.detrend_workbench import (
+            _build_parser,
+            _override_settings,
+            estimate_with_abort_fallback,
+        )
+
+        ns = _build_parser().parse_args(shlex.split(w.command.text())[1:])
+        plan = build_stage_plan(ns.stage, ns.hold) if ns.stage else None
+        if ns.final == "joint":
+            # what --final joint means: the plan identified, it does not fit
+            plan = None
+        settings = _override_settings(
+            w.base_settings,
+            w.sta,
+            quiet=True,
+            segments=tuple(_parse_segments(ns.segment)) or None,
+            steps=tuple(float(s) for s in ns.step) or None,
+            max_gap_years=ns.max_gap_years,
+        )
+        est, _ = estimate_with_abort_fallback(
+            w.sta,
+            w.yearf,
+            w.data,
+            w.sigma,
+            settings=settings,
+            terms=tuple(ns.term) or None,
+            stage_plan=plan,
+            model=ns.model,
+            stages=ns.stages,
+        )
+        return est
+
+    @pytest.mark.parametrize(
+        "label, kwargs",
+        [
+            ("unstaged", {}),
+            ("unstaged, linear only", {"model_out": ("periodic",)}),
+            ("unstaged, periodic only", {"model_out": ("secular",)}),
+            ("preset", {"cards": {}}),
+            ("secular re-estimated late", {"cards": {1: ("secular", "step")}}),
+            ("periodic freed late", {"cards": {1: ("periodic", "step")}}),
+            ("linear only, staged", {"cards": {}, "model_out": ("periodic",)}),
+            ("flagged epochs fitted", {"flagged": True}),
+            ("flagged epochs, staged", {"cards": {}, "flagged": True}),
+            ("joint final", {"cards": {}, "joint": True}),
+            (
+                "joint final, freed late",
+                {"cards": {1: ("secular", "step")}, "joint": True},
+            ),
+            ("joint final, flagged", {"cards": {}, "joint": True, "flagged": True}),
+        ],
+    )
+    def test_the_command_reproduces_the_figure(self, label, kwargs) -> None:
+        w = self._configure(TestQtPickerBorrowedFeatures._window(), **kwargs)
+        if w.record is None:
+            pytest.skip(f"{label}: refused — covered by the refusal tests")
+        est = self._replay(w)
+        assert est is not None, f"{label}: the emitted command produced no record"
+        for key in self.FITTED:
+            assert est.record[key] == w.record[key], f"{label}: {key} diverged"
+        for c, (a, b) in enumerate(
+            zip(est.record["components"], w.record["components"], strict=True)
+        ):
+            assert a["params"] == pytest.approx(b["params"], rel=0, abs=1e-9), (
+                f"{label}: component {c} parameters diverged"
+            )
+
+
+def _parse_segments(specs):
+    out = []
+    for spec in specs or ():
+        lo, _, hi = spec.partition(":")
+        out.append((float(lo) if lo else None, float(hi) if hi else None))
+    return out

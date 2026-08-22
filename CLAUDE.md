@@ -86,6 +86,10 @@ belongs one level down. Read it before touching any of them.
   a second place assembling the same decision. Both pickers now build their
   run-flag tail with `detrend_workbench.run_flags`, because two pickers
   assembling it independently forgot the same flag independently.
+- **The compositional model** (`f(t) = Σ mᵢ(t)`, 2026-08-22) — N stage cards,
+  membership split from assignment, the peel that follows the active stage,
+  `--final joint` and the commit mode the batch forces. The grammar already
+  expressed all of it; this was UI exposure and storage.
 
 **Per-station curation is config, not just a record.** `--commit` writes to
 three places a batch re-run must find — `detrend_params.json` plus two

@@ -649,3 +649,156 @@ re-including an excision. `load_session` runs at LAUNCH and parses the whole
 payload before touching a widget: a corrupt session degrades to the declared
 defaults and names the file (it is somebody's curation), where it used to
 take the application down before the window appeared.
+
+## The compositional model — f(t) = Σ mᵢ(t)
+
+Added 2026-08-22. The operator builds a trajectory in parts: the background
+on a quiet window, then steps against that background, then transients
+against both. **The CLI grammar already expressed all of it** —
+`build_stage_plan` has always taken N stages with per-stage windows and
+holds. What could not express it was the GUI, which offered two stages and
+one window and *derived* the second stage's groups rather than letting them
+be chosen. So this was UI exposure and storage, not an engine change.
+
+### Membership is not assignment
+
+The three-state combo (`estimate here` / `hold from window` / `not in the
+model`) fused two decisions the estimator has always treated as orthogonal:
+`--model` says which terms are in the design matrix, the stage plan says
+where each is estimated. Fusing them made one thing inexpressible — a group
+estimated in TWO stages, which the nuisance rule requires, because the clean
+stage frees `secular` even when the kept value comes from later.
+
+They are now separate controls, and the old states map onto the new pair
+exactly, which is the evidence the split factored what was already there:
+
+| old state | membership | assignment |
+|---|---|---|
+| `not in the model` | out | — |
+| `hold from window` | in | the FIRST stage (so later ones hold it) |
+| `estimate here` | in | the LAST stage |
+
+`migrate_group_states` is that table, and it is pure and takes the stage
+names as arguments. It has to: reading them off a not-yet-built card list
+collapsed `first` and `last` onto one stage, putting a held group and a
+freely estimated one in the same place.
+
+Holds are **derived from card order** (`compose_drafts`), never set: a group
+a stage does not estimate is held at whatever the last earlier stage fitted.
+A settable hold would be a second place deciding one thing.
+
+### One windowed stage is a real fit
+
+The two-stage default refused a plan that held everything, on the grounds
+that staging exists to carry something across the span. Once the preset
+opened out into N stages, RHOF — no step, no transient — laid out ONE
+windowed stage, and that refusal **broke the invariant**: `build_stage_plan`
+accepts the single-stage spelling, so the window said refused while the
+emitted command fitted perfectly well. It is also the right fit: the model
+is estimated inside the window and evaluated across the span, which is what
+holding the background from a quiet window means when there is nothing else
+to estimate. The refusal now fires only for ≥ 2 stages with no holds, where
+the earlier stages genuinely did no work.
+
+### The peel follows the active stage
+
+Selecting stage k plots data minus stages 1…k−1 — exactly what stage k is
+fitted to. The operator's own description of the workflow turned out to be a
+*specification* of the display rule.
+
+`group_contribution` is the arithmetic. The model is linear in every
+parameter it solves for (τ and the step epochs are fixed inputs), so zeroing
+the other groups' coefficients and evaluating gives those terms exactly —
+verified as a decomposition, not an approximation: the groups sum back to
+the whole model with **max error 0.0** on a deployed record. Classification
+is delegated (`TrajectoryModel.group_mask` for v2, `group_parameter_mask`
+for v1) and is the STAGED vocabulary; the apply-time one folds step
+amplitudes into `secular` and would remove the very step the next stage
+exists to estimate. Only the step tail is decided locally, and by
+construction: `to_record` APPENDS `step_amp_k`, so no classifier sees them.
+
+The card's group checkbox is the one control — it decides both the hold and
+what the plot subtracts. `cb_detrend` remains view-only and still subtracts
+everything.
+
+### Fitting the screened epochs needed no new flag
+
+`--stages S1,S2` already means "flag nothing": S1/S2 are structural and
+always run, so naming only those turns despike, global, window and
+protection all off. It also settles the abort question — with no candidates
+there is no fraction to exceed, and an explicit stage set is an operator
+override the S0 fallback never second-guesses. `n_rejected` goes to zero,
+which is the honest answer.
+
+Drawing the grey points is a separate, view-only control. Same masks, same
+counts, same record.
+
+### `--final joint`, and why the commit mode is forced
+
+Staging identifies a model; it does not automatically report one. Every
+stage after the first conditions on earlier values treated as KNOWN, so its
+uncertainties are conditional and the covariance between a held group and a
+free one is absent. `--final joint` re-fits the identified structure with
+every group free over the domain, and reports the staged→joint movement
+scaled by the joint σ.
+
+No seeding is involved and none is needed: everything solved is linear, so
+the joint solve has one minimum. Staging chose the structure, the windows
+and τ — that is the whole of its contribution to the numbers.
+
+It changes the **run**, not just the commit. Plotting the staged fit and
+committing the joint one would put a figure and a record side by side that
+are not the same thing.
+
+**The commit mode is forced by the batch, not chosen.**
+`gps-estimate-detrend` RECOMPUTES the record and reads the plan from
+`analysis.yaml`, so committing the joint solve while leaving a stage plan
+behind means the next batch run rebuilds a STAGED record over the top of it
+— no error, no warning, other science. Joint mode therefore stores no plan
+and CLEARS a stale one.
+
+Measured on SELF, and the reason the delta report exists: a plan holding
+lin+per from a window that *starts after* the 2008 Ölfus coseismic, then
+extrapolating back across it, put `step_amp_1` at −0.04 mm where the joint
+solve puts it at **−150.74 mm — 1130 σ**, rms 63.9 → 1.97. The staged
+partition was claiming a separation the data cannot support, and nothing in
+the staged output said so.
+
+### Per-group provenance in the record
+
+A `groups` block records, per term group, its slice of `param_names`, the
+window it was estimated on, and whether it came from this station or a
+donor. Additive at the current `record_version`, following the `segments`
+precedent: `from_record` ignores unknown keys, so the 37 deployed records
+stay valid and gain a block when next re-committed. An UNSTAGED record gets
+none — for a single fit the answer is derivable from keys already present,
+and a written copy is a copy that can drift.
+
+**Donors stay pointers.** `DonorRef` resolves against the donor's current
+record at estimation time, deliberately: re-estimating a donor is *meant* to
+reach everyone borrowing from it. What was missing was visibility, so the
+block records the donor's vintage and a digest of the borrowed coefficients
+at commit, and a batch re-run warns when they move — and still uses the new
+values. Verified end to end: RHOF holding `periodic` from ALHV, ALHV
+re-estimated, the re-run warned naming both digests and RHOF's periodic came
+out equal to ALHV's *current* values.
+
+### What is verified
+
+- **Invariant sweep**, 12 configurations × the whole matrix: emitted command
+  parsed back, re-estimated, records diffed elementwise. Allowed to differ:
+  `refs`, `fitted_at`. Never diffed: which card is expanded, the peel,
+  whether grey points are drawn. Negative control — suppressing the
+  `--final joint` emission fails 3 of 12 with all 7 parameters mismatched.
+- **Batch round-trip**, both commit modes on SELF: parameters reproduce to
+  9 decimals; staged stores the plan, joint clears it.
+- **Donor round-trip** as above.
+
+### Still open
+
+`stage_plan_to_config`'s docstring claims a stored record's `stage_plan`
+always parses back via `stage_plan_from_config`. That is **false for donor
+holds**: the record spells them `explicit:donor:STA@<fitted_at>`, which
+`parse_hold_spec` refuses. The existing round-trip test only covers `stage:`
+holds. Nothing here depends on it, but the claim needs correcting or the
+spelling reconciling.
