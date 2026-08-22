@@ -1657,6 +1657,77 @@ def trajectory_curve(
     return grid, fit
 
 
+def staged_joint_deltas(
+    staged: Mapping[str, Any], joint: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """How far each parameter moved between the staged and the joint solve.
+
+    The staged build is how a model is IDENTIFIED — which windows, which
+    terms, which starting values. It is not automatically how the numbers
+    should be reported: every stage after the first conditions on earlier
+    values treated as known, so its uncertainties are conditional and any
+    covariance between a held group and a free one is missing.
+
+    A large movement here is the diagnostic that matters: it means two
+    stages were fighting over shared signal, and the staged partition was
+    claiming a separation the data does not support. Scaled by the JOINT
+    sigma, because that is the one that is not conditional.
+
+    No seeding is involved and none is needed. Everything the estimator
+    solves for is linear — τ and the step epochs are fixed inputs, not
+    parameters — so the joint solve has one minimum and reaches it from
+    anywhere. "Initialised at the staged solution" would be words.
+    """
+    from gps_analysis import trajectory_from_record
+
+    _, staged_fits = trajectory_from_record(staged)
+    _, joint_fits = trajectory_from_record(joint)
+    names = list(joint.get("param_names") or ())
+    rows: list[dict[str, Any]] = []
+    for index, (s_fit, j_fit) in enumerate(zip(staged_fits, joint_fits, strict=False)):
+        sigmas = np.asarray(j_fit.uncertainties, dtype=float)
+        for j, name in enumerate(names):
+            if j >= len(s_fit.params) or j >= len(j_fit.params):
+                continue
+            s_val = float(s_fit.params[j])
+            j_val = float(j_fit.params[j])
+            sigma = float(sigmas[j]) if j < sigmas.size else float("nan")
+            delta = j_val - s_val
+            rows.append(
+                {
+                    "component": s_fit.component,
+                    "index": index,
+                    "param": name,
+                    "staged": s_val,
+                    "joint": j_val,
+                    "delta": delta,
+                    "sigma": sigma,
+                    "ratio": abs(delta) / sigma if sigma > 0 else float("inf"),
+                }
+            )
+    return rows
+
+
+def format_staged_joint_deltas(
+    rows: Sequence[Mapping[str, Any]], *, threshold: float = 1.0
+) -> str:
+    """The delta table, loudest first, with the ones over threshold marked."""
+    if not rows:
+        return "(no comparable parameters)"
+    lines = [
+        f"  {'component':10s} {'parameter':16s} {'staged':>12s} "
+        f"{'joint':>12s} {'Δ':>10s} {'Δ/σ':>7s}"
+    ]
+    for row in sorted(rows, key=lambda r: -float(r["ratio"])):
+        mark = "  <-- stages disagreed" if float(row["ratio"]) > threshold else ""
+        lines.append(
+            f"  {str(row['component']):10s} {str(row['param']):16s} "
+            f"{row['staged']:12.4f} {row['joint']:12.4f} "
+            f"{row['delta']:10.4f} {row['ratio']:7.2f}{mark}"
+        )
+    return "\n".join(lines)
+
+
 def group_param_mask(record: Mapping[str, Any], groups: Sequence[str]) -> Any:
     """Which of a RECORD's parameters belong to the named term groups.
 
@@ -2051,6 +2122,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "parameters are biased relative to a full-detection one",
     )
     p.add_argument(
+        "--final",
+        choices=("staged", "joint"),
+        default="staged",
+        help="which solve produces the reported record when a stage plan is "
+        "given. 'staged' keeps each stage's own answer. 'joint' re-fits the "
+        "identified structure with every group free, over the domain, and "
+        "reports the staged->joint movement — the honest uncertainties, "
+        "since every stage after the first conditions on earlier values "
+        "treated as known. Under --commit, 'joint' stores NO stage plan (and "
+        "clears a stale one), because the batch must reproduce what was "
+        "stored",
+    )
+    p.add_argument(
         "--segment",
         action="append",
         default=[],
@@ -2336,6 +2420,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    joint_deltas: list[dict[str, Any]] = []
+    if args.final == "joint" and resolved_stages is not None and not args.donor:
+        # The whole RUN becomes joint, not just what gets stored. Plotting the
+        # staged fit and committing the joint one would put a figure and a
+        # record side by side that are not the same thing -- the divergence
+        # this tool exists to prevent.
+        #
+        # Nothing is seeded from the staged solution and nothing needs to be:
+        # every parameter the estimator solves for is linear, so there is one
+        # minimum. Staging chose the structure, the windows and tau; the joint
+        # solve is that structure with all groups free.
+        staged_record = record
+        try:
+            record, yearf, data, sigma, estimate = build_record(
+                sta,
+                tot_dir=args.tot_dir,
+                uncert=args.uncert,
+                outlier_param=args.outlier_param,
+                fit_catalog=args.fit_catalog,
+                model=args.model,
+                stages=args.stages,
+                stage_plan=None,
+                lookup_donor=None,
+                terms_spec=args.term or None,
+                segments=_resolve_cli_segments(args),
+                steps=args.step or None,
+                max_gap_years=args.max_gap_years,
+                min_epochs=args.min_epochs,
+                min_span_years=args.min_span_years,
+            )
+        except RuntimeError as exc:
+            print(
+                f"error: the staged fit succeeded but the joint re-fit was "
+                f"refused ({exc}). Re-run with --final staged to keep the "
+                f"staged answer, understanding that its uncertainties are "
+                f"conditional.",
+                file=sys.stderr,
+            )
+            return 2
+        joint_deltas = staged_joint_deltas(staged_record, record)
+
     if args.donor:
         try:
             borrowed = borrow_record(args.donor, sta, params_path=args.params)
@@ -2354,6 +2479,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"\n{sta} — detrend record\n")
         print(summarise(record, sta))
+    if joint_deltas:
+        loud = [r for r in joint_deltas if float(r["ratio"]) > 1.0]
+        print(
+            "\n  JOINT re-fit — the staged build identified the structure, "
+            "these are the numbers with every group free.\n"
+            "  Movement is scaled by the JOINT sigma, the one that is not "
+            "conditional on an earlier stage.\n"
+        )
+        print(format_staged_joint_deltas(joint_deltas))
+        if loud:
+            print(
+                f"\n  {len(loud)} parameter(s) moved by more than one sigma: "
+                f"those stages were fitting the same signal, and the staged "
+                f"partition claimed a separation the data does not support."
+            )
     seismic, declared_other = declared_event_epochs(sta)
     seismic = sorted(seismic + parse_events(args.event))
     tos_events: list[tuple[float, str]] = []
@@ -2511,11 +2651,20 @@ def main(argv: list[str] | None = None) -> int:
             # ALONGSIDE the record rather than inside it: analysis.yaml is
             # what a batch re-run reads, and a plan living only in the record
             # would be invisible to gps-estimate-detrend.
+            #
+            # Under --final joint the committed record is the UNSTAGED solve,
+            # so storing the plan would make the batch recompute a staged
+            # record and replace this one with different numbers. The plan
+            # was scaffolding: it chose the structure, and the structure is
+            # stored as model/terms/steps/segments. A stale entry from an
+            # earlier staged commit is REMOVED for the same reason -- leaving
+            # it is the same failure, one commit later.
             from geo_dataread.stage_plan import (
                 default_analysis_yaml_path,
                 write_stage_plan,
             )
 
+            joint = args.final == "joint" and not args.donor
             yaml_path = args.analysis_yaml or default_analysis_yaml_path()
             if yaml_path is None:
                 print(
@@ -2524,6 +2673,13 @@ def main(argv: list[str] | None = None) -> int:
                     "committed, but a batch re-run will re-fit this station "
                     "single-stage. Pass --analysis-yaml to say where.",
                     file=sys.stderr,
+                )
+            elif joint:
+                write_stage_plan(yaml_path, sta, None)
+                print(
+                    f"  stage plan CLEARED in {yaml_path} — the committed "
+                    f"record is the joint solve, and a stored plan would make "
+                    f"the batch recompute a staged one"
                 )
             else:
                 write_stage_plan(yaml_path, sta, stage_plan)

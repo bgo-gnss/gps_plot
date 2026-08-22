@@ -2025,3 +2025,122 @@ class TestUseFlaggedEpochs:
         assert sum(w.record["n_rejected"]) == 0
         # with nothing flagged there is nothing grey left to draw
         assert len(w.flag_scatters[0].getData()[0] or []) == 0
+
+
+class TestJointRefit:
+    """Slice 4: staging identifies the structure, the joint solve reports it.
+
+    Every stage after the first conditions on earlier values treated as
+    known, so its uncertainties are conditional and the covariance between a
+    held group and a free one is missing. The joint solve has neither
+    problem. The staged→joint movement is the diagnostic: more than one
+    sigma means two stages were fitting the same signal.
+    """
+
+    @staticmethod
+    def _staged():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        return w
+
+    def test_the_flag_is_only_emitted_with_a_stage_plan(self) -> None:
+        """Unstaged IS joint; the flag would claim a choice never made."""
+        w = TestQtPickerBorrowedFeatures._window()
+        w.cb_final_joint.setChecked(True)
+        assert "--final" not in w.command.text()
+        assert not w.final_joint
+
+    def test_the_shown_fit_is_the_joint_one(self) -> None:
+        """Emitting --final joint while drawing the staged curve would put a
+        command and a figure on screen that are not the same fit."""
+        w = self._staged()
+        staged_rms = list(w.record["rms"])
+        w.cb_final_joint.setChecked(True)
+        assert "--final joint" in w.command.text()
+        assert w.record is not None
+        assert list(w.record["rms"]) != staged_rms, (
+            "the joint solve produced the staged numbers — nothing was re-fitted"
+        )
+
+    def test_the_movement_is_reported(self) -> None:
+        w = self._staged()
+        w.cb_final_joint.setChecked(True)
+        assert w.joint_deltas, "no deltas computed"
+        assert {"param", "staged", "joint", "delta", "sigma", "ratio"} <= set(
+            w.joint_deltas[0]
+        )
+        assert "joint re-fit" in w.summary.toPlainText()
+
+    def test_the_command_reproduces_the_figure(self) -> None:
+        """The invariant, on the new flag: the whole point of --final joint
+        changing the RUN rather than only the commit."""
+        import shlex
+
+        from gps_plot.detrend_workbench import _build_parser
+
+        w = self._staged()
+        w.cb_final_joint.setChecked(True)
+        parts = shlex.split(w.command.text())
+        ns = _build_parser().parse_args(parts[1:])
+        assert ns.final == "joint"
+        assert ns.stage and ns.hold, "the identifying plan is still emitted"
+
+    def test_unticking_returns_the_staged_answer(self) -> None:
+        w = self._staged()
+        before = list(w.record["rms"])
+        w.cb_final_joint.setChecked(True)
+        w.cb_final_joint.setChecked(False)
+        assert list(w.record["rms"]) == before
+        assert "--final" not in w.command.text()
+        assert w.joint_deltas == []
+
+
+class TestStagedJointDeltas:
+    """The delta arithmetic, without a window."""
+
+    def test_identical_records_move_nothing(self) -> None:
+        import json
+        import pathlib
+
+        from gps_plot.detrend_workbench import staged_joint_deltas
+
+        p = pathlib.Path.home() / ".config/gpsconfig/detrend_params.json"
+        if not p.is_file():  # pragma: no cover
+            pytest.skip("no deployed detrend_params.json")
+        recs = json.loads(p.read_text())
+        recs = recs.get("stations", recs)
+        rec = next(v for v in recs.values() if isinstance(v, dict))
+        rows = staged_joint_deltas(rec, rec)
+        assert rows, "no parameters compared"
+        assert all(r["delta"] == 0.0 for r in rows)
+        assert all(r["ratio"] == 0.0 for r in rows)
+
+    def test_the_table_marks_what_crossed_a_sigma(self) -> None:
+        from gps_plot.detrend_workbench import format_staged_joint_deltas
+
+        rows = [
+            {
+                "component": "north",
+                "param": "rate",
+                "staged": 1.0,
+                "joint": 3.0,
+                "delta": 2.0,
+                "sigma": 0.5,
+                "ratio": 4.0,
+            },
+            {
+                "component": "east",
+                "param": "offset",
+                "staged": 1.0,
+                "joint": 1.01,
+                "delta": 0.01,
+                "sigma": 1.0,
+                "ratio": 0.01,
+            },
+        ]
+        text = format_staged_joint_deltas(rows)
+        lines = text.splitlines()
+        assert "rate" in lines[1], "the loudest row must come first"
+        assert "stages disagreed" in lines[1]
+        assert "stages disagreed" not in lines[2]

@@ -1392,3 +1392,64 @@ class TestTrajectoryCurveSpansGaps:
         before = json.dumps(record, sort_keys=True, default=str)
         trajectory_curve(record, yearf)
         assert json.dumps(record, sort_keys=True, default=str) == before
+
+
+def test_joint_commit_clears_a_stale_stage_plan(gpsconfig, tmp_path):
+    """Gate 2, the half that fails SILENTLY.
+
+    `gps-estimate-detrend` RECOMPUTES the record and reads the plan from
+    `analysis.yaml`. So committing the joint solve while leaving a stage plan
+    behind means the next batch run rebuilds a STAGED record and replaces the
+    committed numbers with different ones — no error, no warning, just other
+    science. Measured on SELF: the staged plan put step_amp_1 at -0.04 mm and
+    the joint solve at -150.74 mm, 1130 sigma apart.
+    """
+    import json
+
+    from geo_dataread.stage_plan import read_stage_plans
+    from gps_plot.detrend_workbench import main
+
+    doc = gpsconfig / "detrend_params.json"
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    plan_args = [
+        "--stage",
+        "clean:secular,periodic@2009.5443:2021.0394",
+        "--stage",
+        "st:step",
+        "--hold",
+        "st:secular=stage:clean",
+        "--hold",
+        "st:periodic=stage:clean",
+    ]
+    common = [
+        "SELF",
+        "--tot-dir",
+        str(TOT),
+        "--max-gap-years",
+        "1.5",
+        "--uncert",
+        "10",
+        "--commit",
+        "--force",
+        "--params",
+        str(doc),
+        "--analysis-yaml",
+        str(yaml_path),
+        "--out",
+        str(tmp_path / "x.png"),
+    ]
+
+    assert main(common + plan_args + ["--final", "staged"]) == 0
+    assert "SELF" in read_stage_plans(yaml_path), "staged commit stored no plan"
+    staged = json.loads(doc.read_text())["stations"]["SELF"]
+
+    assert main(common + plan_args + ["--final", "joint"]) == 0
+    assert "SELF" not in read_stage_plans(yaml_path), (
+        "the joint record was committed but the stage plan survived — the "
+        "next batch run will recompute a staged record over the top of it"
+    )
+    joint = json.loads(doc.read_text())["stations"]["SELF"]
+    assert joint["rms"] != staged["rms"], "the joint solve changed nothing"
+    # and the joint record carries no plan of its own to re-stage from
+    assert "stage_plan" not in joint

@@ -80,7 +80,9 @@ from typing import Any
 from gps_plot.detrend_workbench import (
     WORKBENCH_UNCERT_DEFAULT,
     estimate_with_abort_fallback,
+    format_staged_joint_deltas,
     group_contribution,
+    staged_joint_deltas,
     trajectory_curve,
 )
 
@@ -452,6 +454,11 @@ class PickerWindow:  # pragma: no cover - GUI
         # The detection stage set the fit runs with, composed in `_current()`
         # beside the flag that spells it. None means the full pipeline.
         self.stages_spec: str | None = None
+        # Whether the SHOWN fit is the joint re-fit; composed in `_current()`
+        # beside the flag that spells it.
+        self.final_joint: bool = False
+        # staged->joint parameter movement, when both were computed.
+        self.joint_deltas: list[dict[str, Any]] = []
         # The fit the refine action seeds from; set on every successful refit.
         self._est: Any = None
 
@@ -1083,6 +1090,24 @@ class PickerWindow:  # pragma: no cover - GUI
         # excess-candidate abort unreachable rather than ambiguous: with no
         # candidates there is no fraction to exceed, and an explicit stage set
         # is an operator override the fallback never second-guesses.
+        # Off while BUILDING -- the staged fit is what the peel view is for --
+        # and on at the end, which is the workflow: stage to identify, then
+        # report from one solve with every group free. It switches the
+        # picker's own fit, not just the flag: emitting `--final joint` while
+        # showing the staged curve would put a command and a figure on screen
+        # that are not the same fit.
+        self.cb_final_joint = QtWidgets.QCheckBox("final fit: joint (all groups free)")
+        self.cb_final_joint.setToolTip(
+            "Re-fit the identified structure with no stage plan, over the "
+            "domain (emits --final joint). Every stage after the first "
+            "conditions on earlier values treated as known, so only the joint "
+            "solve has unconditional uncertainties. The staged→joint movement "
+            "is reported: more than one sigma means those stages were fitting "
+            "the same signal"
+        )
+        self.cb_final_joint.toggled.connect(self.refit)
+        mcol.addWidget(self.cb_final_joint)
+
         self.cb_use_flagged = QtWidgets.QCheckBox("use flagged epochs in the fit")
         self.cb_use_flagged.setToolTip(
             "Put the screened epochs back into the estimation (emits "
@@ -1946,6 +1971,12 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         if self.stages_spec is not None:
             extra += ["--stages", self.stages_spec]
+        # Only meaningful with a stage plan, and only emitted then -- an
+        # unstaged fit IS the joint one, so the flag would claim a choice
+        # that was never made.
+        self.final_joint = self.cb_final_joint.isChecked() and self.cb_stage.isChecked()
+        if self.final_joint:
+            extra += ["--final", "joint"]
 
         # Only the PICKED steps become --step flags; the declared ones are
         # already the workbench's floor, so emitting them would be a no-op
@@ -2054,6 +2085,7 @@ class PickerWindow:  # pragma: no cover - GUI
 
         np = self.np
         self._clear_comparison()
+        self.joint_deltas = []
         settings, extra, terms, stage_specs, holds = self._current()
 
         plan = None
@@ -2118,6 +2150,27 @@ class PickerWindow:  # pragma: no cover - GUI
                     model=self.model,
                     stages=self.stages_spec,
                 )
+                if self.final_joint and est is not None and plan is not None:
+                    # The staged solve identified the structure; this is that
+                    # structure with every group free. What is SHOWN becomes
+                    # the joint fit, because the emitted command carries
+                    # `--final joint` and the workbench will show the same.
+                    staged_est = est
+                    est, fell_back = estimate_with_abort_fallback(
+                        self.sta,
+                        self.yearf,
+                        self.data,
+                        self.sigma,
+                        settings=settings,
+                        terms=terms or None,
+                        stage_plan=None,
+                        model=self.model,
+                        stages=self.stages_spec,
+                    )
+                    if est is not None:
+                        self.joint_deltas = staged_joint_deltas(
+                            staged_est.record, est.record
+                        )
             except (ValueError, RuntimeError) as exc:
                 # A refused fit is a RESULT -- rank-deficient stage, an
                 # unfittable term, a domain with too few epochs. Say so and
@@ -2246,6 +2299,21 @@ class PickerWindow:  # pragma: no cover - GUI
             block = self.params_block(est.record)
             if block:
                 text += "\n\nparameters\n" + block
+            if self.joint_deltas:
+                loud = [r for r in self.joint_deltas if float(r["ratio"]) > 1.0]
+                text += (
+                    f"\n\njoint re-fit — {len(loud)} of "
+                    f"{len(self.joint_deltas)} parameters moved > 1σ"
+                )
+                if loud:
+                    worst = max(loud, key=lambda r: float(r["ratio"]))
+                    text += (
+                        f"\n  worst {worst['param']} ({worst['component']}) "
+                        f"Δ/σ {float(worst['ratio']):.2f} — those stages were "
+                        f"fitting the same signal"
+                    )
+                print(f"\n{self.sta} — staged → joint")
+                print(format_staged_joint_deltas(self.joint_deltas))
             self.print_params(est.record, "current fit")
             if fell_back:
                 # Same words the CLI prints to stderr -- an S0 record is
