@@ -1767,3 +1767,165 @@ class TestCardsAreTheStageEditor:
         assignments = migrate_group_states(parsed["legacy_groups"], "clean", "st")
         assert assignments["clean"] == ["periodic"]
         assert "secular" in assignments["st"]
+
+
+class TestPeelFollowsTheActiveStage:
+    """Slice 3: the plot shows what the active stage is actually fitted to.
+
+    The standing complaint this answers: an estimate made in the orange
+    window was not the model the next decision got read against. Selecting
+    stage k now subtracts stages 1..k-1 — steps against data − s(t),
+    transients against data − s(t) − st(t) — which is the operator's own
+    description of the workflow, made into the display rule.
+    """
+
+    @staticmethod
+    def _staged():
+        w = TestQtPickerBorrowedFeatures._window()
+        w.stage_regions[0].setRegion((2009.5443, 2021.0394))
+        w.cb_stage.setChecked(True)
+        return w
+
+    def test_the_first_stage_peels_nothing(self) -> None:
+        w = self._staged()
+        assert w.stage_cards[0].box.isChecked(), "the first card starts active"
+        assert w._peeled_groups() == []
+        assert "minus" not in w.plots[0].getAxis("left").labelText
+
+    def test_a_later_stage_peels_exactly_the_earlier_ones(self) -> None:
+        import numpy as np
+
+        from gps_plot.detrend_workbench import group_contribution
+
+        w = self._staged()
+        assert [c.name for c in w.stage_cards] == ["clean", "st"]
+        w.stage_cards[1].box.setChecked(True)
+        w.refit()
+        assert w._peeled_groups() == ["secular", "periodic"]
+        assert w.record is not None
+
+        # The drawn series IS data minus that contribution -- not merely
+        # "something smaller".
+        expected = w.data - group_contribution(
+            w.record, w.yearf, ["secular", "periodic"]
+        )
+        shown_x, shown_y = w.kept_scatters[0].getData()
+        finite = np.isfinite(w.data[0])
+        keep = finite & np.isin(w.yearf, shown_x)
+        assert keep.sum() > 100, "no kept epochs to compare"
+        assert np.allclose(
+            shown_y[: keep.sum()],
+            expected[0][keep][: keep.sum()],
+            atol=1e-9,
+        )
+
+    def test_the_axis_names_what_was_subtracted(self) -> None:
+        w = self._staged()
+        w.stage_cards[1].box.setChecked(True)
+        w.refit()
+        label = w.plots[0].getAxis("left").labelText
+        assert "minus linear, periodic" in label, label
+
+    def test_the_curve_is_peeled_with_the_data(self) -> None:
+        """A residual series under an unpeeled curve is a model of other data."""
+        import numpy as np
+
+        w = self._staged()
+        w.stage_cards[1].box.setChecked(True)
+        w.refit()
+        _, curve_y = w.fit_curves[0].getData()
+        assert curve_y is not None and len(curve_y) > 0
+        # What is left of SELF's model after removing lin+per is the step
+        # alone: piecewise constant with exactly ONE jump. Asserting the
+        # SHAPE rather than a magnitude is deliberate -- with the background
+        # held from a window that starts after the 2008 coseismic, the
+        # amplitude here is a few hundredths of a millimetre, and a
+        # threshold on it would be testing this station's numbers instead of
+        # the peel.
+        jumps = np.flatnonzero(np.abs(np.diff(curve_y)) > 1e-12)
+        assert jumps.size == 1, f"expected one step, got {jumps.size}"
+        assert float(np.nanstd(curve_y)) < float(np.nanstd(w.data[0])) / 10.0, (
+            "the curve still carries the trend that was peeled off the data"
+        )
+
+    def test_the_view_only_checkbox_still_wins(self) -> None:
+        """It asks about the whole model, not about one stage."""
+        w = self._staged()
+        w.stage_cards[1].box.setChecked(True)
+        w.cb_detrend.setChecked(True)
+        w.refit()
+        assert "residual" in w.plots[0].getAxis("left").labelText
+        assert len(w.fit_curves[0].getData()[0] or []) == 0
+
+    def test_peeling_moves_no_fitted_quantity(self) -> None:
+        """DISPLAY ONLY, on the same terms as --hide-outliers."""
+        w = self._staged()
+        before_cmd = w.command.text()
+        before_rms = list(w.record["rms"])
+        w.stage_cards[1].box.setChecked(True)
+        w.refit()
+        assert w.command.text() == before_cmd, "the peel moved the command"
+        assert list(w.record["rms"]) == before_rms, "the peel moved the fit"
+
+    def test_the_card_shows_the_holds_it_emits(self) -> None:
+        w = self._staged()
+        w.refit()
+        text = w.stage_cards[1].held_label.text()
+        assert "linear ← clean" in text and "periodic ← clean" in text
+        for group in ("secular", "periodic"):
+            assert f"--hold st:{group}=stage:clean" in w.command.text()
+        assert w.stage_cards[0].held_label.text().startswith("holds nothing")
+
+
+class TestGroupContribution:
+    """The peel's arithmetic, without a window."""
+
+    @staticmethod
+    def _record():
+        import json
+        import pathlib
+
+        p = pathlib.Path.home() / ".config/gpsconfig/detrend_params.json"
+        if not p.is_file():  # pragma: no cover
+            pytest.skip("no deployed detrend_params.json")
+        recs = json.loads(p.read_text())
+        recs = recs.get("stations", recs)
+        for sta, rec in recs.items():
+            if isinstance(rec, dict) and rec.get("step_epochs"):
+                return sta, rec
+        pytest.skip("no deployed record carries a step")  # pragma: no cover
+
+    def test_the_groups_sum_back_to_the_whole_model(self) -> None:
+        """Linear in every parameter it solves for, so this must be exact."""
+        import numpy as np
+
+        from gps_analysis import evaluate_record
+        from gps_plot.detrend_workbench import group_contribution
+
+        _, rec = self._record()
+        t = np.linspace(2000.0, 2024.0, 400)
+        full = np.asarray(evaluate_record(rec, t, terms="all"))
+        parts = group_contribution(rec, t, ["secular", "periodic"]) + (
+            group_contribution(rec, t, ["step", "transient"])
+        )
+        assert np.nanmax(np.abs(full - parts)) == 0.0
+
+    def test_the_step_tail_is_classified_as_step(self) -> None:
+        """`to_record` APPENDS step_amp_k, so no classifier ever sees them."""
+        from gps_plot.detrend_workbench import group_param_mask
+
+        _, rec = self._record()
+        names = rec["param_names"]
+        mask = group_param_mask(rec, ["step"])
+        assert [n for n, m in zip(names, mask) if m] == [
+            n for n in names if n.startswith("step_amp_")
+        ]
+
+    def test_periodic_alone_leaves_the_offset_in(self) -> None:
+        """The offset belongs to secular; peeling periodic must not take it."""
+        from gps_plot.detrend_workbench import group_param_mask
+
+        _, rec = self._record()
+        names = rec["param_names"]
+        mask = group_param_mask(rec, ["periodic"])
+        assert "offset" not in [n for n, m in zip(names, mask) if m]

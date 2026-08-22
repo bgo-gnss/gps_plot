@@ -80,6 +80,7 @@ from typing import Any
 from gps_plot.detrend_workbench import (
     WORKBENCH_UNCERT_DEFAULT,
     estimate_with_abort_fallback,
+    group_contribution,
     trajectory_curve,
 )
 
@@ -219,6 +220,7 @@ class StageCard:
     name_edit: Any
     groups: dict[str, Any]
     inherit: Any
+    held_label: Any = None
     window: tuple[float, float] | None = None
 
     @property
@@ -794,7 +796,20 @@ class PickerWindow:  # pragma: no cover - GUI
         inherit.toggled.connect(self.refit)
         inner.addWidget(inherit)
 
-        card = StageCard(box=box, name_edit=edit, groups=checks, inherit=inherit)
+        held = QtWidgets.QLabel()
+        held.setWordWrap(True)
+        held.setStyleSheet("color: #666;")
+        held.setToolTip(
+            "Derived from the stages above, not set here: a group this stage "
+            "does not estimate is held at whatever the last earlier stage "
+            "fitted. Tick it above to free it instead — that ONE checkbox "
+            "decides both the hold and what the plot subtracts"
+        )
+        inner.addWidget(held)
+
+        card = StageCard(
+            box=box, name_edit=edit, groups=checks, inherit=inherit, held_label=held
+        )
         card.window = window
         box.toggled.connect(lambda on, c=card: self._card_expanded(c, on))
         return card
@@ -936,6 +951,26 @@ class PickerWindow:  # pragma: no cover - GUI
     def _preset_names(self) -> list[str]:
         """Stage names the preset would lay out, without building it."""
         return [name for name, _, _ in self._preset_spec((0.0, 1.0))]
+
+    def _peeled_groups(self) -> list[str]:
+        """Groups estimated BEFORE the active stage.
+
+        Which is exactly what the active stage is fitted TO — steps against
+        data − s(t), transients against data − s(t) − st(t). The plot
+        subtracts the same thing, so the panel and the figure cannot
+        disagree about which model is being worked with. That disagreement
+        was the standing complaint: an estimate made in the orange window
+        was not the model the next step was read against.
+        """
+        if not self.stages or not self.stage_cards:
+            return []
+        index = next(
+            (i for i, c in enumerate(self.stage_cards) if c.box.isChecked()), 0
+        )
+        out: list[str] = []
+        for draft in self.stages[:index]:
+            out.extend(g for g in draft.groups if g not in out)
+        return out
 
     def _controls(self) -> Any:
         """The right-hand control column.
@@ -2090,20 +2125,44 @@ class PickerWindow:  # pragma: no cover - GUI
             # the same either way -- this subtracts the model that was already
             # fitted, it does not fit anything different. Same convention as
             # --hide-outliers.
+            #
+            # The PEEL follows the active stage automatically, so what is on
+            # screen is what that stage is fitted to. The checkbox is the
+            # view-only override and wins: it subtracts everything, which is
+            # a question about the whole model rather than about one stage.
             detrended = self.cb_detrend.isChecked()
-            shown = self.data - fit if detrended else self.data
+            peel = [] if detrended else self._peeled_groups()
+            if detrended:
+                shown = self.data - fit
+            elif peel:
+                shown = self.data - group_contribution(est.record, self.yearf, peel)
+            else:
+                shown = self.data
 
             fit_x, fit_y = trajectory_curve(est.record, self.yearf)
             if detrended:
                 # Subtracted, the model IS the zero line; drawing it again
                 # would just be y=0 over the grid's own axis.
                 fit_x, fit_y = fit_x[:0], fit_y[:, :0]
+            elif peel:
+                # Draw what is LEFT of the model, on the same grid: the
+                # residual series and the curve over it must be the same
+                # subtraction, or the line is a model of different data.
+                fit_y = group_contribution(
+                    est.record, fit_x, [g for g in GROUP_ORDER if g not in peel]
+                )
             for curve in self.fit_curves:
                 curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
+            # The axis says what was subtracted, because two peels look alike
+            # and the difference between them is the whole point.
+            if detrended:
+                suffix = " residual"
+            elif peel:
+                suffix = " minus " + ", ".join(GROUP_LABELS.get(g, g) for g in peel)
+            else:
+                suffix = ""
             for c, name in enumerate(COMPONENTS):
-                self.plots[c].setLabel(
-                    "left", f"{name} residual [mm]" if detrended else f"{name} [mm]"
-                )
+                self.plots[c].setLabel("left", f"{name}{suffix} [mm]")
             for c in range(3):
                 # connect="finite" so a component the model cannot evaluate
                 # breaks the line instead of being joined across. The step
@@ -2165,8 +2224,42 @@ class PickerWindow:  # pragma: no cover - GUI
         if note:
             self.summary.setPlainText(note)
 
+        self._update_cards()
         self.command.setText(self._command(plan, extra, terms, stage_specs, holds))
         self._update_header(terms, plan)
+
+    def _update_cards(self) -> None:
+        """Show each card's DERIVED holds, and mark the active one.
+
+        The holds are read off the drafts rather than recomputed, so a card
+        cannot display a hold the emitted command does not carry.
+        """
+        peel = self._peeled_groups()
+        for index, card in enumerate(self.stage_cards):
+            draft = self.stages[index] if index < len(self.stages) else None
+            holds = draft.holds if draft is not None else {}
+            if holds:
+                card.held_label.setText(
+                    "holds "
+                    + ", ".join(
+                        f"{GROUP_LABELS.get(g, g)} ← {src.split(':', 1)[1]}"
+                        for g, src in holds.items()
+                    )
+                )
+            else:
+                card.held_label.setText("holds nothing")
+            active = card.box.isChecked()
+            groups = ", ".join(GROUP_LABELS.get(g, g) for g in card.estimates())
+            card.box.setTitle(
+                f"{index + 1}. {card.name} — {groups or 'estimates nothing'}"
+                + ("   ● active" if active else "")
+            )
+            if active and peel:
+                card.held_label.setText(
+                    card.held_label.text()
+                    + "  ·  plotted against data − "
+                    + ", ".join(GROUP_LABELS.get(g, g) for g in peel)
+                )
 
     def _update_header(self, terms: list[str], plan: Any) -> None:
         """Station, run parameters and the live picks, always on screen.

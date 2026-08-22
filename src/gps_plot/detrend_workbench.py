@@ -1657,6 +1657,84 @@ def trajectory_curve(
     return grid, fit
 
 
+def group_param_mask(record: Mapping[str, Any], groups: Sequence[str]) -> Any:
+    """Which of a RECORD's parameters belong to the named term groups.
+
+    Delegates the classification rather than repeating it: ``secular`` has
+    to keep one meaning across the estimator, ``select_terms`` and the
+    borrow path, and a fourth opinion here is how the two vocabularies would
+    quietly drift. Note this is the STAGED vocabulary — the apply-time one
+    folds step amplitudes into ``secular``, and using that here would remove
+    the very step a later stage is being set up to estimate.
+
+    The step tail is the one thing decided locally, and by construction
+    rather than by classification: ``StationEstimate.to_record`` APPENDS one
+    ``step_amp_k`` per declared step to the base model's ``param_names``, so
+    the entries past the base model's width are step amplitudes and no
+    classifier sees them.
+    """
+    names = list(record.get("param_names") or ())
+    wanted = set(groups)
+    spec = record.get("terms")
+    if spec is not None:
+        from gps_analysis.terms import TrajectoryModel
+
+        model = TrajectoryModel.from_spec(spec)
+        base = np.zeros(model.n_params, dtype=bool)
+        for group in wanted:
+            base |= np.asarray(model.group_mask(group), dtype=bool)
+    else:
+        from gps_analysis.staged import group_parameter_mask
+
+        base = np.zeros(0, dtype=bool)
+        for group in wanted:
+            one = np.asarray(group_parameter_mask(record["model"], group), dtype=bool)
+            base = one if base.size == 0 else (base | one)
+
+    mask = np.zeros(len(names), dtype=bool)
+    mask[: base.size] = base
+    if "step" in wanted:
+        mask[base.size :] = True
+    return mask
+
+
+def group_contribution(
+    record: Mapping[str, Any], yearf: Any, groups: Sequence[str]
+) -> Any:
+    """Evaluate ONLY the named groups' terms of a fitted record.
+
+    What "data − s(t)" means when s(t) is part of a larger model: the model
+    is linear in every parameter it solves for (τ and the step epochs are
+    fixed inputs, not solved), so zeroing the other groups' coefficients and
+    evaluating gives exactly those terms' contribution. No re-fitting, and
+    no second evaluator — ``evaluate_record`` is the same one the trajectory
+    is drawn with.
+
+    ``offset`` belongs to ``secular``, so peeling a stage that estimated the
+    linear term removes the constant with it and the residual sits about
+    zero. Peeling ``periodic`` alone deliberately does not: the offset was
+    never that stage's to remove.
+    """
+    from gps_analysis import evaluate_record
+
+    mask = group_param_mask(record, groups)
+    if not mask.any():
+        y = np.asarray(yearf, dtype=float)
+        return np.zeros((len(record["components"]), y.size), dtype=float)
+    masked = dict(record)
+    masked["components"] = [
+        {
+            **component,
+            "params": [
+                float(p) if keep else 0.0
+                for p, keep in zip(component["params"], mask, strict=True)
+            ],
+        }
+        for component in record["components"]
+    ]
+    return np.asarray(evaluate_record(masked, yearf, terms="all"), dtype=float)
+
+
 def _to_datetime(yearf: Any) -> Any:
     from geo_dataread.gps_read import toDateTime
 
