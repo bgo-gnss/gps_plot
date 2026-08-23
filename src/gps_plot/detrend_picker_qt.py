@@ -562,6 +562,15 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.btn_save.clicked.connect(self.save_secular)
         bcol.addWidget(self.btn_save)
+        self.btn_bg_commit = QtWidgets.QPushButton("copy the commit command")
+        self.btn_bg_commit.setToolTip(
+            "For a station whose model IS the background — no events to "
+            "estimate — this is the whole f(t). Emits --save-secular --commit, "
+            "which writes s(t) to the store AND the finished record to "
+            "detrend_params.json, where plot-gps-timeseries reads it"
+        )
+        self.btn_bg_commit.clicked.connect(self.copy_commit)
+        bcol.addWidget(self.btn_bg_commit)
         self.saved_label = QtWidgets.QLabel()
         self.saved_label.setWordWrap(True)
         self.saved_label.setStyleSheet("color: #555;")
@@ -1342,9 +1351,43 @@ class PickerWindow:  # pragma: no cover - GUI
         and it is the one an operator can read before it runs.
         """
         if self.mode.currentText() != MODE_EVENTS:
+            # A station with no events HAS no events phase to commit from --
+            # it says "nothing to estimate" and produces no record, which
+            # left such a station with no route to detrend_params.json at
+            # all. Its background IS its whole model, so it commits here.
+            #
+            # The two writes stay distinct even in one command:
+            # --save-secular writes s(t) to the store as a reusable
+            # COMPONENT, --commit writes the finished record production
+            # reads. Declared steps are already in this record (steps.csv is
+            # a floor), so for a station whose only events are declared, the
+            # background phase produces a complete f(t).
+            if self.record is None:
+                self.summary.setPlainText(
+                    "nothing to commit: there is no fit on screen."
+                )
+                return
+            cmd = background_command(
+                self.sta,
+                segments=self.segments(),
+                model=self.model,
+                flags=self._run_flags(),
+                save=True,
+            )
+            cmd += " --commit"
+            self.QtWidgets.QApplication.clipboard().setText(cmd)
+            declared = self.record.get("step_epochs") or []
+            note = (
+                f"\n\nThis record carries {len(declared)} declared step(s) "
+                f"{[round(float(e), 4) for e in declared]}, so it is already a "
+                f"complete f(t)."
+                if declared
+                else "\n\nThis station has no declared step, so s(t) IS f(t)."
+            )
             self.summary.setPlainText(
-                "the finished model is committed from the events phase; the "
-                "background is saved with 'save s(t)'."
+                f"copied to the clipboard:\n\n{cmd}\n\n"
+                f"--save-secular writes the reusable s(t); --commit writes the "
+                f"finished record plot-gps-timeseries reads.{note}"
             )
             return
         from gps_plot.detrend_workbench import _override_settings

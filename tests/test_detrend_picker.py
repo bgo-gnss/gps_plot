@@ -529,3 +529,63 @@ class TestTransientsAreOutOfScope:
         from gps_plot.detrend_picker_qt import PEEL_ALL
 
         assert "transient" in PEEL_ALL
+
+
+class TestTheBackgroundCanBeCommitted:
+    """A station with no events must still reach detrend_params.json.
+
+    Measured hole 2026-08-23: RHOF has no declared step, so the events phase
+    reports "nothing to estimate" and produces no record — leaving no route
+    from the picker to the document plot-gps-timeseries reads. Its background
+    IS its whole model, so it commits from the background phase.
+
+    The two writes stay DISTINCT even in one command: --save-secular writes
+    s(t) to the store as a reusable component, --commit writes the finished
+    record. Conflating them is the hazard the separate stores exist to
+    prevent — a background committed for a station that HAS events would make
+    production serve a series with its offset still in it.
+    """
+
+    def test_the_background_phase_emits_both_writes(self, tmp_path) -> None:
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.add_segment((2002.0, 2020.0))
+        assert w.record is not None
+        w.copy_commit()
+        cmd = w.QtWidgets.QApplication.clipboard().text()
+        assert "--save-secular" in cmd, "the reusable s(t) is not written"
+        assert "--commit" in cmd, "the finished record is not written"
+        assert "--stage" not in cmd, "the background phase declares no stage"
+
+    def test_it_says_which_write_does_what(self, tmp_path) -> None:
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.add_segment((2002.0, 2020.0))
+        w.copy_commit()
+        text = w.summary.toPlainText()
+        assert "reusable s(t)" in text and "plot-gps-timeseries" in text
+
+    def test_a_stepless_station_is_told_s_is_f(self, tmp_path) -> None:
+        w = TestTheWindow._window(sta="RHOF", tmp_state=tmp_path)
+        w.add_segment((2002.0, 2020.0))
+        if w.record is None:  # pragma: no cover
+            pytest.skip("RHOF not fittable here")
+        if w.record.get("step_epochs"):  # pragma: no cover
+            pytest.skip("RHOF gained a declared step; pick another station")
+        w.copy_commit()
+        assert "s(t) IS f(t)" in w.summary.toPlainText()
+
+    def test_a_station_with_a_declared_step_says_so(self, tmp_path) -> None:
+        """The record already carries it — steps.csv is a floor."""
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.add_segment((2002.162, 2008.4448))
+        w.add_segment((2009.3294, 2021.4796))
+        assert w.record.get("step_epochs"), "SELF lost its declared step"
+        w.copy_commit()
+        assert "complete f(t)" in w.summary.toPlainText()
+
+    def test_nothing_to_commit_is_said_not_crashed(self, tmp_path) -> None:
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.cb_linear.setChecked(False)
+        w.cb_periodic.setChecked(False)
+        assert w.record is None
+        w.copy_commit()
+        assert "nothing to commit" in w.summary.toPlainText()
