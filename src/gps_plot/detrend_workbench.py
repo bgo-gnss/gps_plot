@@ -176,6 +176,7 @@ def estimate_with_abort_fallback(
     outlier_param: list[str] | None = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
     terms: Sequence[str] | None = None,
     **kwargs: Any,
 ) -> tuple[Any, bool]:
@@ -214,6 +215,7 @@ def estimate_with_abort_fallback(
             outlier_params=params,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
+            lookup_secular=lookup_secular,
             terms=terms,
             **kwargs,
         )
@@ -390,6 +392,7 @@ def estimate_record(
     outlier_params: Any = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
     terms: Sequence[str] | None = None,
     model: str | None = None,
     refs: Mapping[str, Any] | None = None,
@@ -447,6 +450,7 @@ def estimate_record(
         outlier_params=outlier_params,
         stage_plan=stage_plan,
         lookup_donor=lookup_donor,
+        lookup_secular=lookup_secular,
         terms=terms,
         **extra,
     )
@@ -463,6 +467,7 @@ def build_record(
     stages: str | None = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
     terms_spec: Sequence[str] | None = None,
     segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
@@ -542,6 +547,7 @@ def build_record(
             outlier_param=outlier_param,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
+            lookup_secular=lookup_secular,
             terms=terms_spec,
             **kwargs,
         )
@@ -1731,42 +1737,20 @@ def format_staged_joint_deltas(
 def group_param_mask(record: Mapping[str, Any], groups: Sequence[str]) -> Any:
     """Which of a RECORD's parameters belong to the named term groups.
 
-    Delegates the classification rather than repeating it: ``secular`` has
-    to keep one meaning across the estimator, ``select_terms`` and the
-    borrow path, and a fourth opinion here is how the two vocabularies would
-    quietly drift. Note this is the STAGED vocabulary — the apply-time one
-    folds step amplitudes into ``secular``, and using that here would remove
-    the very step a later stage is being set up to estimate.
+    One line, because the logic now lives beside the classifier it belongs
+    to: `gps_analysis.staged.record_group_mask`. It was written here first
+    and independently in the donor-borrow path, and the donor copy compared
+    the model's width against the record's -- so it refused every station
+    with a declared step. Two implementations of one rule, differing where
+    it mattered, which is the shape this lane keeps paying for.
 
-    The step tail is the one thing decided locally, and by construction
-    rather than by classification: ``StationEstimate.to_record`` APPENDS one
-    ``step_amp_k`` per declared step to the base model's ``param_names``, so
-    the entries past the base model's width are step amplitudes and no
-    classifier sees them.
+    Note this is the STAGED vocabulary. The apply-time one folds step
+    amplitudes into ``secular``, and using it here would remove the very
+    step a later stage is being set up to estimate.
     """
-    names = list(record.get("param_names") or ())
-    wanted = set(groups)
-    spec = record.get("terms")
-    if spec is not None:
-        from gps_analysis.terms import TrajectoryModel
+    from gps_analysis.staged import record_group_mask
 
-        model = TrajectoryModel.from_spec(spec)
-        base = np.zeros(model.n_params, dtype=bool)
-        for group in wanted:
-            base |= np.asarray(model.group_mask(group), dtype=bool)
-    else:
-        from gps_analysis.staged import group_parameter_mask
-
-        base = np.zeros(0, dtype=bool)
-        for group in wanted:
-            one = np.asarray(group_parameter_mask(record["model"], group), dtype=bool)
-            base = one if base.size == 0 else (base | one)
-
-    mask = np.zeros(len(names), dtype=bool)
-    mask[: base.size] = base
-    if "step" in wanted:
-        mask[base.size :] = True
-    return mask
+    return record_group_mask(record, list(groups))
 
 
 def group_contribution(
@@ -1888,6 +1872,18 @@ def resolve_out(out: str | None, sta: str) -> Path:
     if os.sep in out or out.startswith("~") or (os.altsep and os.altsep in out):
         return Path(out).expanduser()
     return default_figdir() / out
+
+
+def _secular_lookup(args: Any, sta: str) -> Any:
+    """The saved-background lookup a ``store:`` hold resolves against.
+
+    Same file the stage plans and models live in, resolved the same way, so
+    an operator has one answer to "where is my curation".
+    """
+    from geo_dataread.detrend_estimate import secular_lookup
+    from geo_dataread.stage_plan import default_analysis_yaml_path
+
+    return secular_lookup(args.analysis_yaml or default_analysis_yaml_path(), sta)
 
 
 def commit_record(
@@ -2122,6 +2118,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "parameters are biased relative to a full-detection one",
     )
     p.add_argument(
+        "--save-secular",
+        action="store_true",
+        help="save this fit's BACKGROUND — linear + periodic only — to "
+        "analysis.yaml as this station's reusable s(t). Steps and transients "
+        "are events and are never part of it. Hold it later with "
+        "--hold secular=store:self, or from another station with "
+        "--hold periodic=store:STA. Separate from --commit, which stores the "
+        "finished f(t) that plot-gps-timeseries reads",
+    )
+    p.add_argument(
         "--final",
         choices=("staged", "joint"),
         default="staged",
@@ -2334,6 +2340,7 @@ def main(argv: list[str] | None = None) -> int:
         return 5
 
     stage_plan = None
+    secular_lookup = None
     if args.stage or args.hold:
         # Parsed BEFORE any data is read, like the --terms refusal above: a
         # grammar error should cost nothing, and every message below names the
@@ -2387,7 +2394,14 @@ def main(argv: list[str] | None = None) -> int:
             # Up-front existence check only: a missing donor must fail
             # before any data is read. The estimator re-resolves per
             # component, since a donor hold borrows THAT component's numbers.
-            resolve_stage_plan(stage_plan, lookup_donor=_donor, component=0)
+            secular_lookup = _secular_lookup(args, sta)
+            resolve_stage_plan(
+                stage_plan,
+                lookup_donor=_donor,
+                component=0,
+                lookup_secular=secular_lookup,
+                station=sta,
+            )
             resolved_stages = stage_plan
             donor_lookup = _donor
         except (RuntimeError, ValueError, KeyError) as exc:
@@ -2407,6 +2421,7 @@ def main(argv: list[str] | None = None) -> int:
             stages=args.stages,
             stage_plan=resolved_stages,
             lookup_donor=donor_lookup,
+            lookup_secular=secular_lookup,
             terms_spec=args.term or None,
             segments=_resolve_cli_segments(args),
             steps=args.step or None,
@@ -2607,6 +2622,38 @@ def main(argv: list[str] | None = None) -> int:
                     f"too recent for the detector to rule on)"
                 )
     print(f"\nwrote {path}")
+
+    if args.save_secular:
+        # The BACKGROUND store, not the finished one. Deliberately separate:
+        # a background committed into detrend_params.json would look complete
+        # and be wrong -- production would detrend the station with s(t) alone
+        # and serve a series with its coseismic offset still in it.
+        from geo_dataread.secular_store import secular_from_record, write_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
+
+        yaml_path = args.analysis_yaml or default_analysis_yaml_path()
+        if yaml_path is None:
+            print(
+                "  warning: background NOT saved — no analysis.yaml is "
+                "reachable (no gpsconfig on this host). Pass --analysis-yaml "
+                "to say where.",
+                file=sys.stderr,
+            )
+        else:
+            entry = secular_from_record(record, fitted_at=record.get("fitted_at"))
+            write_secular(yaml_path, sta, entry)
+            spans = (
+                "the fit's own domain"
+                if not entry.segments
+                else ", ".join(f"{a}:{b}" for a, b in entry.segments)
+            )
+            print(
+                f"  background s(t) -> {yaml_path}\n"
+                f"    {len(entry.param_names)} parameters per component, "
+                f"fitted on {spans}\n"
+                f"    hold it with: --hold secular=store:self "
+                f"--hold periodic=store:self"
+            )
 
     if args.commit:
         record.setdefault("refs", {})["generator"] = "gps-detrend-workbench"

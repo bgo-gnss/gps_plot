@@ -1453,3 +1453,100 @@ def test_joint_commit_clears_a_stale_stage_plan(gpsconfig, tmp_path):
     assert joint["rms"] != staged["rms"], "the joint solve changed nothing"
     # and the joint record carries no plan of its own to re-stage from
     assert "stage_plan" not in joint
+
+
+def test_the_saved_background_can_be_held_later(gpsconfig, tmp_path):
+    """The workflow the secular store exists for, end to end.
+
+    Estimate s(t) on clean intervals, SAVE it, then come back and estimate
+    only the events with that background held. Before the store this could
+    only be spelled `--hold secular=donor:SELF`, borrowing from the station's
+    own finished record -- and that was refused outright for any station with
+    a declared step, because the donor mask was built from the model's width
+    (6) and compared to the record's (7).
+    """
+    from geo_dataread.secular_store import read_secular
+    from gps_plot.detrend_workbench import main
+
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    common = [
+        "SELF",
+        "--tot-dir",
+        str(TOT),
+        "--max-gap-years",
+        "2.0",
+        "--uncert",
+        "10",
+        "--analysis-yaml",
+        str(yaml_path),
+    ]
+
+    # 1. the background, on the clean intervals either side of the 2008 step
+    assert (
+        main(
+            common
+            + [
+                "--segment",
+                "2001.5:2008.40",
+                "--segment",
+                "2009.5:2020.83",
+                "--save-secular",
+                "--out",
+                str(tmp_path / "a.png"),
+            ]
+        )
+        == 0
+    )
+    entry = read_secular(yaml_path)["SELF"]
+    assert "step_amp_1" not in entry.param_names, "an event leaked into s(t)"
+    assert entry.segments == ((2001.5, 2008.4), (2009.5, 2020.83))
+
+    # 2. hold it, estimate only the events
+    assert (
+        main(
+            common
+            + [
+                "--stage",
+                "ev:step",
+                "--hold",
+                "secular=store:self",
+                "--hold",
+                "periodic=store:self",
+                "--out",
+                str(tmp_path / "b.png"),
+            ]
+        )
+        == 0
+    )
+
+
+def test_a_store_hold_without_a_saved_background_is_refused(gpsconfig, tmp_path):
+    """Never silently estimate what the operator asked to hold.
+
+    Quietly fitting a background instead would store different science under
+    the same command -- the failure mode every refusal in this grammar is
+    shaped against.
+    """
+    from gps_plot.detrend_workbench import main
+
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    rc = main(
+        [
+            "RHOF",
+            "--tot-dir",
+            str(TOT),
+            "--max-gap-years",
+            "2.0",
+            "--analysis-yaml",
+            str(yaml_path),
+            "--stage",
+            "ev:secular",
+            "--hold",
+            "periodic=store:self",
+            "--out",
+            str(tmp_path / "c.png"),
+        ]
+    )
+    assert rc == 4, "expected a refusal, not a fit"
