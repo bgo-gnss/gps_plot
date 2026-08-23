@@ -1,6 +1,6 @@
 """Qt picker for the detrend lane — two phases, because the model has two.
 
-    f(t) = s(t) + Σ step(t − tₖ) + Σ transient(t − tₑ)
+    f(t) = s(t) + Σ step(t − tₖ)
 
 ``s(t)`` is the BACKGROUND: rate plus annual and semiannual, estimated once
 on clean data, saved, and reused — held fixed while events are estimated
@@ -20,8 +20,16 @@ the point: one interval cannot span an event, and a background fitted only
 after one extrapolates backwards through it.
 
 **events** — the saved s(t) is held, the plot shows ``data − s(t)``, and
-steps and transients are estimated against a background that no longer
-moves.  ``data − f(t)`` goes to zero when the model is right.
+the offsets are estimated against a background that no longer moves.
+``data − f(t)`` goes to zero when the model is right.
+
+Transients are deliberately NOT here.  They were tried and taken back out:
+a short-τ saturating exp is 0.993 correlated with the step it sits on, so
+over an 18-year record the two are not separable, and what looks like a
+transient across an event is often a RATE CHANGE — which breaks the
+one-regime assumption the background rests on and needs a term the grammar
+does not have.  ``gps-detrend-workbench --term`` still exists for anyone who
+wants one; this window does not offer what it cannot help you judge.
 
 The invariant is unchanged and is still the whole promise: **the emitted
 command reproduces the figure.**  Every divergence found in this window has
@@ -74,7 +82,6 @@ FIT_COLOR = (31, 119, 180)  # blue   — the model
 SEGMENT_COLOR = (255, 165, 0, 60)  # orange — a clean interval for s(t)
 DOMAIN_COLOR = (100, 150, 220, 45)  # blue   — the events fit domain
 STEP_COLOR = (140, 20, 20)
-ONSET_COLOR = (44, 120, 44)
 TOS_EVENT_COLOR = (0, 100, 0)
 SEISMIC_EVENT_COLOR = (139, 0, 0)
 STALE_COLOR = (150, 150, 150)  # a curve whose fit was REFUSED
@@ -84,7 +91,7 @@ COMPONENTS = ("North", "East", "Up")
 #: estimated against it, and the mode makes that order visible rather than
 #: leaving it to be rediscovered per station.
 MODE_BACKGROUND = "background — s(t)"
-MODE_EVENTS = "events — steps and transients"
+MODE_EVENTS = "events — offsets"
 
 #: The GUI says `linear`; every emitted flag still says `secular`. The stage
 #: grammar's `secular` names the linear term alone, but "secular" properly
@@ -96,11 +103,24 @@ GROUP_LABELS = {
     "transient": "transient",
 }
 
-#: The groups s(t) is made of, and the groups that are events. Steps and
-#: transients are what gets estimated AGAINST the background, never part of
-#: it — the same split `geo_dataread.secular_store` enforces when saving.
+#: The groups s(t) is made of, and the groups that are events. A step is
+#: what gets estimated AGAINST the background, never part of it — the same
+#: split `geo_dataread.secular_store` enforces when saving.
+#:
+#: TRANSIENTS ARE OUT OF SCOPE HERE, deliberately and after trying. They are
+#: not a missing feature but an unfinished conversation: on SELF a short-τ
+#: saturating exp is 0.993 correlated with the step it sits on, so the two
+#: cannot be separated over an 18-year record, and the rate change either
+#: side of the event is not a transient at all — it breaks the one-regime
+#: assumption this whole two-phase design rests on. `--term` is still there
+#: in the workbench for anyone who wants it; the picker does not offer what
+#: it cannot help you judge.
 BACKGROUND_GROUPS = ("secular", "periodic")
-EVENT_GROUPS = ("step", "transient")
+EVENT_GROUPS = ("step",)
+#: Peeled for the `data − f(t)` view: a record fitted elsewhere may carry a
+#: transient even though this window will not create one, and the view must
+#: still subtract the WHOLE model.
+PEEL_ALL = ("secular", "periodic", "step", "transient")
 
 #: `station_record_from_arrays`' own default, so the emitted command stays
 #: clean when the operator has not moved away from it.
@@ -217,7 +237,6 @@ def events_command(
     free: Sequence[str],
     hold_from: str = "self",
     steps: Sequence[float] = (),
-    term: str | None = None,
     segment: tuple[float, float] | None = None,
     flags: Sequence[str] = (),
     commit: bool = False,
@@ -235,8 +254,6 @@ def events_command(
         parts += ["--segment", f"{segment[0]}:{segment[1]}"]
     for epoch in steps:
         parts += ["--step", str(epoch)]
-    if term:
-        parts += ["--term", term]
     parts += ["--stage", f"{EVENT_STAGE}:{','.join(free)}"]
     for group in BACKGROUND_GROUPS:
         parts += ["--hold", f"{group}=store:{hold_from}"]
@@ -368,8 +385,6 @@ class PickerWindow:  # pragma: no cover - GUI
         # DIFFERENT objects: one says which epochs the events are fitted over,
         # the other which the background came from.
         self.domain_regions = self._add_region(self.default_domain, DOMAIN_COLOR)
-        self.onset_lines = self._add_line(sum(self.span) / 2.0, ONSET_COLOR)
-        self._set_visible(self.onset_lines, False)
         self.layout.scene().sigMouseClicked.connect(self._on_click)
 
     def _add_region(self, values: tuple[float, float], colour: Any) -> list[Any]:
@@ -568,39 +583,6 @@ class PickerWindow:  # pragma: no cover - GUI
         self.hold_from.editingFinished.connect(self.refit)
         hrow.addWidget(self.hold_from)
         ecol.addLayout(hrow)
-
-        self.cb_term = QtWidgets.QCheckBox("transient")
-        self.cb_term.setToolTip(
-            "A log/exp transient at the green onset line (emits --term)"
-        )
-        self.cb_term.toggled.connect(self._toggle_term)
-        ecol.addWidget(self.cb_term)
-
-        krow = QtWidgets.QHBoxLayout()
-        self.kind = QtWidgets.QComboBox()
-        self.kind.addItems(["log", "exp"])
-        self.kind.currentIndexChanged.connect(self.refit)
-        krow.addWidget(self.kind)
-        krow.addWidget(QtWidgets.QLabel("tau [yr]"))
-        self.tau = QtWidgets.QDoubleSpinBox()
-        self.tau.setRange(0.05, 50.0)
-        self.tau.setSingleStep(0.1)
-        # 3 dp: refining solves tau to better than a hundredth of a year, and
-        # rounding back to 2 would discard precision the fit just earned --
-        # and put the command a step away from the figure.
-        self.tau.setDecimals(3)
-        self.tau.setValue(2.0)
-        self.tau.editingFinished.connect(self.refit)
-        krow.addWidget(self.tau)
-        ecol.addLayout(krow)
-
-        self.btn_refine = QtWidgets.QPushButton("refine τ (VARPRO)")
-        self.btn_refine.setToolTip(
-            "Solve τ from the fit on screen instead of eyeballing it. The "
-            "spinbox stays the single source, so the command follows"
-        )
-        self.btn_refine.clicked.connect(self._refine_tau)
-        ecol.addWidget(self.btn_refine)
 
         self.btn_commit = QtWidgets.QPushButton("copy the commit command")
         self.btn_commit.setToolTip(
@@ -881,10 +863,6 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.refit()
 
-    def _toggle_term(self, on: bool) -> None:
-        self._set_visible(self.onset_lines, on)
-        self.refit()
-
     def _mode_changed(self, *_: Any) -> None:
         events = self.mode.currentText() == MODE_EVENTS
         self.bg_box.setVisible(not events)
@@ -892,7 +870,6 @@ class PickerWindow:  # pragma: no cover - GUI
         self._set_visible(self.domain_regions, events)
         for group in self.segment_regions:
             self._set_visible(group, not events)
-        self._set_visible(self.onset_lines, events and self.cb_term.isChecked())
         for group in self.step_lines:
             self._set_visible(group, events)
         self.phase_hint.setText(
@@ -933,15 +910,7 @@ class PickerWindow:  # pragma: no cover - GUI
             flags = ["--stages", USE_FLAGGED_STAGES, *flags]
         return flags
 
-    def _term_spec(self) -> str | None:
-        if not self.cb_term.isChecked():
-            return None
-        return (
-            f"{self.kind.currentText()}@{round(float(self.onset_lines[0].value()), 4)}"
-            f",tau={round(float(self.tau.value()), 3)}"
-        )
-
-    def _events_free(self, settings: Any, term: str | None) -> list[str]:
+    def _events_free(self, settings: Any) -> list[str]:
         """Which groups the event stage estimates.
 
         `step` only when the FIT will carry one — the MERGED declaration
@@ -953,12 +922,7 @@ class PickerWindow:  # pragma: no cover - GUI
         """
         from gps_plot.detrend_workbench import _declared_step_epochs
 
-        free = []
-        if _declared_step_epochs(self.sta, settings.steps):
-            free.append("step")
-        if term:
-            free.append("transient")
-        return free
+        return ["step"] if _declared_step_epochs(self.sta, settings.steps) else []
 
     def refit(self, *_: Any) -> None:
         from gps_plot.detrend_workbench import _override_settings
@@ -970,7 +934,6 @@ class PickerWindow:  # pragma: no cover - GUI
         plan = lookup = None
 
         if events:
-            term = self._term_spec()
             steps = self._picked_steps()
             lo, hi = (round(float(v), 4) for v in self.domain_regions[0].getRegion())
             moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
@@ -982,28 +945,26 @@ class PickerWindow:  # pragma: no cover - GUI
                 steps=steps or None,
                 max_gap_years=self.max_gap_years,
             )
-            free = self._events_free(settings, term)
+            free = self._events_free(settings)
             hold_from = self.hold_from.text().strip() or "self"
             self.command_text = events_command(
                 self.sta,
                 free=free or ["step"],
                 hold_from=hold_from,
                 steps=steps,
-                term=term,
                 segment=(lo, hi) if moved else None,
                 flags=flags,
             )
             self.model = None
             if not free:
                 note = (
-                    "nothing to estimate: this station has no declared step "
-                    "and no transient is configured. Double-click a jump to "
-                    "declare a step, or tick 'transient'."
+                    "nothing to estimate: this station has no declared step. "
+                    "Double-click a jump to "
+                    "declare a step by double-clicking a jump on the plot."
                 )
             else:
                 plan, lookup, note = self._events_plan(free, hold_from)
         else:
-            term = None
             self.model = self._terms_model()
             segs = self.segments()
             settings = _override_settings(
@@ -1033,7 +994,6 @@ class PickerWindow:  # pragma: no cover - GUI
                     self.data,
                     self.sigma,
                     settings=settings,
-                    terms=(term,) if term else None,
                     stage_plan=plan,
                     lookup_secular=lookup,
                     model=self.model,
@@ -1153,7 +1113,7 @@ class PickerWindow:  # pragma: no cover - GUI
         if view == "data − s(t)":
             peel = list(BACKGROUND_GROUPS)
         elif view == "data − f(t)":
-            peel = list(BACKGROUND_GROUPS) + list(EVENT_GROUPS)
+            peel = list(PEEL_ALL)
         # DISPLAY ONLY: the masks, the record and the emitted command are the
         # same either way -- this subtracts a model that was already fitted,
         # it does not fit anything different.
@@ -1169,9 +1129,7 @@ class PickerWindow:  # pragma: no cover - GUI
         # vertical at any zoom.
         fit_x, fit_y = trajectory_curve(est.record, self.yearf)
         if peel:
-            remaining = [
-                g for g in list(BACKGROUND_GROUPS) + list(EVENT_GROUPS) if g not in peel
-            ]
+            remaining = [g for g in list(PEEL_ALL) if g not in peel]
             fit_y = (
                 group_contribution(est.record, fit_x, remaining)
                 if remaining
@@ -1373,7 +1331,7 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.summary.setPlainText(
             f"background saved for {self.sta}.\n\nSwitch to the events phase "
-            f"to estimate steps and transients against it.\n\nThe same thing "
+            f"to estimate the offsets against it.\n\nThe same thing "
             f"from the CLI:\n\n{cmd}"
         )
 
@@ -1392,7 +1350,6 @@ class PickerWindow:  # pragma: no cover - GUI
         from gps_plot.detrend_workbench import _override_settings
 
         steps = self._picked_steps()
-        term = self._term_spec()
         settings = _override_settings(
             self.base_settings,
             self.sta,
@@ -1402,134 +1359,14 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         cmd = events_command(
             self.sta,
-            free=self._events_free(settings, term) or ["step"],
+            free=self._events_free(settings) or ["step"],
             hold_from=self.hold_from.text().strip() or "self",
             steps=steps,
-            term=term,
             flags=self._run_flags(),
             commit=True,
         )
         self.QtWidgets.QApplication.clipboard().setText(cmd)
         self.summary.setPlainText(f"copied to the clipboard:\n\n{cmd}")
-
-    def _refine_tau(self) -> None:
-        """Solve τ by VARPRO, seeded by the fit currently on screen.
-
-        The visual fit fixes everything except the one genuinely nonlinear
-        parameter, which the operator has been setting by eye. ``τ`` is
-        exactly what :func:`gps_analysis.profile_transient_tau` exists to
-        refine — "the opt-in nonlinear refinement of an operator-fixed τ" —
-        so this is a seed-and-solve, not a new estimator.
-
-        Per COMPONENT, because the profiler takes one series, while the CLI's
-        ``--term …,tau=X`` applies ONE τ to all three. All three are therefore
-        reported and the best-constrained one (tightest relative interval) is
-        written into the spinbox. That rule is stated rather than hidden, and
-        it is overridable by typing: the spinbox stays the single source the
-        fit and the command both read, so refining cannot move one without
-        the other.
-
-        The profiler WARNS when its identification conditions fail (T_post ≳
-        5τ̂, amplitude SNR ≥ 5); those warnings are surfaced verbatim, because
-        a τ that is really only a bound must not read as a measurement.
-        """
-        import warnings
-
-        np = self.np
-        est = getattr(self, "_est", None)
-        if not self.cb_term.isChecked() or est is None:
-            self.summary.setPlainText(
-                "refine τ: needs a transient and a fitted record on screen."
-            )
-            return
-
-        spec = getattr(est.estimate, "term_spec", None)
-        if not spec:
-            self.summary.setPlainText(
-                "refine τ: this record carries no composed term spec, so "
-                "there is no transient to profile."
-            )
-            return
-
-        from gps_analysis import TrajectoryModel, profile_transient_tau
-
-        model = TrajectoryModel.from_spec(spec)
-        outl = np.atleast_2d(np.asarray(est.outliers, dtype=bool))
-        lines: list[str] = ["refine τ (VARPRO, seeded by the visual fit)", ""]
-        best: tuple[float, float, str] | None = None
-
-        for c, name in enumerate(COMPONENTS):
-            keep = est.in_window & np.isfinite(self.data[c]) & ~outl[c]
-            t, y = self.yearf[keep], self.data[c][keep]
-            s = self.sigma[c][keep]
-            s = s if np.all(np.isfinite(s)) and np.all(s > 0) else None
-            try:
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    # Bounds come from the SPINBOX, so a solved τ is always
-                    # representable. Profiling over a wider range than the
-                    # control can hold silently clamps on the way back: SELF
-                    # returned τ = 0.020 and the spinbox took 0.05, so the
-                    # summary and the command disagreed about the number the
-                    # figure was drawn with.
-                    fit = profile_transient_tau(
-                        model,
-                        t,
-                        y,
-                        sigma=s,
-                        tau_bounds=(self.tau.minimum(), self.tau.maximum()),
-                    )
-            except Exception as exc:  # a refusal is a RESULT, per this lane
-                lines.append(f"  {name:5s} refused — {exc}")
-                continue
-
-            lo, hi = fit.tau_interval
-            # An interval that did not close is a BOUND, not a measurement --
-            # the profiler's own words. Applying it would turn "τ is at least
-            # this" into "τ is this" silently, which is the one thing this
-            # action must not do, so such a component is reported and skipped.
-            open_side = fit.interval_open_lower or fit.interval_open_upper
-            flag = " ⚠ BOUND, not applied" if open_side else ""
-            lines.append(
-                f"  {name:5s} τ = {fit.tau:.3f} ± {fit.tau_sigma:.3f} yr   "
-                f"[{lo:.2f}, {hi:.2f}]{flag}"
-            )
-            for w in caught:
-                lines.append(f"         {str(w.message)[:88]}")
-            if open_side:
-                continue
-            rel = abs(fit.tau_sigma / fit.tau) if fit.tau else float("inf")
-            if best is None or rel < best[0]:
-                best = (rel, float(fit.tau), name)
-
-        if best is None:
-            lines += [
-                "",
-                "  No component gave a CLOSED interval, so τ is a bound here",
-                "  and the spinbox is unchanged. The usual cause is that the",
-                "  transient is not identifiable against the rest of the",
-                "  model — an onset at a declared step epoch makes the two",
-                "  collinear, and too little post-onset data (T_post ≲ 5τ)",
-                "  does the same. Move the onset, or keep τ as your own.",
-            ]
-            self.summary.setPlainText("\n".join(lines))
-            return
-
-        _rel, tau, name = best
-        lines += [
-            "",
-            f"  applied {name}'s τ = {tau:.3f} yr — the tightest relative",
-            "  interval of the three. One τ is shared by all components, so",
-            "  one had to be chosen; type over it to use another.",
-        ]
-        self.summary.setPlainText("\n".join(lines))
-        # Setting the spinbox is what makes the refinement REAL: it refits and
-        # re-emits, so the figure and the command move together.
-        self.tau.setValue(tau)
-        self.refit()
-        self.summary.setPlainText(
-            "\n".join(lines) + "\n\n" + self.summary.toPlainText()
-        )
 
     # -- session ---------------------------------------------------------------
     def _session_path(self) -> Any:
@@ -1565,12 +1402,6 @@ class PickerWindow:  # pragma: no cover - GUI
             "domain": [round(float(v), 4) for v in self.domain_regions[0].getRegion()],
             "steps": list(self._picked_steps()),
             "hold_from": self.hold_from.text().strip(),
-            "term": {
-                "on": self.cb_term.isChecked(),
-                "kind": self.kind.currentText(),
-                "epoch": round(float(self.onset_lines[0].value()), 4),
-                "tau": round(float(self.tau.value()), 3),
-            },
             "params": {
                 "uncert": self.uncert,
                 "max_gap_years": self.max_gap_years,
@@ -1602,10 +1433,9 @@ class PickerWindow:  # pragma: no cover - GUI
             segments = [(float(a), float(b)) for a, b in (d.get("segments") or [])]
             steps = [float(e) for e in (d.get("steps") or [])]
             domain = d.get("domain")
-            term = d.get("term") or {}
             terms = d.get("terms") or {}
-            if not isinstance(term, dict) or not isinstance(terms, dict):
-                raise ValueError("'term' and 'terms' must be objects")
+            if not isinstance(terms, dict):
+                raise ValueError("'terms' must be an object")
         except (OSError, ValueError, TypeError) as exc:
             self._session_note = (
                 f"session NOT restored — {path} is unusable ({exc}).\n"
@@ -1629,18 +1459,6 @@ class PickerWindow:  # pragma: no cover - GUI
             self.step_lines.append(self._add_line(e, STEP_COLOR))
         if d.get("hold_from"):
             self.hold_from.setText(str(d["hold_from"]))
-        self.cb_term.blockSignals(True)
-        self.cb_term.setChecked(bool(term.get("on")))
-        self.cb_term.blockSignals(False)
-        if term.get("kind") in ("log", "exp"):
-            self.kind.setCurrentText(str(term["kind"]))
-        if term.get("epoch"):
-            for ln in self.onset_lines:
-                ln.blockSignals(True)
-                ln.setValue(float(term["epoch"]))
-                ln.blockSignals(False)
-        if term.get("tau"):
-            self.tau.setValue(float(term["tau"]))
         if d.get("mode") in (MODE_BACKGROUND, MODE_EVENTS):
             self.mode.blockSignals(True)
             self.mode.setCurrentText(str(d["mode"]))

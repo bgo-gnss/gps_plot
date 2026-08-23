@@ -124,9 +124,8 @@ class TestTheTwoCommands:
             background_command("SELF", segments=[(2001.5, 2008.4)], save=True),
             events_command(
                 "SELF",
-                free=["step", "transient"],
+                free=["step"],
                 steps=[2011.25],
-                term="log@2008.4085,tau=2.0",
                 segment=(2001.5, 2026.0),
                 commit=True,
             ),
@@ -412,136 +411,6 @@ class TestTheTwoPhaseWorkflow:
         assert "nothing to save" in w.summary.toPlainText()
 
 
-class TestRefineTau:
-    """Slice 3: solve the one nonlinear parameter instead of eyeballing it.
-
-    The visual fit fixes everything except tau, which is exactly what
-    `gps_analysis.profile_transient_tau` exists to refine. The spinbox stays
-    the single source the fit and the command both read, so a refinement
-    cannot move one without the other.
-    """
-
-    @staticmethod
-    def _synthetic(tau=1.5, t0=2014.0, seed=7, tmp_path=None, monkeypatch=None):
-        """A series with a KNOWN tau — the only honest way to test recovery.
-
-        Driven through the REAL workflow, because a transient is an event and
-        events are estimated against a saved background: fit s(t) on the
-        clean stretch before the onset, save it, then switch phases. Ticking
-        `transient` in the background phase does nothing at all, which is the
-        design and not an oversight.
-        """
-        import os
-
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        import numpy as np
-
-        from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
-        from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
-
-        _pg, qtw = _require_qt()
-        qtw.QApplication.instance() or qtw.QApplication([])
-        rng = np.random.default_rng(seed)
-        t = np.arange(2010.0, 2020.0, 1 / 365.25)
-        post = np.maximum(t - t0, 0.0)
-        sig = (
-            3.0 * t - 6000.0 + 4.0 * np.sin(2 * np.pi * t) + 25.0 * np.log1p(post / tau)
-        )
-        y = np.vstack([sig + rng.normal(0, 1.0, t.size) for _ in range(3)])
-        settings = resolve_fit_settings(
-            "SYNT", None, FitDefaults(max_gap_years=2.0), catalog_source="test"
-        )
-        if tmp_path is not None and monkeypatch is not None:
-            import shutil
-            from pathlib import Path
-
-            src = Path.home() / ".config/gpsconfig"
-            if not (src / "analysis.yaml").is_file():  # pragma: no cover
-                pytest.skip("no deployed gpsconfig on this host")
-            dst = tmp_path / "cfg"
-            shutil.copytree(src, dst, symlinks=False)
-            monkeypatch.setenv("GPS_CONFIG_PATH", str(dst))
-            monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-        w = PickerWindow(
-            "SYNT", t, y, np.full_like(y, 1.0), settings, max_gap_years=2.0, uncert=10
-        )
-        # s(t) from the pre-onset stretch, which is the only part of this
-        # series the transient has not touched. The onset sits at 2014 rather
-        # than mid-series so that stretch clears `min_span_years`: at 1.9 yr
-        # the background is refused outright and there is nothing to save.
-        w.add_segment((2010.05, round(t0 - 0.05, 4)))
-        assert w.record is not None, w.summary.toPlainText()[:200]
-        w.save_secular()
-        w.mode.setCurrentText(MODE_EVENTS)
-        w.onset_lines[0].setValue(t0)
-        w.cb_term.setChecked(True)
-        return w
-
-    def test_it_recovers_a_known_tau_and_applies_it(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        w = self._synthetic(tau=1.5, tmp_path=tmp_path, monkeypatch=monkeypatch)
-        w.tau.setValue(4.0)  # a deliberately wrong seed
-        w.cb_term.setChecked(True)
-        w._refine_tau()
-        assert w.tau.value() == pytest.approx(1.5, abs=0.1), w.summary.toPlainText()
-        # and the command moved with the figure
-        assert f"tau={w.tau.value()}" in w.command.text(), w.command.text()
-
-    def test_an_unclosed_interval_is_a_bound_and_is_not_applied(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """The profiler's own words: publish a BOUND then, not a measurement.
-
-        Applying it would silently turn "tau is at least this" into "tau is
-        this". SELF's transient placed on its declared 2008 coseismic is the
-        real case — onset and step are collinear, so tau runs to the bound.
-        """
-        import shutil
-        from pathlib import Path
-
-        src = Path.home() / ".config/gpsconfig"
-        if not (src / "analysis.yaml").is_file():  # pragma: no cover
-            pytest.skip("no deployed gpsconfig on this host")
-        shutil.copytree(src, tmp_path / "cfg", symlinks=False)
-        monkeypatch.setenv("GPS_CONFIG_PATH", str(tmp_path / "cfg"))
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-
-        w = TestTheWindow._window()
-        w.add_segment((2001.5, 2008.40))
-        w.add_segment((2009.5, 2020.83))
-        w.save_secular()
-        w.mode.setCurrentText(MODE_EVENTS)
-        w.onset_lines[0].setValue(2008.4085)  # the declared step epoch
-        w.cb_term.setChecked(True)
-        before = w.tau.value()
-        w._refine_tau()
-        text = w.summary.toPlainText()
-        assert "BOUND, not applied" in text, text[:200]
-        assert w.tau.value() == before, "a bound was applied as a measurement"
-
-    def test_the_profiler_cannot_return_a_tau_the_spinbox_cannot_hold(self) -> None:
-        """Regression: bounds wider than the control silently clamp.
-
-        Profiling over (0.02, 40) while the spinbox held (0.05, 50) made the
-        summary report tau = 0.020 and the command carry 0.05 — the reported
-        number and the fitted one disagreed.
-        """
-        w = self._synthetic()
-        w.cb_term.setChecked(True)
-        w._refine_tau()
-        for line in w.summary.toPlainText().splitlines():
-            if " τ = " in line:
-                value = float(line.split("τ = ")[1].split()[0])
-                assert w.tau.minimum() <= value <= w.tau.maximum(), line
-
-    def test_it_needs_a_transient_and_says_so(self) -> None:
-        w = self._synthetic()
-        w.cb_term.setChecked(False)
-        w._refine_tau()
-        assert "needs a transient" in w.summary.toPlainText()
-
-
 class TestBothPickersEmitTheSameRunFlags:
     """`run_flags` exists because two pickers forgot the same flag.
 
@@ -623,3 +492,40 @@ class TestBothPickersEmitTheSameRunFlags:
             run_flags(uncert=12.5)
         # an integral float is the same screen, and stays spellable
         assert run_flags(uncert=12.0) == ["--uncert", "12"]
+
+
+class TestTransientsAreOutOfScope:
+    """Taken back out on purpose, after trying — so the removal is pinned.
+
+    Two measurements decided it. A short-τ saturating exp is 0.993 correlated
+    with the step it sits on, so over an 18-year record the pair is not
+    separable and only their SUM is trustworthy. And on SELF what looks like
+    a transient across the 2008 event is a rate change — pre 2.17, post 3.05
+    mm/yr on north — which is not a transient at all and breaks the
+    one-regime assumption the background rests on.
+
+    `gps-detrend-workbench --term` still exists. The picker does not offer
+    what it cannot help an operator judge.
+    """
+
+    def test_the_events_command_carries_no_term(self) -> None:
+        cmd = events_command("SELF", free=["step"], steps=[2008.4085])
+        assert "--term" not in cmd
+        assert "--stage ev:step" in cmd
+
+    def test_the_window_has_no_transient_control(self, tmp_path) -> None:
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        for gone in ("cb_term", "kind", "tau", "onset_lines", "btn_refine"):
+            assert not hasattr(w, gone), f"{gone} survived the removal"
+
+    def test_the_event_stage_estimates_steps_only(self, tmp_path) -> None:
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.mode.setCurrentText(MODE_EVENTS)
+        assert "transient" not in w.command.text()
+
+    def test_the_whole_model_view_still_peels_a_transient(self, tmp_path) -> None:
+        """A record fitted ELSEWHERE may carry one, and data − f(t) must
+        subtract the whole model or it is not what it says it is."""
+        from gps_plot.detrend_picker_qt import PEEL_ALL
+
+        assert "transient" in PEEL_ALL
