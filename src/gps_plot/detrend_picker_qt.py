@@ -1,134 +1,94 @@
-"""Pick a detrend setup by pointing at the data, and print the command.
+"""Qt picker for the detrend lane — two phases, because the model has two.
 
-The desktop picker. Its predecessors were rejected for good reasons and both
-lessons are built in here:
+    f(t) = s(t) + Σ step(t − tₖ) + Σ transient(t − tₑ)
 
-* the PDF workflow (edit a flag, re-run, open a viewer) is too slow to take
-  as many looks as curation needs;
-* the marimo notebook made it *reactive* but not *pointed* — sliders and
-  dropdowns are typing numbers with extra steps, which is "the terminal in a
-  browser".
+``s(t)`` is the BACKGROUND: rate plus annual and semiannual, estimated once
+on clean data, saved, and reused — held fixed while events are estimated
+against it, and borrowed by stations too short or too noisy to constrain a
+seasonal of their own.  The events are short-lived departures from it.
 
-So everything here is placed **on the data**: drag the fit domain to where
-the series stops being quiet, double-click the jump you want declared as a
-step, drag the transient onset to where deformation starts. The fit re-runs
-on release (~0.2–0.4 s) and the trajectory redraws, so the consequence of a
-pick is visible immediately.
+Those are different acts on different data, and the previous panel made them
+one.  It offered a general N-stage editor in which the operator had to
+rediscover, per station, that a background held from a window on ONE side of
+an event pins the level to that side and leaves the step nothing to measure
+(SELF, 2026-08-22: step estimated at 0.0 mm against a true −150.8).  This
+window has the two phases as two modes, and their order IS the workflow:
 
-It still **never stores anything**. The output is a
-``gps-detrend-workbench`` command line, which remains the only path to
-committed science — so every refusal the CLI makes still applies, and this
-window cannot store what the CLI would reject. One grammar, several
-producers (``geo_dataread.stage_plan`` and ``geo_dataread.term_spec`` are
-the grammar; this is a third producer alongside the CLI and the notebook).
+**background** — pick the clean intervals (a UNION, usually one either side
+of the event), fit lin+per on them, look at it, ``save s(t)``.  The union is
+the point: one interval cannot span an event, and a background fitted only
+after one extrapolates backwards through it.
 
-Honest trade, stated because it is the reason matplotlib was the earlier
-choice: this is a FAITHFUL BUT DIFFERENT view from the PDF. pyqtgraph draws
-the same numbers with the same vocabulary (red kept, grey flagged, gold
-provisional, blue trajectory, coloured event lines) but not the same
-renderer, so judge borderline cosmetics on the PDF. What it buys is
-interaction the publication figure cannot give: grab-handled regions,
-draggable markers and redraw fast enough to explore with.
+**events** — the saved s(t) is held, the plot shows ``data − s(t)``, and
+steps and transients are estimated against a background that no longer
+moves.  ``data − f(t)`` goes to zero when the model is right.
 
-Prior art, surveyed 2026-08-03; each idea below is attributed where it is
-used:
+The invariant is unchanged and is still the whole promise: **the emitted
+command reproduces the figure.**  Every divergence found in this window has
+had one shape — a second place assembling the same decision — so the two
+commands come from two pure functions below, the run-flag tail from
+``detrend_workbench.run_flags`` (shared with the marimo picker), the settings
+from the workbench's own ``_override_settings``, and what a background IS
+from ``geo_dataread.secular_store``.
 
-* **SARI** — Santamaría-Gómez, A. (2019), *SARI: interactive GNSS position
-  time series analysis software*, GPS Solutions 23:52,
-  doi:10.1007/s10291-019-0846-y. R/Shiny, browser-based. Same term algebra
-  (polynomial + offsets + sinusoids + exp/log decays); WLS and Kalman
-  fitters. Notably **digests equipment changes from IGS site logs, GAMIT
-  ``station.info``, the NGL offsets file or a custom offsets file** to flag
-  candidate discontinuities, and can subtract a nearby station's series.
-* **TSAnalyzer** — Wu, D., Yan, H., Shen, Y. (2017), *TSAnalyzer, a GNSS
-  time series analysis software*, GPS Solutions 21:1389–1394,
-  doi:10.1007/s10291-017-0637-2. Python + Qt, the same stack as this module,
-  arrived at independently. Semi-automatic offset detection via ``sigseg``
-  (Vitti 2012) then manual inspection, and **records picked offsets in a
-  JSON file that can be reloaded**, replotted as coloured lines by kind.
-* **Snuffler** — Heimann et al., Pyrocko seismological toolbox,
-  https://pyrocko.org/docs/current/apps/snuffler/manual.html. The mature
-  interactive-picking tradition: distinct marker TYPES, double-click to
-  pick, click-and-drag for a time span, markers attached to a trace or
-  global, and a plugin system (*snufflings*).
-* Both GNSS tools cite **Gazeaux et al. (2013)**, doi:10.1002/jgrb.50152,
-  for the finding this whole tool rests on: automatic offset detection has
-  not matched expert manual inspection.
-
-What is NOT borrowed, deliberately: both published GNSS tools are
-GUI-PRIMARY, with the model inside the interface. This one is CLI-first and
-emits a command, so a picked record is reproducible from a line of text
-rather than from a session file.
-
-Requires ``pyqtgraph`` and ``PySide6``, which live in the DEV group — a
-local development tool, never a production dependency (``uv sync`` installs
-them; a production install is unaffected).
+Requires ``pyqtgraph`` and ``PySide6``, which live in the DEV group — a local
+development tool, never a production dependency.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import shlex
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
-# ``gps-detrend-workbench``'s own ``--uncert`` default, IMPORTED rather than
-# mirrored so the emitted command omits the flag exactly when the workbench
-# would default to the same screen. A copy could drift; this cannot.
+# The workbench's own default, IMPORTED rather than mirrored so the emitted
+# command omits the flag exactly when the workbench would default to the same
+# screen. A copy could drift; this cannot.
 from gps_plot.detrend_workbench import (
     WORKBENCH_UNCERT_DEFAULT,
     estimate_with_abort_fallback,
-    format_staged_joint_deltas,
     group_contribution,
-    staged_joint_deltas,
+    run_flags,
     trajectory_curve,
 )
 
-__all__ = ["StageDraft", "main", "render_stage_flags"]
+__all__ = [
+    "EVENT_STAGE",
+    "MODE_BACKGROUND",
+    "MODE_EVENTS",
+    "background_command",
+    "events_command",
+    "main",
+    "model_equation",
+]
 
-# The cleaned-view vocabulary, kept deliberately in step with
-# ``timesmatplt``'s constants so the two tools cannot drift apart.
-KEPT_COLOR = (214, 39, 40)  # red   — in the fit
-FLAG_COLOR = (150, 150, 150)  # grey  — flagged outlier, masked
-FIT_COLOR = (31, 119, 180)  # blue  — the fitted trajectory
-DOMAIN_COLOR = (31, 119, 180, 40)
-STAGE_COLOR = (255, 127, 14, 55)
-OUTSIDE_COLOR = (105, 105, 105)  # dimgrey — view-flagged OUTSIDE the fit window
-PROV_FACE = (255, 215, 0)  # gold          — provisional: verdict PENDING
-PROV_EDGE = (184, 134, 11)  # darkgoldenrod
-TOS_EVENT_COLOR = (0, 100, 0)  # darkgreen — TOS equipment change
-SEISMIC_EVENT_COLOR = (139, 0, 0)  # darkred — declared seismic step
-STEP_COLOR = (140, 20, 20)  # dark red   — declared step
-ONSET_COLOR = (44, 120, 44)  # dark green — transient onset
+# --- the cleaned-view vocabulary, kept in step with timesmatplt's constants
+KEPT_COLOR = (214, 39, 40)  # red    — in the fit
+FLAG_COLOR = (150, 150, 150)  # grey   — flagged by the fit
+OUTSIDE_COLOR = (150, 150, 150)  # grey   — flagged outside the window
+PROV_FACE = (255, 215, 0)  # gold   — provisional, kept
+PROV_EDGE = (184, 134, 11)
+FIT_COLOR = (31, 119, 180)  # blue   — the model
+SEGMENT_COLOR = (255, 165, 0, 60)  # orange — a clean interval for s(t)
+DOMAIN_COLOR = (100, 150, 220, 45)  # blue   — the events fit domain
+STEP_COLOR = (140, 20, 20)
+ONSET_COLOR = (44, 120, 44)
+TOS_EVENT_COLOR = (0, 100, 0)
+SEISMIC_EVENT_COLOR = (139, 0, 0)
+STALE_COLOR = (150, 150, 150)  # a curve whose fit was REFUSED
 COMPONENTS = ("North", "East", "Up")
 
-#: The three things a term group can be, and they are three CLAIMS, not two.
-#: A seasonal HELD from the quiet window asserts it continues across the whole
-#: span; a seasonal ABSENT asserts there is none. A two-state toggle collapses
-#: that distinction, and it is the distinction the background model rests on.
-#: ``--model`` and the stage plan are orthogonal in the estimator -- one
-#: decides which terms are in the design matrix, the other where each is
-#: estimated -- which is what makes three states expressible at all.
-STATE_ESTIMATE = "estimate here"
-STATE_HOLD = "hold from window"
-STATE_ABSENT = "not in the model"
-GROUP_STATES = (STATE_ESTIMATE, STATE_HOLD, STATE_ABSENT)
+#: The two phases. Not a preference — s(t) must exist before events can be
+#: estimated against it, and the mode makes that order visible rather than
+#: leaving it to be rediscovered per station.
+MODE_BACKGROUND = "background — s(t)"
+MODE_EVENTS = "events — steps and transients"
 
-#: Term groups in the order the stage grammar lists them. This is the STAGED
-#: vocabulary, deliberately not ``select_terms``' apply-time one, which folds
-#: steps into ``secular`` -- 37 deployed records depend on that folding, and
-#: staged estimation must not inherit it.
-GROUP_ORDER = ("secular", "periodic", "step", "transient")
-
-#: What each group is CALLED on screen. The stage grammar's `secular` means
-#: the linear term alone, but "secular" properly names the long-term
-#: background as a whole -- linear AND periodic together, which is what
-#: `lineperiodic` composes. Showing the grammar's word for the linear term
-#: invites reading it as the whole background, so the label says `linear`
-#: while every emitted flag keeps saying `secular`; the tooltip names both so
-#: the command stays traceable to the control.
+#: The GUI says `linear`; every emitted flag still says `secular`. The stage
+#: grammar's `secular` names the linear term alone, but "secular" properly
+#: names the long-term background as a whole, which invites misreading.
 GROUP_LABELS = {
     "secular": "linear",
     "periodic": "periodic",
@@ -136,43 +96,36 @@ GROUP_LABELS = {
     "transient": "transient",
 }
 
-#: ``(secular, periodic)`` states -> the stored ``--model``.  Both absent has
-#: no spelling: every model in the vocabulary carries at least one of them.
-MODEL_BY_STATE: dict[tuple[bool, bool], str] = {
+#: The groups s(t) is made of, and the groups that are events. Steps and
+#: transients are what gets estimated AGAINST the background, never part of
+#: it — the same split `geo_dataread.secular_store` enforces when saving.
+BACKGROUND_GROUPS = ("secular", "periodic")
+EVENT_GROUPS = ("step", "transient")
+
+#: `station_record_from_arrays`' own default, so the emitted command stays
+#: clean when the operator has not moved away from it.
+DEFAULT_MODEL = "lineperiodic"
+
+#: (linear, periodic) → the stored `--model`. Both off has no spelling:
+#: every value in the vocabulary carries at least one of them.
+MODEL_BY_TERMS: dict[tuple[bool, bool], str] = {
     (True, True): "lineperiodic",
     (True, False): "linear",
     (False, True): "periodic",
 }
 
-#: ``station_record_from_arrays``' own default, so the emitted command stays
-#: clean when the operator has not moved away from it.
-DEFAULT_MODEL = "lineperiodic"
+#: The one stage the events phase declares. A fixed name, because there is
+#: exactly one stage in this shape and a vocabulary for it would be a second
+#: thing to keep in step with the command.
+EVENT_STAGE = "ev"
 
-#: "Flag nothing" as the detection pipeline already spells it. S1 and S2 are
-#: structural and always run, so naming ONLY those turns despike, global,
-#: window and protection all off — no new flag was needed, and inventing one
-#: would have been a second spelling for a state the CLI could already reach.
+#: "Flag nothing", as the detection pipeline already spells it: S1 and S2 are
+#: structural and always run, so naming only those turns despike, global,
+#: window and protection all off. No new flag was needed for it.
 USE_FLAGGED_STAGES = "S1,S2"
 
-#: The comparison overlay: a fit the emitted command does NOT describe, so it
-#: must not be mistakable for the trajectory. Magenta is unused by every other
-#: lane here (red kept, grey flagged, gold provisional, blue trajectory,
-#: darkgreen equipment, darkred seismic) and it is drawn dashed on top.
-COMPARE_COLOR = (170, 40, 170)
-
-#: A trajectory left on screen after its fit was REFUSED. Drawn grey and
-#: dashed because a solid blue line reads as a result whatever the header
-#: says -- and a staged fit that never happened was being read as one.
-STALE_COLOR = (150, 150, 150)
-
-#: Per-component ANSI colours for the terminal parameter dump, matching the
-#: residual periodogram's three curves so the same component is the same
-#: colour in both places.
-ANSI = ("\033[31m", "\033[32m", "\033[34m")  # N red, E green, U blue
-ANSI_OFF = "\033[0m"
-
 #: Symbolic spelling of each parameter family, keyed by the prefix
-#: ``param_names`` uses. Built from the record's OWN names so the equation
+#: `param_names` uses. Built from the record's OWN names so the equation
 #: cannot drift from the model that was actually fitted.
 TERM_FORMS: tuple[tuple[str, str], ...] = (
     ("offset", "a₀"),
@@ -184,220 +137,116 @@ TERM_FORMS: tuple[tuple[str, str], ...] = (
 )
 
 
-@dataclasses.dataclass
-class StageDraft:
-    """One stage of the picker's plan — the picker's ONLY model of a stage.
-
-    The picker's promise is that the emitted command reproduces the figure,
-    and every violation of it so far has had one shape: a second place
-    assembling the same decision. So the picker does not keep a "composed
-    model" of its own beside the plan it emits — this dataclass IS the
-    plan, in the same vocabulary
-    :func:`geo_dataread.stage_plan.build_stage_plan` parses, and
-    :func:`render_stage_flags` is the only thing that turns it into flags.
-
-    Attributes:
-        name: Stage name, as it appears in ``--stage NAME:...`` and on the
-            left of a ``--hold NAME:GROUP=...``.
-        groups: Term groups ESTIMATED in this stage, in ``GROUP_ORDER``.
-        window: ``(start, end)`` fit domain, or None to inherit the caller's.
-            None and ``(None, None)`` differ in the grammar — omitting ``@``
-            inherits, ``@:`` means the full span — and only the first is
-            expressible here, which is what the picker has always emitted.
-        holds: ``group -> "stage:NAME" | "donor:STA"``. The kind is part of
-            the value because the grammar refuses a bare one: ``stage:`` and
-            ``donor:`` produce different record provenance.
-    """
-
-    name: str
-    groups: list[str] = dataclasses.field(default_factory=list)
-    window: tuple[float, float] | None = None
-    holds: dict[str, str] = dataclasses.field(default_factory=dict)
-
-
-@dataclasses.dataclass
-class StageCard:
-    """Widgets for one stage card, and the window it owns.
-
-    Deliberately holds no holds: those are derived from the card ORDER by
-    :func:`compose_drafts`. The card is a view onto one
-    :class:`StageDraft`, never a parallel copy of the plan.
-    """
-
-    box: Any
-    name_edit: Any
-    groups: dict[str, Any]
-    inherit: Any
-    held_label: Any = None
-    window: tuple[float, float] | None = None
-
-    @property
-    def name(self) -> str:
-        return str(self.name_edit.text()).strip()
-
-    def estimates(self) -> list[str]:
-        """Groups checked on this card, in ``GROUP_ORDER``."""
-        return [g for g in GROUP_ORDER if self.groups[g].isChecked()]
-
-
-def migrate_group_states(
-    legacy: Mapping[str, str], first: str, last: str
-) -> dict[str, list[str]]:
-    """Turn a session's group→state map into a per-stage assignment.
-
-    Sessions outlive the code that reads them, and the three states map onto
-    the new pair exactly — which is the evidence that splitting membership
-    from assignment factored what was already there rather than inventing
-    something:
-
-    ===================  ============================================
-    ``not in the model`` out of the model (handled by the caller)
-    ``hold from window`` estimated in the FIRST stage, so every later
-                         stage holds it
-    ``estimate here``    estimated in the LAST stage
-    ===================  ============================================
-
-    Pure, and takes the stage names as arguments, because the names are not
-    known until the cards exist: reading them off a not-yet-built card list
-    silently collapsed ``first`` and ``last`` onto the same stage, which put
-    a held group and a freely-estimated one in the same place.
-    """
-    assignments: dict[str, list[str]] = {first: [], last: []}
-    for group, state in legacy.items():
-        if state == STATE_HOLD:
-            assignments[first].append(group)
-        elif state == STATE_ESTIMATE:
-            assignments[last].append(group)
-    return assignments
-
-
-def compose_drafts(
-    stages: Sequence[tuple[str, Sequence[str], tuple[float, float] | None]],
-) -> list[StageDraft]:
-    """Fill in each stage's holds from the order of the stages.
-
-    A stage holds every group it does not itself estimate at the value of the
-    LAST earlier stage that did. Nothing else needs saying: that rule IS the
-    compositional build — lin+per on a quiet window, steps against that
-    background, transients against both — and deriving it means the operator
-    cannot leave a hold behind that contradicts the assignment above it.
-
-    A group estimated in more than one stage is legal and deliberate: the
-    clean stage frees ``secular`` as a NUISANCE even when the kept value
-    comes from a later stage, because a seasonal fitted on a window that
-    ignores the trend inside that window absorbs part of it. Under this rule
-    the later stage simply does not hold what it re-estimates.
-
-    Groups already excluded from the model must be filtered out before
-    calling: this function has no opinion about membership, only order.
-    """
-    drafts: list[StageDraft] = []
-    for index, (name, groups, window) in enumerate(stages):
-        holds: dict[str, str] = {}
-        for group in GROUP_ORDER:
-            if group in groups:
-                continue
-            source = next(
-                (
-                    earlier
-                    for earlier, earlier_groups, _ in reversed(list(stages[:index]))
-                    if group in earlier_groups
-                ),
-                None,
-            )
-            if source is not None:
-                holds[group] = f"stage:{source}"
-        drafts.append(StageDraft(name, list(groups), window, holds))
-    return drafts
-
-
-def render_stage_flags(stages: Sequence[StageDraft]) -> tuple[list[str], list[str]]:
-    """Render stage drafts to ``--stage`` / ``--hold`` argument values.
-
-    The ONE place drafts become flags. An empty ``groups`` list renders as a
-    trailing colon and is left for ``build_stage_plan`` to refuse: that is
-    the RHOF case — nothing free once the background is held — and the
-    refusal has to reach the operator through the same path whether they are
-    looking at the figure or at the copied command.
-
-    The ``STAGE:`` prefix on a hold is emitted whenever more than one stage
-    is declared, because the grammar makes it optional only below that.
-    """
-    if not stages:
-        return [], []
-    specs: list[str] = []
-    holds: list[str] = []
-    qualify = len(stages) > 1
-    for stage in stages:
-        spec = f"{stage.name}:{','.join(stage.groups)}"
-        if stage.window is not None:
-            spec += f"@{stage.window[0]}:{stage.window[1]}"
-        specs.append(spec)
-        for group, source in stage.holds.items():
-            prefix = f"{stage.name}:" if qualify else ""
-            holds.append(f"{prefix}{group}={source}")
-    return specs, holds
-
-
 def model_equation(param_names: Sequence[str]) -> str:
-    """The GENERAL model form, as symbols rather than fitted numbers.
+    """The general FORM of a record's model, read off its parameter names.
 
-    Read off ``param_names``, so it always describes the model that was
-    actually estimated -- including however many steps and transients the
-    record happens to carry -- instead of a formula written down once and
-    left to rot.
+    Written down once it would rot; derived, it cannot. The numbers go to the
+    panel and the terminal separately — an equation with twenty-one
+    coefficients substituted into it is not readable as an equation.
     """
-    parts: list[str] = []
-    n_step = n_trans = 0
-    for name in param_names:
-        form = dict(TERM_FORMS).get(name)
-        if form is not None:
-            parts.append(form)
-        elif name.startswith("step_amp"):
-            n_step += 1
-            parts.append(f"h{n_step}·H(t−t{n_step})")
-        elif name.endswith("_amp_1") or "_amp" in name:
-            n_trans += 1
-            kind = name.split("_")[0]
-            inner = "ln(1+(t−tₑ)/τ)" if kind == "log" else "(1−e^(−(t−tₑ)/τ))"
-            parts.append(f"A{n_trans}·{inner}")
-        else:  # pragma: no cover - a family this display does not know yet
-            parts.append(name)
+    names = list(param_names)
+    parts = [form for key, form in TERM_FORMS if key in names]
+    steps = sum(1 for n in names if n.startswith("step_amp"))
+    parts += [f"h{k + 1}·H(t−t{k + 1})" for k in range(steps)]
+    for n in names:
+        if n.startswith("log_amp"):
+            parts.append("A·ln(1+(t−tₑ)/τ)")
+        elif n.startswith("exp_amp"):
+            parts.append("A·(1−e^(−(t−tₑ)/τ))")
     return "x(t) = " + " + ".join(parts) if parts else "x(t) = (no terms)"
 
 
 def _provisional_days_default() -> float:
-    """geo_dataread's own gold-lane recency bound, for the spinbox's start.
-
-    Imported rather than restated: the spinbox is only showing what the fit
-    would use anyway, and a number copied here would be a second definition
-    of the same default that could drift from the leaf's.
-    """
+    """geo_dataread's own default, imported so the two cannot drift."""
     try:
-        from geo_dataread.gps_views import PROVISIONAL_DAYS
+        from geo_dataread.gps_views import PROVISIONAL_DAYS_DEFAULT
 
-        return float(PROVISIONAL_DAYS)
-    except Exception:  # pragma: no cover - leaf rename/removal
+        return float(PROVISIONAL_DAYS_DEFAULT)
+    except Exception:  # pragma: no cover - older sibling
         return 14.0
 
 
 def _require_qt() -> tuple[Any, Any]:
-    """Import the Qt stack, or explain how to get it."""
+    """Import pyqtgraph, explaining itself if the dev group is absent."""
     try:
         import pyqtgraph as pg
-        from PySide6 import QtWidgets
-    except ImportError as exc:  # pragma: no cover - environment dependent
+        from pyqtgraph.Qt import QtWidgets
+    except Exception as exc:  # pragma: no cover - import guard
         raise RuntimeError(
-            "the Qt picker needs pyqtgraph and PySide6, which are a local "
-            "development dependency rather than a production one. Install "
-            "with:  uv sync   (or use gps-detrend-picker for the matplotlib "
-            "fallback, or the CLI's --segment/--stage/--term directly)"
+            "the Qt picker needs pyqtgraph and PySide6, which live in the dev "
+            "group: run `uv sync` in gps_plot, or use the CLI "
+            "(`gps-detrend-workbench`), which needs neither."
         ) from exc
     return pg, QtWidgets
 
 
+# --- the two commands, as pure functions -----------------------------------
+#
+# ONE speller per phase, module-level and Qt-free, so what the window shows
+# and what the clipboard carries are assembled in a single place. Every
+# violation of this window's invariant has been a second such place.
+
+
+def background_command(
+    station: str,
+    *,
+    segments: Sequence[tuple[float, float]] = (),
+    model: str | None = DEFAULT_MODEL,
+    flags: Sequence[str] = (),
+    save: bool = False,
+) -> str:
+    """The command that fits s(t) on the clean intervals, and maybe saves it.
+
+    Every interval becomes its own ``--segment``. The union is what a
+    background needs when an event sits inside the record, and it is the one
+    thing a single dragged region could never express.
+    """
+    parts = ["gps-detrend-workbench", station]
+    for lo, hi in segments:
+        parts += ["--segment", f"{lo}:{hi}"]
+    if model is not None and model != DEFAULT_MODEL:
+        parts += ["--model", model]
+    if save:
+        parts.append("--save-secular")
+    return shlex.join(parts + list(flags))
+
+
+def events_command(
+    station: str,
+    *,
+    free: Sequence[str],
+    hold_from: str = "self",
+    steps: Sequence[float] = (),
+    term: str | None = None,
+    segment: tuple[float, float] | None = None,
+    flags: Sequence[str] = (),
+    commit: bool = False,
+) -> str:
+    """The command that estimates events against a held background.
+
+    ``hold_from`` is a ``store:`` value — ``self``, or another station's code
+    (the legacy ``UseSTA``). ``store:`` is a DIFFERENT hold kind from
+    ``donor:``, which reads a finished record; this one reads the background
+    store, and the grammar names the kind precisely because the two resolve
+    against different objects.
+    """
+    parts = ["gps-detrend-workbench", station]
+    if segment is not None:
+        parts += ["--segment", f"{segment[0]}:{segment[1]}"]
+    for epoch in steps:
+        parts += ["--step", str(epoch)]
+    if term:
+        parts += ["--term", term]
+    parts += ["--stage", f"{EVENT_STAGE}:{','.join(free)}"]
+    for group in BACKGROUND_GROUPS:
+        parts += ["--hold", f"{group}=store:{hold_from}"]
+    if commit:
+        parts.append("--commit")
+    return shlex.join(parts + list(flags))
+
+
 class PickerWindow:  # pragma: no cover - GUI
-    """The window: three linked panels, draggable picks, a live refit."""
+    """Plots on the left, the phase controls on the right."""
 
     def __init__(
         self,
@@ -407,334 +256,153 @@ class PickerWindow:  # pragma: no cover - GUI
         sigma: Any,
         settings: Any,
         *,
-        max_gap_years: float | None,
-        uncert: int,
+        max_gap_years: float | None = None,
+        uncert: int = WORKBENCH_UNCERT_DEFAULT,
         provisional_days: float | None = None,
         tot_dir: str | None = None,
     ) -> None:
-        pg, QtWidgets = _require_qt()
         import numpy as np
 
+        pg, QtWidgets = _require_qt()
         self.pg, self.QtWidgets, self.np = pg, QtWidgets, np
+
         self.sta = sta
-        self.yearf, self.data, self.sigma = yearf, data, sigma
+        self.yearf = yearf
+        self.data = data
+        self.sigma = sigma
         self.base_settings = settings
-        self.max_gap_years, self.uncert = max_gap_years, uncert
+        self.max_gap_years = max_gap_years
+        self.uncert = int(uncert)
         self.provisional_days = provisional_days
-        # Kept only so the emitted command can carry it: a picker run against
-        # a non-default TOT directory used to emit a command that reads the
-        # DEFAULT one, i.e. a different series entirely.
         self.tot_dir = tot_dir
-        self.span = (float(np.nanmin(yearf)), float(np.nanmax(yearf)))
-        # The domain region opens on the CATALOG's fit window, not on the data
-        # span.  Starting at the span asserted "fit everything" over a station
-        # whose `fit_windows.csv` row says otherwise, and then -- because
-        # `--segment` was emitted only when the region differed from the SPAN
-        # -- an untouched region emitted no flag at all, so the copied command
-        # fitted the catalog window while the figure showed the full span.
-        # The same divergence as the picked-step bug, one lever over.
-        lo, hi = self.base_settings.window  # hull; either side may be open
+
+        finite = yearf[np.isfinite(yearf)]
+        self.span = (float(finite.min()), float(finite.max()))
+        lo, hi = getattr(settings, "window", (None, None)) or (None, None)
         self.default_domain = (
             self.span[0] if lo is None else max(float(lo), self.span[0]),
             self.span[1] if hi is None else min(float(hi), self.span[1]),
         )
-        self.step_lines: list[Any] = []
-        self._prov_counts: list[int] = [0, 0, 0]
+
         self.record: dict[str, Any] | None = None
-        # Composed from the group states on every `_current()`; seeded here so
-        # the attribute exists before the first refit.
         self.model: str | None = DEFAULT_MODEL
-        # The stage plan as an AST, rebuilt on every `_current()`. Empty means
-        # unstaged, which is what an unchecked "stage the fit" produces.
-        self.stages: list[StageDraft] = []
-        # Seeded before `_controls()` builds anything: `_card_expanded` reads
-        # the list from a signal handler, and a card can be added before the
-        # window has finished constructing itself.
-        self.stage_cards: list[StageCard] = []
-        # The detection stage set the fit runs with, composed in `_current()`
-        # beside the flag that spells it. None means the full pipeline.
-        self.stages_spec: str | None = None
-        # Whether the SHOWN fit is the joint re-fit; composed in `_current()`
-        # beside the flag that spells it.
-        self.final_joint: bool = False
-        # staged->joint parameter movement, when both were computed.
-        self.joint_deltas: list[dict[str, Any]] = []
-        # The fit the refine action seeds from; set on every successful refit.
         self._est: Any = None
+        self.segment_regions: list[list[Any]] = []
+        self.step_lines: list[list[Any]] = []
+        self._prov_counts = [0, 0, 0]
+        self.command_text = ""
+        # A session that failed to load must still be SAID, and `refit`
+        # rewrites the summary the moment it runs. Held here and re-applied
+        # after the first fit, or the warning is on screen for microseconds.
+        self._session_note = ""
 
-        pg.setConfigOptions(antialias=False, background="w", foreground="k")
-        self.win = QtWidgets.QMainWindow()
-        self.win.setWindowTitle(f"{sta} — detrend picker")
-        central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
+        self._build_plots()
+        controls = self._build_controls()
+        self._assemble(controls)
+        self._draw_declared_events()
+        self.load_session()
+        self.refit()
+        if self._session_note:
+            self.summary.setPlainText(
+                f"{self._session_note}\n\n{self.summary.toPlainText()}"
+            )
 
-        self.header = QtWidgets.QLabel()
-        self.header.setStyleSheet(
-            "font-family: monospace; font-size: 13px; padding: 4px;"
-        )
-        self.header.setTextInteractionFlags(self.pg.QtCore.Qt.TextSelectableByMouse)
-        layout.addWidget(self.header)
-
-        self.glw = pg.GraphicsLayoutWidget()
-        layout.addWidget(self.glw, stretch=1)
+    # -- construction ----------------------------------------------------
+    def _build_plots(self) -> None:
+        pg = self.pg
+        pg.setConfigOptions(antialias=True, background="w", foreground="k")
+        self.layout = pg.GraphicsLayoutWidget()
         self.plots: list[Any] = []
-        self.fit_curves: list[Any] = []
-        self.compare_curves: list[Any] = []
         self.kept_scatters: list[Any] = []
         self.flag_scatters: list[Any] = []
         self.outside_scatters: list[Any] = []
         self.prov_scatters: list[Any] = []
-        for c, name in enumerate(COMPONENTS):
-            p = self.glw.addPlot(row=c, col=0)
-            p.setLabel("left", f"{name} [mm]")
-            p.showGrid(x=True, y=True, alpha=0.25)
-            if c:
-                p.setXLink(self.plots[0])
-            finite = np.isfinite(yearf) & np.isfinite(data[c])
-            # Red is the KEPT series only. Production masks a flagged epoch
-            # (NaN) and redraws it grey, so drawing it red with a grey ring
-            # would say "in the fit, and also flagged" -- two different
-            # claims. Re-masked on every refit.
-            self.kept_scatters.append(
-                p.plot(
-                    yearf[finite],
-                    data[c][finite],
-                    pen=None,
-                    symbol="o",
-                    symbolSize=3,
-                    symbolBrush=KEPT_COLOR,
-                    symbolPen=None,
-                )
-            )
-            self.flag_scatters.append(
-                p.plot(
-                    [],
-                    [],
-                    pen=None,
-                    symbol="o",
-                    symbolSize=5,
-                    symbolBrush=None,
-                    symbolPen=pg.mkPen(FLAG_COLOR, width=1),
-                )
-            )
-            # Second grey lane: the VIEW detector's verdict on epochs the fit
-            # window excluded. Hollow and dimmer so the two greys stay
-            # countable apart -- they are masked for different reasons ("not
-            # in the fit" cannot justify it, since NO out-of-window epoch is).
-            self.outside_scatters.append(
-                p.plot(
-                    [],
-                    [],
-                    pen=None,
-                    symbol="o",
-                    symbolSize=5,
-                    symbolBrush=None,
-                    symbolPen=pg.mkPen(OUTSIDE_COLOR, width=1),
-                )
-            )
-            # Gold: PROVISIONAL. These epochs stay IN the series -- the marker
-            # says only that the verdict is pending, because nothing follows
-            # them yet and a blunder looks identical to the onset of
-            # deformation. Drawn as an overlay on the kept series, never
-            # instead of it, and it WILL change as epochs arrive.
-            self.prov_scatters.append(
-                p.plot(
-                    [],
-                    [],
-                    pen=None,
-                    symbol="o",
-                    symbolSize=6,
-                    symbolBrush=PROV_FACE,
-                    symbolPen=pg.mkPen(PROV_EDGE, width=1),
-                )
-            )
-            self.fit_curves.append(p.plot([], [], pen=pg.mkPen(FIT_COLOR, width=2)))
-            # The comparison overlay. Dashed and magenta because the emitted
-            # command does NOT describe it -- it must never be mistakable for
-            # the trajectory, which is the one thing the command reproduces.
-            self.compare_curves.append(
-                p.plot(
-                    [],
-                    [],
-                    pen=pg.mkPen(
-                        COMPARE_COLOR, width=2, style=self.pg.QtCore.Qt.DashLine
-                    ),
-                )
-            )
-            self.plots.append(p)
-        self.plots[-1].setLabel("bottom", "fractional year")
-        self._draw_declared_events()
+        self.fit_curves: list[Any] = []
 
-        # Fourth panel: the residual periodogram. Both published GNSS pickers
-        # carry one (SARI's Lomb-Scargle + wavelet; TSAnalyzer's Lomb-Scargle),
-        # and it answers the question the time-domain panels cannot: is the
-        # SEASONAL adequately modelled? Leftover power at 1 cycle/yr says the
-        # stage-1 window is drawing the seasonal from the wrong stretch.
-        # Lomb-Scargle rather than an FFT because GNSS series are gappy and
-        # unevenly sampled (Lomb 1976; Scargle 1982) -- resampling to force an
-        # FFT would invent the very structure being tested for.
-        self.spec = self.glw.addPlot(row=3, col=0)
+        for row, name in enumerate(COMPONENTS):
+            p = self.layout.addPlot(row=row, col=0)
+            p.showGrid(x=True, y=True, alpha=0.25)
+            p.setLabel("left", f"{name} [mm]")
+            if row:
+                p.setXLink(self.plots[0])
+            self.plots.append(p)
+
+            def scatter(face: Any, edge: Any = None, size: int = 4, _p: Any = p) -> Any:
+                s = pg.ScatterPlotItem(
+                    size=size,
+                    pen=pg.mkPen(edge or face, width=1),
+                    brush=pg.mkBrush(face),
+                )
+                _p.addItem(s)
+                return s
+
+            self.kept_scatters.append(scatter(KEPT_COLOR))
+            self.flag_scatters.append(scatter(FLAG_COLOR, size=3))
+            self.outside_scatters.append(scatter(OUTSIDE_COLOR, size=3))
+            self.prov_scatters.append(scatter(PROV_FACE, PROV_EDGE, size=5))
+            self.fit_curves.append(p.plot([], [], pen=pg.mkPen(FIT_COLOR, width=2)))
+
+        self.plots[-1].setLabel("bottom", "fractional year")
+
+        # The residual periodogram, borrowed from SARI / TSAnalyzer: a
+        # seasonal the model missed shows as power at 1 or 2 cycles/yr, which
+        # no amount of staring at the residual series reveals.
+        self.spec = self.layout.addPlot(row=3, col=0)
         self.spec.setLabel("left", "residual power")
         self.spec.setLabel("bottom", "cycles per year")
-        self.spec.showGrid(x=True, y=True, alpha=0.25)
-        self.spec.setMaximumHeight(190)
+        self.spec.setMaximumHeight(150)
         self.spec_curves = [
-            self.spec.plot([], [], pen=pg.mkPen(col, width=1))
-            for col in ((200, 60, 60), (60, 140, 60), (60, 60, 200))
+            self.spec.plot([], [], pen=pg.mkPen(c, width=1))
+            for c in (KEPT_COLOR, (44, 160, 44), FIT_COLOR)
         ]
-        for f, lbl in ((1.0, "annual"), (2.0, "semi")):
-            mark = pg.InfiniteLine(
-                pos=f,
-                angle=90,
-                movable=False,
-                pen=pg.mkPen((150, 150, 150), width=1, style=self.pg.QtCore.Qt.DotLine),
-                label=lbl,
-                labelOpts={"position": 0.9, "color": (110, 110, 110)},
+        for x in (1.0, 2.0):
+            self.spec.addItem(
+                pg.InfiniteLine(
+                    x,
+                    angle=90,
+                    pen=pg.mkPen((160, 160, 160), style=pg.QtCore.Qt.DashLine),
+                )
             )
-            self.spec.addItem(mark)
 
-        # --- the picks -------------------------------------------------
-        # Regions live on every panel and move together: a fit domain that
-        # differed between components would be meaningless, and seeing the
-        # same window on all three is most of the point.
+        # The events domain (blue) and the clean intervals (orange) are
+        # DIFFERENT objects: one says which epochs the events are fitted over,
+        # the other which the background came from.
         self.domain_regions = self._add_region(self.default_domain, DOMAIN_COLOR)
-        self.stage_regions = self._add_region(
-            (self.span[0], min(self.span[0] + 8.0, self.span[1])), STAGE_COLOR
-        )
-        self._set_visible(self.stage_regions, False)
-        self.onset_lines = self._add_line(
-            (self.span[0] + self.span[1]) / 2.0, ONSET_COLOR
-        )
+        self.onset_lines = self._add_line(sum(self.span) / 2.0, ONSET_COLOR)
         self._set_visible(self.onset_lines, False)
+        self.layout.scene().sigMouseClicked.connect(self._on_click)
 
-        self.summary = QtWidgets.QPlainTextEdit()
-        self.summary.setReadOnly(True)
-        self.summary.setMinimumHeight(190)
-        self.summary.setStyleSheet("font-family: monospace;")
+    def _add_region(self, values: tuple[float, float], colour: Any) -> list[Any]:
+        """One region per component panel, moving together.
 
-        # Controls and record go in a right-hand column, the plots on the left,
-        # with a draggable divider between them. Stacking everything vertically
-        # spent the scarcest dimension -- height -- on a one-line control strip,
-        # while three stacked component panels plus the periodogram need every
-        # bit of it. A column also gives the controls somewhere to GROW: as a
-        # single row they were already running out of width.
-        right = QtWidgets.QWidget()
-        rcol = QtWidgets.QVBoxLayout(right)
-        rcol.setContentsMargins(0, 0, 0, 0)
-        rcol.addWidget(self._controls())
-        rcol.addWidget(self.summary, stretch=1)
-
-        self.split = QtWidgets.QSplitter(self.pg.QtCore.Qt.Horizontal)
-        self.split.addWidget(self.glw)
-        self.split.addWidget(right)
-        # Plots take the space when the window resizes; the control column is
-        # sized to its contents and stays put.
-        self.split.setStretchFactor(0, 1)
-        self.split.setStretchFactor(1, 0)
-        self.split.setSizes([880, 370])
-        self.split.setChildrenCollapsible(False)
-        layout.addWidget(self.split, stretch=1)
-
-        # The command stays FULL WIDTH along the bottom rather than joining the
-        # right column. It is the output of the whole window -- a staged fit
-        # with a term and a segment runs past 200 characters -- and it exists to
-        # be read and copied, which a third of the window cannot do.
-        self.command = QtWidgets.QLineEdit()
-        self.command.setReadOnly(True)
-        self.command.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.command)
-
-        self.win.setCentralWidget(central)
-        self.win.resize(1420, 950)
-        self.glw.scene().sigMouseClicked.connect(self._on_click)
-        if not self.load_session():
-            self.refit()
-
-    def _draw_declared_events(self) -> None:
-        """Draw already-DECLARED events, so a pick is informed rather than guessed.
-
-        Borrowed from SARI (Santamaría-Gómez 2019, doi:10.1007/s10291-019-0846-y),
-        which digests IGS site logs / GAMIT ``station.info`` / the NGL offsets
-        file to flag candidate discontinuities. Our equivalent sources are the
-        TOS device history and ``steps.csv``, already resolved by the
-        workbench, so the vocabulary matches the PDF exactly: **darkgreen** =
-        new antenna/receiver install, **darkred** = declared seismic step.
-
-        These are DECLARATIONS, not detections — nothing here is fitted. They
-        are drawn thin and behind the picks so an operator can see that an
-        antenna changed on the day they are about to double-click, which is
-        the difference between declaring a step and inventing one.
+        A fit domain that differed between components would be meaningless,
+        and seeing the same interval on all three is most of the point.
         """
         pg = self.pg
-        from gps_plot.detrend_workbench import declared_event_epochs
-
-        events: list[tuple[float, str, tuple[int, int, int]]] = []
-        try:
-            seismic, _other = declared_event_epochs(self.sta)
-            events += [(e, lbl, SEISMIC_EVENT_COLOR) for e, lbl in seismic]
-        except Exception:
-            pass  # a missing catalog must never cost the window
-        try:
-            from gps_plot.detrend_workbench import tos_equipment_epochs
-
-            events += [
-                (e, lbl, TOS_EVENT_COLOR) for e, lbl in tos_equipment_epochs(self.sta)
-            ]
-        except Exception:
-            # TOS is a live service; being offline is not an error here.
-            pass
-
-        lo, hi = self.span
-        self.declared_events = [(e, lbl) for e, lbl, _c in events if lo <= e <= hi]
-        for epoch, label, colour in events:
-            if not (lo <= epoch <= hi):
-                continue  # clipped: an off-axis line loses its line and keeps its caption
-            for i, p in enumerate(self.plots):
-                ln = pg.InfiniteLine(
-                    pos=epoch,
-                    angle=90,
-                    movable=False,
-                    pen=pg.mkPen(colour, width=1, style=self.pg.QtCore.Qt.DotLine),
-                    label=label if i == 0 else None,
-                    labelOpts={
-                        "position": 0.92,
-                        "color": colour,
-                        "fill": (255, 255, 255, 180),
-                    },
-                )
-                ln.setZValue(-20)
-                p.addItem(ln)
-
-    # -- construction helpers ------------------------------------------
-    def _add_region(self, values: tuple[float, float], colour: Any) -> list[Any]:
-        pg = self.pg
-        items = []
+        group: list[Any] = []
         for p in self.plots:
-            r = pg.LinearRegionItem(values=values, brush=pg.mkBrush(*colour))
+            r = pg.LinearRegionItem(values=values, brush=pg.mkBrush(colour))
             r.setZValue(-10)
             p.addItem(r)
-            items.append(r)
-        for r in items:
-            r.sigRegionChanged.connect(lambda src, g=items: self._sync(src, g))
+            group.append(r)
+        for r in group:
+            r.sigRegionChanged.connect(lambda src, g=group: self._sync(src, g))
             r.sigRegionChangeFinished.connect(self.refit)
-        return items
+        return group
 
     def _add_line(self, pos: float, colour: Any) -> list[Any]:
         pg = self.pg
-        items = []
+        group: list[Any] = []
         for p in self.plots:
             ln = pg.InfiniteLine(
-                pos=pos,
-                angle=90,
-                movable=True,
-                pen=pg.mkPen(colour, width=2, style=self.pg.QtCore.Qt.DashLine),
+                pos, angle=90, movable=True, pen=pg.mkPen(colour, width=2)
             )
             p.addItem(ln)
-            items.append(ln)
-        for ln in items:
-            ln.sigPositionChanged.connect(lambda src, g=items: self._sync_line(src, g))
+            group.append(ln)
+        for ln in group:
+            ln.sigPositionChanged.connect(lambda src, g=group: self._sync_line(src, g))
             ln.sigPositionChangeFinished.connect(self.refit)
-        return items
+        return group
 
     @staticmethod
     def _sync(src: Any, group: list[Any]) -> None:
@@ -753,254 +421,56 @@ class PickerWindow:  # pragma: no cover - GUI
                 ln.blockSignals(False)
 
     @staticmethod
-    def _set_visible(group: list[Any], on: bool) -> None:
+    def _set_visible(group: Sequence[Any], on: bool) -> None:
         for item in group:
             item.setVisible(on)
 
-    # -- stage cards ----------------------------------------------------
-    def _new_card(
-        self,
-        name: str,
-        groups: Sequence[str],
-        window: tuple[float, float] | None,
-    ) -> StageCard:
-        """One collapsible stage card.
+    def _draw_declared_events(self) -> None:
+        """Equipment changes and declared earthquakes, from the catalogs.
 
-        The card carries only what a stage IS — its name, which groups it
-        estimates, and its window. Its holds are DERIVED from the order of
-        the cards (:func:`compose_drafts`), because a hold the operator could
-        set independently of the assignment above it would be a second place
-        deciding the same thing.
+        SARI's metadata fusion (Santamaria-Gomez 2019): a candidate
+        discontinuity nobody has picked is still worth seeing, because the
+        reason for a jump is usually in the station's own history.
         """
-        QtWidgets = self.QtWidgets
-        box = QtWidgets.QGroupBox()
-        box.setCheckable(True)
-        box.setChecked(True)
-        inner = QtWidgets.QVBoxLayout(box)
-        inner.setContentsMargins(8, 4, 8, 4)
+        pg = self.pg
+        try:
+            from gps_plot.detrend_workbench import declared_event_epochs
 
-        edit = QtWidgets.QLineEdit(name)
-        edit.setToolTip(
-            "Stage name, as it appears in --stage NAME:... and on the left of "
-            "any --hold NAME:GROUP=..."
-        )
-        edit.editingFinished.connect(self.refit)
-        inner.addWidget(edit)
-
-        row = QtWidgets.QHBoxLayout()
-        checks: dict[str, Any] = {}
-        for group in GROUP_ORDER:
-            cb = QtWidgets.QCheckBox(GROUP_LABELS.get(group, group))
-            cb.setChecked(group in groups)
-            cb.setToolTip(
-                f"Estimate {GROUP_LABELS.get(group, group)} (emitted as "
-                f"'{group}') in this stage. Unchecked here, it is held at "
-                f"whatever the last earlier stage fitted"
-            )
-            cb.toggled.connect(self.refit)
-            checks[group] = cb
-            row.addWidget(cb)
-        inner.addLayout(row)
-
-        inherit = QtWidgets.QCheckBox("inherit the domain")
-        inherit.setChecked(window is None)
-        inherit.setToolTip(
-            "Fit this stage over the caller's domain instead of its own "
-            "window. Omitting the window is NOT the same as asking for the "
-            "full span -- they differ whenever --segment is set"
-        )
-        inherit.toggled.connect(self.refit)
-        inner.addWidget(inherit)
-
-        held = QtWidgets.QLabel()
-        held.setWordWrap(True)
-        held.setStyleSheet("color: #666;")
-        held.setToolTip(
-            "Derived from the stages above, not set here: a group this stage "
-            "does not estimate is held at whatever the last earlier stage "
-            "fitted. Tick it above to free it instead — that ONE checkbox "
-            "decides both the hold and what the plot subtracts"
-        )
-        inner.addWidget(held)
-
-        card = StageCard(
-            box=box, name_edit=edit, groups=checks, inherit=inherit, held_label=held
-        )
-        card.window = window
-        box.toggled.connect(lambda on, c=card: self._card_expanded(c, on))
-        return card
-
-    def _card_expanded(self, card: StageCard, on: bool) -> None:
-        """Expanding a card makes it ACTIVE — the orange region is its window.
-
-        One window on screen at a time, and never a question of which stage
-        it belongs to. Collapsing the active card leaves it active: the
-        alternative is a plot whose region silently belongs to nothing.
-        """
-        if not on:
+            seismic, other = declared_event_epochs(self.sta)
+        except Exception:  # pragma: no cover - catalogs are optional
             return
-        for other in self.stage_cards:
-            if other is not card and other.box.isChecked():
-                other.box.blockSignals(True)
-                other.box.setChecked(False)
-                other.box.blockSignals(False)
-        self._show_active_window()
+        for epochs, colour in (
+            (seismic, SEISMIC_EVENT_COLOR),
+            (other, TOS_EVENT_COLOR),
+        ):
+            for item in epochs or ():
+                # `declared_event_epochs` yields bare epochs for one catalog
+                # and (epoch, description) pairs for the other; both are drawn.
+                if isinstance(item, (tuple, list)):
+                    epoch = float(item[0])
+                    label = str(item[1]) if len(item) > 1 else ""
+                else:
+                    epoch, label = float(item), ""
+                for index, p in enumerate(self.plots):
+                    p.addItem(
+                        pg.InfiniteLine(
+                            epoch,
+                            angle=90,
+                            pen=pg.mkPen(colour, width=1, style=pg.QtCore.Qt.DotLine),
+                            label=label if index == 0 else None,
+                            labelOpts={"position": 0.95, "color": colour},
+                        )
+                    )
 
-    def _show_active_window(self) -> None:
-        """Point the orange region at the active card's window."""
-        card = self.active_card()
-        if card is None:
-            return
-        window = card.window or self.default_domain
-        for region in self.stage_regions:
-            region.blockSignals(True)
-            region.setRegion(window)
-            region.blockSignals(False)
-        self._set_visible(self.stage_regions, self.cb_stage.isChecked())
+    def _build_controls(self) -> Any:
+        """The right-hand column, grouped by WHAT A CONTROL DECIDES.
 
-    def active_card(self) -> StageCard | None:
-        """The expanded card, or the first one; None when unstaged."""
-        for card in self.stage_cards:
-            if card.box.isChecked():
-                return card
-        return self.stage_cards[0] if self.stage_cards else None
-
-    def _set_cards(
-        self,
-        spec: Sequence[tuple[str, Sequence[str], tuple[float, float] | None]],
-    ) -> None:
-        """Replace every card. The ONLY way the card list changes shape."""
-        for card in self.stage_cards:
-            self.stages_col.removeWidget(card.box)
-            card.box.setParent(None)
-        self.stage_cards = []
-        for name, groups, window in spec:
-            card = self._new_card(name, groups, window)
-            card.box.blockSignals(True)
-            card.box.setChecked(False)
-            card.box.blockSignals(False)
-            self.stage_cards.append(card)
-            self.stages_col.addWidget(card.box)
-        if self.stage_cards:
-            self.stage_cards[0].box.blockSignals(True)
-            self.stage_cards[0].box.setChecked(True)
-            self.stage_cards[0].box.blockSignals(False)
-        self._show_active_window()
-
-    def _preset_spec(
-        self, window: tuple[float, float]
-    ) -> list[tuple[str, list[str], tuple[float, float] | None]]:
-        """The standard compositional build, as far as the model reaches.
-
-        ``clean`` estimates the background on the window; ``st`` and ``tr``
-        appear only when there is a step or a transient to estimate, because
-        a stage that estimates nothing is refused — rightly, and it would be
-        refused on every station that has neither.
-
-        With only ``clean``, no hold is derived and the plan is refused with
-        the same message it has always used: staging exists to carry
-        something across the span, and one windowed stage carries nothing.
-        That is ``--segment``, spelled a second way.
-        """
-        background = [g for g in ("secular", "periodic") if self._in_model(g)]
-        spec: list[tuple[str, list[str], tuple[float, float] | None]] = [
-            ("clean", background, window)
-        ]
-        if self._in_model("step"):
-            spec.append(("st", ["step"], None))
-        if self._in_model("transient"):
-            spec.append(("tr", ["transient"], None))
-        return spec
-
-    def reset_preset(self) -> None:
-        window = tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
-        self._set_cards(self._preset_spec((window[0], window[1])))
-        self.refit()
-
-    def add_stage(self) -> None:
-        """Append an empty stage; it holds everything fitted above it."""
-        spec = [(c.name, c.estimates(), c.window) for c in self.stage_cards]
-        spec.append((f"s{len(spec) + 1}", [], None))
-        self._set_cards(spec)
-        self.refit()
-
-    def remove_stage(self) -> None:
-        if len(self.stage_cards) <= 1:
-            self.summary.setPlainText(
-                "a staged fit needs at least one stage — uncheck 'stage the "
-                "fit' to go back to a single unstaged solve"
-            )
-            return
-        spec = [(c.name, c.estimates(), c.window) for c in self.stage_cards[:-1]]
-        self._set_cards(spec)
-        self.refit()
-
-    def _merged_step_epochs(self, settings: Any = None) -> tuple[float, ...]:
-        """The steps the FIT will carry: the ``steps.csv`` floor ∪ the picked.
-
-        ONE definition, called from both the preset builder (which has no
-        settings yet) and the draft builder (which does). Two of these is how
-        RHOF got a step stage for a step it does not have: the preset asked
-        "is step in the model?" and got an unconditional yes.
-        """
-        from gps_plot.detrend_workbench import _declared_step_epochs, _override_settings
-
-        if settings is None:
-            settings = _override_settings(
-                self.base_settings,
-                self.sta,
-                quiet=True,
-                steps=tuple(round(g[0].value(), 4) for g in self.step_lines) or None,
-            )
-        return tuple(_declared_step_epochs(self.sta, settings.steps))
-
-    def _in_model(self, group: str) -> bool:
-        """Membership, from whichever control owns it for that group."""
-        if group in self.model_in:
-            return bool(self.model_in[group].isChecked())
-        if group == "transient":
-            return bool(self.cb_term.isChecked())
-        if group == "step":
-            return bool(self._merged_step_epochs())
-        return True
-
-    def _preset_names(self) -> list[str]:
-        """Stage names the preset would lay out, without building it."""
-        return [name for name, _, _ in self._preset_spec((0.0, 1.0))]
-
-    def _peeled_groups(self) -> list[str]:
-        """Groups estimated BEFORE the active stage.
-
-        Which is exactly what the active stage is fitted TO — steps against
-        data − s(t), transients against data − s(t) − st(t). The plot
-        subtracts the same thing, so the panel and the figure cannot
-        disagree about which model is being worked with. That disagreement
-        was the standing complaint: an estimate made in the orange window
-        was not the model the next step was read against.
-        """
-        if not self.stages or not self.stage_cards:
-            return []
-        index = next(
-            (i for i, c in enumerate(self.stage_cards) if c.box.isChecked()), 0
-        )
-        out: list[str] = []
-        for draft in self.stages[:index]:
-            out.extend(g for g in draft.groups if g not in out)
-        return out
-
-    def _controls(self) -> Any:
-        """The right-hand control column.
-
-        Grouped by what a control DECIDES, not by widget type: "model" changes
-        what is fitted and therefore the record, "picks" only moves what is
-        already on the plot. That split is the one an operator needs when
-        deciding whether an action is curation or navigation -- the same
-        distinction the workbench draws between a stored decision and a
-        look-only one.
-
-        Laid out as a column because the old single row had run out of width;
-        every widget below is the same object with the same signal as before,
-        only re-parented.
+        `phase` chooses which half of the model is being worked on; the two
+        phase boxes change the fit and therefore the record; `view` changes
+        nothing at all; `run` holds the parameters that were once CLI-only.
+        That split is the one an operator needs to tell curation from
+        navigation, and it is the same one the workbench draws between a
+        stored decision and a look-only one.
         """
         QtWidgets = self.QtWidgets
         box = QtWidgets.QWidget()
@@ -1008,258 +478,196 @@ class PickerWindow:  # pragma: no cover - GUI
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(8)
 
-        # --- model: these change the FIT, and so the emitted command ------
-        model_box = QtWidgets.QGroupBox("model")
-        mcol = QtWidgets.QVBoxLayout(model_box)
-
-        self.cb_stage = QtWidgets.QCheckBox("stage the fit")
-        self.cb_stage.setToolTip(
-            "Fit the seasonal on a clean sub-window and hold it for the long "
-            "stage (emits --stage/--hold)"
+        # --- phase --------------------------------------------------------
+        phase_box = QtWidgets.QGroupBox("phase")
+        pcol = QtWidgets.QVBoxLayout(phase_box)
+        self.mode = QtWidgets.QComboBox()
+        self.mode.addItems([MODE_BACKGROUND, MODE_EVENTS])
+        self.mode.setToolTip(
+            "s(t) first, then the events against it. The order is not a "
+            "preference: a background held from a window on ONE side of an "
+            "event pins the level to that side, and the step is then left "
+            "with nothing to measure"
         )
-        self.cb_stage.toggled.connect(self._toggle_stage)
-        mcol.addWidget(self.cb_stage)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        pcol.addWidget(self.mode)
+        self.phase_hint = QtWidgets.QLabel()
+        self.phase_hint.setWordWrap(True)
+        self.phase_hint.setStyleSheet("color: #555;")
+        pcol.addWidget(self.phase_hint)
+        col.addWidget(phase_box)
 
-        # MEMBERSHIP, which is not the same question as assignment: --model
-        # decides which terms are in the design matrix, the stage plan decides
-        # where each is estimated, and the estimator has always treated the two
-        # as orthogonal. The old three-state combo fused them, so a group could
-        # not be estimated in two stages -- which the nuisance rule requires.
-        #
-        # Only `secular` and `periodic` get a control. `step` membership comes
-        # from the declarations (steps.csv is a FLOOR, and a picked step is
-        # removed by removing the pick), and `transient` from the checkbox
-        # below -- offering "not in the model" for either would promise
-        # something no emitted command could carry out.
-        self.model_in: dict[str, Any] = {}
-        mrow = QtWidgets.QHBoxLayout()
-        mrow.addWidget(QtWidgets.QLabel("in the model:"))
-        for name in ("secular", "periodic"):
-            cb = QtWidgets.QCheckBox(GROUP_LABELS.get(name, name))
-            cb.setChecked(True)
-            cb.setToolTip(
-                f"Keep {GROUP_LABELS.get(name, name)} (emitted as '{name}') in "
-                f"the design matrix. Unchecked, it leaves --model entirely; "
-                f"linear + periodic together are the secular background"
-            )
+        # --- background ----------------------------------------------------
+        self.bg_box = QtWidgets.QGroupBox("background s(t)")
+        bcol = QtWidgets.QVBoxLayout(self.bg_box)
+
+        trow = QtWidgets.QHBoxLayout()
+        trow.addWidget(QtWidgets.QLabel("terms:"))
+        self.cb_linear = QtWidgets.QCheckBox("linear")
+        self.cb_linear.setChecked(True)
+        self.cb_linear.setToolTip(
+            "Rate and offset (emitted inside --model as 'secular'). The "
+            "OFFSET matters here even though detrending does not need one: "
+            "holding s(t) to measure a step needs the level anchored"
+        )
+        self.cb_periodic = QtWidgets.QCheckBox("periodic")
+        self.cb_periodic.setChecked(True)
+        self.cb_periodic.setToolTip("Annual and semiannual (emitted inside --model)")
+        for cb in (self.cb_linear, self.cb_periodic):
             cb.toggled.connect(self.refit)
-            self.model_in[name] = cb
-            mrow.addWidget(cb)
-        mrow.addStretch(1)
-        mcol.addLayout(mrow)
+            trow.addWidget(cb)
+        trow.addStretch(1)
+        bcol.addLayout(trow)
 
-        # The stage cards. Empty until staging is on, because an unstaged fit
-        # has no stages -- not one stage covering everything, which would be a
-        # different (and refusable) plan.
-        self.stages_box = QtWidgets.QWidget()
-        self.stages_col = QtWidgets.QVBoxLayout(self.stages_box)
-        self.stages_col.setContentsMargins(0, 0, 0, 0)
-        self.stages_box.setVisible(False)
-        mcol.addWidget(self.stages_box)
+        self.seg_list = QtWidgets.QListWidget()
+        self.seg_list.setMaximumHeight(90)
+        self.seg_list.setToolTip(
+            "The clean intervals s(t) is fitted on — a UNION, which is the "
+            "whole point: one interval cannot span an event, and a background "
+            "fitted only after one extrapolates backwards through it"
+        )
+        bcol.addWidget(self.seg_list)
 
-        self.stage_buttons = QtWidgets.QWidget()
-        srow = QtWidgets.QHBoxLayout(self.stage_buttons)
-        srow.setContentsMargins(0, 0, 0, 0)
-        btn_add = QtWidgets.QPushButton("+ stage")
-        btn_add.setToolTip(
-            "Append a stage. It starts estimating nothing and holding "
-            "everything the stages above it fitted"
-        )
-        btn_add.clicked.connect(self.add_stage)
-        srow.addWidget(btn_add)
-        btn_del = QtWidgets.QPushButton("− stage")
-        btn_del.setToolTip("Remove the last stage")
-        btn_del.clicked.connect(self.remove_stage)
-        srow.addWidget(btn_del)
-        btn_preset = QtWidgets.QPushButton("reset to preset")
-        btn_preset.setToolTip(
-            "Back to the standard build: linear+periodic on the window, then "
-            "steps against that background, then transients against both"
-        )
-        btn_preset.clicked.connect(self.reset_preset)
-        srow.addWidget(btn_preset)
-        self.stage_buttons.setVisible(False)
-        mcol.addWidget(self.stage_buttons)
+        srow = QtWidgets.QHBoxLayout()
+        add = QtWidgets.QPushButton("+ interval")
+        add.setToolTip("Add a clean interval; drag its orange region on the plot")
+        add.clicked.connect(lambda: self.add_segment())
+        srow.addWidget(add)
+        rem = QtWidgets.QPushButton("− interval")
+        rem.setToolTip("Remove the last interval")
+        rem.clicked.connect(self.remove_segment)
+        srow.addWidget(rem)
+        bcol.addLayout(srow)
 
-        # ABOVE the view-only divider, because it changes the estimate: the
-        # screened epochs go back INTO the fit, the "fitting N of M" count
-        # moves, and the emitted command has to say so. `--stages S1,S2`
-        # already spells it -- S1/S2 are structural and always run, so naming
-        # only those turns despike, global, window and protection all off --
-        # which is why no new flag was invented for this. It also makes the
-        # excess-candidate abort unreachable rather than ambiguous: with no
-        # candidates there is no fraction to exceed, and an explicit stage set
-        # is an operator override the fallback never second-guesses.
-        # Off while BUILDING -- the staged fit is what the peel view is for --
-        # and on at the end, which is the workflow: stage to identify, then
-        # report from one solve with every group free. It switches the
-        # picker's own fit, not just the flag: emitting `--final joint` while
-        # showing the staged curve would put a command and a figure on screen
-        # that are not the same fit.
-        self.cb_final_joint = QtWidgets.QCheckBox("final fit: joint (all groups free)")
-        self.cb_final_joint.setToolTip(
-            "Re-fit the identified structure with no stage plan, over the "
-            "domain (emits --final joint). Every stage after the first "
-            "conditions on earlier values treated as known, so only the joint "
-            "solve has unconditional uncertainties. The staged→joint movement "
-            "is reported: more than one sigma means those stages were fitting "
-            "the same signal"
+        self.btn_save = QtWidgets.QPushButton("save s(t)")
+        self.btn_save.setToolTip(
+            "Write this background to analysis.yaml as the station's reusable "
+            "s(t) (--save-secular). Separate from committing, which stores "
+            "the finished f(t) that plot-gps-timeseries reads"
         )
-        self.cb_final_joint.toggled.connect(self.refit)
-        mcol.addWidget(self.cb_final_joint)
+        self.btn_save.clicked.connect(self.save_secular)
+        bcol.addWidget(self.btn_save)
+        self.saved_label = QtWidgets.QLabel()
+        self.saved_label.setWordWrap(True)
+        self.saved_label.setStyleSheet("color: #555;")
+        bcol.addWidget(self.saved_label)
+        col.addWidget(self.bg_box)
 
-        self.cb_use_flagged = QtWidgets.QCheckBox("use flagged epochs in the fit")
-        self.cb_use_flagged.setToolTip(
-            "Put the screened epochs back into the estimation (emits "
-            "--stages S1,S2). This CHANGES the fit and the record — it is not "
-            "the same as drawing them, which is in the view box below"
+        # --- events ---------------------------------------------------------
+        self.ev_box = QtWidgets.QGroupBox("events")
+        ecol = QtWidgets.QVBoxLayout(self.ev_box)
+
+        hrow = QtWidgets.QHBoxLayout()
+        hrow.addWidget(QtWidgets.QLabel("hold s(t) from:"))
+        self.hold_from = QtWidgets.QLineEdit("self")
+        self.hold_from.setToolTip(
+            "'self' holds this station's own saved background; a station code "
+            "borrows that station's (the legacy UseSTA). Emitted as "
+            "--hold secular=store:… --hold periodic=store:…"
         )
-        self.cb_use_flagged.toggled.connect(self.refit)
-        mcol.addWidget(self.cb_use_flagged)
+        self.hold_from.editingFinished.connect(self.refit)
+        hrow.addWidget(self.hold_from)
+        ecol.addLayout(hrow)
 
         self.cb_term = QtWidgets.QCheckBox("transient")
         self.cb_term.setToolTip(
-            "Add a log/exp transient at the green onset line (emits --term)"
+            "A log/exp transient at the green onset line (emits --term)"
         )
         self.cb_term.toggled.connect(self._toggle_term)
-        mcol.addWidget(self.cb_term)
+        ecol.addWidget(self.cb_term)
 
-        trow = QtWidgets.QHBoxLayout()
+        krow = QtWidgets.QHBoxLayout()
         self.kind = QtWidgets.QComboBox()
         self.kind.addItems(["log", "exp"])
         self.kind.currentIndexChanged.connect(self.refit)
-        trow.addWidget(self.kind)
-        trow.addWidget(QtWidgets.QLabel("tau [yr]"))
+        krow.addWidget(self.kind)
+        krow.addWidget(QtWidgets.QLabel("tau [yr]"))
         self.tau = QtWidgets.QDoubleSpinBox()
         self.tau.setRange(0.05, 50.0)
         self.tau.setSingleStep(0.1)
-        # 3 dp: refining solves tau to better than a hundredth of a year,
-        # and rounding it back to 2 would discard precision the VARPRO fit
-        # just earned -- and put the command a step away from the figure.
+        # 3 dp: refining solves tau to better than a hundredth of a year, and
+        # rounding back to 2 would discard precision the fit just earned --
+        # and put the command a step away from the figure.
         self.tau.setDecimals(3)
         self.tau.setValue(2.0)
         self.tau.editingFinished.connect(self.refit)
-        trow.addWidget(self.tau)
-        mcol.addLayout(trow)
+        krow.addWidget(self.tau)
+        ecol.addLayout(krow)
 
-        self.btn_refine = QtWidgets.QPushButton("refine \u03c4 (VARPRO)")
+        self.btn_refine = QtWidgets.QPushButton("refine τ (VARPRO)")
         self.btn_refine.setToolTip(
-            "Solve \u03c4 from the fit on screen instead of eyeballing it. "
-            "Reports all three components and applies the best-constrained; "
-            "the spinbox stays the single source, so the command follows"
+            "Solve τ from the fit on screen instead of eyeballing it. The "
+            "spinbox stays the single source, so the command follows"
         )
         self.btn_refine.clicked.connect(self._refine_tau)
-        mcol.addWidget(self.btn_refine)
+        ecol.addWidget(self.btn_refine)
 
-        self.btn_compare = QtWidgets.QPushButton("compare unstaged")
-        self.btn_compare.setToolTip(
-            "Fit the same setup without the stage plan and overlay it "
-            "(magenta dashed). The figure and the command are untouched — "
-            "no need to uncheck 'stage the fit', which would reset the states"
+        self.btn_commit = QtWidgets.QPushButton("copy the commit command")
+        self.btn_commit.setToolTip(
+            "Put the command WITH --commit on the clipboard. The picker never "
+            "writes the finished record itself: the workbench does, so there "
+            "is one path to stored science and it is one you can read first"
         )
-        self.btn_compare.clicked.connect(self.compare_unstaged)
-        mcol.addWidget(self.btn_compare)
+        self.btn_commit.clicked.connect(self.copy_commit)
+        ecol.addWidget(self.btn_commit)
 
-        self.btn_adopt = QtWidgets.QPushButton("switch to the unstaged fit")
-        self.btn_adopt.setToolTip(
-            "REPLACE your fit with the overlaid unstaged one: staging goes "
-            "off and the command follows. To keep the fit you configured, "
-            "just dismiss the overlay instead"
-        )
-        self.btn_adopt.setEnabled(False)
-        self.btn_adopt.clicked.connect(self.adopt_comparison)
-        mcol.addWidget(self.btn_adopt)
-
-        self.btn_dismiss = QtWidgets.QPushButton("dismiss comparison")
-        self.btn_dismiss.setToolTip(
-            "Remove the overlay and keep the fit you configured — the "
-            "default outcome, since comparing never changed it"
-        )
-        self.btn_dismiss.setEnabled(False)
-        self.btn_dismiss.clicked.connect(self._dismiss_comparison)
-        mcol.addWidget(self.btn_dismiss)
-        col.addWidget(model_box)
-
-        # --- picks: these move what is on the plot, and nothing else ------
-        picks_box = QtWidgets.QGroupBox("picks")
-        pcol = QtWidgets.QVBoxLayout(picks_box)
-        reset = QtWidgets.QPushButton("reset domain")
-        reset.setToolTip("Back to the catalog's fit window, not the data span")
-        reset.clicked.connect(self._reset_domain)
-        pcol.addWidget(reset)
-        clear = QtWidgets.QPushButton("clear steps")
+        clear = QtWidgets.QPushButton("clear picked steps")
         clear.setToolTip(
             "Remove the PICKED steps. Steps declared in steps.csv are a floor "
             "and stay in the fit"
         )
-        clear.clicked.connect(self._clear_steps)
-        pcol.addWidget(clear)
-        save = QtWidgets.QPushButton("save session")
-        save.clicked.connect(self.save_session)
-        pcol.addWidget(save)
-
+        clear.clicked.connect(self.clear_steps)
+        ecol.addWidget(clear)
         hint = QtWidgets.QLabel(
             "double-click a jump to declare a step · right-click it to remove"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #666;")
-        pcol.addWidget(hint)
-        col.addWidget(picks_box)
+        ecol.addWidget(hint)
+        col.addWidget(self.ev_box)
 
-        view_box = QtWidgets.QGroupBox("view")
+        # --- view: moves nothing that is fitted or stored --------------------
+        view_box = QtWidgets.QGroupBox("view — display only")
         vcol = QtWidgets.QVBoxLayout(view_box)
-        self.cb_detrend = QtWidgets.QCheckBox("residuals (data − the WHOLE model)")
-        self.cb_detrend.setToolTip(
-            "Subtract the entire fitted model — every group, including steps "
-            "and transients — and plot what is left. No curve is drawn, "
-            "because the model is then the zero line by construction. To see "
-            "one stage's fit against what that stage sees, leave this "
-            "unticked and expand its card instead. DISPLAY ONLY: the record, "
-            "the fit and the emitted command are unchanged"
+        self.view = QtWidgets.QComboBox()
+        self.view.addItems(["data", "data − s(t)", "data − f(t)"])
+        self.view.setToolTip(
+            "'data − s(t)' is where events are read: the background is gone "
+            "and what remains is the departures from it. 'data − f(t)' goes "
+            "to zero when the whole model is right"
         )
-        self.cb_detrend.toggled.connect(self.refit)
-        vcol.addWidget(self.cb_detrend)
-
-        # Building a composition and judging one are different views, and
-        # before this only the first was reachable while staged: the curve was
-        # always the active stage's groups, so a staged model's step and
-        # transient could not be seen on the raw data at all -- the secular
-        # just ran on as a straight line through the jump.
-        self.cb_whole_model = QtWidgets.QCheckBox("curve: the whole model")
-        self.cb_whole_model.setToolTip(
-            "Draw the composed staged model over the RAW data, instead of the "
-            "active stage's own terms over what that stage sees. This is the "
-            "view for judging the result; the per-stage view is for building "
-            "it. DISPLAY ONLY — the fit and the emitted command are unchanged"
-        )
-        self.cb_whole_model.toggled.connect(self.refit)
-        vcol.addWidget(self.cb_whole_model)
-
+        self.view.currentIndexChanged.connect(self.refit)
+        vcol.addWidget(self.view)
         self.cb_draw_flagged = QtWidgets.QCheckBox("draw flagged epochs (grey)")
         self.cb_draw_flagged.setChecked(True)
         self.cb_draw_flagged.setToolTip(
             "Show or hide the screened epochs, exactly like --hide-outliers: "
             "same masks, same counts, same record. To put them back in the "
-            "FIT, use the checkbox in the model box"
+            "FIT, use the checkbox in the run box"
         )
         self.cb_draw_flagged.toggled.connect(self.refit)
         vcol.addWidget(self.cb_draw_flagged)
         col.addWidget(view_box)
 
-        # --- run: parameters that were command-line-only ------------------
-        # Each writes the SAME attribute `run_flags` emits, so a control cannot
-        # move the figure without moving the command with it.
+        # --- run: each writes the SAME attribute run_flags emits -------------
         run_box = QtWidgets.QGroupBox("run")
         rgrid = QtWidgets.QFormLayout(run_box)
+        self.cb_use_flagged = QtWidgets.QCheckBox("fit the flagged epochs too")
+        self.cb_use_flagged.setToolTip(
+            "Put the screened epochs back into the estimation (emits "
+            "--stages S1,S2, which is 'flag nothing'). This CHANGES the fit "
+            "and the record — unlike drawing them, which is in the view box"
+        )
+        self.cb_use_flagged.toggled.connect(self.refit)
+        rgrid.addRow(self.cb_use_flagged)
 
         self.sp_gap = QtWidgets.QDoubleSpinBox()
         self.sp_gap.setRange(0.1, 50.0)
         self.sp_gap.setSingleStep(0.5)
         self.sp_gap.setDecimals(2)
         # Show the EFFECTIVE gate, not the flag: with no --max-gap-years the
-        # resolved settings carry the catalog's value (or the spec default),
-        # and a spinbox reading 0.5 while the fit ran at 1.0 would be a third
-        # place disagreeing about the same number.
+        # resolved settings carry the catalog's value, and a spinbox reading
+        # 0.5 while the fit ran at 1.0 is a third place disagreeing about it.
         self.sp_gap.setValue(
             float(
                 self.max_gap_years
@@ -1287,7 +695,7 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.sp_prov.setToolTip(
             "Recency bound of the GOLD provisional lane [days]; 0 disables. "
-            "Display only -- it moves no fitted quantity"
+            "Display only — it moves no fitted quantity"
         )
         self.sp_prov.editingFinished.connect(self._set_provisional_days)
         rgrid.addRow("provisional [d]", self.sp_prov)
@@ -1296,147 +704,713 @@ class PickerWindow:  # pragma: no cover - GUI
         self.sp_uncert.setRange(1, 200)
         self.sp_uncert.setValue(self.uncert)
         self.sp_uncert.setToolTip(
-            "Formal-sigma screen [mm], applied at READ time. Unlike the others "
-            "this RE-READS the series from disk — it changes which epochs "
-            "exist, not how they are fitted"
+            "Formal-sigma screen [mm], applied at READ time. Unlike the "
+            "others this RE-READS the series from disk — it changes which "
+            "epochs exist, not how they are fitted"
         )
         self.sp_uncert.editingFinished.connect(self._set_uncert)
         rgrid.addRow("uncert [mm]", self.sp_uncert)
         col.addWidget(run_box)
 
+        save = QtWidgets.QPushButton("save session")
+        save.setToolTip(
+            "Convenience only — the emitted command is what reproduces the "
+            "science, because it is re-parsed by the grammar the CLI uses"
+        )
+        save.clicked.connect(self.save_session)
+        col.addWidget(save)
+
+        self.summary = QtWidgets.QPlainTextEdit()
+        self.summary.setReadOnly(True)
+        self.summary.setMinimumHeight(180)
+        self.summary.setStyleSheet("font-family: monospace;")
+        col.addWidget(self.summary)
+        col.addStretch(1)
         return box
+
+    def _assemble(self, controls: Any) -> None:
+        QtWidgets = self.QtWidgets
+        self.win = QtWidgets.QWidget()
+        self.win.setWindowTitle(f"detrend picker — {self.sta}")
+        outer = QtWidgets.QVBoxLayout(self.win)
+
+        self.header = QtWidgets.QLabel()
+        self.header.setTextFormat(self.pg.QtCore.Qt.RichText)
+        outer.addWidget(self.header)
+
+        # Plots left, controls right, draggable divider. Stacking everything
+        # vertically spent the scarcest dimension -- height -- on a one-line
+        # control strip, while three component panels plus the periodogram
+        # need every bit of it.
+        split = QtWidgets.QSplitter(self.pg.QtCore.Qt.Horizontal)
+        split.addWidget(self.layout)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(controls)
+        scroll.setWidgetResizable(True)
+        scroll.setMinimumWidth(340)
+        split.addWidget(scroll)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        outer.addWidget(split, 1)
+
+        # The command runs FULL WIDTH along the bottom: it is the window's
+        # output, runs past 200 characters on a staged fit with a term and a
+        # segment, and exists to be read and copied -- which a third of the
+        # window cannot do.
+        self.command = QtWidgets.QLineEdit()
+        self.command.setReadOnly(True)
+        self.command.setStyleSheet("font-family: monospace;")
+        outer.addWidget(self.command)
+        self.win.resize(1500, 950)
+
+    # -- segments ---------------------------------------------------------
+    def segments(self) -> list[tuple[float, float]]:
+        """The clean intervals, in time order, rounded as they are emitted."""
+        out = [
+            (round(float(g[0].getRegion()[0]), 4), round(float(g[0].getRegion()[1]), 4))
+            for g in self.segment_regions
+        ]
+        return sorted(out)
+
+    def add_segment(self, values: tuple[float, float] | None = None) -> None:
+        if values is None:
+            lo, hi = self.span
+            width = (hi - lo) / 4.0
+            start = lo + width * len(self.segment_regions)
+            values = (round(start, 4), round(min(start + width, hi), 4))
+        self.segment_regions.append(self._add_region(values, SEGMENT_COLOR))
+        self.refit()
+
+    def remove_segment(self) -> None:
+        if not self.segment_regions:
+            return
+        for p, r in zip(self.plots, self.segment_regions.pop(), strict=True):
+            p.removeItem(r)
+        self.refit()
+
+    def _clear_segments(self) -> None:
+        while self.segment_regions:
+            for p, r in zip(self.plots, self.segment_regions.pop(), strict=True):
+                p.removeItem(r)
+
+    def _update_segment_list(self) -> None:
+        self.seg_list.clear()
+        for lo, hi in self.segments():
+            self.seg_list.addItem(f"{lo} : {hi}      ({hi - lo:.2f} yr)")
+
+    # -- steps -------------------------------------------------------------
+    def _on_click(self, ev: Any) -> None:
+        """Double-click places a step; right-click on one removes it."""
+        if self.mode.currentText() != MODE_EVENTS:
+            return
+        pos = ev.scenePos()
+        for p in self.plots:
+            if not p.sceneBoundingRect().contains(pos):
+                continue
+            x = float(p.vb.mapSceneToView(pos).x())
+            if ev.double():
+                self._add_step(round(x, 4))
+                ev.accept()
+            elif ev.button() == self.pg.QtCore.Qt.MouseButton.RightButton:
+                self._remove_step_near(x)
+                ev.accept()
+            return
+
+    def _add_step(self, epoch: float) -> None:
+        self.step_lines.append(self._add_line(epoch, STEP_COLOR))
+        self.refit()
+
+    def _remove_step_near(self, x: float) -> None:
+        if not self.step_lines:
+            return
+        idx = min(
+            range(len(self.step_lines)),
+            key=lambda i: abs(self.step_lines[i][0].value() - x),
+        )
+        if abs(self.step_lines[idx][0].value() - x) > 0.25:
+            return
+        for p, ln in zip(self.plots, self.step_lines.pop(idx), strict=True):
+            p.removeItem(ln)
+        self.refit()
+
+    def clear_steps(self) -> None:
+        while self.step_lines:
+            for p, ln in zip(self.plots, self.step_lines.pop(), strict=True):
+                p.removeItem(ln)
+        self.refit()
+
+    def _picked_steps(self) -> tuple[float, ...]:
+        return tuple(round(float(g[0].value()), 4) for g in self.step_lines)
+
+    # -- run parameters -----------------------------------------------------
+    def _set_max_gap(self) -> None:
+        self.max_gap_years = float(self.sp_gap.value())
+        self.refit()
+
+    def _set_provisional_days(self) -> None:
+        self.provisional_days = float(self.sp_prov.value())
+        self.refit()
+
+    def _set_uncert(self) -> None:
+        """RE-READS the series: this screen decides which epochs exist."""
+        import geo_dataread.gps_read as gpsr
+
+        want = int(self.sp_uncert.value())
+        try:
+            yearf, data, sigma, _ = gpsr.getData(
+                self.sta, ref="plate", Dir=self.tot_dir, tType="TOT", uncert=want
+            )
+        except Exception as exc:
+            self.summary.setPlainText(f"re-read at uncert {want} failed: {exc}")
+            self.sp_uncert.setValue(self.uncert)
+            return
+        if yearf is None or len(yearf) == 0:
+            self.summary.setPlainText(
+                f"uncert {want} mm screens every epoch away — keeping {self.uncert}"
+            )
+            self.sp_uncert.setValue(self.uncert)
+            return
+        np = self.np
+        before = self.yearf.size
+        self.yearf = np.asarray(yearf, float)
+        self.data = np.atleast_2d(np.asarray(data, float))
+        self.sigma = np.atleast_2d(np.asarray(sigma, float))
+        self.uncert = want
+        self.summary.setPlainText(
+            f"re-read at uncert {want} mm: {before} → {self.yearf.size} epochs"
+        )
+        self.refit()
+
+    def _toggle_term(self, on: bool) -> None:
+        self._set_visible(self.onset_lines, on)
+        self.refit()
+
+    def _mode_changed(self, *_: Any) -> None:
+        events = self.mode.currentText() == MODE_EVENTS
+        self.bg_box.setVisible(not events)
+        self.ev_box.setVisible(events)
+        self._set_visible(self.domain_regions, events)
+        for group in self.segment_regions:
+            self._set_visible(group, not events)
+        self._set_visible(self.onset_lines, events and self.cb_term.isChecked())
+        for group in self.step_lines:
+            self._set_visible(group, events)
+        self.phase_hint.setText(
+            "Estimate the departures against a background that no longer "
+            "moves. data − s(t) is where they are read."
+            if events
+            else "Pick the CLEAN intervals — usually one either side of an "
+            "event — then save s(t)."
+        )
+        # Entering the events phase, the useful view is the one events are
+        # read in; leaving it, the useful view is the data itself.
+        self.view.blockSignals(True)
+        self.view.setCurrentIndex(1 if events else 0)
+        self.view.blockSignals(False)
+        self.refit()
+
+    # -- the fit -------------------------------------------------------------
+    def _terms_model(self) -> str | None:
+        return MODEL_BY_TERMS.get(
+            (self.cb_linear.isChecked(), self.cb_periodic.isChecked())
+        )
+
+    def _run_flags(self) -> list[str]:
+        """The shared tail. TWO pickers need it; ONE function builds it.
+
+        Two pickers assembling it independently is two places to forget the
+        same flag, and each of them forgot `--tot-dir`.
+        """
+        flags = list(
+            run_flags(
+                tot_dir=self.tot_dir,
+                max_gap_years=self.max_gap_years,
+                uncert=self.uncert,
+                provisional_days=self.provisional_days,
+            )
+        )
+        if self.cb_use_flagged.isChecked():
+            flags = ["--stages", USE_FLAGGED_STAGES, *flags]
+        return flags
+
+    def _term_spec(self) -> str | None:
+        if not self.cb_term.isChecked():
+            return None
+        return (
+            f"{self.kind.currentText()}@{round(float(self.onset_lines[0].value()), 4)}"
+            f",tau={round(float(self.tau.value()), 3)}"
+        )
+
+    def _events_free(self, settings: Any, term: str | None) -> list[str]:
+        """Which groups the event stage estimates.
+
+        `step` only when the FIT will carry one — the MERGED declaration
+        (steps.csv floor ∪ picked), not the picked lines, because a declared
+        step has parameters whether or not anyone clicked it. Naming a group
+        the model has no parameters for is refused by the estimator, rightly,
+        so asking for it unconditionally would make every stepless station
+        unfittable.
+        """
+        from gps_plot.detrend_workbench import _declared_step_epochs
+
+        free = []
+        if _declared_step_epochs(self.sta, settings.steps):
+            free.append("step")
+        if term:
+            free.append("transient")
+        return free
+
+    def refit(self, *_: Any) -> None:
+        from gps_plot.detrend_workbench import _override_settings
+
+        events = self.mode.currentText() == MODE_EVENTS
+        self._update_segment_list()
+        flags = self._run_flags()
+        note = ""
+        plan = lookup = None
+
+        if events:
+            term = self._term_spec()
+            steps = self._picked_steps()
+            lo, hi = (round(float(v), 4) for v in self.domain_regions[0].getRegion())
+            moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
+            settings = _override_settings(
+                self.base_settings,
+                self.sta,
+                quiet=True,
+                segments=((lo, hi),) if moved else None,
+                steps=steps or None,
+                max_gap_years=self.max_gap_years,
+            )
+            free = self._events_free(settings, term)
+            hold_from = self.hold_from.text().strip() or "self"
+            self.command_text = events_command(
+                self.sta,
+                free=free or ["step"],
+                hold_from=hold_from,
+                steps=steps,
+                term=term,
+                segment=(lo, hi) if moved else None,
+                flags=flags,
+            )
+            self.model = None
+            if not free:
+                note = (
+                    "nothing to estimate: this station has no declared step "
+                    "and no transient is configured. Double-click a jump to "
+                    "declare a step, or tick 'transient'."
+                )
+            else:
+                plan, lookup, note = self._events_plan(free, hold_from)
+        else:
+            term = None
+            self.model = self._terms_model()
+            segs = self.segments()
+            settings = _override_settings(
+                self.base_settings,
+                self.sta,
+                quiet=True,
+                segments=tuple(segs) or None,
+                max_gap_years=self.max_gap_years,
+            )
+            self.command_text = background_command(
+                self.sta, segments=segs, model=self.model, flags=flags
+            )
+            if self.model is None:
+                note = (
+                    "fit refused: linear and periodic are both off, which no "
+                    "--model value can express. Leave at least one of them in."
+                )
+
+        est = None
+        if not note:
+            try:
+                # The SAME fallback the workbench applies: a full-detection
+                # abort is recoverable (retry S0-only), a failed gate is not.
+                est, fell_back = estimate_with_abort_fallback(
+                    self.sta,
+                    self.yearf,
+                    self.data,
+                    self.sigma,
+                    settings=settings,
+                    terms=(term,) if term else None,
+                    stage_plan=plan,
+                    lookup_secular=lookup,
+                    model=self.model,
+                    stages=(
+                        USE_FLAGGED_STAGES if self.cb_use_flagged.isChecked() else None
+                    ),
+                )
+            except (ValueError, RuntimeError) as exc:
+                # A refused fit is a RESULT -- a rank-deficient stage, an
+                # unfittable term, a domain with too few epochs. Say so, and
+                # keep the previous trajectory on screen but greyed.
+                note = f"fit refused: {exc}"
+            else:
+                if fell_back:
+                    from gps_plot.detrend_workbench import abort_fallback_note
+
+                    note = f"note: {abort_fallback_note(self.sta)}"
+
+        self._render(est, note)
+        self.command.setText(self.command_text)
+        self._update_header(events)
+
+    def _events_plan(self, free: Sequence[str], hold_from: str) -> tuple[Any, Any, str]:
+        """The one-stage plan and the store lookup, or an explanation."""
+        from geo_dataread.stage_plan import build_stage_plan, default_analysis_yaml_path
+        from gps_plot.detrend_workbench import _secular_lookup
+
+        class _Args:
+            analysis_yaml = None
+
+        try:
+            plan = build_stage_plan(
+                [f"{EVENT_STAGE}:{','.join(free)}"],
+                [f"{g}=store:{hold_from}" for g in BACKGROUND_GROUPS],
+            )
+        except ValueError as exc:
+            return None, None, f"stage plan refused: {exc}"
+        try:
+            lookup = _secular_lookup(_Args(), self.sta)
+            # Resolved EAGERLY so a missing background is reported here, with
+            # the action that fixes it, rather than surfacing later as an
+            # opaque fit failure.
+            lookup(None if hold_from == "self" else hold_from)
+        except (RuntimeError, ValueError) as exc:
+            return (
+                None,
+                None,
+                f"{exc}\n\nSwitch to the background phase, pick the clean "
+                f"intervals and press 'save s(t)'.\n"
+                f"Store: {default_analysis_yaml_path()}",
+            )
+        return plan, lookup, ""
+
+    # -- rendering -----------------------------------------------------------
+    def _render(self, est: Any, note: str) -> None:
+        np = self.np
+        if est is None:
+            # Grey and DASHED: a solid blue line reads as a result whatever
+            # the summary says, and this curve belongs to a configuration that
+            # is no longer on screen.
+            for curve in self.fit_curves:
+                curve.setPen(
+                    self.pg.mkPen(
+                        STALE_COLOR, width=1, style=self.pg.QtCore.Qt.DashLine
+                    )
+                )
+            for group in (
+                self.flag_scatters,
+                self.outside_scatters,
+                self.prov_scatters,
+            ):
+                for sc in group:
+                    sc.setData([], [])
+            for c in range(len(COMPONENTS)):
+                finite = np.isfinite(self.data[c])
+                self.kept_scatters[c].setData(self.yearf[finite], self.data[c][finite])
+            self.record = None
+            self.summary.setPlainText(
+                note
+                or "no record: the outlier stage aborted, or a validity gate "
+                "rejected this domain (span / epochs / max-gap)"
+            )
+            return
+
+        import gps_analysis
+
+        self.record = est.record
+        self._est = est
+        fit = np.asarray(gps_analysis.evaluate_record(est.record, self.yearf))
+        outl = np.atleast_2d(np.asarray(est.outliers, dtype=bool))
+        empty = np.zeros(self.yearf.shape, dtype=bool)
+
+        # The fit passes NO verdict outside its window, so drawn plain those
+        # epochs claim "clean" and one blunder owns the y-axis. Fill that
+        # silence with the view detector -- the same chain
+        # `plot-gps-timeseries --view cleaned` uses, and the only thing that
+        # HAS a provisional category.
+        try:
+            from gps_plot.detrend_workbench import screen_outside_window
+
+            outside, prov = screen_outside_window(
+                self.sta,
+                self.yearf,
+                self.data,
+                self.sigma,
+                est,
+                steps=self._picked_steps() or None,
+                provisional_days=self.provisional_days,
+            )
+        except Exception:
+            outside = prov = None
+        outside = None if outside is None else np.atleast_2d(np.asarray(outside, bool))
+        prov = None if prov is None else np.atleast_2d(np.asarray(prov, bool))
+
+        view = self.view.currentText()
+        peel: list[str] = []
+        if view == "data − s(t)":
+            peel = list(BACKGROUND_GROUPS)
+        elif view == "data − f(t)":
+            peel = list(BACKGROUND_GROUPS) + list(EVENT_GROUPS)
+        # DISPLAY ONLY: the masks, the record and the emitted command are the
+        # same either way -- this subtracts a model that was already fitted,
+        # it does not fit anything different.
+        shown = (
+            self.data
+            if not peel
+            else self.data - group_contribution(est.record, self.yearf, peel)
+        )
+
+        # The curve is drawn on its own dense grid: joining the data epochs
+        # draws a straight chord over every gap, which claims linear motion
+        # the model never fitted. Steps are bracketed there so a jump stays
+        # vertical at any zoom.
+        fit_x, fit_y = trajectory_curve(est.record, self.yearf)
+        if peel:
+            remaining = [
+                g for g in list(BACKGROUND_GROUPS) + list(EVENT_GROUPS) if g not in peel
+            ]
+            fit_y = (
+                group_contribution(est.record, fit_x, remaining)
+                if remaining
+                else np.zeros((self.data.shape[0], fit_x.size))
+            )
+        for curve in self.fit_curves:
+            curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
+
+        suffix = "" if not peel else (" − s(t)" if len(peel) == 2 else " − f(t)")
+        draw = self.cb_draw_flagged.isChecked()
+        blank = self.yearf[:0]
+        for c, name in enumerate(COMPONENTS):
+            self.plots[c].setLabel("left", f"{name}{suffix} [mm]")
+            # connect="finite" so a component the model cannot evaluate breaks
+            # the line instead of being joined across.
+            self.fit_curves[c].setData(fit_x, fit_y[c], connect="finite")
+            finite = np.isfinite(self.data[c])
+            flagged = outl[c] & finite
+            out_c = outside[c] & finite if outside is not None else empty
+            prov_c = prov[c] & finite if prov is not None else empty
+            # Both greys MASK; gold does not, so gold stays in the kept series
+            # and is only overlaid.
+            kept = finite & ~outl[c] & ~out_c
+            self.kept_scatters[c].setData(self.yearf[kept], shown[c][kept])
+            self.flag_scatters[c].setData(
+                self.yearf[flagged] if draw else blank,
+                shown[c][flagged] if draw else blank,
+            )
+            self.outside_scatters[c].setData(
+                self.yearf[out_c] if draw else blank,
+                shown[c][out_c] if draw else blank,
+            )
+            self.prov_scatters[c].setData(self.yearf[prov_c], shown[c][prov_c])
+            self._prov_counts[c] = int(prov_c.sum())
+
+        self._update_spectrum(fit)
+        text = model_equation(est.record.get("param_names") or []) + "\n\n"
+        if note:
+            text = f"{note}\n\n{text}"
+        text += self._summary(est.record)
+        block = self.params_block(est.record)
+        if block:
+            text += "\n\nparameters\n" + block
+        self.print_params(est.record, "current fit")
+        self.summary.setPlainText(text)
+
+    def _update_spectrum(self, fit: Any) -> None:
+        """Lomb-Scargle of the residuals, per component."""
+        np = self.np
+        try:
+            from scipy.signal import lombscargle
+        except Exception:  # pragma: no cover
+            return
+        freqs = np.linspace(0.2, 6.0, 600)
+        omega = 2.0 * np.pi * freqs
+        for c in range(len(COMPONENTS)):
+            resid = self.data[c] - fit[c]
+            ok = np.isfinite(resid) & np.isfinite(self.yearf)
+            if int(ok.sum()) < 32:
+                self.spec_curves[c].setData([], [])
+                continue
+            y = resid[ok] - resid[ok].mean()
+            try:
+                power = lombscargle(self.yearf[ok], y, omega, normalize=True)
+            except Exception:  # pragma: no cover
+                self.spec_curves[c].setData([], [])
+                continue
+            self.spec_curves[c].setData(freqs, power)
+
+    def _summary(self, rec: dict[str, Any]) -> str:
+        # `rms` is rounded for DISPLAY: raw it printed as
+        # [1.8299068022476694, ...] and wrapped over three lines in the
+        # control column, burying the number being compared between iterations.
+        keys = ("model", "window", "n_epochs", "n_rejected", "rms", "step_epochs")
+        lines = []
+        for k in keys:
+            value = rec.get(k)
+            if k == "rms" and value is not None:
+                value = [round(float(v), 2) for v in value]
+            lines.append(f"{k:14s} {value}")
+        rate = [round(float(c["params"][1]), 2) for c in rec["components"]]
+        lines.append(f"{'rate [mm/yr]':14s} {rate}")
+        return "\n".join(lines)
 
     def params_block(self, record: dict[str, Any]) -> str:
         """The parameter table as text, for the panel.
 
         The picker is normally launched from a sway keybinding, which `exec`s
         it with no terminal attached -- so printing to stdout alone put the
-        numbers nowhere an operator could see them. They go in the panel, and
-        still to stdout for the times it IS run from a shell.
+        numbers nowhere an operator could see them.
         """
-        names = list(record.get("param_names") or [])
+        names = record.get("param_names") or []
         comps = record.get("components") or []
         if not names or not comps:
             return ""
-        width = max(len(n) for n in names)
-        lines = ["  " + " " * width + "".join(f"{c:>10s}" for c in COMPONENTS)]
-        for i, name in enumerate(names):
-            row = f"  {name:<{width}s}"
-            for comp in comps[:3]:
-                row += f"{float(comp['params'][i]):10.3f}"
-            lines.append(row)
-        return "\n".join(lines)
+        rows = [f"{'':18s}" + "".join(f"{n:>12s}" for n in COMPONENTS)]
+        for j, name in enumerate(names):
+            cells = "".join(
+                f"{float(c['params'][j]):12.3f}"
+                if j < len(c["params"])
+                else f"{'':12s}"
+                for c in comps
+            )
+            rows.append(f"{name:18s}{cells}")
+        return "\n".join(rows)
 
     def print_params(self, record: dict[str, Any], tag: str) -> None:
-        """Dump the full parameter vector to the TERMINAL, one row per term.
-
-        The panel shows the general model form; the numbers go here, because
-        a parameter vector with steps and transients is wider than the control
-        column and is something an operator wants to keep, scroll and paste.
-        Components are ANSI-coloured to match the residual periodogram's three
-        curves, so the same component is the same colour in both places.
-        """
-        names = list(record.get("param_names") or [])
-        comps = record.get("components") or []
-        if not names or not comps:
+        block = self.params_block(record)
+        if not block:
             return
-        colour = sys.stdout.isatty()
         print(f"\n{self.sta} — {tag}")
-        print(f"  {model_equation(names)}")
-        width = max(len(n) for n in names)
-        head = "  " + " " * width + "".join(f"{c:>12s}" for c in COMPONENTS)
-        print(head)
-        for i, name in enumerate(names):
-            row = f"  {name:<{width}s}"
-            for c, comp in enumerate(comps[:3]):
-                value = float(comp["params"][i])
-                cell = f"{value:12.3f}"
-                row += f"{ANSI[c]}{cell}{ANSI_OFF}" if colour else cell
-            print(row)
-        rms = record.get("rms")
-        if rms is not None:
-            print(f"  {'rms':<{width}s}" + "".join(f"{float(v):12.2f}" for v in rms))
+        print("  " + model_equation(record.get("param_names") or []))
+        for line in block.splitlines():
+            print("  " + line)
 
-    def compare_unstaged(self) -> None:
-        """Fit the same setup WITHOUT the stage plan and overlay the result.
+    def _update_header(self, events: bool) -> None:
+        """Station, phase and the run parameters, always on screen.
 
-        The figure and the emitted command are left alone: the blue
-        trajectory stays the thing the command reproduces, and this is drawn
-        dashed in magenta beside it. Unchecking 'stage the fit' to get the
-        same look is destructive -- the toggle rewrites the group states on
-        the way out and again on the way back -- so the setup survives here.
+        `uncert` screens sigma at READ time, so it changes WHICH epochs are
+        fitted while leaving no trace in any fitted quantity, and
+        `max_gap_years` decides whether the station is estimable at all. Two
+        records that differ only in these are indistinguishable from their
+        numbers.
         """
-        settings, _extra, terms, _stage_specs, _holds = self._current()
-        try:
-            est, _fell = estimate_with_abort_fallback(
-                self.sta,
-                self.yearf,
-                self.data,
-                self.sigma,
-                settings=settings,
-                terms=terms or None,
-                stage_plan=None,
-                model=self.model,
-            )
-        except (ValueError, RuntimeError) as exc:
-            self.summary.setPlainText(f"comparison refused: {exc}")
-            return
-        if est is None:
+        bits = [
+            f"<b>{self.sta}</b>",
+            f"phase <b>{'events' if events else 'background'}</b>",
+            f"uncert {self.uncert} mm",
+            f"max-gap {self.sp_gap.value():.1f} yr",
+        ]
+        if events:
+            bits.append(f"holding s(t) from <b>{self.hold_from.text().strip()}</b>")
+            bits.append(f"steps picked {len(self.step_lines)}")
+        else:
+            segs = self.segments()
+            if segs:
+                span = sum(hi - lo for lo, hi in segs)
+                bits.append(f"{len(segs)} interval(s), {span:.1f} yr")
+            else:
+                bits.append(
+                    "<span style='color:#a00'>no interval — using the catalog "
+                    "domain</span>"
+                )
+        if self.record is None:
+            bits.append("<span style='color:#a00'>NO RECORD</span>")
+        else:
+            bits.append(f"fitting {self.record.get('n_epochs')} epochs")
+            if any(self._prov_counts):
+                bits.append(
+                    f"<span style='color:#8a6d0b'>provisional "
+                    f"{self._prov_counts}</span>"
+                )
+        self.header.setText(" · ".join(bits))
+
+    # -- actions --------------------------------------------------------------
+    def save_secular(self) -> None:
+        """Write s(t) to the store, through the store's OWN writer.
+
+        The picker does not decide what a background is: `secular_from_record`
+        does (linear + periodic, never events), and two answers to that
+        question is exactly the divergence this window keeps producing.
+        """
+        if self.record is None:
             self.summary.setPlainText(
-                "comparison refused: the unstaged fit produced no record."
+                "nothing to save: there is no fit on screen. Adjust the "
+                "intervals until a record appears."
             )
             return
+        from geo_dataread.secular_store import secular_from_record, write_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
 
-        fit_x, fit_y = trajectory_curve(est.record, self.yearf)
-        for c in range(3):
-            self.compare_curves[c].setData(fit_x, fit_y[c], connect="finite")
-        self._comparison = est.record
-        self.btn_adopt.setEnabled(True)
-        self.btn_dismiss.setEnabled(True)
-        self.print_params(est.record, "UNSTAGED comparison (not the record)")
-        if self.record is not None:
-            self.print_params(self.record, "current fit (what the command emits)")
-        rate = [round(float(c["params"][1]), 2) for c in est.record["components"]]
-        self.summary.setPlainText(
-            "comparison drawn (magenta dashed) — parameters printed to the "
-            f"terminal.\nunstaged rate {rate}\n\nThe command and the blue "
-            "trajectory are UNCHANGED. Press 'adopt comparison' to make this "
-            "the fit.\n\n" + self.summary.toPlainText()
-        )
-
-    def adopt_comparison(self) -> None:
-        """Make the comparison the actual fit, so the command describes it."""
-        if getattr(self, "_comparison", None) is None:
+        path = default_analysis_yaml_path()
+        if path is None:
+            self.summary.setPlainText(
+                "no analysis.yaml is reachable on this host, so there is "
+                "nowhere to save the background. Run the emitted command with "
+                "--save-secular --analysis-yaml <path> instead."
+            )
             return
-        # Turning staging off IS the configuration the comparison was fitted
-        # under, so this routes through the normal toggle rather than pasting
-        # the record in -- the figure, the record and the command then all
-        # come from one refit, as they do for every other control.
-        self.cb_stage.setChecked(False)
-        self._clear_comparison()
-        self.refit()
-
-    def _dismiss_comparison(self) -> None:
-        """Drop the overlay, keep the configured fit. Nothing else moves."""
-        self._clear_comparison()
+        try:
+            entry = secular_from_record(
+                self.record, fitted_at=self.record.get("fitted_at")
+            )
+            write_secular(path, self.sta, entry)
+        except (ValueError, OSError) as exc:
+            self.summary.setPlainText(f"save refused: {exc}")
+            return
+        spans = ", ".join(f"{a}:{b}" for a, b in (entry.segments or ())) or "the domain"
+        self.saved_label.setText(
+            f"saved {len(entry.param_names)} parameters per component, "
+            f"fitted on {spans} → {path}"
+        )
+        cmd = background_command(
+            self.sta,
+            segments=self.segments(),
+            model=self.model,
+            flags=self._run_flags(),
+            save=True,
+        )
         self.summary.setPlainText(
-            "comparison dismissed — your fit and its command are unchanged.\n\n"
-            + self.summary.toPlainText()
+            f"background saved for {self.sta}.\n\nSwitch to the events phase "
+            f"to estimate steps and transients against it.\n\nThe same thing "
+            f"from the CLI:\n\n{cmd}"
         )
 
-    def _clear_comparison(self) -> None:
-        """Drop the overlay. Called on every refit.
+    def copy_commit(self) -> None:
+        """Put the committing command on the clipboard — never run it here.
 
-        A comparison is a snapshot of a DIFFERENT configuration; leaving it on
-        screen after the blue line has moved would invite reading the two as
-        the same fit.
+        The workbench stores; the picker proposes. One path to stored science,
+        and it is the one an operator can read before it runs.
         """
-        self._comparison = None
-        for curve in self.compare_curves:
-            curve.setData([], [])
-        if hasattr(self, "btn_adopt"):
-            self.btn_adopt.setEnabled(False)
-            self.btn_dismiss.setEnabled(False)
+        if self.mode.currentText() != MODE_EVENTS:
+            self.summary.setPlainText(
+                "the finished model is committed from the events phase; the "
+                "background is saved with 'save s(t)'."
+            )
+            return
+        from gps_plot.detrend_workbench import _override_settings
+
+        steps = self._picked_steps()
+        term = self._term_spec()
+        settings = _override_settings(
+            self.base_settings,
+            self.sta,
+            quiet=True,
+            steps=steps or None,
+            max_gap_years=self.max_gap_years,
+        )
+        cmd = events_command(
+            self.sta,
+            free=self._events_free(settings, term) or ["step"],
+            hold_from=self.hold_from.text().strip() or "self",
+            steps=steps,
+            term=term,
+            flags=self._run_flags(),
+            commit=True,
+        )
+        self.QtWidgets.QApplication.clipboard().setText(cmd)
+        self.summary.setPlainText(f"copied to the clipboard:\n\n{cmd}")
 
     def _refine_tau(self) -> None:
         """Solve τ by VARPRO, seeded by the fit currently on screen.
@@ -1557,125 +1531,46 @@ class PickerWindow:  # pragma: no cover - GUI
             "\n".join(lines) + "\n\n" + self.summary.toPlainText()
         )
 
-    # -- run parameters ------------------------------------------------
-    # These were command-line-only. Each sets the attribute that `_command`
-    # already reads, so the emitted command follows the control by
-    # construction rather than by remembering to update it in two places.
-
-    def _set_max_gap(self) -> None:
-        value = round(float(self.sp_gap.value()), 4)
-        if value == self.max_gap_years:
-            return
-        self.max_gap_years = value
-        self.refit()
-
-    def _set_provisional_days(self) -> None:
-        value = round(float(self.sp_prov.value()), 4)
-        if value == self.provisional_days:
-            return
-        self.provisional_days = value
-        self.refit()
-
-    def _set_uncert(self) -> None:
-        """Re-READ the series under a new sigma screen, then refit.
-
-        The odd one out: ``uncert`` is applied by ``getData`` when the file is
-        read, so it decides which epochs EXIST rather than how they are
-        fitted. A refit alone would move the emitted command while the figure
-        kept showing the old series -- this window's recurring bug wearing a
-        new hat -- so the data is re-read here.
-
-        The picks are deliberately left where they are. Screening sigma is not
-        a statement about which window to fit, so the domain region, steps and
-        onset stay put; only the underlying series changes. A failed read
-        keeps the current data and says so, because a picker that silently
-        empties itself is worse than one that refuses.
-        """
-        value = int(self.sp_uncert.value())
-        if value == self.uncert:
-            return
-
-        import geo_dataread.gps_read as gpsr
-
-        np = self.np
-        try:
-            yearf, data, sigma, _off = gpsr.getData(
-                self.sta, ref="plate", Dir=self.tot_dir, tType="TOT", uncert=value
-            )
-            yearf = np.asarray(yearf, float)
-            if yearf.size == 0:
-                raise ValueError("no epochs survive that screen")
-        except Exception as exc:
-            self.sp_uncert.setValue(self.uncert)  # keep widget and state in step
-            self.summary.setPlainText(
-                f"uncert {value} mm: re-read failed, keeping {self.uncert} mm\n{exc}"
-            )
-            return
-
-        before = self.yearf.size
-        self.yearf = yearf
-        self.data = np.atleast_2d(np.asarray(data, float))
-        self.sigma = np.atleast_2d(np.asarray(sigma, float))
-        self.span = (float(np.nanmin(yearf)), float(np.nanmax(yearf)))
-        self.uncert = value
-        self.refit()
-        self._note_epoch_change(before, yearf.size, value)
-
-    def _note_epoch_change(self, before: int, after: int, uncert: int) -> None:
-        """Say how many epochs the screen took, above the record.
-
-        The count is the whole point of the control and it is invisible
-        otherwise: a tighter screen that drops 40 of 4713 epochs looks
-        identical on a plot of 4673.
-        """
-        delta = after - before
-        if not delta:
-            return
-        self.summary.setPlainText(
-            f"uncert {uncert} mm: {before} -> {after} epochs ({delta:+d})\n\n"
-            + self.summary.toPlainText()
-        )
-
-    # -- session (TSAnalyzer's reloadable pick file) --------------------
+    # -- session ---------------------------------------------------------------
     def _session_path(self) -> Any:
         from pathlib import Path
 
-        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-        d = Path(base) / "gps-detrend-picker" / "sessions"
-        d.mkdir(parents=True, exist_ok=True)
-        return d / f"{self.sta}.json"
+        base = (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            / "gps-detrend-picker"
+        )
+        base.mkdir(parents=True, exist_ok=True)
+        return base / f"{self.sta}.json"
 
     def save_session(self) -> None:
-        """Write the current picks so they survive closing the window.
+        """Write the picks so they survive closing the window.
 
-        Borrowed from TSAnalyzer (Wu et al. 2017,
-        doi:10.1007/s10291-017-0637-2), which "uses a JSON text format to
-        record all these data offset events … and all the data offset events
-        can thus be recorded and reloaded".
-
-        This is a CONVENIENCE, not a record: the emitted command is what
-        reproduces the science, because it is re-parsed by the same grammar
-        the CLI uses. A session that could be mistaken for provenance would
-        be a second path to stored results, which this tool does not have.
+        Borrowed from TSAnalyzer (Wu et al. 2017, doi:10.1007/s10291-017-0637-2).
+        A CONVENIENCE, not a record: the emitted command is what reproduces
+        the science, because it is re-parsed by the same grammar the CLI uses.
+        A session that could be mistaken for provenance would be a second path
+        to stored results, which this tool does not have.
         """
         import json
 
-        lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
-        s_lo, s_hi = (round(v, 4) for v in self.stage_regions[0].getRegion())
         payload = {
             "station": self.sta,
             "note": "picker convenience only — the emitted command is the record",
-            "domain": [lo, hi],
-            "steps": [round(g[0].value(), 4) for g in self.step_lines],
-            "stage": {"on": self.cb_stage.isChecked(), "window": [s_lo, s_hi]},
+            "mode": self.mode.currentText(),
+            "terms": {
+                "linear": self.cb_linear.isChecked(),
+                "periodic": self.cb_periodic.isChecked(),
+            },
+            "segments": [list(s) for s in self.segments()],
+            "domain": [round(float(v), 4) for v in self.domain_regions[0].getRegion()],
+            "steps": list(self._picked_steps()),
+            "hold_from": self.hold_from.text().strip(),
             "term": {
                 "on": self.cb_term.isChecked(),
                 "kind": self.kind.currentText(),
-                "epoch": round(self.onset_lines[0].value(), 4),
-                "tau": round(self.tau.value(), 3),
+                "epoch": round(float(self.onset_lines[0].value()), 4),
+                "tau": round(float(self.tau.value()), 3),
             },
-            "in_model": {n: c.isChecked() for n, c in self.model_in.items()},
-            "assignments": {c.name: c.estimates() for c in self.stage_cards},
             "params": {
                 "uncert": self.uncert,
                 "max_gap_years": self.max_gap_years,
@@ -1683,980 +1578,75 @@ class PickerWindow:  # pragma: no cover - GUI
             },
         }
         self._session_path().write_text(json.dumps(payload, indent=2))
-        self.summary.setPlainText(f"session saved -> {self._session_path()}")
-
-    def _parse_session(self, d: Any) -> dict[str, Any]:
-        """Validate a session payload into plain values, touching no widget.
-
-        Separate from :meth:`load_session` so a malformed field cannot
-        HALF-apply: every field is parsed first, and only a payload that
-        parses in full is allowed to move anything on screen. Applying as it
-        went would leave the picker in a state that is neither the session
-        nor the defaults, with a fit on screen matching no command.
-
-        Raises:
-            ValueError: naming the offending field.
-        """
-
-        def pair(v: Any, field: str) -> tuple[float, float]:
-            if not isinstance(v, (list, tuple)) or len(v) != 2:
-                raise ValueError(f"{field}: expected two numbers, got {v!r}")
-            try:
-                lo, hi = float(v[0]), float(v[1])
-            except (TypeError, ValueError):
-                raise ValueError(f"{field}: not numeric: {v!r}") from None
-            if not (lo < hi):
-                raise ValueError(f"{field}: {lo} is not below {hi}")
-            return lo, hi
-
-        if not isinstance(d, dict):
-            raise ValueError(f"top level must be an object, got {type(d).__name__}")
-        stage = d.get("stage") or {}
-        term = d.get("term") or {}
-        if not isinstance(stage, dict) or not isinstance(term, dict):
-            raise ValueError("'stage' and 'term' must be objects")
-        steps_raw = d.get("steps") or []
-        if not isinstance(steps_raw, (list, tuple)):
-            raise ValueError(f"'steps' must be a list, got {steps_raw!r}")
-        try:
-            steps = [float(e) for e in steps_raw]
-        except (TypeError, ValueError):
-            raise ValueError(f"'steps': not all numeric: {steps_raw!r}") from None
-
-        groups_raw = d.get("groups") or {}
-        if not isinstance(groups_raw, dict):
-            raise ValueError(f"'groups' must be an object, got {groups_raw!r}")
-        # An unrecognised group or state is DROPPED rather than fatal: this
-        # key is newer than the files already in the field, and a session
-        # written by a build that knows one more term group must not make the
-        # whole payload unusable -- the rest of it is still somebody's
-        # curation.
-        legacy = {
-            k: v
-            for k, v in groups_raw.items()
-            if k in GROUP_ORDER and v in GROUP_STATES
-        }
-        if not legacy and stage.get("on"):
-            # Predates per-group hold: that build held `periodic` only, and
-            # restoring it under today's default (hold the whole background)
-            # would not reproduce the fit the session described -- on a station
-            # with no step and no transient it leaves the later stage nothing
-            # to estimate, so a session that used to work comes back REFUSED.
-            legacy = {"secular": STATE_ESTIMATE, "periodic": STATE_HOLD}
-
-        in_model = {g: state != STATE_ABSENT for g, state in legacy.items()}
-        raw_in_model = d.get("in_model")
-        if isinstance(raw_in_model, dict):
-            in_model = {k: bool(v) for k, v in raw_in_model.items() if k in GROUP_ORDER}
-        # Resolved against the real card names in `load_session`, once the
-        # cards exist; `legacy` alone cannot name a stage.
-        assignments: dict[str, list[str]] | None = None
-        raw_assign = d.get("assignments")
-        if isinstance(raw_assign, dict):
-            assignments = {
-                str(name): [g for g in groups if g in GROUP_ORDER]
-                for name, groups in raw_assign.items()
-                if isinstance(groups, (list, tuple))
-            }
-
-        out: dict[str, Any] = {
-            "in_model": in_model,
-            "assignments": assignments,
-            "legacy_groups": legacy,
-            "domain": (
-                pair(d["domain"], "domain")
-                if d.get("domain") is not None
-                else self.default_domain
-            ),
-            "stage_window": (
-                pair(stage["window"], "stage.window")
-                if stage.get("window") is not None
-                else self.span
-            ),
-            "stage_on": bool(stage.get("on")),
-            "term_on": bool(term.get("on")),
-            "steps": steps,
-            "kind": term.get("kind") if term.get("kind") in ("log", "exp") else None,
-        }
-        for key, field in (("epoch", "term.epoch"), ("tau", "term.tau")):
-            raw = term.get(key)
-            if raw in (None, 0, 0.0):
-                out[key] = None
-                continue
-            try:
-                out[key] = float(raw)
-            except (TypeError, ValueError):
-                raise ValueError(f"{field}: not numeric: {raw!r}") from None
-        return out
+        self.summary.setPlainText(f"session saved → {self._session_path()}")
 
     def load_session(self) -> bool:
-        """Restore picks written by :meth:`save_session`. Returns True if any.
+        """Restore picks. Nothing here may raise: this runs at LAUNCH.
 
-        Called at launch, which is why nothing here may raise: a session file
-        that is unreadable OR structurally wrong used to take the whole
-        application down before the window appeared — leaving the operator no
-        way in to clear the very file that was killing it. A bad session now
-        degrades to the defaults and says where the file is, because the file
-        is somebody's curation and deleting it unasked is the worse failure.
+        A session file that is unreadable OR structurally wrong used to take
+        the application down before the window appeared, leaving no way in to
+        clear the very file that was killing it. A bad session now degrades to
+        the declared defaults and says where the file is, because the file is
+        somebody's curation and deleting it unasked is the worse failure.
         """
         import json
 
         path = self._session_path()
         if not path.exists():
+            self._mode_changed()
             return False
         try:
-            d = self._parse_session(json.loads(path.read_text()))
+            d = json.loads(path.read_text())
+            if not isinstance(d, dict):
+                raise ValueError("top level must be an object")
+            segments = [(float(a), float(b)) for a, b in (d.get("segments") or [])]
+            steps = [float(e) for e in (d.get("steps") or [])]
+            domain = d.get("domain")
+            term = d.get("term") or {}
+            terms = d.get("terms") or {}
+            if not isinstance(term, dict) or not isinstance(terms, dict):
+                raise ValueError("'term' and 'terms' must be objects")
         except (OSError, ValueError, TypeError) as exc:
-            self.summary.setPlainText(
+            self._session_note = (
                 f"session NOT restored — {path} is unusable ({exc}).\n"
                 f"Starting from the declared defaults; the file is left as is."
             )
+            self.summary.setPlainText(self._session_note)
+            self._mode_changed()
             return False
-        for r in self.domain_regions:
-            r.blockSignals(True)
-            # a session with no stored domain falls back to the DECLARED one,
-            # for the same reason the initial region does
-            r.setRegion(d["domain"])
-            r.blockSignals(False)
-        for r in self.stage_regions:
-            r.blockSignals(True)
-            r.setRegion(d["stage_window"])
-            r.blockSignals(False)
-        for name, wanted in d["in_model"].items():
-            cb = self.model_in.get(name)
-            if cb is None:
-                continue  # membership this build does not control (step)
-            cb.blockSignals(True)
-            cb.setChecked(wanted)
-            cb.blockSignals(False)
-        # AFTER membership: `_toggle_stage` lays out the preset from what is
-        # in the model, so restoring the cards first would simply be undone.
-        self.cb_stage.setChecked(d["stage_on"])
-        assignments = d["assignments"]
-        if assignments is None and self.stage_cards:
-            assignments = migrate_group_states(
-                d["legacy_groups"],
-                self.stage_cards[0].name,
-                self.stage_cards[-1].name,
-            )
-        for card in self.stage_cards:
-            wanted_groups = (assignments or {}).get(card.name)
-            if wanted_groups is None:
-                continue  # a stage this session never named — leave the preset
-            for group, cb in card.groups.items():
-                cb.blockSignals(True)
-                cb.setChecked(group in wanted_groups)
-                cb.blockSignals(False)
-        self.cb_term.setChecked(d["term_on"])
-        if d["kind"] is not None:
-            self.kind.setCurrentText(d["kind"])
-        if d["epoch"] is not None:
+
+        self.cb_linear.setChecked(bool(terms.get("linear", True)))
+        self.cb_periodic.setChecked(bool(terms.get("periodic", True)))
+        self._clear_segments()
+        for lo, hi in segments:
+            self.segment_regions.append(self._add_region((lo, hi), SEGMENT_COLOR))
+        if isinstance(domain, (list, tuple)) and len(domain) == 2:
+            for r in self.domain_regions:
+                r.blockSignals(True)
+                r.setRegion((float(domain[0]), float(domain[1])))
+                r.blockSignals(False)
+        for e in steps:
+            self.step_lines.append(self._add_line(e, STEP_COLOR))
+        if d.get("hold_from"):
+            self.hold_from.setText(str(d["hold_from"]))
+        self.cb_term.blockSignals(True)
+        self.cb_term.setChecked(bool(term.get("on")))
+        self.cb_term.blockSignals(False)
+        if term.get("kind") in ("log", "exp"):
+            self.kind.setCurrentText(str(term["kind"]))
+        if term.get("epoch"):
             for ln in self.onset_lines:
                 ln.blockSignals(True)
-                ln.setValue(d["epoch"])
+                ln.setValue(float(term["epoch"]))
                 ln.blockSignals(False)
-        if d["tau"] is not None:
-            self.tau.setValue(d["tau"])
-        self._clear_steps_quiet()
-        for e in d["steps"]:
-            self.step_lines.append(self._add_line(e, STEP_COLOR))
-        self.refit()
+        if term.get("tau"):
+            self.tau.setValue(float(term["tau"]))
+        if d.get("mode") in (MODE_BACKGROUND, MODE_EVENTS):
+            self.mode.blockSignals(True)
+            self.mode.setCurrentText(str(d["mode"]))
+            self.mode.blockSignals(False)
+        self._mode_changed()
         return True
-
-    def _clear_steps_quiet(self) -> None:
-        for group in self.step_lines:
-            for p, ln in zip(self.plots, group, strict=True):
-                p.removeItem(ln)
-        self.step_lines.clear()
-
-    # -- interaction ----------------------------------------------------
-    def _toggle_stage(self, on: bool) -> None:
-        """Staging on/off is the presence or absence of the card list.
-
-        Turning it ON lays out the standard build — the background on the
-        window, then steps against it, then transients against both — which
-        is the same background model the two-stage default expressed, opened
-        out into the stages it always was. Turning it OFF drops the cards
-        entirely rather than leaving them on screen describing a plan that no
-        longer reaches the fit.
-        """
-        self._set_visible(self.stage_regions, on)
-        self.stages_box.setVisible(on)
-        self.stage_buttons.setVisible(on)
-        if on:
-            window = tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
-            self._set_cards(self._preset_spec((window[0], window[1])))
-        else:
-            self._set_cards([])
-        self.refit()
-
-    def _toggle_term(self, on: bool) -> None:
-        self._set_visible(self.onset_lines, on)
-        self.refit()
-
-    def _reset_domain(self) -> None:
-        """Back to the DECLARED domain, which is what "reset" has to mean.
-
-        Resetting to the data span would be a third way to say "fit
-        everything" and would leave the picker asserting something the
-        catalog does not.
-        """
-        for r in self.domain_regions:
-            r.blockSignals(True)
-            r.setRegion(self.default_domain)
-            r.blockSignals(False)
-        self.refit()
-
-    def _clear_steps(self) -> None:
-        for group in self.step_lines:
-            for p, ln in zip(self.plots, group, strict=True):
-                p.removeItem(ln)
-        self.step_lines.clear()
-        self.refit()
-
-    def _on_click(self, ev: Any) -> None:
-        """Double-click places a step; right-click on one removes it."""
-        pos = ev.scenePos()
-        for p in self.plots:
-            if not p.sceneBoundingRect().contains(pos):
-                continue
-            x = float(p.vb.mapSceneToView(pos).x())
-            if ev.double():
-                self._add_step(round(x, 4))
-                ev.accept()
-            elif ev.button() == self.pg.QtCore.Qt.MouseButton.RightButton:
-                self._remove_step_near(x)
-                ev.accept()
-            return
-
-    def _add_step(self, epoch: float) -> None:
-        group = self._add_line(epoch, STEP_COLOR)
-        self.step_lines.append(group)
-        self.refit()
-
-    def _remove_step_near(self, x: float) -> None:
-        if not self.step_lines:
-            return
-        idx = min(
-            range(len(self.step_lines)),
-            key=lambda i: abs(self.step_lines[i][0].value() - x),
-        )
-        if abs(self.step_lines[idx][0].value() - x) > 0.25:
-            return
-        for p, ln in zip(self.plots, self.step_lines.pop(idx), strict=True):
-            p.removeItem(ln)
-        self.refit()
-
-    # -- the fit --------------------------------------------------------
-    def _current(
-        self,
-    ) -> tuple[Any, list[str], list[str], list[str], list[str]]:
-        """Read the picks off the plot into settings + CLI flags.
-
-        Settings and flags are assembled by the SAME function the workbench
-        CLI uses (``_override_settings``), because the picker's promise is
-        that the emitted command reproduces the figure.  Building the
-        settings here instead is what broke it: a picked step REPLACED the
-        station's declared ones, while ``--step`` on the command line merges
-        with them.  On SELF that was the difference between an aborted fit
-        showing a stale curve and a clean one -- the undeclared 2008 Ölfus
-        coseismic trips the excess-candidate rule -- and on a milder station
-        it would have been a silent difference in rate.
-        """
-        from gps_plot.detrend_workbench import _override_settings
-
-        lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
-        extra: list[str] = []
-        # An UNTOUCHED region defers to the catalog entirely -- no flag, and
-        # `segments=None` so `_override_settings` leaves the row's own
-        # segments in place.  That matters beyond tidiness: a catalog row may
-        # declare a UNION of intervals, and one region cannot express a union,
-        # so overriding it with the hull would silently re-include an
-        # excision the operator never touched.  Once the region IS moved, the
-        # single interval is both fitted and emitted, and `--segment`
-        # replaces the row -- figure and command agree either way.
-        moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
-        segments = ((lo, hi),) if moved else None
-        if moved:
-            extra += ["--segment", f"{lo}:{hi}"]
-
-        # Assembled HERE, with every other fit-affecting flag, so the stage
-        # set the estimator receives and the one the command asks for are the
-        # same string.
-        self.stages_spec = (
-            USE_FLAGGED_STAGES if self.cb_use_flagged.isChecked() else None
-        )
-        if self.stages_spec is not None:
-            extra += ["--stages", self.stages_spec]
-        # Only meaningful with a stage plan, and only emitted then -- an
-        # unstaged fit IS the joint one, so the flag would claim a choice
-        # that was never made.
-        self.final_joint = self.cb_final_joint.isChecked() and self.cb_stage.isChecked()
-        if self.final_joint:
-            extra += ["--final", "joint"]
-
-        # Only the PICKED steps become --step flags; the declared ones are
-        # already the workbench's floor, so emitting them would be a no-op
-        # at best and a double-declaration at worst.
-        steps = tuple(round(g[0].value(), 4) for g in self.step_lines)
-        for e in steps:
-            extra += ["--step", str(e)]
-
-        # max_gap_years goes through the SAME override the workbench applies,
-        # from the same live attribute the emitted command reads -- so the
-        # spinbox cannot change the command without changing the fit.
-        settings = _override_settings(
-            self.base_settings,
-            self.sta,
-            quiet=True,
-            segments=segments,
-            steps=steps or None,
-            max_gap_years=self.max_gap_years,
-        )
-
-        # The stored --model is COMPOSED from the group states, in the same
-        # place the flags are built, so the design matrix the picker fits and
-        # the model the copied command asks for cannot come apart.
-        # Composed from MEMBERSHIP, never from assignment: a group estimated
-        # in no stage -- a freshly added empty one, or every card unticked --
-        # is still in the design matrix, and reading the model off the cards
-        # would drop terms the operator never removed.
-        self.model = MODEL_BY_STATE.get(
-            (self._in_model("secular"), self._in_model("periodic"))
-        )
-        if self.model is not None and self.model != DEFAULT_MODEL:
-            extra += ["--model", self.model]
-
-        terms: list[str] = []
-        if self.cb_term.isChecked():
-            terms.append(
-                f"{self.kind.currentText()}@{round(self.onset_lines[0].value(), 4)}"
-                f",tau={round(self.tau.value(), 3)}"
-            )
-
-        # The drafts are kept so the panel can render the SAME objects the
-        # command is spelled from; `render_stage_flags` is the only speller.
-        self.stages = self._stage_drafts(terms, settings)
-        stages, holds = render_stage_flags(self.stages)
-        return settings, extra, terms, stages, holds
-
-    def _stage_drafts(self, terms: list[str], settings: Any) -> list[StageDraft]:
-        """Read the cards into the stage list, in card order.
-
-        Two things are applied here rather than left to the widgets, because
-        both depend on state the cards do not own:
-
-        **Membership filtering.** ``step`` is in the model when there is a
-        MERGED declaration (``steps.csv`` floor ∪ picked) — the same source
-        ``_override_settings`` uses, because a declared step has parameters
-        whether or not anyone clicked it — and ``transient`` when a term is
-        configured. A card may have either ticked while neither exists; the
-        tick is then simply not carried into the plan.
-
-        **The catch-all.** An in-model group estimated on NO card falls to
-        the last stage. Without it, turning on a transient while staged would
-        put a term in the design matrix that no stage estimates. It is
-        derived, not a control: there is nowhere else to put it, and leaving
-        it unestimated is never what was meant.
-        """
-        if not self.cb_stage.isChecked():
-            return []
-
-        in_model = {
-            "secular": self.model in ("linear", "lineperiodic"),
-            "periodic": self.model in ("periodic", "lineperiodic"),
-            "step": bool(self._merged_step_epochs(settings)),
-            "transient": bool(terms),
-        }
-        active = self.active_card()
-        spec: list[tuple[str, list[str], tuple[float, float] | None]] = []
-        for card in self.stage_cards:
-            window = None
-            if not card.inherit.isChecked():
-                window = (
-                    tuple(round(v, 4) for v in self.stage_regions[0].getRegion())
-                    if card is active
-                    else card.window
-                )
-            spec.append(
-                (
-                    card.name,
-                    [g for g in card.estimates() if in_model[g]],
-                    None if window is None else (window[0], window[1]),
-                )
-            )
-        if spec:
-            assigned = {g for _, groups, _ in spec for g in groups}
-            orphans = [g for g in GROUP_ORDER if in_model[g] and g not in assigned]
-            if orphans:
-                name, groups, window = spec[-1]
-                spec[-1] = (name, list(groups) + orphans, window)
-        return compose_drafts(spec)
-
-    def refit(self, *_: Any) -> None:
-        from geo_dataread.stage_plan import build_stage_plan
-        from gps_plot.detrend_workbench import (
-            abort_fallback_note,
-            estimate_with_abort_fallback,
-        )
-
-        np = self.np
-        self._clear_comparison()
-        self.joint_deltas = []
-        settings, extra, terms, stage_specs, holds = self._current()
-
-        plan = None
-        note = ""
-        if self.model is None:
-            # Both secular and periodic absent. There is no --model spelling
-            # for it -- every value in the vocabulary carries at least one --
-            # so this is refused HERE rather than sent to the estimator, which
-            # would fail later and less clearly. Refused loudly, previous
-            # curve kept, per the composer's own convention.
-            note = (
-                "fit refused: secular and periodic are both 'not in the "
-                "model', which no --model value can express. Leave at least "
-                "one of them in."
-            )
-        if stage_specs and not note:
-            # The plan now COMES FROM the group states (_stage_drafts); this
-            # only turns it into a plan object. Deriving the free list here as
-            # well was the sixth-violation shape -- a second place composing
-            # the same decision -- and it hardcoded "hold periodic", which is
-            # exactly the choice the operator is now making.
-            if len(stage_specs) > 1 and not holds:
-                # TWO stages neither of which carries anything from the other
-                # is the unstaged fit with extra words: the earlier stages did
-                # no work. ONE windowed stage is different and must NOT be
-                # refused -- the model is fitted inside the window and
-                # evaluated across the whole span, which is exactly "hold the
-                # background from the quiet window" when there is nothing else
-                # to estimate. Refusing it broke the invariant the moment the
-                # grammar started accepting it: the window said refused while
-                # the emitted command fitted perfectly well.
-                note = (
-                    "stage plan refused: no stage carries anything from an "
-                    "earlier one, so the stages above the last did no work. "
-                    "Untick a group in the later stage to hold it, or remove "
-                    "the stage."
-                )
-            else:
-                try:
-                    plan = build_stage_plan(stage_specs, holds)
-                except ValueError as exc:
-                    note = f"stage plan refused: {exc}"
-
-        est = None
-        if not note:
-            try:
-                # The SAME fallback the workbench applies: a full-detection
-                # abort is recoverable (retry S0-only), a failed gate is not.
-                # Calling estimate_record directly meant the picker gave up
-                # where the emitted command produced a perfectly good figure --
-                # reachable as soon as `--model periodic` became selectable,
-                # since a periodic-only model leaves the trend in the residuals
-                # and the candidate fraction trips the abort.
-                est, fell_back = estimate_with_abort_fallback(
-                    self.sta,
-                    self.yearf,
-                    self.data,
-                    self.sigma,
-                    settings=settings,
-                    terms=terms or None,
-                    stage_plan=plan,
-                    model=self.model,
-                    stages=self.stages_spec,
-                )
-                if self.final_joint and est is not None and plan is not None:
-                    # The staged solve identified the structure; this is that
-                    # structure with every group free. What is SHOWN becomes
-                    # the joint fit, because the emitted command carries
-                    # `--final joint` and the workbench will show the same.
-                    staged_est = est
-                    est, fell_back = estimate_with_abort_fallback(
-                        self.sta,
-                        self.yearf,
-                        self.data,
-                        self.sigma,
-                        settings=settings,
-                        terms=terms or None,
-                        stage_plan=None,
-                        model=self.model,
-                        stages=self.stages_spec,
-                    )
-                    if est is not None:
-                        self.joint_deltas = staged_joint_deltas(
-                            staged_est.record, est.record
-                        )
-            except (ValueError, RuntimeError) as exc:
-                # A refused fit is a RESULT -- rank-deficient stage, an
-                # unfittable term, a domain with too few epochs. Say so and
-                # keep the previous trajectory on screen.
-                note = f"fit refused: {exc}"
-
-        if est is not None:
-            self.record = est.record
-            # Kept for the refine action: it needs the fit's own masks and
-            # the estimator's own term spec, not a re-derivation of either.
-            self._est = est
-            fit = np.asarray(
-                __import__("gps_analysis").evaluate_record(est.record, self.yearf)
-            )
-            outl = np.atleast_2d(np.asarray(est.outliers, dtype=bool))
-            empty = np.zeros(self.yearf.shape, dtype=bool)
-            # The fit passes NO verdict outside its window, so drawn plain
-            # those epochs claim "clean" and one blunder owns the y-axis.
-            # Fill that silence with the view detector -- the same chain
-            # `plot-gps-timeseries --view cleaned` uses -- which is also the
-            # only thing that HAS a provisional category.
-            try:
-                from gps_plot.detrend_workbench import screen_outside_window
-
-                outside, prov = screen_outside_window(
-                    self.sta,
-                    self.yearf,
-                    self.data,
-                    self.sigma,
-                    est,
-                    steps=tuple(round(g[0].value(), 4) for g in self.step_lines)
-                    or None,
-                    provisional_days=self.provisional_days,
-                )
-            except Exception:
-                # The screen is an AID; never lose the figure over it.
-                outside = prov = None
-            outside = (
-                None
-                if outside is None
-                else np.atleast_2d(np.asarray(outside, dtype=bool))
-            )
-            prov = None if prov is None else np.atleast_2d(np.asarray(prov, dtype=bool))
-            # The CURVE is drawn on its own dense grid, while `fit` above
-            # stays at the data epochs because the residual spectrum needs
-            # data minus model at the SAME epochs. Two samplings, two
-            # purposes -- joining the data epochs drew a straight chord over
-            # every gap, which claims linear motion the model never fitted.
-            from gps_plot.detrend_workbench import trajectory_curve
-
-            # DISPLAY ONLY: the masks, the record and the emitted command are
-            # the same either way -- this subtracts the model that was already
-            # fitted, it does not fit anything different. Same convention as
-            # --hide-outliers.
-            #
-            # The PEEL follows the active stage automatically, so what is on
-            # screen is what that stage is fitted to. The checkbox is the
-            # view-only override and wins: it subtracts everything, which is
-            # a question about the whole model rather than about one stage.
-            # `final fit: joint` has no stage structure to peel: the whole
-            # point of it is one solve over the domain, so the honest view is
-            # the whole model against the raw data.
-            detrended = self.cb_detrend.isChecked()
-            whole = self.cb_whole_model.isChecked()
-            # Showing the whole model REQUIRES the raw data: a composed curve
-            # over a peeled series is a model of data that is not on screen.
-            peel = (
-                []
-                if (detrended or whole or self.final_joint)
-                else self._peeled_groups()
-            )
-            if detrended:
-                shown = self.data - fit
-            elif peel:
-                shown = self.data - group_contribution(est.record, self.yearf, peel)
-            else:
-                shown = self.data
-
-            # Which groups the active stage estimates, or None when there is
-            # no stage to speak for (unstaged, detrended, or the joint solve).
-            active = (
-                None if (detrended or whole or self.final_joint) else self.active_card()
-            )
-            # Read the groups off the DRAFT, not the card's checkboxes. They
-            # differ whenever the orphan catch-all has folded an in-model group
-            # that no card claims into the last stage -- delete the step stage
-            # and `clean` silently starts estimating the step and the
-            # transient. Reading the card then drew lin+per while the fit
-            # carried all four, so the secular ran straight through the 2008
-            # jump and the terms that explain it were nowhere on screen. The
-            # draft is what the command says and what the estimator ran.
-            active_index = None if active is None else self.stage_cards.index(active)
-            active_groups = (
-                None
-                if active_index is None or active_index >= len(self.stages)
-                else list(self.stages[active_index].groups)
-            )
-
-            fit_x, fit_y = trajectory_curve(est.record, self.yearf)
-            if detrended:
-                # Subtracted, the model IS the zero line; drawing it again
-                # would just be y=0 over the grid's own axis.
-                fit_x, fit_y = fit_x[:0], fit_y[:, :0]
-            elif active_groups is not None:
-                # THE ACTIVE STAGE'S OWN CURVE, not the composed model.
-                #
-                # Drawing everything that is left instead was wrong in the way
-                # that matters: with `clean — linear, periodic` active and a
-                # step stage below it, the figure showed lin+per+step over a
-                # window that contains no step, so a stage configured to fit
-                # two groups appeared to be fitting three. The parameters were
-                # right the whole time -- stage 1's rate is identical to the
-                # same fit run standalone on its window -- but a curve that
-                # includes a term the stage never estimated is a curve of a
-                # different model, and the curve is what gets believed.
-                #
-                # Read off the FINAL record, not re-fitted: a held group keeps
-                # the earlier stage's values, so the record's lin+per ARE
-                # stage 1's. One source, no second solve.
-                fit_y = group_contribution(est.record, fit_x, active_groups)
-            for curve in self.fit_curves:
-                curve.setPen(self.pg.mkPen(FIT_COLOR, width=2))
-            # The axis says what was subtracted, because two peels look alike
-            # and the difference between them is the whole point.
-            if detrended:
-                suffix = " residual"
-            elif peel:
-                suffix = " minus " + ", ".join(GROUP_LABELS.get(g, g) for g in peel)
-            else:
-                suffix = ""
-            for c, name in enumerate(COMPONENTS):
-                self.plots[c].setLabel("left", f"{name}{suffix} [mm]")
-            if detrended:
-                # The curve is hidden here for a good reason, but a line that
-                # simply vanishes reads as a failure. Say which it is.
-                self.plots[0].setTitle(
-                    "<span style='color:#888'>curve: none — the whole model is "
-                    "subtracted, so it is y = 0. Untick to see the active "
-                    "stage's fit over what that stage sees.</span>"
-                )
-            elif active is not None:
-                # Say what the blue line IS. Under staging it is one stage's
-                # contribution, which is not what a trajectory curve usually
-                # means in this window.
-                drawn = ", ".join(GROUP_LABELS.get(g, g) for g in active_groups or ())
-                self.plots[0].setTitle(
-                    f"<span style='color:#888'>curve: stage <b>{active.name}</b> — "
-                    f"{drawn or 'estimates nothing'}</span>"
-                )
-            elif whole and self.stage_cards:
-                self.plots[0].setTitle(
-                    "<span style='color:#888'>curve: the whole staged model, "
-                    "over the raw data</span>"
-                )
-            else:
-                self.plots[0].setTitle(None)
-            for c in range(3):
-                # connect="finite" so a component the model cannot evaluate
-                # breaks the line instead of being joined across. The step
-                # epochs do NOT rely on it -- trajectory_curve brackets those
-                # so the jump draws vertical.
-                self.fit_curves[c].setData(fit_x, fit_y[c], connect="finite")
-                finite = np.isfinite(self.data[c])
-                flagged = outl[c] & finite
-                out_c = outside[c] & finite if outside is not None else empty
-                prov_c = prov[c] & finite if prov is not None else empty
-                # Both greys MASK; gold does not. So gold stays in the kept
-                # series and is only overlaid.
-                kept = finite & ~outl[c] & ~out_c
-                self.kept_scatters[c].setData(self.yearf[kept], shown[c][kept])
-                # DISPLAY ONLY, on the same terms as --hide-outliers: the
-                # masks, the counts and the record are identical either way.
-                # Hiding here is a different act from `use flagged epochs in
-                # the fit`, which moves all three.
-                draw = self.cb_draw_flagged.isChecked()
-                empty_x = self.yearf[:0]
-                self.flag_scatters[c].setData(
-                    self.yearf[flagged] if draw else empty_x,
-                    shown[c][flagged] if draw else empty_x,
-                )
-                self.outside_scatters[c].setData(
-                    self.yearf[out_c] if draw else empty_x,
-                    shown[c][out_c] if draw else empty_x,
-                )
-                self.prov_scatters[c].setData(self.yearf[prov_c], shown[c][prov_c])
-                self._prov_counts[c] = int(prov_c.sum())
-            self._update_spectrum(fit)
-            text = model_equation(est.record.get("param_names") or []) + "\n\n"
-            text += self._summary(est.record)
-            block = self.params_block(est.record)
-            if block:
-                text += "\n\nparameters\n" + block
-            if self.joint_deltas:
-                loud = [r for r in self.joint_deltas if float(r["ratio"]) > 1.0]
-                text += (
-                    f"\n\njoint re-fit — {len(loud)} of "
-                    f"{len(self.joint_deltas)} parameters moved > 1σ"
-                )
-                if loud:
-                    worst = max(loud, key=lambda r: float(r["ratio"]))
-                    text += (
-                        f"\n  worst {worst['param']} ({worst['component']}) "
-                        f"Δ/σ {float(worst['ratio']):.2f} — those stages were "
-                        f"fitting the same signal"
-                    )
-                print(f"\n{self.sta} — staged → joint")
-                print(format_staged_joint_deltas(self.joint_deltas))
-            self.print_params(est.record, "current fit")
-            if fell_back:
-                # Same words the CLI prints to stderr -- an S0 record is
-                # not the same object as a full-detection one, and the
-                # operator has to know which one they are judging.
-                text = f"note: {abort_fallback_note(self.sta)}\n\n{text}"
-            self.summary.setPlainText(text)
-        else:
-            # Grey and dashed: the header already says NO RECORD, but a solid
-            # blue trajectory reads as a fit no matter what the header says,
-            # and this curve belongs to a configuration that is no longer on
-            # screen.
-            for curve in self.fit_curves:
-                curve.setPen(
-                    self.pg.mkPen(
-                        STALE_COLOR, width=1, style=self.pg.QtCore.Qt.DashLine
-                    )
-                )
-            for group in (
-                self.flag_scatters,
-                self.outside_scatters,
-                self.prov_scatters,
-            ):
-                for sc in group:
-                    sc.setData([], [])
-            for c in range(3):
-                finite = np.isfinite(self.data[c])
-                self.kept_scatters[c].setData(self.yearf[finite], self.data[c][finite])
-            self.record = None
-        if est is None and not note:
-            note = (
-                "no record: the outlier stage aborted, or a validity gate "
-                "rejected this domain (span / epochs / max-gap)"
-            )
-        if note:
-            self.summary.setPlainText(note)
-
-        self._update_cards()
-        self.command.setText(self._command(plan, extra, terms, stage_specs, holds))
-        self._update_header(terms, plan)
-
-    def _update_cards(self) -> None:
-        """Show each card's DERIVED holds, and mark the active one.
-
-        The holds are read off the drafts rather than recomputed, so a card
-        cannot display a hold the emitted command does not carry.
-        """
-        peel = self._peeled_groups()
-        for index, card in enumerate(self.stage_cards):
-            draft = self.stages[index] if index < len(self.stages) else None
-            holds = draft.holds if draft is not None else {}
-            if holds:
-                card.held_label.setText(
-                    "holds "
-                    + ", ".join(
-                        f"{GROUP_LABELS.get(g, g)} ← {src.split(':', 1)[1]}"
-                        for g, src in holds.items()
-                    )
-                )
-            else:
-                card.held_label.setText("holds nothing")
-            active = card.box.isChecked()
-            groups = ", ".join(GROUP_LABELS.get(g, g) for g in card.estimates())
-            card.box.setTitle(
-                f"{index + 1}. {card.name} — {groups or 'estimates nothing'}"
-                + ("   ● active" if active else "")
-            )
-            if active and peel:
-                card.held_label.setText(
-                    card.held_label.text()
-                    + "  ·  plotted against data − "
-                    + ", ".join(GROUP_LABELS.get(g, g) for g in peel)
-                )
-
-    def _update_header(self, terms: list[str], plan: Any) -> None:
-        """Station, run parameters and the live picks, always on screen.
-
-        The run parameters matter enough to display rather than remember:
-        ``uncert`` screens sigma at READ time, so it changes WHICH epochs are
-        fitted while leaving no trace in any fitted quantity, and
-        ``max_gap_years`` decides whether the station is estimable at all.
-        Two records that differ only in these are indistinguishable from
-        their numbers.
-        """
-        lo, hi = (round(v, 4) for v in self.domain_regions[0].getRegion())
-        rec = self.record
-        bits = [
-            f"<b>{self.sta}</b>",
-            f"uncert {self.uncert:g} mm",
-            f"max-gap {self.max_gap_years if self.max_gap_years is not None else 'default'} yr",
-            f"prov {self.provisional_days if self.provisional_days is not None else 'default 14'} d",
-            f"domain {lo}:{hi}",
-        ]
-        # How many epochs the DOMAIN actually kept. The blue region is the
-        # control that decides which epochs are fitted, but shaded background
-        # does not read as a control, and the plots always show the whole
-        # series either way -- so a fit restricted to a window looked exactly
-        # like a fit over everything. Saying "1718 of 4812" makes the
-        # restriction visible at the moment it takes effect.
-        if rec is not None:
-            n_fitted = int(rec.get("n_epochs") or 0)
-            n_total = int(self.np.isfinite(self.yearf).sum())
-            bits.append(
-                f"fitting <b>{n_fitted} of {n_total}</b> epochs"
-                if n_fitted < n_total
-                else f"fitting all {n_total} epochs"
-            )
-        # One region cannot draw a union, so when the catalog declares several
-        # segments and the region is untouched, the picture is the HULL while
-        # the fit is the union. Say so rather than let the excision be
-        # invisible; moving the region collapses it to the single interval
-        # drawn, which is then also what the command says.
-        n_seg = len(self.base_settings.segments)
-        if n_seg > 1:
-            moved = (lo, hi) != tuple(round(v, 4) for v in self.default_domain)
-            bits.append(
-                f"⚠ shown as hull of {n_seg} catalog segments"
-                if not moved
-                else f"⚠ collapses {n_seg} catalog segments to one"
-            )
-        picked = [round(g[0].value(), 4) for g in self.step_lines]
-        # What was FITTED, not what was clicked. steps.csv and the fit
-        # catalog are a floor the picks add to, and the window filter drops
-        # any step outside the domain, so the two lists routinely differ --
-        # and the operator has to see which, because the merge is exactly
-        # what used to be missing from this fit.
-        fitted = [round(float(v), 4) for v in (rec or {}).get("step_epochs", [])]
-        if fitted and fitted != picked:
-            bits.append(f"steps picked {picked} → fitting {fitted}")
-        elif picked:
-            bits.append(f"steps {picked}")
-        if terms:
-            bits.append(f"term {terms[0]}")
-        if plan is not None:
-            bits.append("staged")
-        if rec is not None:
-            n = rec.get("n_rejected")
-            method = str(rec.get("detrend_method", ""))
-            stages = str((rec.get("refs") or {}).get("outlier_stages", "?"))
-            # An abort is the difference between "nothing was wrong" and
-            # "nothing was judged", so say which.
-            aborted = method == "plain_wls" or (n and not any(n))
-            flag = (
-                f"<span style='color:#a00'>outliers ABORTED (stages {stages}) "
-                f"— nothing judged</span>"
-                if aborted
-                else f"outliers {n} (stages {stages})"
-            )
-            bits.append(flag)
-            if self._prov_counts and any(self._prov_counts):
-                bits.append(
-                    f"<span style='color:#8a6d0b'>provisional {self._prov_counts} "
-                    f"(gold; KEPT, verdict pending)</span>"
-                )
-        else:
-            # The case where the operator most needs telling: an abort or a
-            # failed gate leaves the PREVIOUS trajectory on screen, which
-            # otherwise reads as a successful fit of the current picks.
-            bits.append(
-                "<span style='color:#a00'>NO RECORD — outlier stage aborted, "
-                "or a gate rejected this domain; the curve shown is stale"
-                "</span>"
-            )
-        self.header.setText("  ·  ".join(bits))
-
-    def _update_spectrum(self, fit: Any) -> None:
-        """Lomb-Scargle periodogram of the fit residuals, per component.
-
-        Equation (Lomb 1976, Astrophys. Space Sci. 39; Scargle 1982, ApJ 263,
-        eq. 10): the least-squares power of a sinusoid at angular frequency ω
-        fitted to unevenly sampled data, which is why it is the right tool
-        here — GNSS series are gappy, and resampling onto a regular grid to
-        permit an FFT would manufacture the structure being tested for.
-
-        Read it as a MODEL-ADEQUACY check, not as science: a peak left at
-        1 cycle/yr means the stored seasonal does not describe this series,
-        usually because the stage-1 window drew it from an unrepresentative
-        stretch.
-        """
-        import numpy as np
-        from scipy.signal import lombscargle
-
-        freqs = np.linspace(0.2, 6.0, 400)  # cycles per year
-        omega = 2.0 * np.pi * freqs
-        for c in range(3):
-            good = np.isfinite(self.data[c]) & np.isfinite(fit[c])
-            t = self.yearf[good]
-            resid = self.data[c][good] - fit[c][good]
-            if t.size < 32 or not np.isfinite(resid).all():
-                self.spec_curves[c].setData([], [])
-                continue
-            resid = resid - resid.mean()
-            if not np.any(resid):
-                self.spec_curves[c].setData([], [])
-                continue
-            try:
-                power = lombscargle(t, resid, omega, normalize=True)
-            except (ValueError, ZeroDivisionError):
-                self.spec_curves[c].setData([], [])
-                continue
-            self.spec_curves[c].setData(freqs, np.asarray(power, dtype=float))
-
-    def _summary(self, rec: dict[str, Any]) -> str:
-        # `rms` is rounded for DISPLAY, to 2 dp like the PDF's `summarise`.
-        # Raw it prints as [1.8299068022476694, 2.8976389308583466, ...], which
-        # wrapped over three lines in the control column and buried the values
-        # that are actually being compared between iterations. Sub-micrometre
-        # digits on a millimetre residual are noise either way.
-        keys = ("model", "window", "n_epochs", "n_rejected", "rms", "step_epochs")
-        lines = []
-        for k in keys:
-            value = rec.get(k)
-            if k == "rms" and value is not None:
-                value = [round(float(v), 2) for v in value]
-            lines.append(f"{k:14s} {value}")
-        rate = [round(float(c["params"][1]), 2) for c in rec["components"]]
-        lines.append(f"{'rate [mm/yr]':14s} {rate}")
-        lines.append(f"{'record_version':14s} {rec.get('record_version')}")
-        return "\n".join(lines)
-
-    def _command(
-        self,
-        plan: Any,
-        extra: list[str],
-        terms: list[str],
-        stage_specs: list[str] | None = None,
-        holds: list[str] | None = None,
-    ) -> str:
-        from gps_plot.detrend_picker import render_command
-        from gps_plot.detrend_workbench import run_flags
-
-        # Assembled by the workbench's own `run_flags`, shared with the
-        # marimo picker: two pickers building this list independently is two
-        # places to forget the same flag, and each of them forgot
-        # `--tot-dir`. It also formats `--uncert` as the int the workbench's
-        # `type=int` will accept -- "12.0" emitted a command that does not
-        # parse.
-        flags = list(extra) + run_flags(
-            tot_dir=self.tot_dir,
-            max_gap_years=self.max_gap_years,
-            uncert=self.uncert,
-            provisional_days=self.provisional_days,
-        )
-        if plan is not None:
-            return render_command(self.sta, plan, flags, terms=terms)
-
-        parts = ["gps-detrend-workbench", self.sta]
-        for t in terms:
-            parts += ["--term", t]
-        # A REFUSED plan must still be emitted. Falling through to the
-        # unstaged spelling here meant that when the stage plan would not
-        # build, the window showed a refusal while the command said something
-        # else entirely -- on RHOF (no declared step, nothing left free once
-        # the background is held) it emitted a plain unstaged command that
-        # fits perfectly well. Copying it would have produced a figure the
-        # picker had just refused to show. Emitting what was ASKED FOR keeps
-        # the promise: the workbench then refuses it too, for the same reason.
-        for spec in stage_specs or ():
-            parts += ["--stage", spec]
-        for hold in holds or ():
-            parts += ["--hold", hold]
-        return shlex.join(parts + flags)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
@@ -2683,10 +1673,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
         "--provisional-days",
         type=float,
         default=None,
-        help="recency bound for the GOLD provisional lane [days]; 0 disables. "
-        "Default is geo_dataread's 14. The bound matters: indeterminate "
-        "clusters also sit at old mid-series gaps and would otherwise "
-        "dominate the lane",
+        help="recency bound for the GOLD provisional lane [days]; 0 disables",
     )
     args = p.parse_args(argv)
     sta = args.station.upper()
@@ -2720,20 +1707,16 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
     path = default_fit_catalog_path()
     if path and Path(path).is_file():
         catalog, source = read_fit_catalog(path), str(path)
-    # PLAIN FitDefaults, with --max-gap-years applied later as an OVERRIDE in
-    # `_current` -- the order the workbench uses (`build_record`). Baking it
-    # into the defaults here instead put it BELOW the catalog row, so on a
-    # station whose fit_windows.csv sets its own gate the flag was silently
-    # discarded: `gps-detrend-picker-qt DYNG --max-gap-years 2.0` fitted at the
-    # catalog's 1.0 while emitting a command that fits at 2.0. The sixth
-    # instance of this window's one recurring bug, and the same shape as the
-    # rest -- a second place assembling the same decision.
+    # PLAIN FitDefaults, with --max-gap-years applied later as an OVERRIDE --
+    # the order the workbench uses. Baking it into the defaults put it BELOW
+    # the catalog row, so on a station whose fit_windows.csv sets its own gate
+    # the flag was silently discarded.
     settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     # Pin the Wayland app_id rather than letting Qt derive one from argv[0]:
-    # the sway scratchpad rules match on app_id, and a binding that depends
-    # on how the program happened to be invoked is a binding that breaks.
+    # the sway scratchpad rules match on app_id, and a binding that depends on
+    # how the program happened to be invoked is a binding that breaks.
     app.setApplicationName("gps-detrend-picker")
     app.setDesktopFileName("gps-detrend-picker")
     window = PickerWindow(
