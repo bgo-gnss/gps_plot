@@ -95,6 +95,11 @@ BATCH_UNCERT_DEFAULT: int = 15
 #: command argparse refuses.
 WORKBENCH_UNCERT_DEFAULT: int = 10
 
+#: Deployed per-station curation-status catalog filename (gpsconfig-owned).
+#: Only ``skip`` rows are durable here — DONE lives in ``detrend_params.json``
+#: and PENDING is "active and in neither".
+DETREND_STATUS_FILENAME: str = "detrend_status.csv"
+
 
 def run_flags(
     *,
@@ -2079,7 +2084,12 @@ def _build_parser() -> argparse.ArgumentParser:
             if block
         ),
     )
-    p.add_argument("station", help="four-letter station code")
+    p.add_argument(
+        "station",
+        nargs="?",
+        default=None,
+        help="four-letter station code (omitted only with --status)",
+    )
     p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
     p.add_argument(
         "--uncert",
@@ -2392,11 +2402,130 @@ def _build_parser() -> argparse.ArgumentParser:
         "out-of-window lane has this state — a fit has no provisional "
         "category",
     )
+    p.add_argument(
+        "--status",
+        action="store_true",
+        help="print the detrend-parameter curation status: every active "
+        "station in stations.cfg, split into done (has a detrend record), "
+        "skipped (listed in detrend_status.csv) and pending. The station "
+        "argument is ignored; this reads config only and exits.",
+    )
     return p
+
+
+def _print_status() -> int:
+    """Curation status: active stations split done / skipped / pending.
+
+    Reads three deployed sources and reconciles them:
+
+    - ``stations.cfg`` (via ``gps_parser.ConfigParser``) — the 4-char
+      sections with ``station_role`` active (NOT the passive global
+      reference sites);
+    - ``detrend_params.json`` — a station present here is DONE (the record
+      is the durable artifact of an estimate);
+    - ``detrend_status.csv`` — optional operator-maintained catalog with
+      ``sta,status,notes`` rows; ``status=skip`` marks a station decided to
+      NOT need detrending (no record, but no longer pending either).
+
+    This is a read-only reconcile: nothing is written, so it is safe to run
+    anywhere.  The authoritative "how many are done" lives in
+    ``detrend_params.json``, not here — this only counts against it.
+    """
+    import csv
+
+    from gps_parser import ConfigParser
+    from geo_dataread.gps_views import (
+        default_params_path,
+        read_detrend_params,
+    )
+    from gps_parser import outlier_catalogs as _oc
+
+    # active stations from the deployed stations.cfg
+    try:
+        cp = ConfigParser()
+        active = [
+            s
+            for s in cp.config.sections()
+            if len(s) == 4 and cp.getStationRole(s) == "active"
+        ]
+    except Exception as exc:
+        print(f"error: could not read stations.cfg ({exc})", file=sys.stderr)
+        return 1
+
+    # done = present in the deployed detrend record document
+    try:
+        params_path = default_params_path()
+        doc = read_detrend_params(params_path)
+    except Exception as exc:
+        print(f"error: could not read detrend_params.json ({exc})", file=sys.stderr)
+        return 1
+    done = set(doc.get("stations", {}).keys())
+
+    # skipped = status=skip rows in the optional detrend_status.csv
+    skipped: dict[str, str] = {}
+    status_path = _oc.catalog_path(
+        "detrend_status", DETREND_STATUS_FILENAME
+    )
+    if status_path is not None and Path(status_path).is_file():
+        try:
+            with open(status_path, encoding="utf-8") as f:
+                lines = [
+                    ln for ln in f.read().splitlines()
+                    if ln.strip() and not ln.lstrip().startswith("#")
+                ]
+            for row in csv.DictReader(lines):
+                sta = (row.get("sta") or "").strip().upper()
+                status = (row.get("status") or "").strip().lower()
+                if sta and status == "skip":
+                    skipped[sta] = (row.get("notes") or "").strip()
+        except Exception as exc:
+            print(f"warning: detrend_status.csv unreadable ({exc})", file=sys.stderr)
+
+    pending = [s for s in active if s not in done and s not in skipped]
+    unknown_skips = [s for s in skipped if s not in active]
+
+    n_done = sum(1 for s in active if s in done)
+    n_skip = sum(1 for s in active if s in skipped)
+
+    print("detrend curation status:")
+    print(f"  active stations:  {len(active)}")
+    print(f"  done:             {n_done}")
+    print(f"  skipped:          {n_skip}")
+    print(f"  pending:          {len(pending)}")
+    if params_path:
+        print(f"  params:           {params_path}")
+    print()
+    if pending:
+        print(f"pending ({len(pending)}):")
+        _print_columns(sorted(pending))
+        print()
+    if skipped:
+        print(f"skipped ({n_skip}):")
+        for s in sorted(skipped):
+            note = f" — {skipped[s]}" if skipped[s] else ""
+            print(f"  {s}{note}")
+        print()
+    if unknown_skips:
+        print(
+            f"note: {len(unknown_skips)} skip row(s) for stations not in "
+            f"stations.cfg: {', '.join(sorted(unknown_skips))}"
+        )
+    return 0
+
+
+def _print_columns(items: list[str], width: int = 78) -> None:
+    """Print a list of 4-char codes, wrapped into columns."""
+    per_row = max(1, width // 6)
+    for i in range(0, len(items), per_row):
+        print("  " + "  ".join(items[i : i + per_row]))
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.status:
+        return _print_status()
+    if args.station is None:
+        _build_parser().error("station is required unless --status is given")
     sta = args.station.upper()
 
     if args.commit and args.terms != APPLY_TERMS_DEFAULT:
