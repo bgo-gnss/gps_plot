@@ -392,6 +392,42 @@ def _config_dir(config, option, default=None):
         return default
 
 
+#: ``--remove-steps`` aliases for the operator's own vocabulary.  ``kind``
+#: values come from ``steps.yaml`` (``gps_parser.outlier_catalogs.STEP_KINDS``);
+#: these are the friendly spellings of the same concept.
+_KIND_ALIASES = {"instrumental": "equipment", "instrument": "equipment"}
+
+
+def _normalize_kinds(raw: Sequence[str]) -> list[str] | None:
+    """Alias + validate ``--remove-steps`` / ``--annotate-steps`` kinds.
+
+    Each item in ``raw`` is split on comma so ``equipment,earthquake`` works
+    alongside repeatable ``--remove-steps equipment --remove-steps earthquake``.
+    Returns ``None`` when no kinds were given; otherwise a de-duplicated list
+    of canonical ``STEP_KINDS`` values.  An unknown kind is a hard error.
+    """
+    if not raw:
+        return None
+    from gps_parser.outlier_catalogs import STEP_KINDS
+
+    kinds: list[str] = []
+    for item in raw:
+        for part in item.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            k = _KIND_ALIASES.get(part.lower(), part.lower())
+            if k not in STEP_KINDS:
+                raise SystemExit(
+                    f"--remove-steps/--annotate-steps: kind {part!r} is not "
+                    f"one of {STEP_KINDS} (aliases accepted: {sorted(_KIND_ALIASES)})"
+                )
+            if k not in kinds:
+                kinds.append(k)
+    return kinds or None
+    return kinds
+
+
 # Main
 def main():
     """ """
@@ -481,7 +517,7 @@ def main():
         type=str,
         default="itrf2008",
         choices=ref_allow,
-        help="Reference frame: defaults to itrf2008, remove plate  velocity (plate), Detrend the time series (detrend)",
+        help="Reference frame: defaults to itrf2008, remove plate velocity (plate), detrend (subtract rate + seasonal — step offsets remain visible)",
     )
     parser.add_argument(
         "--view",
@@ -489,9 +525,10 @@ def main():
         default="raw",
         choices=view_allow,
         help="Data view (geo_dataread apply-on-read toggle): raw (default), "
-        "cleaned (outlier epochs masked from the main series and overlaid "
-        "as red points), detrended (stored-parameter detrended series — "
-        "pure apply of the deployed detrend record, plate-first)",
+        "cleaned (outlier epochs masked from the main series; the grey "
+        "overlay is OFF by default -- add --show-outliers to see what was "
+        "set aside), detrended (subtract full trajectory including steps "
+        "— unlike --ref detrend which keeps step offsets visible)",
     )
     parser.add_argument(
         "--tType",
@@ -513,8 +550,11 @@ def main():
         "-u",
         "--uncert",
         type=int,
-        default=15,
-        help="set limit for uncertainty of values ploted in mm.",
+        default=10,
+        help="formal-uncertainty screen at read time [mm] — epochs with σ above "
+        "this threshold are excluded from the series. Default 10 (the "
+        "same screen as the detrend workbench; the batch estimator and "
+        "geo_dataread.gps_read.getData default is 15)",
     )
     parser.add_argument(
         "--special",
@@ -579,14 +619,14 @@ def main():
         "which is never a production setting. Ignored unless --view cleaned",
     )
     parser.add_argument(
-        "--hide-outliers",
+        "--show-outliers",
         action="store_true",
-        help="drop the grey outlier overlay from the figure. The flagged "
-        "epochs are ALREADY absent from the plotted series (--view cleaned "
-        "masks them); this only decides whether the plot still shows what "
-        "was set aside. Side effect: the y-axis tightens to the cleaned "
-        "series, since the overlay no longer stretches the autoscale. "
-        "Ignored unless --view cleaned",
+        help="overlay the grey outlier points on the --view cleaned figure. "
+        "Off by default: the flagged epochs are masked from the series and "
+        "the overlay is HIDDEN, so the plot shows only the cleaned series "
+        "(and the y-axis tightens to it). Turning this on restores the "
+        "evidence of what the detector set aside, at the cost of the "
+        "y-axis stretching back out. Ignored unless --view cleaned",
     )
     parser.add_argument(
         "--provisional-days",
@@ -600,6 +640,39 @@ def main():
         "the marker only says the verdict is pending. 0 disables the marker; "
         "unset uses the geo_dataread default (14). Ignored unless "
         "--view cleaned",
+    )
+    parser.add_argument(
+        "--remove-steps",
+        action="append",
+        default=[],
+        metavar="KIND[,KIND...]",
+        help="subtract the RECORDED step amplitudes (detrend_params.json) "
+        "for declared steps of these kinds. Repeatable, and each argument "
+        "accepts a comma-separated list "
+        "(e.g. --remove-steps equipment,earthquake). "
+        "Kind is the steps.yaml vocabulary: equipment (= instrument / "
+        "antenna / receiver changes), earthquake, icing, manual, other "
+        "('instrumental' is accepted as an alias for 'equipment'). Needs a "
+        "committed detrend record for the station; otherwise it warns and "
+        "plots the series unchanged. Pure apply, no re-fit; composable "
+        "with --view cleaned (cleaning runs first, then step removal).  "
+        "Independent of --ref detrend (which subtracts rate + seasonal "
+        "only; they compose — rate+seasonal removal + selective step "
+        "removal).  Redundant with --view detrended (which already "
+        "subtracts the full trajectory including steps)",
+    )
+    parser.add_argument(
+        "--annotate-steps",
+        nargs="?",
+        const="*",
+        default=None,
+        metavar="KIND[,KIND...]",
+        help="draw the declared steps from steps.yaml on the figure: a "
+        "solid vertical line at each step epoch plus a rotated label "
+        "('kind: comment'), seismic dark-red, equipment dark-green. "
+        "Optionally filter by kind: --annotate-steps (all kinds) or "
+        "--annotate-steps equipment,earthquake (selected). Display-only "
+        "and independent of --remove-steps",
     )
     parser.add_argument(
         "-t", action="store_true", help="join gamit pre and rap time series"
@@ -657,6 +730,21 @@ def main():
     kwargs["outlier_params"] = _build_outlier_params(
         kwargs.pop("outlier_param"), base=stage_over
     )
+    # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
+    # default); the CLI inverts it -- the grey overlay is OFF unless
+    # ``--show-outliers`` asks for it, so ``hide_outliers = not show``.
+    kwargs["hide_outliers"] = not kwargs.pop("show_outliers")
+    # ``--remove-steps`` kinds -> plotTime's ``remove_kinds`` (validated +
+    # aliased); ``--annotate-steps`` -> ``True`` (all kinds), a list of
+    # kinds (filtered), or ``False`` (the flag was not passed at all).
+    kwargs["remove_kinds"] = _normalize_kinds(kwargs.pop("remove_steps"))
+    annotate_raw = kwargs.pop("annotate_steps")
+    if annotate_raw is None:
+        kwargs["annotate_steps"] = False
+    elif annotate_raw == "*":
+        kwargs["annotate_steps"] = True
+    else:
+        kwargs["annotate_steps"] = _normalize_kinds([annotate_raw])
 
     stations = args.Stations  # station list
     del kwargs["Stations"]

@@ -44,8 +44,10 @@ __version__ = "$Revision: 0.2 $"[11:-2]
 import dataclasses
 import datetime
 import os
+import warnings
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import matplotlib as mpl
@@ -329,6 +331,7 @@ def view_flags(
     else:
         steps = np.atleast_1d(np.asarray(step_epochs, dtype=float))
     pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
+    xepochs, _xe_src = gps_views.resolve_excluded_epochs(sta)
     resolved = gps_views.resolve_outlier_detection(
         sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
     )
@@ -343,6 +346,8 @@ def view_flags(
     }
     if provisional_days is not None:
         detect_kwargs["provisional_days"] = provisional_days
+    if xepochs:
+        detect_kwargs["exclude_epochs"] = xepochs
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
@@ -467,6 +472,10 @@ def plotTime(
     outlier_overrides: str | None = None,
     hide_outliers: bool = False,
     provisional_days: float | None = None,
+    remove_kinds: Sequence[str] | None = None,
+    annotate_steps: bool | Sequence[str] | None = False,
+    steps_catalog: str | None = None,
+    params: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -475,16 +484,14 @@ def plotTime(
     or ``"eps,pdf,png"`` -- each written by one native ``savefig``) or
     shows it interactively.  Returns the Figure (REPL-friendly).
 
-    ``view`` is the first-class raw|cleaned|detrended toggle of the
-    internal delivery path (geo_dataread ``gps_views``, design
-    DESIGN_live_detrending §0): ``"raw"`` (default) plots exactly as
-    before; ``"cleaned"`` masks outlier epochs from the main series and
-    overlays them as red points (mask only — raw stays retrievable);
-    ``"detrended"`` plots the stored-parameter detrended series (maps to
-    the revived ``ref="detrend"`` read — plate-first, pure apply, no
-    re-fit). Cleaning/detrending degrades gracefully inside geo_dataread
-    (warning + undegraded series), so a plot never fails for a view
-    reason.
+    ``view`` is the first-class raw|cleaned toggle of the internal delivery
+    path (geo_dataread ``gps_views``, design DESIGN_live_detrending §0):
+    ``"raw"`` (default) plots exactly before; ``"cleaned"`` masks outlier
+    epochs from the main series and overlays them as GREY points (mask only
+    — raw stays retrievable).  Use ``remove_kinds`` (--remove-steps) for
+    selective step removal per-kind from the deployed record. Degrades
+    gracefully (warning + undegraded series), so a plot never fails for a
+    view reason.
 
     ``outlier_params`` / ``outlier_overrides`` reach the ``cleaned`` view
     only.  Both are thresholds-level levers of
@@ -512,12 +519,8 @@ def plotTime(
     one file in a viewer while re-rendering), but it also means a
     multi-station or multi-variant run leaves only the last render.
     """
-    if view not in ("raw", "cleaned", "detrended"):
-        raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
-    if view == "detrended":
-        # the stored-parameter detrended series IS the revived ref="detrend"
-        # read path; title/filename follow the existing ref convention
-        ref = "detrend"
+    if view not in ("raw", "cleaned"):
+        raise ValueError(f"view must be 'raw' or 'cleaned', got {view!r}")
 
     # heavy production deps are imported lazily so the module (and the
     # figure-building seam) stays importable without them
@@ -580,6 +583,86 @@ def plotTime(
             outlier_overrides=outlier_overrides,
             provisional_days=provisional_days,
         )
+
+    # Selective step removal: subtract the RECORDED step amplitudes (from
+    # the deployed detrend record) for declared steps whose kind is in
+    # ``remove_kinds``.  steps.yaml has the epochs + kinds, the record has
+    # the amplitudes — a pure apply, no re-fit, and it degrades to a
+    # warning (series unchanged) when there is no record or no matching
+    # step.  Runs BEFORE the inline detrended view (below), so
+    # --remove-steps + --view detrended compose: selective steps removed
+    # first, then the remaining trajectory is subtracted.
+    if remove_kinds:
+        from geo_dataread import gps_views
+
+        data, _prov = gps_views.remove_declared_steps(
+            sta,
+            yearf,
+            data,
+            kinds=remove_kinds,
+            params=params,
+            steps_catalog=steps_catalog,
+        )
+
+    # Inline detrended view: subtract the stored trajectory from the
+    # SAME plate data — one data stream, so cleaning + detrending
+    # compose without a double-read.  Runs AFTER --remove-steps, so the
+    # two compose: selective steps removed first, then the remainder is
+    # subtracted.
+    #
+    # --view detrended: subtract the FULL trajectory (rate + seasonal +
+    # steps).  --ref detrend: subtract rate + seasonal only — step
+    # offsets remain visible (the user wants trends removed, not discrete
+    # events).  Both trigger this block; the distinction is handled after
+    # the full subtraction by adding step contributions back.
+    if view == "detrended" or ref == "detrend":
+        from geo_dataread import gps_views as _gv
+
+        try:
+            doc = _gv.read_detrend_params(params)
+            record, _src = _gv.station_detrend_record(doc, sta)
+        except Exception:
+            record = None
+        if record is None:
+            warnings.warn(
+                f"{sta}: no detrend record for this station; serving raw series",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            try:
+                data = _gv.apply_stored_detrend(
+                    record, yearf, data, frame=record.get("frame")
+                )
+                # --ref detrend: subtract rate + seasonal but KEEP step
+                # offsets visible (trends removed, discrete events stay).
+                # apply_stored_detrend subtracted the FULL trajectory
+                # including steps; add the step contributions back so
+                # earthquake/equipment offsets remain in the data.
+                # --view detrended keeps the full subtraction.
+                if ref == "detrend" and view != "detrended":
+                    _step_epochs = record.get("step_epochs", [])
+                    if _step_epochs:
+                        _yr = np.asarray(yearf, dtype=np.float64)
+                        _pn = record.get("param_names", [])
+                        for _ci in range(data.shape[0]):
+                            _cp = record["components"][_ci]["params"]
+                            for _k, _ep in enumerate(_step_epochs):
+                                try:
+                                    _idx = _pn.index(f"step_amp_{_k + 1}")
+                                except ValueError:
+                                    continue
+                                _amp = float(_cp[_idx])
+                                data[_ci] = data[_ci] + np.where(
+                                    _yr >= float(_ep), _amp, 0.0
+                                )
+            except ValueError as exc:
+                warnings.warn(
+                    f"{sta}: could not apply detrend record ({exc}); "
+                    "serving raw series",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
@@ -671,6 +754,22 @@ def plotTime(
     if events:
         addEvent(events, fig)
 
+    if annotate_steps:
+        # Declared steps from steps.yaml, drawn as a vertical line + rotated
+        # label (seismic dark-red, equipment dark-green) — independent of the
+        # --remove-steps data transformation.  ``annotate_steps`` is ``True``
+        # (all kinds) or a sequence of kind strings (filtered).
+        kind_filter = (
+            annotate_steps
+            if isinstance(annotate_steps, Sequence)
+            and not isinstance(annotate_steps, str)
+            else None
+        )
+        for epoch, label, color in step_annotations(
+            sta, steps_catalog, kinds=kind_filter
+        ):
+            add_event_lines(fig, [(epoch, label)], color)
+
     if logo:
         inpLogo(fig)
 
@@ -682,6 +781,8 @@ def plotTime(
         filend = "-%s" % (ref,)
         if view == "cleaned":
             filend += "-cleaned"
+        if remove_kinds:
+            filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType != "TOT":
             filend += "-{0:s}".format(tType)
 
@@ -1016,6 +1117,92 @@ def addEvent(
         [ax.axvline(x=event, color=color, zorder=2, **kwargs) for ax in axes]
 
     return fig
+
+
+#: Annotation colours for declared steps, split by :attr:`StepRecord.is_seismic`.
+#: (The workbench carries its own ``SEISMIC_COLOR``/``TOS_COLOR`` for its event
+#: lines; these are the plot driver's spellings of the same two colours.)
+SEISMIC_STEP_COLOR: str = "darkred"
+EQUIPMENT_STEP_COLOR: str = "darkgreen"
+
+
+def add_event_lines(
+    fig: Figure, events: Sequence[tuple[float, str]], color: str
+) -> Figure:
+    """Vertical lines with a label on the top axis.
+
+    Lines go through :func:`addEvent` (the existing primitive — ``axvline``
+    on every axis); only the text is new, and only on axis 0, because
+    repeating it on all three is noise.
+
+    The label is drawn in FULL.  It used to be ``label.split(" ")[0]`` —
+    the date and nothing else — which was right while the rest of the
+    string was a device count, and silently threw away the equipment names
+    the moment they existed.  Date and equipment go on two rotated lines
+    so the identifying part stays at the axis edge and the detail runs
+    beside it rather than after it.
+    """
+    from gtimes.timefunc import TimefromYearf
+
+    if not events:
+        return fig
+    addEvent({TimefromYearf(e): [color] for e, _ in events}, fig)
+    ax = fig.axes[0]
+    lo, hi = ax.get_ylim()
+    mid = (lo + hi) / 2.0
+    for epoch, label in events:
+        head, sep, tail = label.partition(" (")
+        text = f"{head}\n{tail.rstrip(')')}" if sep else label
+        ax.text(
+            TimefromYearf(epoch),
+            mid,
+            text,
+            rotation=90,
+            va="center",
+            ha="right",
+            fontsize=9,
+            linespacing=0.95,
+            color=color,
+            zorder=6,
+        )
+    return fig
+
+
+def step_annotations(
+    sta: str,
+    steps_catalog: str | Path | None = None,
+    *,
+    kinds: Sequence[str] | None = None,
+) -> list[tuple[float, str, str]]:
+    """Declared steps for annotation: ``(epoch, label, colour)`` triples.
+
+    Reads ``steps.yaml`` (the durable declaration catalog) and returns one
+    triple per declared step — the label via :attr:`StepRecord.label`, the
+    colour from the seismic/equipment split (:attr:`StepRecord.is_seismic`).
+    When ``kinds`` is given, only steps whose ``kind`` is in that set are
+    annotated (``None`` = all).
+    A missing or empty catalog degrades to ``[]``: annotation is an
+    enhancement, never a plot failure.
+    """
+    try:
+        from gps_parser.outlier_catalogs import read_steps
+
+        catalog = read_steps(steps_catalog)
+    except Exception:
+        return []
+    kind_set = {k.strip().lower() for k in kinds} if kinds else None
+    out: list[tuple[float, str, str]] = []
+    for row in catalog.get(sta.upper(), ()):
+        if kind_set is not None and (row.kind or "").strip().lower() not in kind_set:
+            continue
+        out.append(
+            (
+                float(row.epoch_yearf),
+                row.label,
+                SEISMIC_STEP_COLOR if row.is_seismic else EQUIPMENT_STEP_COLOR,
+            )
+        )
+    return sorted(out)
 
 
 def saveFig(

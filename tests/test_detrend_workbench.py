@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -72,16 +71,32 @@ def gpsconfig(tmp_path, monkeypatch):
 
 
 def _detrended() -> tuple[np.ndarray, np.ndarray, bool]:
-    """The detrended series, through the PRODUCTION read path."""
-    import geo_dataread.gps_read as gpsr
+    """The detrended series through the new MODULAR path.
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        y, d, _s, _o = gpsr.getData(
-            STA, ref="detrend", Dir=str(TOT), tType="TOT", uncert=10
+    ``ref="detrend"`` now reads plate-removed data (same as
+    ``ref="plate"``); the record application lives in the plot driver
+    as ``apply_stored_detrend``, which runs AFTER cleaning and step
+    removal.  "absent" means the record is missing or not yet committed
+    (the fixture starts with STA removed from the document).
+    """
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread import gps_views
+
+    y, d, _s, _o = gpsr.getData(STA, ref="plate", Dir=str(TOT), tType="TOT", uncert=10)
+    try:
+        doc = gps_views.read_detrend_params()
+        record, _src = gps_views.station_detrend_record(doc, STA)
+    except Exception:
+        return y, d, True
+    if record is None:
+        return y, d, True
+    try:
+        d_detrended = gps_views.apply_stored_detrend(
+            record, y, d, frame=record.get("frame")
         )
-    absent = any("absent from the detrend parameter" in str(w.message) for w in caught)
-    return y, d, absent
+    except ValueError:
+        return y, d, True
+    return y, d_detrended, False
 
 
 def _residual_trend(yearf: np.ndarray, series: np.ndarray) -> tuple[float, float]:
@@ -104,7 +119,13 @@ def _residual_trend(yearf: np.ndarray, series: np.ndarray) -> tuple[float, float
 
 
 def test_commit_then_detrended_view_consumes_the_record(gpsconfig, tmp_path):
-    """The whole point: commit a record, and production reads it back."""
+    """The whole point: commit a record, and the consumption path sees it.
+
+    ``apply_stored_detrend`` (the same function the plot driver's
+    ``--remove-steps`` pipeline calls) reads the deployed document and
+    returns the record-subtracted series.  Before commit: absent + raw;
+    after commit: present + detrended.
+    """
     import json
 
     from gps_plot.detrend_workbench import build_record, commit_record
@@ -191,6 +212,67 @@ def test_commit_rejects_a_frame_mismatch(gpsconfig):
     rec["frame"] = "itrf2008"
     with pytest.raises(RuntimeError, match="!= document frame"):
         commit_record(STA, rec, params_path=doc, force=True)
+
+
+def test_declare_step_writes_the_catalog_and_enters_the_fit(gpsconfig, monkeypatch):
+    """--declare-step merges the declaration BEFORE estimation, so the stored
+    row and the fitted step are the same event — one command, one epoch."""
+    from gps_parser.outlier_catalogs import read_steps
+    from gps_plot import detrend_workbench as wb
+
+    steps_yaml = gpsconfig / "steps.yaml"
+    before = read_steps(steps_yaml)
+    assert STA not in before, "the fixture station must start undeclared"
+
+    seen: dict[str, list[float]] = {}
+    original = wb.build_record
+
+    def capture(*a, **k):
+        rec, y, d, s, est = original(*a, **k)
+        seen["step_epochs"] = [float(e) for e in (rec.get("step_epochs") or ())]
+        return rec, y, d, s, est
+
+    monkeypatch.setattr(wb, "build_record", capture)
+    rc = wb.main(
+        [
+            STA,
+            "--tot-dir",
+            str(TOT),
+            "--no-tos",
+            "--max-gap-years",
+            "2.0",
+            "--declare-step",
+            "epoch=2015.5;kind=manual;comment=declared-by-test",
+            "--out",
+            str(gpsconfig / "decl.pdf"),
+        ]
+    )
+    assert rc == 0
+
+    after = read_steps(steps_yaml)
+    rows = after[STA]
+    assert len(rows) == 1
+    (row,) = rows
+    assert row.kind == "manual" and row.comment == "declared-by-test"
+    assert abs(row.epoch_yearf - 2015.5) < 1e-3
+    # and the declared epoch really entered the model: the record the command
+    # estimated carries it, not just a future one
+    assert any(abs(e - 2015.5) < 1e-3 for e in seen["step_epochs"])
+
+
+def test_declare_step_refuses_an_offvocabulary_kind(gpsconfig):
+    """kind is the metadata the catalog exists for — a bad one is refused
+    before anything is written."""
+    from gps_plot.detrend_workbench import main
+
+    with pytest.raises(SystemExit, match="kind"):
+        main(
+            [
+                STA_SELF,
+                "--declare-step",
+                "epoch=2008.4085;kind=explosion",
+            ]
+        )
 
 
 @pytest.mark.parametrize(

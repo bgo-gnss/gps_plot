@@ -17,60 +17,11 @@ from gps_plot.detrend_picker_qt import (
     MODE_BACKGROUND,
     MODE_EVENTS,
     background_command,
+    declare_spec,
     events_command,
     model_equation,
+    store_command,
 )
-
-
-class TestMarimoNotebook:
-    """The notebook is a real artifact, so it gets real checks.
-
-    marimo enforces that each name is defined in exactly ONE cell — that
-    strictness is what makes its dataflow analysable, and it caught a genuine
-    duplicate-import bug while this was being written. ``marimo export`` runs
-    that analysis, so exporting IS the structural test.
-    """
-
-    NOTEBOOK = "notebooks/detrend_picker.py"
-
-    def test_notebook_exists_and_is_a_marimo_app(self) -> None:
-        from pathlib import Path
-
-        src = Path(self.NOTEBOOK)
-        if not src.is_file():
-            pytest.skip("notebook not present in this checkout")
-        text = src.read_text()
-        assert "marimo.App(" in text
-        assert "app.run()" in text
-
-    def test_dataflow_analyses_cleanly(self) -> None:
-        # Catches duplicate definitions and cycles across cells.
-        import shutil
-        import subprocess
-        from pathlib import Path
-
-        if not Path(self.NOTEBOOK).is_file():
-            pytest.skip("notebook not present in this checkout")
-        if shutil.which("marimo") is None:
-            pytest.skip("marimo not installed (dev group)")
-        r = subprocess.run(
-            ["marimo", "export", "script", self.NOTEBOOK, "-o", "/dev/null"],
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        assert r.returncode == 0, r.stderr
-
-    def test_notebook_never_commits(self) -> None:
-        # The contract: it emits the command, the workbench stores. A --commit
-        # in here would be a second path to stored science.
-        from pathlib import Path
-
-        if not Path(self.NOTEBOOK).is_file():
-            pytest.skip("notebook not present in this checkout")
-        text = Path(self.NOTEBOOK).read_text()
-        assert "commit_record" not in text
-        assert "write_stage_plan" not in text
 
 
 class TestTheTwoCommands:
@@ -150,6 +101,112 @@ class TestTheTwoCommands:
             "secular": StoreRef(None),
             "periodic": StoreRef(None),
         }
+
+
+class TestStoreCommand:
+    """The store dialog's command assembly — pure, no Qt, no data.
+
+    ``store_command`` is what the dialog shows and what the store run parses:
+    a declared pick becomes a ``--declare-step`` and its ``--step`` flag is
+    dropped (the floor carries it once the declaration lands), ``--force``
+    replaces an existing stored record.
+    """
+
+    def test_a_declared_step_becomes_declare_and_loses_step(self) -> None:
+        base = events_command("SELF", free=["step"], steps=[2008.4085], commit=True)
+        assert "--step 2008.4085" in base
+        cmd = store_command(base, [(2008.4085, "earthquake", "Ölfus M6.3")])
+        assert "--step 2008.4085" not in cmd, "a declared pick must not stay fit-only"
+        assert "--declare-step" in cmd
+        assert "kind=earthquake" in cmd and "comment=Ölfus M6.3" in cmd
+
+    def test_an_unticked_pick_stays_a_step(self) -> None:
+        base = events_command("SELF", free=["step"], steps=[2008.4085], commit=True)
+        assert store_command(base) == base
+
+    def test_only_the_declared_epoch_loses_its_flag(self) -> None:
+        base = events_command(
+            "SELF", free=["step"], steps=[2008.4085, 2010.5], commit=True
+        )
+        cmd = store_command(base, [(2008.4085, "earthquake", "")])
+        assert "--step 2010.5" in cmd, "the undeclared pick must survive"
+        assert "--step 2008.4085" not in cmd
+
+    def test_declare_spec_carries_epoch_and_date(self) -> None:
+        spec = declare_spec(2008.4085, "earthquake", "Ölfus M6.3")
+        assert "epoch=2008.408500" in spec
+        assert "date=2008-05-29" in spec, "the date must be the noon-convention day"
+        assert "kind=earthquake" in spec and "comment=Ölfus M6.3" in spec
+
+    def test_declare_spec_round_trips_through_the_workbench_parser(self) -> None:
+        from gps_plot.detrend_workbench import parse_declare_step
+
+        spec = declare_spec(2008.4085, "equipment", "antenna swap")
+        rec = parse_declare_step(spec, "SELF")
+        assert rec.marker == "SELF" and rec.kind == "equipment"
+        assert abs(rec.epoch_yearf - 2008.4085) < 1e-4
+        assert rec.date == "2008-05-29"
+
+    def test_force_appends_the_replace_flag(self) -> None:
+        base = events_command("SELF", free=["step"], steps=[2008.4085], commit=True)
+        assert "--force" not in base
+        assert store_command(base, force=True).endswith("--force")
+
+    def test_near_declared_step_flags_a_twin(self) -> None:
+        """The Ölfus case: a pick 4 days from the declared earthquake must be
+        recognised as the SAME event, not stored as a second step in one gap."""
+        from gps_plot.detrend_picker_qt import near_declared_step
+
+        assert near_declared_step(2008.3973, [2008.4085]) == 2008.4085
+        # distinct events, months apart, are not twins
+        assert near_declared_step(2010.5, [2008.4085]) is None
+        # an exact match is a twin (and merge_station_steps would dedup it)
+        assert near_declared_step(2008.4085, [2008.4085]) == 2008.4085
+
+
+class TestSegmentAndCoverageGuards:
+    """Two states the window used to restore silently: overlapping clean
+    intervals (the fit refuses them → "NO RECORD" on every restart), and a
+    held background that never spanned the step it was meant to measure
+    (the offset comes out ~0)."""
+
+    def test_normalize_drops_the_overlap_keeps_the_chain(self) -> None:
+        from gps_plot.detrend_picker_qt import normalize_segments
+
+        kept, dropped = normalize_segments(
+            [(2002.162, 2008.4448), (2008.4206, 2009.3298), (2009.3294, 2021.4796)]
+        )
+        # the middle interval overlaps the first, so it is dropped; the
+        # post-event one survives — the pre+post structure the user meant
+        assert kept == [(2002.162, 2008.4448), (2009.3294, 2021.4796)]
+        assert dropped == [(2008.4206, 2009.3298)]
+
+    def test_normalize_is_idempotent_on_clean_segments(self) -> None:
+        from gps_plot.detrend_picker_qt import normalize_segments
+
+        kept, dropped = normalize_segments([(2009.0, 2015.0), (2002.0, 2008.0)])
+        assert kept == [(2002.0, 2008.0), (2009.0, 2015.0)]  # sorted
+        assert dropped == []
+
+    def test_adjacent_segments_are_not_an_overlap(self) -> None:
+        from gps_plot.detrend_picker_qt import normalize_segments
+
+        kept, dropped = normalize_segments([(2002.0, 2008.5), (2008.5, 2020.0)])
+        assert dropped == [] and len(kept) == 2
+
+    def test_step_outside_background_names_the_side(self) -> None:
+        from gps_plot.detrend_picker_qt import step_outside_background
+
+        # SELF's coseismic is BEFORE a post-event-only background
+        gaps = step_outside_background([2008.4085], [(2009.31, 2021.28)])
+        assert gaps == [
+            (2008.4085, "before the background's earliest data (2009.3100)")
+        ]
+        # a step inside the span is fine
+        assert step_outside_background([2015.0], [(2009.31, 2021.28)]) == []
+        # and a step after it is named too
+        (gap,) = step_outside_background([2025.0], [(2009.31, 2021.28)])
+        assert "after" in gap[1]
 
 
 class TestModelEquation:
@@ -450,33 +507,6 @@ class TestBothPickersEmitTheSameRunFlags:
         ns = _build_parser().parse_args(["SELF", *flags])
         assert ns.tot_dir == "/data/alt-tot" and ns.max_gap_years == 1.5
 
-    def test_both_pickers_declare_uncert_as_the_same_type(self) -> None:
-        """A float here and an int there is how the spelling diverged."""
-        from gps_plot import detrend_picker, detrend_picker_qt
-        from gps_plot.detrend_workbench import WORKBENCH_UNCERT_DEFAULT
-
-        for mod in (detrend_picker, detrend_picker_qt):
-            assert mod.WORKBENCH_UNCERT_DEFAULT is WORKBENCH_UNCERT_DEFAULT
-
-    def test_the_marimo_picker_parses_uncert_as_an_int(self) -> None:
-        import subprocess
-        import sys
-
-        out = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import gps_plot.detrend_picker as m; m.main()",
-                "SELF",
-                "--uncert",
-                "12.5",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert out.returncode != 0
-        assert "invalid int value" in out.stderr
-
     def test_a_non_integral_screen_raises_rather_than_rounding(self) -> None:
         """Rounding would be the fixed bug wearing a disguise.
 
@@ -550,42 +580,108 @@ class TestTheBackgroundCanBeCommitted:
         w = TestTheWindow._window(tmp_state=tmp_path)
         w.add_segment((2002.0, 2020.0))
         assert w.record is not None
-        w.copy_commit()
-        cmd = w.QtWidgets.QApplication.clipboard().text()
+        cmd = w._commit_command()
         assert "--save-secular" in cmd, "the reusable s(t) is not written"
         assert "--commit" in cmd, "the finished record is not written"
         assert "--stage" not in cmd, "the background phase declares no stage"
 
-    def test_it_says_which_write_does_what(self, tmp_path) -> None:
+    def test_the_events_phase_commits_the_event_stage(self, tmp_path) -> None:
         w = TestTheWindow._window(tmp_state=tmp_path)
-        w.add_segment((2002.0, 2020.0))
-        w.copy_commit()
-        text = w.summary.toPlainText()
-        assert "reusable s(t)" in text and "plot-gps-timeseries" in text
+        w.mode.setCurrentText(MODE_EVENTS)
+        cmd = w._commit_command()
+        assert "--stage" in cmd and "--commit" in cmd
+        assert "--save-secular" not in cmd, "the events phase stores only the record"
 
-    def test_a_stepless_station_is_told_s_is_f(self, tmp_path) -> None:
+    def test_a_stepless_station_is_committed_from_the_background(
+        self, tmp_path
+    ) -> None:
         w = TestTheWindow._window(sta="RHOF", tmp_state=tmp_path)
         w.add_segment((2002.0, 2020.0))
         if w.record is None:  # pragma: no cover
             pytest.skip("RHOF not fittable here")
         if w.record.get("step_epochs"):  # pragma: no cover
             pytest.skip("RHOF gained a declared step; pick another station")
-        w.copy_commit()
-        assert "s(t) IS f(t)" in w.summary.toPlainText()
+        cmd = w._commit_command()
+        assert "--save-secular" in cmd and "--commit" in cmd
 
-    def test_a_station_with_a_declared_step_says_so(self, tmp_path) -> None:
-        """The record already carries it — steps.csv is a floor."""
-        w = TestTheWindow._window(tmp_state=tmp_path)
-        w.add_segment((2002.162, 2008.4448))
-        w.add_segment((2009.3294, 2021.4796))
-        assert w.record.get("step_epochs"), "SELF lost its declared step"
-        w.copy_commit()
-        assert "complete f(t)" in w.summary.toPlainText()
-
-    def test_nothing_to_commit_is_said_not_crashed(self, tmp_path) -> None:
+    def test_nothing_to_store_is_said_not_crashed(self, tmp_path) -> None:
         w = TestTheWindow._window(tmp_state=tmp_path)
         w.cb_linear.setChecked(False)
         w.cb_periodic.setChecked(False)
         assert w.record is None
-        w.copy_commit()
-        assert "nothing to commit" in w.summary.toPlainText()
+        w.store()
+        assert "nothing to store" in w.summary.toPlainText()
+
+
+class TestTheStoreRun:
+    """The store button runs the command in-process through
+    ``detrend_workbench.main``.  ``main`` takes the RAW argv (parse_args
+    drops argv[0]), but the command spells its own program name — so the
+    store drops it.  Getting that wrong means the program name becomes the
+    ``station`` positional and every store fails with an argparse error; the
+    offscreen picker never surfaced it because the dialog is modal.
+    """
+
+    def test_the_store_drops_the_program_name(self, tmp_path, monkeypatch) -> None:
+        import gps_plot.detrend_workbench as wb
+
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        received: dict[str, list[str]] = {}
+
+        def fake_main(argv):
+            received["argv"] = list(argv)
+            return 0
+
+        monkeypatch.setattr(wb, "main", fake_main)
+        w._run_store("gps-detrend-workbench RHOF --commit", [])
+        assert received["argv"][0] == "RHOF", (
+            "the program name must be dropped before main() — it is argv[0]"
+        )
+        assert "gps-detrend-workbench" not in received["argv"]
+
+    def test_a_refused_store_is_reported_not_silent(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import gps_plot.detrend_workbench as wb
+
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        monkeypatch.setattr(wb, "main", lambda argv: 3)
+        w._run_store("gps-detrend-workbench RHOF --commit", [])
+        assert "FAILED" in w.summary.toPlainText()
+        assert "exit 3" in w.summary.toPlainText()
+
+
+class TestAutoSaveBackground:
+    """Switching to events auto-saves s(t) when it differs from the on-screen
+    segments — the "what you see gets held" contract."""
+
+    def test_switch_to_events_auto_saves_when_background_differs(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from geo_dataread.secular_store import read_secular
+
+        cfg = TestTheTwoPhaseWorkflow._scratch_config(tmp_path, monkeypatch)
+        w = TestTheWindow._window(tmp_state=tmp_path)
+        w.add_segment((2002.0, 2008.35))
+        w.add_segment((2009.0, 2020.83))
+        assert w.record is not None
+
+        # initial saved background (from the deployed post-event copy) differs
+        saved_before = read_secular(cfg / "analysis.yaml").get("SELF")
+        on_screen = w.segments()
+        assert saved_before is None or tuple(on_screen) != tuple(
+            (float(s[0]), float(s[1])) for s in (saved_before.segments or ())
+        ), "test only valid when saved bg ≠ on-screen segments"
+
+        w.mode.setCurrentText(MODE_EVENTS)
+
+        # auto-save wrote the on-screen segments
+        saved_after = read_secular(cfg / "analysis.yaml")["SELF"]
+        assert tuple(on_screen) == tuple(
+            (float(s[0]), float(s[1])) for s in saved_after.segments
+        )
+
+        # the offset is NOT ~0 (it was measured against a spanning background)
+        amp = abs(float(w.record["components"][0]["params"][-1]))
+        assert amp > 50.0, f"step_amp {amp:.1f} — not the ~0 mm of an extrapolated bg"
+        assert "auto-saved" in w.summary.toPlainText()

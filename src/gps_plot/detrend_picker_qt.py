@@ -49,6 +49,7 @@ import os
 import shlex
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 # The workbench's own default, IMPORTED rather than mirrored so the emitted
@@ -68,6 +69,11 @@ __all__ = [
     "MODE_EVENTS",
     "background_command",
     "events_command",
+    "declare_spec",
+    "near_declared_step",
+    "normalize_segments",
+    "step_outside_background",
+    "store_command",
     "main",
     "model_equation",
 ]
@@ -143,6 +149,11 @@ EVENT_STAGE = "ev"
 #: structural and always run, so naming only those turns despike, global,
 #: window and protection all off. No new flag was needed for it.
 USE_FLAGGED_STAGES = "S1,S2"
+
+#: Two declared steps closer than this [yr, ~11 days] are treated as the SAME
+#: event by the store dialog's near-duplicate guard — declaring both puts two
+#: steps in one data gap and the estimator refuses (rank deficient).
+NEAR_DECLARED_TOLERANCE = 0.03
 
 #: Symbolic spelling of each parameter family, keyed by the prefix
 #: `param_names` uses. Built from the record's OWN names so the equation
@@ -262,6 +273,170 @@ def events_command(
     return shlex.join(parts + list(flags))
 
 
+def declare_spec(epoch: float, kind: str, comment: str = "") -> str:
+    """The ``--declare-step`` spelling of one picked step — Qt-free.
+
+    Carries BOTH ``epoch`` and ``date`` (the date derived from the epoch via
+    ``gtimes`` — the one canonical convention): the workbench's own parser
+    cross-checks them, so a dialog row can never store a row whose two epoch
+    spellings disagree.
+    """
+    from gtimes.timefunc import TimefromYearf
+
+    iso = TimefromYearf(epoch, "%Y-%m-%d")
+    parts = [f"epoch={epoch:.6f}", f"date={iso}", f"kind={kind}"]
+    if comment.strip():
+        parts.append(f"comment={comment.strip()}")
+    return ";".join(parts)
+
+
+def near_declared_step(
+    epoch: float, declared: Sequence[float], tol: float = NEAR_DECLARED_TOLERANCE
+) -> float | None:
+    """The declared step a pick is a near-duplicate of, or None.
+
+    A pick within ``tol`` (yr) of an already-declared step is almost
+    certainly the SAME event — and declaring both puts two steps in one data
+    gap, which the estimator refuses (identical Heaviside columns, rank
+    deficient).  SELF is the worked case: the Ölfus earthquake is declared
+    at 2008.4085; a pick at the jump's onset (2008.3973, 4 days earlier)
+    declared a "manual" twin, and every subsequent fit refused with *"no
+    fitted epoch between them"* — in a catalog, silently, until removed.
+    """
+    for d in declared:
+        if abs(float(d) - float(epoch)) < tol:
+            return float(d)
+    return None
+
+
+def store_command(
+    base: str,
+    declarations: Sequence[tuple[float, str, str]] = (),
+    force: bool = False,
+) -> str:
+    """The committing command the store dialog runs — Qt-free, testable.
+
+    ``declarations`` are ``(epoch, kind, comment)`` triples the operator
+    ticked: each becomes a ``--declare-step``, and its ``--step`` flag is
+    dropped from ``base`` — the declaration lands in the floor BEFORE the
+    fit, so the flag would only restate an epoch the catalog now carries.
+    ``force`` appends ``--force`` (replacing an existing stored record).
+    """
+    parts = shlex.split(base)
+    if declarations:
+        # Compare NUMERICALLY: the command spells a pick as str(epoch)
+        # ("2008.5") while the dialog carries it rounded — the same value
+        # either way, and a string compare would silently keep the flag the
+        # declaration just made redundant.
+        declared_vals = {round(float(epoch), 4) for epoch, _k, _c in declarations}
+
+        def _is_declared_step_value(token: str) -> bool:
+            try:
+                return round(float(token), 4) in declared_vals
+            except ValueError:
+                return False
+
+        kept: list[str] = []
+        skip_next = False
+        for i, t in enumerate(parts):
+            if skip_next:
+                skip_next = False
+                continue
+            if (
+                t == "--step"
+                and i + 1 < len(parts)
+                and _is_declared_step_value(parts[i + 1])
+            ):
+                skip_next = True
+                continue
+            kept.append(t)
+        parts = kept
+        for epoch, kind, comment in declarations:
+            parts += ["--declare-step", declare_spec(epoch, kind, comment)]
+    if force:
+        parts.append("--force")
+    return shlex.join(parts)
+
+
+def normalize_segments(
+    segments: Sequence[tuple[float, float]],
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Sort and greedily drop overlapping intervals, keeping the earliest.
+
+    The estimator refuses overlapping segments (a union fit domain is fine,
+    but a hairline overlap — an interval whose start was dragged a few days
+    past its neighbour's end — is not).  This returns the greedy maximal
+    non-overlapping chain plus the dropped offenders, so a session restored
+    from a file with an overlap cannot leave the window stuck on "NO RECORD".
+
+    Returns:
+        ``(kept, dropped)`` — both lists of ``(lo, hi)``, sorted by ``lo``.
+    """
+    ordered = sorted((float(a), float(b)) for a, b in segments)
+    kept: list[tuple[float, float]] = []
+    dropped: list[tuple[float, float]] = []
+    for lo, hi in ordered:
+        if kept and lo < kept[-1][1]:
+            dropped.append((lo, hi))
+        else:
+            kept.append((lo, hi))
+    return kept, dropped
+
+
+def step_outside_background(
+    step_epochs: Sequence[float],
+    background_segments: Sequence[tuple[float, float]],
+) -> list[tuple[float, str]]:
+    """Declared steps lying outside the held background's span, with a reason.
+
+    A step the background was never fitted across (before its earliest data,
+    or after its latest) is measured against an EXTRAPOLATED background — the
+    SELF 2008 coseismic comes out ~0 mm when the background is post-event
+    only.  Naming the step turns a silently-wrong offset into something the
+    operator can see and fix (re-save s(t) with a clean interval on each side
+    of it).
+    """
+    if not background_segments or not step_epochs:
+        return []
+    lo = min(float(s[0]) for s in background_segments)
+    hi = max(float(s[1]) for s in background_segments)
+    out: list[tuple[float, str]] = []
+    for epoch in step_epochs:
+        epoch = float(epoch)
+        if epoch + 1e-3 < lo:
+            out.append((epoch, f"before the background's earliest data ({lo:.4f})"))
+        elif epoch - 1e-3 > hi:
+            out.append((epoch, f"after the background's latest data ({hi:.4f})"))
+    return out
+
+
+def _background_coverage_gaps(
+    win: Any, step_epochs: Sequence[float]
+) -> list[tuple[float, str]]:
+    """Coverage gaps between a picker's held background and its declared steps.
+
+    Reads the saved background (``detrend.secular``) for the window's station
+    — the same store ``save s(t)`` writes and ``--hold …=store:self`` holds —
+    and returns :func:`step_outside_background` against ``step_epochs``.
+    Only when holding from ``self``; a borrowed background is a different
+    station's span and the comparison would be meaningless.
+    """
+    from geo_dataread.secular_store import read_secular
+    from geo_dataread.stage_plan import default_analysis_yaml_path
+
+    if (win.hold_from.text().strip() or "self") != "self":
+        return []
+    try:
+        path = default_analysis_yaml_path()
+        if path is None or not Path(path).is_file():
+            return []
+        entry = read_secular(path).get(win.sta)
+    except Exception:
+        return []
+    segs = getattr(entry, "segments", None) if entry is not None else None
+    return step_outside_background(step_epochs, segs or [])
+
+
 class PickerWindow:  # pragma: no cover - GUI
     """Plots on the left, the phase controls on the right."""
 
@@ -308,6 +483,7 @@ class PickerWindow:  # pragma: no cover - GUI
         self.step_lines: list[list[Any]] = []
         self._prov_counts = [0, 0, 0]
         self.command_text = ""
+        self._auto_save_note = ""
         # A session that failed to load must still be SAID, and `refit`
         # rewrites the summary the moment it runs. Held here and re-applied
         # after the first fit, or the warning is on screen for microseconds.
@@ -562,14 +738,15 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.btn_save.clicked.connect(self.save_secular)
         bcol.addWidget(self.btn_save)
-        self.btn_bg_commit = QtWidgets.QPushButton("copy the commit command")
+        self.btn_bg_commit = QtWidgets.QPushButton("store…")
         self.btn_bg_commit.setToolTip(
             "For a station whose model IS the background — no events to "
-            "estimate — this is the whole f(t). Emits --save-secular --commit, "
-            "which writes s(t) to the store AND the finished record to "
-            "detrend_params.json, where plot-gps-timeseries reads it"
+            "estimate — this is the whole f(t). Runs the committing command "
+            "in-process: --save-secular + --commit, writing s(t) to the "
+            "store AND the finished record to detrend_params.json. The "
+            "command is shown (and run) as-is — what you read is what runs"
         )
-        self.btn_bg_commit.clicked.connect(self.copy_commit)
+        self.btn_bg_commit.clicked.connect(self.store)
         bcol.addWidget(self.btn_bg_commit)
         self.saved_label = QtWidgets.QLabel()
         self.saved_label.setWordWrap(True)
@@ -593,18 +770,20 @@ class PickerWindow:  # pragma: no cover - GUI
         hrow.addWidget(self.hold_from)
         ecol.addLayout(hrow)
 
-        self.btn_commit = QtWidgets.QPushButton("copy the commit command")
+        self.btn_commit = QtWidgets.QPushButton("store…")
         self.btn_commit.setToolTip(
-            "Put the command WITH --commit on the clipboard. The picker never "
-            "writes the finished record itself: the workbench does, so there "
-            "is one path to stored science and it is one you can read first"
+            "Run the committing command in-process: picked steps ticked for "
+            "declaration land in steps.yaml (the durable catalog), then the "
+            "record is committed to detrend_params.json. The command is "
+            "shown first — read it before it runs; one path to stored "
+            "science, and it is the workbench's own"
         )
-        self.btn_commit.clicked.connect(self.copy_commit)
+        self.btn_commit.clicked.connect(self.store)
         ecol.addWidget(self.btn_commit)
 
         clear = QtWidgets.QPushButton("clear picked steps")
         clear.setToolTip(
-            "Remove the PICKED steps. Steps declared in steps.csv are a floor "
+            "Remove the PICKED steps. Steps declared in steps.yaml are a floor "
             "and stay in the fit"
         )
         clear.clicked.connect(self.clear_steps)
@@ -872,6 +1051,69 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.refit()
 
+    def _background_matches(self) -> bool:
+        """Whether the saved s(t) carries the on-screen segments.
+
+        When they differ, the events phase holds a background fitted on a
+        DIFFERENT set of clean intervals than the one visible — a silent
+        drift that the coverage warning fires for, but only after the fit.
+        Checking here lets us save first instead of warning after.
+        """
+        from geo_dataread.secular_store import read_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
+
+        try:
+            path = default_analysis_yaml_path()
+            if path is None or not Path(path).is_file():
+                return False
+            entry = read_secular(path).get(self.sta)
+        except Exception:
+            return False
+        if entry is None:
+            return False
+        saved = tuple(
+            (
+                None if s[0] is None else round(float(s[0]), 4),
+                None if s[1] is None else round(float(s[1]), 4),
+            )
+            for s in (getattr(entry, "segments", None) or ())
+        )
+        return saved == tuple(self.segments())
+
+    def _auto_save_background(self) -> None:
+        """Save the current background record as s(t) — silently.
+
+        Called from ``_mode_changed`` when switching TO events and the
+        on-screen segments differ from the saved s(t).  The record is the
+        background-phase fit (``refit`` hasn't run yet for the events phase
+        at this point), so what gets saved IS what the operator sees.
+        """
+        if self.record is None:
+            return
+        from geo_dataread.secular_store import secular_from_record, write_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
+
+        path = default_analysis_yaml_path()
+        if path is None:
+            return
+        try:
+            entry = secular_from_record(
+                self.record, fitted_at=self.record.get("fitted_at")
+            )
+            write_secular(path, self.sta, entry)
+        except (ValueError, OSError):
+            return
+        spans = ", ".join(f"{a}:{b}" for a, b in (entry.segments or ())) or "the domain"
+        self.saved_label.setText(
+            f"saved {len(entry.param_names)} parameters per component, "
+            f"fitted on {spans} → {path}"
+        )
+        self._auto_save_note = (
+            f"s(t) auto-saved from the on-screen segments ({spans}) — "
+            f"they differed from the stored background, so it was re-written "
+            f"before estimating against it."
+        )
+
     def _mode_changed(self, *_: Any) -> None:
         events = self.mode.currentText() == MODE_EVENTS
         self.bg_box.setVisible(not events)
@@ -888,6 +1130,16 @@ class PickerWindow:  # pragma: no cover - GUI
             else "Pick the CLEAN intervals — usually one either side of an "
             "event — then save s(t)."
         )
+        if events and self.segments() and not self._background_matches():
+            # The events phase holds the SAVED s(t); make it the on-screen
+            # segments before estimating, so "what you see is what gets held"
+            # — no separate save step, no silent drift. The record is still
+            # the background-phase fit here (refit below hasn't run for
+            # events yet). Gated on non-empty segments: with no clean
+            # intervals picked there is nothing deliberate to save, and an
+            # accidental switch must not overwrite a curated background with
+            # the default full-span one.
+            self._auto_save_background()
         # Entering the events phase, the useful view is the one events are
         # read in; leaving it, the useful view is the data itself.
         self.view.blockSignals(True)
@@ -923,7 +1175,7 @@ class PickerWindow:  # pragma: no cover - GUI
         """Which groups the event stage estimates.
 
         `step` only when the FIT will carry one — the MERGED declaration
-        (steps.csv floor ∪ picked), not the picked lines, because a declared
+        (steps.yaml floor ∪ picked), not the picked lines, because a declared
         step has parameters whether or not anyone clicked it. Naming a group
         the model has no parameters for is refused by the estimator, rightly,
         so asking for it unconditionally would make every stepless station
@@ -1020,6 +1272,25 @@ class PickerWindow:  # pragma: no cover - GUI
                     from gps_plot.detrend_workbench import abort_fallback_note
 
                     note = f"note: {abort_fallback_note(self.sta)}"
+
+        if events and est is not None:
+            # The held background must SPAN the step it is held to measure: a
+            # step before the background's earliest data is estimated against
+            # an extrapolation, and the offset comes out ~0 (SELF 2008 Ölfus
+            # against a post-event-only background).  Say which step, and the
+            # fix, rather than let a wrong offset sit on screen unremarked.
+            gaps = _background_coverage_gaps(self, est.record.get("step_epochs") or [])
+            for epoch, why in gaps:
+                note = (note + "\n\n" if note else "") + (
+                    f"⚠ offset at {epoch:.4f} is {why} — the held background "
+                    f"was not fitted across it, so the step is measured "
+                    f"against an extrapolation. Re-save s(t) in the "
+                    f"background phase with a clean interval on EACH side of "
+                    f"it."
+                )
+            if self._auto_save_note:
+                note = (self._auto_save_note + ("\n\n" if note else "")) + note
+                self._auto_save_note = ""
 
         self._render(est, note)
         self.command.setText(self.command_text)
@@ -1344,29 +1615,15 @@ class PickerWindow:  # pragma: no cover - GUI
             f"from the CLI:\n\n{cmd}"
         )
 
-    def copy_commit(self) -> None:
-        """Put the committing command on the clipboard — never run it here.
+    def _commit_command(self) -> str:
+        """The committing command for the CURRENT phase — the ONE assembler.
 
-        The workbench stores; the picker proposes. One path to stored science,
-        and it is the one an operator can read before it runs.
+        Shown in the store dialog and parsed by the store run: what you read
+        is what executes.  Phase is the workbench's own distinction — a
+        station with no events HAS no events phase, its background is the
+        whole model, so both phases can commit.
         """
         if self.mode.currentText() != MODE_EVENTS:
-            # A station with no events HAS no events phase to commit from --
-            # it says "nothing to estimate" and produces no record, which
-            # left such a station with no route to detrend_params.json at
-            # all. Its background IS its whole model, so it commits here.
-            #
-            # The two writes stay distinct even in one command:
-            # --save-secular writes s(t) to the store as a reusable
-            # COMPONENT, --commit writes the finished record production
-            # reads. Declared steps are already in this record (steps.csv is
-            # a floor), so for a station whose only events are declared, the
-            # background phase produces a complete f(t).
-            if self.record is None:
-                self.summary.setPlainText(
-                    "nothing to commit: there is no fit on screen."
-                )
-                return
             cmd = background_command(
                 self.sta,
                 segments=self.segments(),
@@ -1374,22 +1631,7 @@ class PickerWindow:  # pragma: no cover - GUI
                 flags=self._run_flags(),
                 save=True,
             )
-            cmd += " --commit"
-            self.QtWidgets.QApplication.clipboard().setText(cmd)
-            declared = self.record.get("step_epochs") or []
-            note = (
-                f"\n\nThis record carries {len(declared)} declared step(s) "
-                f"{[round(float(e), 4) for e in declared]}, so it is already a "
-                f"complete f(t)."
-                if declared
-                else "\n\nThis station has no declared step, so s(t) IS f(t)."
-            )
-            self.summary.setPlainText(
-                f"copied to the clipboard:\n\n{cmd}\n\n"
-                f"--save-secular writes the reusable s(t); --commit writes the "
-                f"finished record plot-gps-timeseries reads.{note}"
-            )
-            return
+            return cmd + " --commit"
         from gps_plot.detrend_workbench import _override_settings
 
         steps = self._picked_steps()
@@ -1400,7 +1642,7 @@ class PickerWindow:  # pragma: no cover - GUI
             steps=steps or None,
             max_gap_years=self.max_gap_years,
         )
-        cmd = events_command(
+        return events_command(
             self.sta,
             free=self._events_free(settings) or ["step"],
             hold_from=self.hold_from.text().strip() or "self",
@@ -1408,8 +1650,184 @@ class PickerWindow:  # pragma: no cover - GUI
             flags=self._run_flags(),
             commit=True,
         )
-        self.QtWidgets.QApplication.clipboard().setText(cmd)
-        self.summary.setPlainText(f"copied to the clipboard:\n\n{cmd}")
+
+    def store(self) -> None:
+        """Store what is on screen: declarations into steps.yaml, the record
+        into detrend_params.json — by RUNNING the workbench command, in
+        process.
+
+        The dialog shows the exact command first (read it before it runs);
+        the run is `detrend_workbench.main(shlex.split(cmd))`, so the stored
+        record comes from the same parser/estimator a terminal run would use
+        — the invariant ("the command reproduces the figure") extends to the
+        store itself.  A picked step ticked for declaration becomes a
+        ``--declare-step`` on the command: it lands in steps.yaml BEFORE the
+        fit, so the stored record is estimated against the floor it just
+        wrote, and the pick can be dropped afterwards (the floor now carries
+        it).
+        """
+        if self.record is None:
+            self.summary.setPlainText("nothing to store: there is no fit on screen.")
+            return
+        QtWidgets = self.QtWidgets
+        picked = self._picked_steps()
+        cmd = self._commit_command()
+
+        dlg = QtWidgets.QDialog(self.win)
+        dlg.setWindowTitle(f"store {self.sta}")
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.addWidget(
+            QtWidgets.QLabel(
+                "The command below is what will run — declarations first "
+                "(steps.yaml), then the fit, then the commit "
+                "(detrend_params.json)."
+            )
+        )
+        rows: list[dict[str, Any]] = []
+        if picked:
+            lay.addWidget(
+                QtWidgets.QLabel(
+                    "picked steps — tick to DECLARE them durably (steps.yaml);"
+                    " unticked stay fit-only (--step)"
+                )
+            )
+            from gtimes.timefunc import TimefromYearf
+
+            from gps_parser.outlier_catalogs import STEP_KINDS
+
+            from gps_plot.detrend_workbench import _declared_step_epochs
+
+            declared_floor = _declared_step_epochs(self.sta, self.base_settings.steps)
+
+            for epoch in picked:
+                twin = near_declared_step(epoch, declared_floor)
+                box = QtWidgets.QHBoxLayout()
+                cb = QtWidgets.QCheckBox(
+                    f"{epoch:.4f}  ({TimefromYearf(epoch, '%Y-%m-%d')})"
+                )
+                # A near-duplicate of an already-declared step defaults to
+                # UNTICKED: declaring both puts two steps in one data gap and
+                # the estimator refuses. The operator must opt in, having read
+                # the warning, rather than opt out of a silent refusal.
+                cb.setChecked(twin is None)
+                kind = QtWidgets.QComboBox()
+                kind.addItems(list(STEP_KINDS))
+                kind.setCurrentText("manual")
+                note = QtWidgets.QLineEdit()
+                note.setPlaceholderText("comment (event id, devices, …)")
+                box.addWidget(cb)
+                box.addWidget(kind)
+                box.addWidget(note, 1)
+                lay.addLayout(box)
+                if twin is not None:
+                    warn = QtWidgets.QLabel(
+                        f"⚠ {twin:.4f} is already declared "
+                        f"({TimefromYearf(twin, '%Y-%m-%d')}), "
+                        f"{(epoch - twin) * 365.25:+.0f} days away — same event?"
+                    )
+                    warn.setStyleSheet("color: #a05000;")
+                    warn.setWordWrap(True)
+                    lay.addWidget(warn)
+                rows.append({"epoch": epoch, "cb": cb, "kind": kind, "note": note})
+
+        # Replacing an existing stored record is a decision, not a default —
+        # name what is being replaced (fitted_at) beside the checkbox.
+        force_cb = QtWidgets.QCheckBox()
+        existing = None
+        try:
+            from geo_dataread.gps_views import (
+                default_params_path,
+                read_detrend_params,
+                station_detrend_record,
+            )
+
+            doc_path = default_params_path()
+            if doc_path is not None and Path(doc_path).is_file():
+                existing, _src = station_detrend_record(
+                    read_detrend_params(doc_path), self.sta
+                )
+        except Exception:
+            existing = None
+        if existing is not None:
+            force_cb.setText(
+                f"replace the stored record (fitted_at={existing.get('fitted_at')})"
+            )
+            force_cb.setChecked(True)
+            lay.addWidget(force_cb)
+
+        cmd_edit = QtWidgets.QPlainTextEdit()
+        cmd_edit.setReadOnly(True)
+        cmd_edit.setStyleSheet("font-family: monospace;")
+        cmd_edit.setMaximumHeight(90)
+        lay.addWidget(cmd_edit)
+
+        def refresh() -> None:
+            declarations = [
+                (r["epoch"], r["kind"].currentText(), r["note"].text())
+                for r in rows
+                if r["cb"].isChecked()
+            ]
+            cmd_edit.setPlainText(
+                store_command(cmd, declarations, force_cb.isChecked())
+            )
+
+        for row in rows:
+            row["cb"].toggled.connect(refresh)
+            row["kind"].currentTextChanged.connect(refresh)
+            row["note"].textChanged.connect(refresh)
+        force_cb.toggled.connect(refresh)
+        refresh()
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            | QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("store")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        final_cmd = cmd_edit.toPlainText()
+        self._run_store(final_cmd, [r["epoch"] for r in rows if r["cb"].isChecked()])
+
+    def _run_store(self, cmd: str, declared_epochs: list[float]) -> None:
+        """Run the committing command in-process; report what got stored."""
+        import contextlib
+        import io
+
+        from gps_plot.detrend_workbench import main as workbench_main
+
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                # main() takes the raw argv (parse_args drops argv[0]); the
+                # command here spells its own program name, so drop it.
+                rc = workbench_main(shlex.split(cmd)[1:])
+        except SystemExit as exc:  # a refused --declare-step parses as one
+            rc = int(exc.code or 0) if isinstance(exc.code, int) else 2
+        tail = "\n".join(buf.getvalue().strip().splitlines()[-14:])
+        if rc == 0:
+            if declared_epochs:
+                # The floor carries them now; keeping the picks would double
+                # the epoch (floor ∪ --step) on the next refit.
+                kept: list[Any] = []
+                for g in self.step_lines:
+                    if round(float(g[0].value()), 4) in {
+                        round(e, 4) for e in declared_epochs
+                    }:
+                        for p, ln in zip(self.plots, g, strict=True):
+                            p.removeItem(ln)
+                    else:
+                        kept.append(g)
+                self.step_lines = kept
+            self.summary.setPlainText(f"stored.\n\n{cmd}\n\n{tail}")
+            self.refit()
+        else:
+            self.summary.setPlainText(
+                f"store FAILED (exit {rc}) — nothing was half-committed;\n\n{tail}"
+            )
 
     # -- session ---------------------------------------------------------------
     def _session_path(self) -> Any:
@@ -1473,7 +1891,7 @@ class PickerWindow:  # pragma: no cover - GUI
             d = json.loads(path.read_text())
             if not isinstance(d, dict):
                 raise ValueError("top level must be an object")
-            segments = [(float(a), float(b)) for a, b in (d.get("segments") or [])]
+            raw_segments = [(float(a), float(b)) for a, b in (d.get("segments") or [])]
             steps = [float(e) for e in (d.get("steps") or [])]
             domain = d.get("domain")
             terms = d.get("terms") or {}
@@ -1487,6 +1905,21 @@ class PickerWindow:  # pragma: no cover - GUI
             self.summary.setPlainText(self._session_note)
             self._mode_changed()
             return False
+
+        # A session can hold OVERLAPPING intervals (an edge dragged a few
+        # days past its neighbour), and the estimator refuses them — which on
+        # restart left the window stuck showing "NO RECORD" with no way to
+        # tell the file from a fresh open. Normalize: keep the earliest
+        # non-overlapping chain, drop the rest, and SAY what was dropped.
+        segments, dropped = normalize_segments(raw_segments)
+        if dropped:
+            names = ", ".join(f"{lo:.4f}:{hi:.4f}" for lo, hi in dropped)
+            self._session_note = (
+                f"session restored, but {len(dropped)} overlapping interval(s) "
+                f"were dropped: {names}\n"
+                "(overlapping clean intervals are refused by the fit; re-add "
+                "them non-overlapping if they were meant)"
+            )
 
         self.cb_linear.setChecked(bool(terms.get("linear", True)))
         self.cb_periodic.setChecked(bool(terms.get("periodic", True)))

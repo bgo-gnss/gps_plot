@@ -53,6 +53,8 @@ from typing import Any, NamedTuple
 import numpy as np
 from matplotlib.figure import Figure
 
+from gps_plot.timesmatplt import add_event_lines
+
 __all__ = [
     "estimate_record",
     "build_record",
@@ -80,8 +82,9 @@ APPLY_TERMS_DEFAULT: str = "all"
 
 #: ``uncert`` default of :func:`geo_dataread.gps_read.getData`, which is what
 #: the batch estimator ``gps-estimate-detrend`` uses when ``--uncert`` is not
-#: passed.  The workbench screens harder by default (see ``--uncert``), so a
-#: commit says how to reproduce the record in batch rather than assuming it.
+#: passed.  The workbench and plot-gps-timeseries both default to 10 (tighter
+#: screen, aligned at 2026-08), so a commit says how to reproduce the record
+#: in batch rather than assuming it.
 BATCH_UNCERT_DEFAULT: int = 15
 
 #: The workbench's OWN ``--uncert`` default, screening harder than the batch
@@ -294,7 +297,7 @@ def _resolve_cli_segments(
 def _declared_step_epochs(sta: str, *sources: Any) -> tuple[float, ...]:
     """Union of every step declaration in play, the deployed catalog included.
 
-    ``steps.csv`` is a FLOOR, never a fallback: the fit-catalog column and a
+    ``steps.yaml`` is a FLOOR, never a fallback: the fit-catalog column and a
     CLI ``--step`` add to it.  Consulting the catalog only when the other
     sources are empty is the precise bug this exists to prevent —
     ``station_record_from_arrays`` does exactly that, so declaring one
@@ -350,7 +353,7 @@ def _override_settings(
 
     Args:
         settings: The resolved catalog row.
-        sta: Station name, for the ``steps.csv`` lookup inside the merge.
+        sta: Station name, for the ``steps.yaml`` lookup inside the merge.
         quiet: Suppress the merge note.  The picker re-assembles on every
             drag of a region handle, so its note would be per-frame noise
             on stderr; it shows the merged set in the header instead.
@@ -365,7 +368,7 @@ def _override_settings(
         # MERGE with whatever is already declared, never replace -- the help
         # text reads additive, and _declared_step_epochs documents the cost of
         # getting it wrong.  The sources differ: settings.steps is the
-        # fit-catalog column, the lookup inside is steps.csv; both fold in.
+        # fit-catalog column, the lookup inside is steps.yaml; both fold in.
         declared = _declared_step_epochs(sta, settings.steps)
         merged = _declared_step_epochs(sta, settings.steps, changed["steps"])
         changed["steps"] = merged
@@ -911,7 +914,7 @@ def clip_events_to_span(
     """Split events into those inside the plotted span and those outside.
 
     Event epochs come from catalogs that describe the STATION, not this
-    figure: TOS knows when the receiver was installed, ``steps.csv`` knows
+    figure: TOS knows when the receiver was installed, ``steps.yaml`` knows
     every declared offset, and neither has an opinion about how much of
     the series has been processed.  BJTV is the case — the antenna went up
     2021-08-09 and the solution starts 2025-02, so the install sits 3.5
@@ -951,55 +954,10 @@ def clip_events_to_span(
     return inside, outside
 
 
-def add_event_lines(
-    fig: Figure, events: Sequence[tuple[float, str]], color: str
-) -> Figure:
-    """Vertical lines with a label on the top axis.
-
-    Lines go through ``timesmatplt.addEvent`` (the existing primitive —
-    ``axvline`` on every axis); only the text is new, and only on axis 0,
-    because repeating it on all three is noise.
-
-    The label is drawn in FULL.  It used to be ``label.split(" ")[0]`` —
-    the date and nothing else — which was right while the rest of the
-    string was a device count, and silently threw away the equipment names
-    the moment they existed.  Date and equipment go on two rotated lines
-    so the identifying part stays at the axis edge and the detail runs
-    beside it rather than after it.
-    """
-    import gps_plot.timesmatplt as tplt
-    from gtimes.timefunc import TimefromYearf
-
-    if not events:
-        return fig
-    tplt.addEvent({TimefromYearf(e): [color] for e, _ in events}, fig, linestyle=":")
-    ax = fig.axes[0]
-    _lo, hi = ax.get_ylim()
-    for epoch, label in events:
-        head, sep, tail = label.partition(" (")
-        text = f"{head}\n{tail.rstrip(')')}" if sep else label
-        ax.text(
-            TimefromYearf(epoch),
-            hi,
-            text,
-            rotation=90,
-            va="top",
-            ha="right",
-            fontsize=7,
-            linespacing=0.95,
-            color=color,
-            zorder=6,
-        )
-    return fig
-
-
 #: Colour of seismic-event lines.  Distinct from equipment (darkgreen) and
 #: from the fit overlay (royalblue): the whole value of tier A is telling the
 #: two apart at a glance.
 SEISMIC_COLOR: str = "darkred"
-
-#: ``steps.csv`` ``kind`` values treated as seismic rather than equipment.
-SEISMIC_KINDS: tuple[str, ...] = ("earthquake", "coseismic", "seismic")
 
 
 def declared_event_epochs(
@@ -1007,14 +965,14 @@ def declared_event_epochs(
 ) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
     """Declared steps for one station, split seismic vs other.
 
-    Reads ``steps.csv`` through :func:`gps_parser.outlier_catalogs.read_steps`
+    Reads ``steps.yaml`` through :func:`gps_parser.outlier_catalogs.read_steps`
     rather than ``gps_views.station_step_epochs``, because the latter flattens
     to bare epochs and DROPS ``kind``/``source``/``comment`` — and ``kind`` is
     exactly what distinguishes an earthquake from an antenna swap.
 
     There is deliberately no seismic-catalogue client here: none exists
     anywhere in the ecosystem (skjálftalísa appears only as a *planned*
-    source in ``analysis.yaml`` and the ``steps.csv`` header), and writing one
+    source in ``analysis.yaml``), and writing one
     is its own project.  The seismic half is therefore served from what an
     operator has already declared, plus ``--events`` for anything not yet
     declared.
@@ -1036,13 +994,10 @@ def declared_event_epochs(
     other: dict[float, str] = {}
     for row in catalog.get(sta.upper(), ()):
         epoch = float(row.epoch_yearf)
-        kind = (row.kind or "").strip().lower()
-        note = (row.comment or "").strip()
-        label = f"{kind or 'step'}"
-        if note:
-            label = f"{label}: {note[:40]}"
-        bucket = seismic if kind in SEISMIC_KINDS else other
-        bucket.setdefault(epoch, label)
+        # ``label`` and ``is_seismic`` are the StepRecord properties both
+        # plotting paths share — one spelling of the label, one classification.
+        bucket = seismic if row.is_seismic else other
+        bucket.setdefault(epoch, row.label)
     return sorted(seismic.items()), sorted(other.items())
 
 
@@ -1050,8 +1005,8 @@ def parse_events(specs: Sequence[str]) -> list[tuple[float, str]]:
     """``--event YYYYMMDD[,label]`` -> ``[(yearf, label), …]``.
 
     The escape hatch for an event that is real but not yet declared in
-    ``steps.csv`` — which, while the catalogs are still templates, is nearly
-    all of them.
+    ``steps.yaml`` — which, while the catalog is young, is nearly all of
+    them.
     """
     from gtimes.timefunc import TimetoYearf
 
@@ -1066,6 +1021,109 @@ def parse_events(specs: Sequence[str]) -> list[tuple[float, str]]:
             (float(TimetoYearf(y, m, d)), label.strip() or f"{y}-{m:02d}-{d:02d}")
         )
     return sorted(out)
+
+
+def parse_declare_step(spec: str, marker: str) -> Any:
+    """``--declare-step 'date=2008-05-29;kind=earthquake;magnitude=6.3;comment=Ölfus'``
+
+    -> a :class:`gps_parser.outlier_catalogs.StepRecord` for merge-writing
+    into ``steps.yaml``.
+
+    Semicolon-separated ``k=v`` pairs — commas stay free for free-text
+    comments.  At least one of ``date`` (ISO; the epoch is derived from it)
+    or ``epoch`` (fractional year, NOON convention); both may be given when
+    they agree (within 1e-3 yr), which is how a caller that knows both
+    (e.g. the picker) stores the display date alongside the fitted epoch
+    without the two ever disagreeing.  ``kind`` is required; it is the
+    metadata the yaml catalog exists to formalise.  ``source`` defaults to
+    ``workbench`` (who wrote the row); knowledge provenance
+    (``tos``/``skjalftalisa``) can be named explicitly.
+    """
+    from gps_parser.outlier_catalogs import (
+        STEP_COMPONENTS,
+        STEP_KINDS,
+        STEP_SOURCES,
+        StepRecord,
+        _yearf_of_date,
+    )
+
+    pairs: dict[str, str] = {}
+    for part in spec.split(";"):
+        key, sep, value = part.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise SystemExit(
+                f"--declare-step expects ';'-separated k=v pairs "
+                f"(date|epoch, kind, [component], [magnitude], [event_id], "
+                f"[source], [comment]); got {part!r}"
+            )
+        if key in pairs:
+            raise SystemExit(f"--declare-step: duplicate key {key!r}")
+        pairs[key] = value.strip()
+
+    iso = pairs.get("date", "")
+    epoch_raw = pairs.get("epoch", "")
+    if not iso and not epoch_raw:
+        raise SystemExit(
+            f"--declare-step needs date=YYYY-MM-DD or epoch=YEARF (got {spec!r})"
+        )
+    derived: float | None = None
+    if iso:
+        try:
+            derived = _yearf_of_date(iso)
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: date {iso!r} is not ISO yyyy-mm-dd"
+            ) from None
+    if epoch_raw:
+        try:
+            epoch = float(epoch_raw)
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: epoch {epoch_raw!r} is not a fractional year"
+            ) from None
+        if derived is not None and abs(epoch - derived) > 1e-3:
+            raise SystemExit(
+                f"--declare-step: epoch {epoch} and date {iso} disagree "
+                f"(date is {derived:.5f} on the noon convention) — one step, "
+                "one epoch"
+            )
+    else:
+        assert derived is not None
+        epoch = derived
+
+    kind = pairs.get("kind", "").lower()
+    if kind not in STEP_KINDS:
+        raise SystemExit(f"--declare-step: kind {kind!r} must be one of {STEP_KINDS}")
+    component = pairs.get("component", "ALL").upper()
+    if component not in STEP_COMPONENTS:
+        raise SystemExit(
+            f"--declare-step: component {component!r} must be one of {STEP_COMPONENTS}"
+        )
+    source = pairs.get("source", "workbench").lower()
+    if source not in STEP_SOURCES:
+        raise SystemExit(
+            f"--declare-step: source {source!r} must be one of {STEP_SOURCES}"
+        )
+    magnitude = None
+    if pairs.get("magnitude"):
+        try:
+            magnitude = float(pairs["magnitude"])
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: magnitude {pairs['magnitude']!r} is not a number"
+            ) from None
+    return StepRecord(
+        marker=marker,
+        epoch_yearf=round(epoch, 6),
+        component=component,
+        kind=kind,
+        source=source,
+        comment=pairs.get("comment", ""),
+        date=iso,
+        event_id=pairs.get("event_id", ""),
+        magnitude=magnitude,
+    )
 
 
 def borrow_record(
@@ -1240,15 +1298,19 @@ def screen_outside_window(
       is invisible to the record and over-flags around itself at ANY
       threshold — that hazard is why :func:`split_outliers` refuses to
       re-run the view detector *inside* the window.  Pass ``steps`` for a
-      CLI ``--step``; ``steps.csv`` is folded in either way;
+      CLI ``--step``; ``steps.yaml`` is folded in either way;
     - detection still runs over the whole series and only the verdict is
       narrowed, because a detector handed the post-window fragment alone
       would fit it worse.
 
     Expect these flags to differ from ``plot-gps-timeseries --view
-    cleaned`` on the same station: ``uncert`` screens σ at READ time and
-    the workbench defaults to 10 against the plot driver's 15, so the two
-    tools are not even looking at the same epochs.
+    cleaned`` on the same station: the mask SOURCE is different.  The
+    workbench shows the fit's own inlier verdict (epochs the detrend
+    estimator weighed and rejected), while ``plot-gps-timeseries`` runs
+    the standalone view detector over the whole series.  The ``uncert``
+    read screen is the same (both default to 10 as of 2026-08), so the
+    two tools DO see the same epochs -- but they judge them differently
+    by design.
 
     Returns:
         ``(flags, provisional)`` — bool arrays shaped like ``data``, False
@@ -2058,8 +2120,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="drop the grey overlay of the epochs the fit rejected. They are "
         "masked out of the plotted series either way — this decides only "
         "whether the figure still SHOWS them, and hiding them lets the "
-        "y-axis tighten to the fitted series. Same name and meaning as "
-        "plot-gps-timeseries --hide-outliers",
+        "y-axis tighten to the fitted series. The inverse of "
+        "plot-gps-timeseries --show-outliers (there the overlay is HIDDEN "
+        "by default; here it is shown unless --hide-outliers)",
     )
     emphasis.add_argument(
         "--show-outliers",
@@ -2079,7 +2142,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="YYYYMMDD[,LABEL]",
         help="draw a seismic/other event line (repeatable). For events not "
-        "yet declared in steps.csv — which, while the catalogs are "
+        "yet declared in steps.yaml — which, while the catalog is "
         "templates, is nearly all of them",
     )
     p.add_argument(
@@ -2222,9 +2285,25 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=[],
         metavar="YEARF",
-        help="declare an offset epoch (repeatable). DECLARE-AND-FIT: the "
-        "epoch is yours, the amplitude is estimated and printed with "
-        "the record. No epoch detection happens here",
+        help="declare an offset epoch for THIS RUN (repeatable). "
+        "DECLARE-AND-FIT, fit-only: the epoch is yours, the amplitude is "
+        "estimated and printed with the record — but nothing is STORED. "
+        "Use --declare-step to make it durable",
+    )
+    p.add_argument(
+        "--declare-step",
+        action="append",
+        default=[],
+        metavar="K=V;…",
+        help="declare a step in steps.yaml — the DURABLE catalog "
+        "(repeatable). Semicolon-separated pairs, with an epoch from "
+        "'date=2008-05-29;kind=earthquake;magnitude=6.3' or "
+        "'epoch=2008.4085;kind=equipment;comment=antenna swap' (both "
+        "allowed when they agree). kind is "
+        "required (earthquake|equipment|icing|manual|other); component "
+        "defaults ALL, source defaults workbench. WRITES CONFIG (merge, "
+        "one station) BEFORE the fit, so the declaration is in the floor "
+        "the record is estimated against",
     )
     p.add_argument(
         "--max-gap-years",
@@ -2409,6 +2488,21 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
     out = resolve_out(args.out, sta)
+
+    if args.declare_step:
+        # WRITES CONFIG — merge one station's declarations into steps.yaml
+        # BEFORE any estimation: the catalog is a floor the fit re-reads, so
+        # declaring here puts the step INTO this run's model, not just into
+        # tomorrow's. The record (with --commit) then stores the amplitude
+        # estimated against the declaration it also reads back.
+        from gps_parser.outlier_catalogs import merge_station_steps
+
+        entries = [parse_declare_step(spec, sta) for spec in args.declare_step]
+        path, _n_before, _n_after, migrated = merge_station_steps(None, sta, entries)
+        print(
+            f"declared {len(entries)} step(s) for {sta} in {path}"
+            + (f" (migrated legacy csv -> {migrated.name})" if migrated else "")
+        )
 
     try:
         record, yearf, data, sigma, estimate = build_record(

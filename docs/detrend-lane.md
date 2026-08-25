@@ -33,10 +33,12 @@ Three marker states, and the distinction is what each COMMITS to:
 Gold epochs are the ones the detector cannot rule on yet (no data follows
 them, so a blunder and the onset of deformation look identical). They stay in
 the data; the marker only says the verdict is pending, and it WILL change as
-epochs arrive. `--hide-outliers` drops the grey overlay (display only — the
-epochs are already masked; the y-axis then tightens to the cleaned series,
-often dramatically: RHOF north 90 mm → 45 mm of range) but deliberately does
-NOT hide gold: decluttering removes decided outliers, never undecided ones.
+epochs arrive. The grey overlay is **hidden by default** (display only —
+the epochs are masked either way; hiding the overlay lets the y-axis tighten
+to the cleaned series, often dramatically: RHOF north 90 mm → 45 mm of
+range). `--show-outliers` restores it. Neither decides the masking, and
+neither hides gold: decluttering removes decided outliers, never undecided
+ones.
 `--provisional-days` bounds the recency window (0 disables; default 14 from
 `geo_dataread`), and the bound matters — indeterminate clusters also sit at
 old mid-series gaps and would otherwise dominate.
@@ -44,7 +46,7 @@ old mid-series gaps and would otherwise dominate.
 ```bash
 plot-gps-timeseries RHOF --view cleaned --outlier-param window_n_sigma=3.0
 plot-gps-timeseries RHOF --view cleaned --outlier-overrides ./overrides.csv
-plot-gps-timeseries RHOF --view cleaned --uncert 10 --hide-outliers
+plot-gps-timeseries RHOF --view cleaned --uncert 10 --show-outliers
 ```
 
 `--uncert` is the first lever for "obvious outliers survive": detection
@@ -152,7 +154,7 @@ epochs, so a step epoch inside an excised gap still enters the model, and its
 amplitude is estimable precisely because the flanking segments constrain the
 level on both sides. SELF 2008 Ölfus M6.3, transient excised:
 `step_amp_1 [-150.8, 148.0, 55.6] mm` — a line that did not exist under any
-single window, and it matches `steps.csv`'s own annotation.
+single window, and it matches `steps.yaml`'s own annotation.
 
 The gates changed meaning, each identically equal to the old one at J = 1:
 **`max_gap_years` is now per segment** (on the hull the deliberate excision was
@@ -166,7 +168,7 @@ hard error naming its index — the real failure is a bound typed into a data ga
 Two steps with no fitted epoch between them are now **refused** (identical
 Heaviside columns ⇒ rank-deficient design, amplitudes meaningless, covariance
 infinite). This bites in practice: `--step 2008.4071` on SELF merges with
-`steps.csv`'s declared 2008.4085 into two steps for one event. It used to
+`steps.yaml`'s declared 2008.4085 into two steps for one event. It used to
 degrade silently.
 
 Persisted per station via a `segments` column in `fit_windows.csv`
@@ -224,7 +226,7 @@ view's rule), not because "not in the fit" — no out-of-window epoch is.
 Two seams make the lanes agree rather than argue: `timesmatplt.view_flags` is
 now the single detector call site (`_mask_outliers` is its plotting half),
 taking `restrict=` — detection still runs on the FULL series, only the verdict
-narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.csv ∪
+narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.yaml ∪
 fit-catalog ∪ `--step`). `record["step_epochs"]` is the wrong source and
 instructively so: it keeps only epochs *inside* the window. Expect these flags
 to differ from `--view cleaned` — `uncert` screens σ at read time and the
@@ -259,12 +261,12 @@ outside it.
 
 Events are **declared, never detected** (tier A), in three colours: `darkgreen`
 new antenna / receiver installs (live `tostools`), `darkred` seismic
-(`steps.csv` rows whose `kind` is
+(`steps.yaml` rows whose `kind` is
 earthquake/coseismic/seismic, plus `--event YYYYMMDD[,LABEL]`), `royalblue` the
-fit. Seismic lines read `steps.csv` via `gps_parser.outlier_catalogs.read_steps`,
+fit. Seismic lines read `steps.yaml` via `gps_parser.outlier_catalogs.read_steps`,
 **not** `gps_views.station_step_epochs` — that one drops `kind`, so it cannot
 separate an earthquake from an antenna swap. No skjálftalísa client exists
-anywhere in the ecosystem (planned only, in `analysis.yaml` + the CSV header).
+anywhere in the ecosystem (planned only, in `analysis.yaml`).
 
 A green line claims the phase centre may have MOVED, so three filters stand
 between a TOS row and one. Subtype: `EQUIPMENT_SUBTYPES` = `antenna` +
@@ -322,6 +324,27 @@ not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
 
 Layered ON TOP of the workbench CLI, never replacing it, and its whole
 promise is one invariant: **the emitted command reproduces the figure.**
+**The store extends the invariant:** a `store` button runs that command
+in-process (declarations → ``steps.yaml``, then the commit →
+``detrend_params.json``), with the command shown first in a dialog —
+one write path, the workbench's own. The marimo picker
+(``gps-detrend-picker``) was retired 2026-08-24; the Qt picker is now
+the one GUI.
+
+**Two restore-time guards** (2026-08-24), each fixing a state the window
+used to restore silently and then refuse or mis-fit. `normalize_segments`
+runs on session load: overlapping clean intervals are dropped (keep the
+earliest non-overlapping chain) with the dropped ones NAMED, because a
+hairline overlap — an edge dragged a few days past its neighbour — used to
+leave the window stuck on "NO RECORD" every restart with no way to tell the
+file from a fresh open. And in the events phase, when holding ``s(t)`` from
+``self``, a step whose epoch lies outside the saved background's span is
+announced ("⚠ offset at … is before the background's earliest data") rather
+than silently measured against an extrapolation — the SELF 2008 coseismic
+comes out ~0 mm against a post-event-only background, and naming the step is
+what turns that into something fixable (re-save ``s(t)`` with a clean
+interval on EACH side of it).
+
 Every divergence found so far has been a second place that assembled the
 same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
@@ -341,44 +364,43 @@ different fit); `--uncert` was float here and int there, so any non-default
 screen emitted a command that will not parse; and the stage lane's final-stage
 free-group list was built from the PICKED steps.
 
-That fifth one is the same lever as the first. `steps.csv` is a floor that
+That fifth one is the same lever as the first. `steps.yaml` is a floor that
 `_override_settings` merges in, so on a station with a declared step an
 untouched stage plan freed only `secular` while the fit still carried
 `step_amp_1` — refused, every time, with *"never estimated and not held in
 the final stage"*. Both sides refused identically, so the emitted command
 still reproduced the figure; what broke was the **feature**: the stage lane
-was unusable on exactly the two stations in `steps.csv` (SELF, HOFN), and
+was unusable on exactly the two stations in `steps.yaml` (SELF, HOFN), and
 nothing said that re-declaring the already-declared step was the way out.
 `free2` now asks `_declared_step_epochs(sta, settings.steps)` — the merged
 set, the same function `_override_settings` uses. Conditional, not blanket:
 RHOF has no declared step and its plan is byte-identical to before
 (`--stage long:secular`).
 
-**One assembly site for the run flags, because there are two pickers.**
+**One assembly site for the run flags, because there were two pickers when
+this was written** (the marimo ``gps-detrend-picker``, retired 2026-08-24).
 `detrend_workbench.run_flags()` builds the `--tot-dir` / `--max-gap-years` /
-`--uncert` / `--provisional-days` tail for both. The marimo picker
-(`gps-detrend-picker`) had TWO of the four violations above still live after
-the Qt picker was fixed — `--tot-dir` read and never emitted, and `--uncert`
-as `type=float` emitting `12.0` at a `type=int` parser — while printing
-*"the workbench re-parses this line, so every refusal still applies."*
-Two pickers assembling the same list is two places to forget the same flag.
+`--uncert` / `--provisional-days` tail. The marimo picker had TWO of the
+four violations above still live after the Qt picker was fixed — `--tot-dir`
+read and never emitted, and `--uncert` as `type=float` emitting `12.0` at a
+`type=int` parser — while printing *"the workbench re-parses this line, so
+every refusal still applies."* Two pickers assembling the same list is two
+places to forget the same flag — which is why there is now one.
 `WORKBENCH_UNCERT_DEFAULT` now lives in `detrend_workbench` beside
-`BATCH_UNCERT_DEFAULT` and is imported by both; omission is only correct
-because it is the workbench's own default, not a number restated.
-**Breaking, deliberately:** `gps-detrend-picker --uncert 12.5` used to be
-accepted and now hard-errors, because what it accepted it could not emit.
-`run_flags` RAISES on a non-integral `uncert` rather than rounding — rounding
-is the same bug in disguise, trading a loud argparse refusal for a command
-that parses and then reads a different set of epochs than the figure was
-fitted on.
+`BATCH_UNCERT_DEFAULT`; omission is only correct because it is the
+workbench's own default, not a number restated. (The marimo picker
+formerly accepted `--uncert 12.5` and hard-errored — a breaking change
+that was deliberate, because what it accepted it could not emit.
+`run_flags` RAISES on a non-integral `uncert` rather than rounding.)
 
 Measured 2026-08-17 by driving `PickerWindow` offscreen and diffing the
 picker's record against the one the emitted command produces, elementwise:
 **11 cases, fitted quantities identical in all of them** (untouched, moved
 domain, picked step, `--term`, stage, stage+step, stage+term, RHOF stage
 baseline, `--uncert 12`, `--provisional-days`+`--tot-dir`, catalog union).
-Two divergences remain and are provenance-only, neither able to reach a
-stored record because the picker has no `--commit`: `refs.uncert` is absent
+Two provenance-only divergences existed when the picker had no `--commit`
+(the store now runs the workbench command in-process, resolving them):
+`refs.uncert` is absent
 picker-side (deliberate — `estimate_record`'s docstring states the picker
 passes a subset), and `refs.window_source` reads `defaults` picker-side
 against `workbench-cli(+defaults)` CLI-side, because the picker folds
@@ -403,7 +425,7 @@ a session written by a build that knows one more term group must not make the
 rest of somebody's curation unusable.
 
 `step` gets free/held but **no ABSENT**: there is no CLI spelling for
-un-declaring a step. `steps.csv` is a floor that merges in, and a picked step
+un-declaring a step. `steps.yaml` is a floor that merges in, and a picked step
 is removed by removing the pick — so the state would promise something no
 emitted command could carry out.
 
