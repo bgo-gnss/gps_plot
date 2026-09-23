@@ -12,12 +12,9 @@ historical reference (do not delete without coordinating). Modern lane
 each routed to its own doc below.
 
 **Quality gates.** `uv run ruff check` / `ruff format --check` / `mypy src`
-are enforced by `.github/workflows/ci.yml`; `uv run pytest` is local-only
-(the suite reads real station data and deployed catalogs, so it cannot run on
-a stock runner). mypy is `strict`, scoped to the same modern lane as the ruff
-excludes — legacy plotting modules are `ignore_errors`, `tests/` is out. All
-three CI steps pass in a CI-faithful install since 2026-08-20. Scope rationale
-and the 137 → 0 path: `docs/mypy-status.md`.
+are CI-enforced; `uv run pytest` is local-only (reads real station data).
+mypy is `strict`, scoped to the modern lane like the ruff excludes (legacy
+modules `ignore_errors`, `tests/` out). Scope rationale: `docs/mypy-status.md`.
 
 ## Layout
 
@@ -31,8 +28,7 @@ gps_plot/
 │   ├── maps.py                       # PyGMT map lane (optional 'maps' extra)
 │   ├── dev_viz.py                    # analysis-lane dev-viz (gps_analysis outputs)
 │   ├── detrend_workbench.py          # operator workbench — the only config-WRITING module
-│   ├── detrend_picker_qt.py          # Qt picker — emits a workbench command
-│   ├── detrend_picker.py             # marimo picker — same contract, older
+│   ├── detrend_picker_qt.py          # Qt picker — the one GUI; stores in-process
 │   └── gasmatplt_{bgo,workingon}15May17.py  # Py-2 snapshots — DO NOT delete
 ├── docs/                             # detrend-lane, map-lane, dev-viz, mypy-status
 ├── tests/                            # dev_viz, maps (GMT-gated), workbench, pickers
@@ -61,7 +57,6 @@ plot-gps-timeseries ...   # entry: gps_plot.plot_gps_timeseries:main
 gps-analysis-devviz ...   # entry: gps_plot.dev_viz:main (dev group required)
 gps-detrend-workbench ... # entry: gps_plot.detrend_workbench:main
 gps-detrend-picker-qt ... # entry: gps_plot.detrend_picker_qt:main (pyqtgraph)
-gps-detrend-picker ...    # entry: gps_plot.detrend_picker:main (marimo notebook)
 ```
 
 ## Detrend lane → `docs/detrend-lane.md` 📄
@@ -70,22 +65,40 @@ The cleaned view, the detrend workbench, segments and both pickers live in
 **[`docs/detrend-lane.md`](docs/detrend-lane.md)** — measured behaviour that
 belongs one level down. Read it before touching any of them.
 
-- **Cleaned view** (`--view cleaned`) — three marker states, and what each
-  COMMITS to: red clean, grey flagged (NaN, removed), **gold provisional**
-  (kept — recent, indeterminate, verdict pending). Loosening `window_n_sigma`
-  is NOT monotonic: a sudden drop to zero flagged means the excess-candidate
+- **Cleaned view** (`--view cleaned`) — red clean, grey flagged (NaN,
+  removed), **gold provisional** (kept, verdict pending). Loosening
+  `window_n_sigma` is NOT monotonic: zero flagged = the excess-candidate
   rule ABORTED and you are being served raw data.
 - **Detrend workbench** (`gps-detrend-workbench`) — detrend choice is
-  curation, not computation. The only config-WRITING module in the package.
+  curation, not computation. The only config-WRITING module in the package:
+  it merge-writes the record (`detrend_params.json`), the declarations
+  (`steps.yaml`, via `--declare-step`) and the `analysis.yaml` keys.
 - **Segments** (`--segment A:B`, repeatable) — the fit domain is a union of
-  intervals, which answers four asks at once; the gates changed meaning per
-  segment.
-- **Qt picker** (`gps-detrend-picker-qt`) — layered ON TOP of the CLI, and its
-  whole promise is one invariant: **the emitted command reproduces the
-  figure.** Eight violations of it are catalogued there, all the same shape —
-  a second place assembling the same decision. Both pickers now build their
-  run-flag tail with `detrend_workbench.run_flags`, because two pickers
-  assembling it independently forgot the same flag independently.
+  intervals (answers four asks at once); the gates changed meaning per segment.
+- **Qt picker** (`gps-detrend-picker-qt`) — the one GUI, layered ON TOP of
+  the CLI; the invariant is **the emitted command reproduces the figure**,
+  and a `store…` button runs that command in-process — one write path, the
+  workbench's own. Eight catalogued violations, all the same shape: a
+  second place assembling the same decision (lane doc).
+- **The compositional model** (`f(t) = Σ mᵢ(t)`, 2026-08-22) — N stage cards,
+  membership split from assignment, the peel that follows the active stage,
+  `--final joint` and the commit mode the batch forces. The grammar already
+  expressed all of it; this was UI exposure and storage.
+- **Cross-station borrowing** (2026-08-26) — a `store:STA` borrow is
+  RE-ANCHORED to this station's level (`--anchor-window`, default full fit
+  span; window shown in summary + record provenance); `--stage apply:` +
+  holds = the fully-borrowed station (ELDC). Numbers + batch gap: lane doc.
+- **Qt picker, background phase: `or borrow s(t) from:`** (2026-08-26) — the
+  control for a station that has NO clean interval to fit on, so the phase's
+  own question has no answer for it. Emits `borrow_command` (`--stage apply:`
+  + a `store:` hold per group); the terms tickboxes choose which groups are
+  borrowed, and unticking one frees it to be fitted here instead. ONE donor
+  field for all three components on purpose — a secular velocity is one
+  3-vector. Eagerly resolved, so a missing donor or a **plate-frame
+  mismatch** is refused in the panel, not at fit time. **Defaults to
+  seasonal-only** (the legacy detrend-OLAC manoeuvre: no datum and no rate
+  cross), applied once on the transition into borrowing; holding `secular`
+  too is the deliberate choice, for a station whose own trend IS deformation.
 
 **Per-station curation is config, not just a record.** `--commit` writes to
 three places a batch re-run must find — `detrend_params.json` plus two
@@ -142,9 +155,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-08-18 — map lane routed out to `docs/map-lane.md` and this
-footer's accumulated history dropped, which is what brought the file back under
-the 150-line budget. That history was a changelog restating commit messages;
-`git log --follow CLAUDE.md docs/` is the authoritative version and does not go
-stale. The measured behaviour those entries pointed at was never in here — it
-lives in `docs/detrend-lane.md` and `docs/map-lane.md`, which is where it stays.*
+*Last reviewed: 2026-08-26 — cross-station borrow re-anchoring +
+`--anchor-window` + apply-only plans (detail routed to
+`docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
+the lane docs, history in `git log --follow CLAUDE.md docs/`).*

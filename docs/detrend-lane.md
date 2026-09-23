@@ -33,10 +33,12 @@ Three marker states, and the distinction is what each COMMITS to:
 Gold epochs are the ones the detector cannot rule on yet (no data follows
 them, so a blunder and the onset of deformation look identical). They stay in
 the data; the marker only says the verdict is pending, and it WILL change as
-epochs arrive. `--hide-outliers` drops the grey overlay (display only — the
-epochs are already masked; the y-axis then tightens to the cleaned series,
-often dramatically: RHOF north 90 mm → 45 mm of range) but deliberately does
-NOT hide gold: decluttering removes decided outliers, never undecided ones.
+epochs arrive. The grey overlay is **hidden by default** (display only —
+the epochs are masked either way; hiding the overlay lets the y-axis tighten
+to the cleaned series, often dramatically: RHOF north 90 mm → 45 mm of
+range). `--show-outliers` restores it. Neither decides the masking, and
+neither hides gold: decluttering removes decided outliers, never undecided
+ones.
 `--provisional-days` bounds the recency window (0 disables; default 14 from
 `geo_dataread`), and the bound matters — indeterminate clusters also sit at
 old mid-series gaps and would otherwise dominate.
@@ -44,7 +46,7 @@ old mid-series gaps and would otherwise dominate.
 ```bash
 plot-gps-timeseries RHOF --view cleaned --outlier-param window_n_sigma=3.0
 plot-gps-timeseries RHOF --view cleaned --outlier-overrides ./overrides.csv
-plot-gps-timeseries RHOF --view cleaned --uncert 10 --hide-outliers
+plot-gps-timeseries RHOF --view cleaned --uncert 10 --show-outliers
 ```
 
 `--uncert` is the first lever for "obvious outliers survive": detection
@@ -152,7 +154,7 @@ epochs, so a step epoch inside an excised gap still enters the model, and its
 amplitude is estimable precisely because the flanking segments constrain the
 level on both sides. SELF 2008 Ölfus M6.3, transient excised:
 `step_amp_1 [-150.8, 148.0, 55.6] mm` — a line that did not exist under any
-single window, and it matches `steps.csv`'s own annotation.
+single window, and it matches `steps.yaml`'s own annotation.
 
 The gates changed meaning, each identically equal to the old one at J = 1:
 **`max_gap_years` is now per segment** (on the hull the deliberate excision was
@@ -166,7 +168,7 @@ hard error naming its index — the real failure is a bound typed into a data ga
 Two steps with no fitted epoch between them are now **refused** (identical
 Heaviside columns ⇒ rank-deficient design, amplitudes meaningless, covariance
 infinite). This bites in practice: `--step 2008.4071` on SELF merges with
-`steps.csv`'s declared 2008.4085 into two steps for one event. It used to
+`steps.yaml`'s declared 2008.4085 into two steps for one event. It used to
 degrade silently.
 
 Persisted per station via a `segments` column in `fit_windows.csv`
@@ -224,7 +226,7 @@ view's rule), not because "not in the fit" — no out-of-window epoch is.
 Two seams make the lanes agree rather than argue: `timesmatplt.view_flags` is
 now the single detector call site (`_mask_outliers` is its plotting half),
 taking `restrict=` — detection still runs on the FULL series, only the verdict
-narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.csv ∪
+narrows — and `step_epochs=`, fed by `_declared_step_epochs` (steps.yaml ∪
 fit-catalog ∪ `--step`). `record["step_epochs"]` is the wrong source and
 instructively so: it keeps only epochs *inside* the window. Expect these flags
 to differ from `--view cleaned` — `uncert` screens σ at read time and the
@@ -259,12 +261,12 @@ outside it.
 
 Events are **declared, never detected** (tier A), in three colours: `darkgreen`
 new antenna / receiver installs (live `tostools`), `darkred` seismic
-(`steps.csv` rows whose `kind` is
+(`steps.yaml` rows whose `kind` is
 earthquake/coseismic/seismic, plus `--event YYYYMMDD[,LABEL]`), `royalblue` the
-fit. Seismic lines read `steps.csv` via `gps_parser.outlier_catalogs.read_steps`,
+fit. Seismic lines read `steps.yaml` via `gps_parser.outlier_catalogs.read_steps`,
 **not** `gps_views.station_step_epochs` — that one drops `kind`, so it cannot
 separate an earthquake from an antenna swap. No skjálftalísa client exists
-anywhere in the ecosystem (planned only, in `analysis.yaml` + the CSV header).
+anywhere in the ecosystem (planned only, in `analysis.yaml`).
 
 A green line claims the phase centre may have MOVED, so three filters stand
 between a TOS row and one. Subtype: `EQUIPMENT_SUBTYPES` = `antenna` +
@@ -322,6 +324,27 @@ not `149/366`. That trap and the TOT join live in `tools/local-plot/README.md`.
 
 Layered ON TOP of the workbench CLI, never replacing it, and its whole
 promise is one invariant: **the emitted command reproduces the figure.**
+**The store extends the invariant:** a `store` button runs that command
+in-process (declarations → ``steps.yaml``, then the commit →
+``detrend_params.json``), with the command shown first in a dialog —
+one write path, the workbench's own. The marimo picker
+(``gps-detrend-picker``) was retired 2026-08-24; the Qt picker is now
+the one GUI.
+
+**Two restore-time guards** (2026-08-24), each fixing a state the window
+used to restore silently and then refuse or mis-fit. `normalize_segments`
+runs on session load: overlapping clean intervals are dropped (keep the
+earliest non-overlapping chain) with the dropped ones NAMED, because a
+hairline overlap — an edge dragged a few days past its neighbour — used to
+leave the window stuck on "NO RECORD" every restart with no way to tell the
+file from a fresh open. And in the events phase, when holding ``s(t)`` from
+``self``, a step whose epoch lies outside the saved background's span is
+announced ("⚠ offset at … is before the background's earliest data") rather
+than silently measured against an extrapolation — the SELF 2008 coseismic
+comes out ~0 mm against a post-event-only background, and naming the step is
+what turns that into something fixable (re-save ``s(t)`` with a clean
+interval on EACH side of it).
+
 Every divergence found so far has been a second place that assembled the
 same decision — so settings are built by the workbench's own
 `_override_settings` (one assembly site), and every run parameter that
@@ -341,44 +364,43 @@ different fit); `--uncert` was float here and int there, so any non-default
 screen emitted a command that will not parse; and the stage lane's final-stage
 free-group list was built from the PICKED steps.
 
-That fifth one is the same lever as the first. `steps.csv` is a floor that
+That fifth one is the same lever as the first. `steps.yaml` is a floor that
 `_override_settings` merges in, so on a station with a declared step an
 untouched stage plan freed only `secular` while the fit still carried
 `step_amp_1` — refused, every time, with *"never estimated and not held in
 the final stage"*. Both sides refused identically, so the emitted command
 still reproduced the figure; what broke was the **feature**: the stage lane
-was unusable on exactly the two stations in `steps.csv` (SELF, HOFN), and
+was unusable on exactly the two stations in `steps.yaml` (SELF, HOFN), and
 nothing said that re-declaring the already-declared step was the way out.
 `free2` now asks `_declared_step_epochs(sta, settings.steps)` — the merged
 set, the same function `_override_settings` uses. Conditional, not blanket:
 RHOF has no declared step and its plan is byte-identical to before
 (`--stage long:secular`).
 
-**One assembly site for the run flags, because there are two pickers.**
+**One assembly site for the run flags, because there were two pickers when
+this was written** (the marimo ``gps-detrend-picker``, retired 2026-08-24).
 `detrend_workbench.run_flags()` builds the `--tot-dir` / `--max-gap-years` /
-`--uncert` / `--provisional-days` tail for both. The marimo picker
-(`gps-detrend-picker`) had TWO of the four violations above still live after
-the Qt picker was fixed — `--tot-dir` read and never emitted, and `--uncert`
-as `type=float` emitting `12.0` at a `type=int` parser — while printing
-*"the workbench re-parses this line, so every refusal still applies."*
-Two pickers assembling the same list is two places to forget the same flag.
+`--uncert` / `--provisional-days` tail. The marimo picker had TWO of the
+four violations above still live after the Qt picker was fixed — `--tot-dir`
+read and never emitted, and `--uncert` as `type=float` emitting `12.0` at a
+`type=int` parser — while printing *"the workbench re-parses this line, so
+every refusal still applies."* Two pickers assembling the same list is two
+places to forget the same flag — which is why there is now one.
 `WORKBENCH_UNCERT_DEFAULT` now lives in `detrend_workbench` beside
-`BATCH_UNCERT_DEFAULT` and is imported by both; omission is only correct
-because it is the workbench's own default, not a number restated.
-**Breaking, deliberately:** `gps-detrend-picker --uncert 12.5` used to be
-accepted and now hard-errors, because what it accepted it could not emit.
-`run_flags` RAISES on a non-integral `uncert` rather than rounding — rounding
-is the same bug in disguise, trading a loud argparse refusal for a command
-that parses and then reads a different set of epochs than the figure was
-fitted on.
+`BATCH_UNCERT_DEFAULT`; omission is only correct because it is the
+workbench's own default, not a number restated. (The marimo picker
+formerly accepted `--uncert 12.5` and hard-errored — a breaking change
+that was deliberate, because what it accepted it could not emit.
+`run_flags` RAISES on a non-integral `uncert` rather than rounding.)
 
 Measured 2026-08-17 by driving `PickerWindow` offscreen and diffing the
 picker's record against the one the emitted command produces, elementwise:
 **11 cases, fitted quantities identical in all of them** (untouched, moved
 domain, picked step, `--term`, stage, stage+step, stage+term, RHOF stage
 baseline, `--uncert 12`, `--provisional-days`+`--tot-dir`, catalog union).
-Two divergences remain and are provenance-only, neither able to reach a
-stored record because the picker has no `--commit`: `refs.uncert` is absent
+Two provenance-only divergences existed when the picker had no `--commit`
+(the store now runs the workbench command in-process, resolving them):
+`refs.uncert` is absent
 picker-side (deliberate — `estimate_record`'s docstring states the picker
 passes a subset), and `refs.window_source` reads `defaults` picker-side
 against `workbench-cli(+defaults)` CLI-side, because the picker folds
@@ -403,7 +425,7 @@ a session written by a build that knows one more term group must not make the
 rest of somebody's curation unusable.
 
 `step` gets free/held but **no ABSENT**: there is no CLI spelling for
-un-declaring a step. `steps.csv` is a floor that merges in, and a picked step
+un-declaring a step. `steps.yaml` is a floor that merges in, and a picked step
 is removed by removing the pick — so the state would promise something no
 emitted command could carry out.
 
@@ -649,3 +671,375 @@ re-including an excision. `load_session` runs at LAUNCH and parses the whole
 payload before touching a widget: a corrupt session degrades to the declared
 defaults and names the file (it is somebody's curation), where it used to
 take the application down before the window appeared.
+
+## The compositional model — f(t) = Σ mᵢ(t)
+
+Added 2026-08-22. The operator builds a trajectory in parts: the background
+on a quiet window, then steps against that background, then transients
+against both. **The CLI grammar already expressed all of it** —
+`build_stage_plan` has always taken N stages with per-stage windows and
+holds. What could not express it was the GUI, which offered two stages and
+one window and *derived* the second stage's groups rather than letting them
+be chosen. So this was UI exposure and storage, not an engine change.
+
+### Membership is not assignment
+
+The three-state combo (`estimate here` / `hold from window` / `not in the
+model`) fused two decisions the estimator has always treated as orthogonal:
+`--model` says which terms are in the design matrix, the stage plan says
+where each is estimated. Fusing them made one thing inexpressible — a group
+estimated in TWO stages, which the nuisance rule requires, because the clean
+stage frees `secular` even when the kept value comes from later.
+
+They are now separate controls, and the old states map onto the new pair
+exactly, which is the evidence the split factored what was already there:
+
+| old state | membership | assignment |
+|---|---|---|
+| `not in the model` | out | — |
+| `hold from window` | in | the FIRST stage (so later ones hold it) |
+| `estimate here` | in | the LAST stage |
+
+`migrate_group_states` is that table, and it is pure and takes the stage
+names as arguments. It has to: reading them off a not-yet-built card list
+collapsed `first` and `last` onto one stage, putting a held group and a
+freely estimated one in the same place.
+
+Holds are **derived from card order** (`compose_drafts`), never set: a group
+a stage does not estimate is held at whatever the last earlier stage fitted.
+A settable hold would be a second place deciding one thing.
+
+### One windowed stage is a real fit
+
+The two-stage default refused a plan that held everything, on the grounds
+that staging exists to carry something across the span. Once the preset
+opened out into N stages, RHOF — no step, no transient — laid out ONE
+windowed stage, and that refusal **broke the invariant**: `build_stage_plan`
+accepts the single-stage spelling, so the window said refused while the
+emitted command fitted perfectly well. It is also the right fit: the model
+is estimated inside the window and evaluated across the span, which is what
+holding the background from a quiet window means when there is nothing else
+to estimate. The refusal now fires only for ≥ 2 stages with no holds, where
+the earlier stages genuinely did no work.
+
+### The peel follows the active stage
+
+Selecting stage k plots data minus stages 1…k−1 — exactly what stage k is
+fitted to. The operator's own description of the workflow turned out to be a
+*specification* of the display rule.
+
+`group_contribution` is the arithmetic. The model is linear in every
+parameter it solves for (τ and the step epochs are fixed inputs), so zeroing
+the other groups' coefficients and evaluating gives those terms exactly —
+verified as a decomposition, not an approximation: the groups sum back to
+the whole model with **max error 0.0** on a deployed record. Classification
+is delegated (`TrajectoryModel.group_mask` for v2, `group_parameter_mask`
+for v1) and is the STAGED vocabulary; the apply-time one folds step
+amplitudes into `secular` and would remove the very step the next stage
+exists to estimate. Only the step tail is decided locally, and by
+construction: `to_record` APPENDS `step_amp_k`, so no classifier sees them.
+
+The card's group checkbox is the one control — it decides both the hold and
+what the plot subtracts. `cb_detrend` remains view-only and still subtracts
+everything.
+
+### Fitting the screened epochs needed no new flag
+
+`--stages S1,S2` already means "flag nothing": S1/S2 are structural and
+always run, so naming only those turns despike, global, window and
+protection all off. It also settles the abort question — with no candidates
+there is no fraction to exceed, and an explicit stage set is an operator
+override the S0 fallback never second-guesses. `n_rejected` goes to zero,
+which is the honest answer.
+
+Drawing the grey points is a separate, view-only control. Same masks, same
+counts, same record.
+
+### `--final joint`, and why the commit mode is forced
+
+Staging identifies a model; it does not automatically report one. Every
+stage after the first conditions on earlier values treated as KNOWN, so its
+uncertainties are conditional and the covariance between a held group and a
+free one is absent. `--final joint` re-fits the identified structure with
+every group free over the domain, and reports the staged→joint movement
+scaled by the joint σ.
+
+No seeding is involved and none is needed: everything solved is linear, so
+the joint solve has one minimum. Staging chose the structure, the windows
+and τ — that is the whole of its contribution to the numbers.
+
+It changes the **run**, not just the commit. Plotting the staged fit and
+committing the joint one would put a figure and a record side by side that
+are not the same thing.
+
+**The commit mode is forced by the batch, not chosen.**
+`gps-estimate-detrend` RECOMPUTES the record and reads the plan from
+`analysis.yaml`, so committing the joint solve while leaving a stage plan
+behind means the next batch run rebuilds a STAGED record over the top of it
+— no error, no warning, other science. Joint mode therefore stores no plan
+and CLEARS a stale one.
+
+Measured on SELF, and the reason the delta report exists: a plan holding
+lin+per from a window that *starts after* the 2008 Ölfus coseismic, then
+extrapolating back across it, put `step_amp_1` at −0.04 mm where the joint
+solve puts it at **−150.74 mm — 1130 σ**, rms 63.9 → 1.97. The staged
+partition was claiming a separation the data cannot support, and nothing in
+the staged output said so.
+
+### Per-group provenance in the record
+
+A `groups` block records, per term group, its slice of `param_names`, the
+window it was estimated on, and whether it came from this station or a
+donor. Additive at the current `record_version`, following the `segments`
+precedent: `from_record` ignores unknown keys, so the 37 deployed records
+stay valid and gain a block when next re-committed. An UNSTAGED record gets
+none — for a single fit the answer is derivable from keys already present,
+and a written copy is a copy that can drift.
+
+**Donors stay pointers.** `DonorRef` resolves against the donor's current
+record at estimation time, deliberately: re-estimating a donor is *meant* to
+reach everyone borrowing from it. What was missing was visibility, so the
+block records the donor's vintage and a digest of the borrowed coefficients
+at commit, and a batch re-run warns when they move — and still uses the new
+values. Verified end to end: RHOF holding `periodic` from ALHV, ALHV
+re-estimated, the re-run warned naming both digests and RHOF's periodic came
+out equal to ALHV's *current* values.
+
+### What is verified
+
+- **Invariant sweep**, 12 configurations × the whole matrix: emitted command
+  parsed back, re-estimated, records diffed elementwise. Allowed to differ:
+  `refs`, `fitted_at`. Never diffed: which card is expanded, the peel,
+  whether grey points are drawn. Negative control — suppressing the
+  `--final joint` emission fails 3 of 12 with all 7 parameters mismatched.
+- **Batch round-trip**, both commit modes on SELF: parameters reproduce to
+  9 decimals; staged stores the plan, joint clears it.
+- **Donor round-trip** as above.
+
+### Still open
+
+`stage_plan_to_config`'s docstring claims a stored record's `stage_plan`
+always parses back via `stage_plan_from_config`. That is **false for donor
+holds**: the record spells them `explicit:donor:STA@<fitted_at>`, which
+`parse_hold_spec` refuses. The existing round-trip test only covers `stage:`
+holds. Nothing here depends on it, but the claim needs correcting or the
+spelling reconciling.
+
+## Cross-station borrowing: re-anchoring + the apply-only plan (2026-08-26)
+
+A `--hold GROUP=store:STA` naming ANOTHER station used to pin this station's
+LEVEL to the donor's: the stored `offset` is the intercept at t = 0 in
+absolute fractional years, so it is wildly station-specific. Measured on SENG
+holding SKSH's s(t) over [2015.5, 2019.9]: mean residual (−2.9, −30.1,
++41.5) mm N/E/U — pure datum error that lands in whatever is free.
+`geo_dataread.resolve_stage_plan` now RE-ANCHORS such a borrow at resolution
+time: only the offset is replaced (found by NAME, never position) with the
+1/σ²-weighted mean of the borrower's own residual against the datum-free
+donor model; rate and every seasonal coefficient stay the donor's verbatim.
+
+- **`--anchor-window START,END`** (workbench only) picks the averaging
+  window; absent, the full fit span is used. The window actually used shows
+  in the summary's per-group provenance line and is stored in the record —
+  `store:STA@<fitted_at> anchored [START,END]`, distinguishable both from a
+  verbatim `store:` hold and from `donor:`. A window selecting zero epochs is
+  refused, naming the station. `store:self` is untouched, byte-identical.
+- **Apply-only stage** `--stage apply:` (empty free list) + holds for every
+  group: the fully-borrowed station (ELDC, THOB — no pre-unrest data).
+  Nothing is fitted, `held_covariance="applied"`, covariance all-zero, and
+  the record carries `borrowed={from, terms: "all", donor_fitted_at}`.
+- The pre-flight existence check is `check_stage_plan_sources` — it verifies
+  pointers before any data is read; the series-needing refusal stays on
+  `resolve_stage_plan`, whose values are actually used.
+- `gps-estimate-detrend` cannot run store: holds at all today (its `main`
+  wires no `lookup_secular`), so a committed store-borrow plan re-runs only
+  through the workbench until that gap is closed.
+
+## Background borrow — the station with no clean interval (2026-08-26)
+
+The background phase asks "which intervals are clean?". For a station
+installed after the deformation started that question has no answer, and
+until now the phase had nothing to offer it. Measured on the Svartsengi
+cluster (band ELDC→SUDV, lat 63.80–63.95): **18 stations, and only SENG and
+SKSH have any data from before the 2020 unrest** — ELDC and THOB start 2021
+(bar two stray 2015 epochs), the other 14 were installed in 2024.
+
+`or borrow s(t) from:` in the background box takes a donor code and emits
+`borrow_command`:
+
+```
+gps-detrend-workbench THOB --stage apply: \
+  --hold apply:secular=store:SVAR_NOAM --hold apply:periodic=store:SVAR_NOAM
+```
+
+THOB fitting its own background:  `rate [138.62, -494.49, -33.47] mm/yr`
+THOB borrowing `SVAR_NOAM`:       `rate [  0.11,    7.41, -16.75] mm/yr`
+
+The first is the unrest, not a background. The donor's datum is NOT carried:
+the offset is re-anchored to THOB's own level (see the re-anchoring section),
+so only rate and seasonal cross.
+
+**One donor for all three components, by contract.** A secular velocity is a
+single 3-vector; north-from-A / east-from-B is not a velocity. The terms
+tickboxes select which term GROUPS are borrowed (both = apply-only, nothing
+estimated here; unticking one frees it to be fitted locally) — groups, never
+components.
+
+**The plate-frame refusal.** `getData(ref="plate")` removes a PER-STATION
+plate model, and the Svartsengi assignment is mixed: SENG/SKSH/ELDC/THOB and
+9 others are NOAM, while GRIV/AUSV/VMOS/SUDV and 3 more are EURA. Measured on
+SENG's own series through both models, **EURA − NOAM = N +2.26, E −15.97
+mm/yr** — the size of the deformation these stations are watched for. A
+crossed frame would not look like an error, it would look like an intrusion,
+so a `derived` store entry carries a `frame` and the lookup refuses to cross
+it, in the panel rather than at fit time.
+
+The deployed store carries two cluster backgrounds (`SVAR_NOAM`,
+`SVAR_EURA`), the inverse-variance mean of SENG's and SKSH's pre-2020
+backgrounds with SKSH's seasonal — SENG's horizontal annual is 2–3× every
+other station in the region and is plausibly the plant's production cycle.
+Half-separation between the two donors is N 0.14 / E 2.89 / U 1.24 mm/yr:
+the honest error on any station borrowing it, and small against a constant
+rate offset's effect on change detection (a velocity CHANGE is a change in
+slope, which a constant slope error does not hide).
+
+### The anchor is the whole point (2026-08-26)
+
+The donor supplies rate and seasonal; the **constant is this station's own**
+and has to come from somewhere in this station's series. In borrow mode the
+picked intervals therefore mean ANCHOR, not fit domain — nothing is fitted,
+so an interval can only mark where the borrowed curve sits level with the
+data. The domain is deliberately NOT narrowed: the whole series stays drawn
+against the borrowed curve, because that departure is what is being read.
+
+**This applies to a FULL borrow only.** In a partial borrow (seasonal from
+the donor, line fitted here) the datum was never borrowed, so there is
+nothing to re-anchor and the intervals keep their usual meaning — the fit
+domain. That case is the Askja manoeuvre and it *needs* the interval
+control: `katlafitlong` fits the seasonal on 2001.6-2019.5 and the line on a
+different, longer span. A first cut made every interval an anchor as soon as
+a donor was named, which left no way to say where the line is fitted.
+Verified on SKSH: `--segment 2013.9:2019.9` gives rate 0.177/9.321/-18.069,
+`--segment 2015.5:2019.9` gives 0.222/9.200/-17.210, and the emitted command
+reproduces each.
+
+Default is the full fit span, and on a station deforming throughout its
+record that mean is not a datum. Measured on THOB borrowing SENG, model minus
+data at 2021.25:
+
+| | full span | anchored 2021.0–2021.5 |
+|---|---|---|
+| north | **+295.9 mm** | −0.6 mm |
+| east | **−966.3 mm** | −0.2 mm |
+| up | −80.8 mm | +1.3 mm |
+
+Unanchored, the curve floats at the mean of a series that moved metres. The
+panel says so when no interval is picked rather than leaving it to be noticed
+on the plot.
+
+### `store:` vs `donor:` — two stores, one datum problem (2026-08-26)
+
+The two hold kinds read different objects and that distinction is real:
+
+| | reads | holds | stations |
+|---|---|---|---|
+| `store:STA` | `analysis.yaml` `detrend.secular` | s(t) as a component | 18 |
+| `donor:STA` | `detrend_params.json` | the finished f(t); the hold takes only the named group out of it | 53 |
+
+So `donor:` is the one most stations actually have, and a `--hold
+secular=store:X` failure on a station that has a record is usually asking for
+`donor:X` instead. The lookup's error message now says so.
+
+**Both are re-anchored.** The datum problem belongs to the hold KIND, not the
+store: the offset in either object is the level of the station it was fitted
+on. Measured, THOB holding SENG through `donor:`, before the fix: +75.3 /
+-34.3 / -124.6 mm N/E/U off THOB's own data, with `--anchor-window` silently
+ignored on that path. After: -0.5 / -0.2 / +1.3, identical to the `store:`
+route. Provenance keeps the kinds distinct (`donor:SENG@… anchored […]`).
+
+The split the fix makes explicit: **the donor's RATE crosses, its DATUM does
+not.** Pointer semantics are unchanged — re-estimate a donor and every
+borrower's rate follows — but the level is now the borrower's own.
+
+### The legacy manoeuvre, and when to prefer it (detrend-OLAC)
+
+`gps_data_analyses/detrend-OLAC/detrend_test.py::katlafitlong` (lines
+422-439) applies parameters between stations without ever transferring a
+polynomial:
+
+```python
+pb, _  = fittimes(lineperiodic, syearf, sdata, sDdata, p0=p0)   # clean window
+ddata  = detrend(yearf, data, Ddata, fitfunc=periodic, p=pb)    # seasonal ONLY
+pl1, _ = fittimes(line, ryearf, rdata, rDdata)                  # line, full span
+data   = detrend(yearf, data, Ddata, fitfunc=line, p=pl1)       # remove it
+```
+
+The load-bearing detail is that the legacy `periodic(x, p0..p5)` **silently
+ignores p0 and p1**, so a whole `lineperiodic` vector can be handed to it and
+only the seasonal is evaluated. The level and trend are then re-estimated on
+the target's own series. That is why `detrend_itrf2008.csv` has no offset
+column and why the legacy never had the datum problem: **the seasonal
+transfers, the polynomial is always local.**
+
+Our grammar spells it directly:
+
+```
+--stage fit:secular --hold fit:periodic=store:<donor>
+```
+
+Measured on SKSH borrowing SENG's seasonal versus fitting its own:
+rms 2.17/1.84/4.24 vs 2.03/1.73/4.06 mm, rate 0.18/9.32/-18.07 vs
+0.20/9.34/-18.11 mm/yr. No anchoring is involved — `periodic` has no DC term,
+so the re-anchor pass skips it by construction.
+
+**Prefer this wherever the station's own trend is usable.** It cannot go
+wrong: no datum and no rate cross. Holding `secular` as well is for the case
+the legacy never had — a station whose local trend IS the deformation
+(ELDC free-fits at -494 mm/yr east), and that is what the re-anchoring above
+exists for. In the Qt picker the terms tickboxes select between them, and **naming a
+donor defaults to seasonal-only** (2026-08-26): `linear` is unticked on the
+TRANSITION into borrowing, once. After that the boxes are the operator's — a
+deliberate decision to borrow the rate too survives re-editing the donor
+field, which it would not if the default reapplied on every edit. Clearing
+the donor restores `linear`, because fitting needs it (a background with the
+linear term off is a model no `--model` value can express).
+
+### The picker resolves the donor code against both stores (2026-08-29)
+
+The CLI grammar refuses to infer a hold kind — `stage:`, `donor:` and
+`store:` produce different provenance, so a bare value is an error. The
+picker sits above that grammar and can resolve: it tries the secular store
+first (the purpose-built object), falls back to the finished record, and
+**spells the kind it found into the emitted command**. Nothing is inferred
+downstream; the command still reproduces the figure.
+
+This matters because the two stores are very unevenly populated — on
+2026-08-29, 72 stations have a finished record and 37 a saved background.
+Typing `HS02` used to dead-end on "has no saved background" even though the
+station had a perfectly good record.
+
+| donor | resolves to | emitted |
+|---|---|---|
+| SENG (both) | secular store | `--hold fit:periodic=store:SENG` |
+| HS02 (record only) | finished record, with a note | `--hold fit:periodic=donor:HS02` |
+| NOPE (neither) | refused, naming both stores | — |
+
+## ⚠️ The secular store is operator state, not deployable config
+
+`deploy.py` overwrote `~/.config/gpsconfig/analysis.yaml` on **2026-08-27
+12:19**, replacing 1310 lines with the repo's 109-line skeleton and
+destroying **38 curated secular backgrounds**. The file was in
+`SHARED_CONFIGS` and in neither `PROTECTED_CONFIGS` nor `NEVER_WRITE`.
+
+37 were reconstructed (16 from a backup as-saved, 19 rebuilt from
+`detrend_params.json` via `secular_from_record`, 2 cluster entries from a
+working copy); THOB had no record and was lost. Fidelity of the rebuild,
+measured on the 16 present in both sources: 15 bit-identical, DYNC differing
+(rate 0.079 mm/yr, seasonal 0.287 mm) because its saved background was fitted
+on different segments than its committed record.
+
+`analysis.yaml` is now in `deploy.py`'s `NEVER_WRITE` and out of
+`SHARED_CONFIGS`. The lesson generalises: **anything `--save-secular` or
+`--commit` merge-writes one station at a time is operator state**, and the
+deploy lists have to know it — `detrend_params.json` already did, and the
+comment above `NEVER_WRITE` had warned that "safe by omission is precisely
+how such a thing breaks two years later".

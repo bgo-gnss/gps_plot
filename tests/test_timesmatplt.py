@@ -212,6 +212,10 @@ def _install_gps_views_stub(
         calls["window_sta"] = sta
         return tuple(windows), None
 
+    def resolve_excluded_epochs(sta, exclude_epochs=None):
+        calls["exclude_sta"] = sta
+        return (), None
+
     def resolve_outlier_detection(
         sta, *, outlier_params=None, min_outlier=None, outlier_overrides=None
     ):
@@ -239,6 +243,7 @@ def _install_gps_views_stub(
 
     gps_views.station_step_epochs = station_step_epochs
     gps_views.resolve_protect_windows = resolve_protect_windows
+    gps_views.resolve_excluded_epochs = resolve_excluded_epochs
     gps_views.resolve_outlier_detection = resolve_outlier_detection
     gps_views.detect_view_outliers = detect_view_outliers
     package = types.ModuleType("geo_dataread")
@@ -840,3 +845,81 @@ def test_mask_outliers_annotation_matches_what_it_returns() -> None:
 
     hints = typing.get_type_hints(tplt._mask_outliers)
     assert len(typing.get_args(hints["return"])) == 4
+
+
+class TestStepAnnotations:
+    """--annotate-steps reads steps.yaml and labels the declared steps."""
+
+    def test_step_annotations_splits_seismic_from_equipment(self, tmp_path):
+        p = tmp_path / "steps.yaml"
+        p.write_text(
+            "schema_version: 1\n"
+            "stations:\n"
+            "  SELF:\n"
+            "    - epoch_yearf: 2008.4085\n"
+            "      kind: earthquake\n"
+            "      comment: Ölfus M6.3 — coseismic offset\n"
+            "    - epoch_yearf: 2001.7219\n"
+            "      kind: equipment\n"
+            "      comment: antenna swap\n"
+        )
+        ann = tplt.step_annotations("SELF", str(p))
+        assert ann == [
+            (2001.7219, "equipment: antenna swap", "darkgreen"),
+            (2008.4085, "earthquake: Ölfus M6.3 — coseismic offset", "darkred"),
+        ]
+
+    def test_step_annotations_missing_catalog_is_empty(self, tmp_path):
+        assert tplt.step_annotations("SELF", str(tmp_path / "nope.yaml")) == []
+
+
+class TestRemoveStepsFlag:
+    """--remove-steps: comma-separated, aliases, validation."""
+
+    def test_comma_separated_splits_and_dedupes(self):
+        from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+        assert _normalize_kinds(["equipment,earthquake"]) == [
+            "equipment",
+            "earthquake",
+        ]
+        # dedup across repeats
+        assert _normalize_kinds(["earthquake", "earthquake"]) == ["earthquake"]
+
+    def test_instrumental_aliases_equipment(self):
+        from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+        assert _normalize_kinds(["instrumental,earthquake"]) == [
+            "equipment",
+            "earthquake",
+        ]
+
+    def test_none_is_none(self):
+        from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+        assert _normalize_kinds([]) is None
+        assert _normalize_kinds([""]) is None
+
+    def test_unknown_kind_refuses(self):
+        from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+        with pytest.raises(SystemExit, match="volcano"):
+            _normalize_kinds(["volcano"])
+
+    def test_annotate_steps_kind_filter(self, tmp_path):
+        """--annotate-steps equipment shows only equipment steps."""
+        p = tmp_path / "steps.yaml"
+        p.write_text(
+            "schema_version: 1\n"
+            "stations:\n"
+            "  SELF:\n"
+            "    - epoch_yearf: 2008.4085\n"
+            "      kind: earthquake\n"
+            "      comment: Ölfus M6.3\n"
+            "    - epoch_yearf: 2001.7219\n"
+            "      kind: equipment\n"
+            "      comment: antenna swap\n"
+        )
+        ann = tplt.step_annotations("SELF", str(p), kinds=["equipment"])
+        assert len(ann) == 1
+        assert ann[0][2] == "darkgreen"

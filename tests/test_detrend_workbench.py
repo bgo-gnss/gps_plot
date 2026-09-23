@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -72,16 +71,32 @@ def gpsconfig(tmp_path, monkeypatch):
 
 
 def _detrended() -> tuple[np.ndarray, np.ndarray, bool]:
-    """The detrended series, through the PRODUCTION read path."""
-    import geo_dataread.gps_read as gpsr
+    """The detrended series through the new MODULAR path.
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        y, d, _s, _o = gpsr.getData(
-            STA, ref="detrend", Dir=str(TOT), tType="TOT", uncert=10
+    ``ref="detrend"`` now reads plate-removed data (same as
+    ``ref="plate"``); the record application lives in the plot driver
+    as ``apply_stored_detrend``, which runs AFTER cleaning and step
+    removal.  "absent" means the record is missing or not yet committed
+    (the fixture starts with STA removed from the document).
+    """
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread import gps_views
+
+    y, d, _s, _o = gpsr.getData(STA, ref="plate", Dir=str(TOT), tType="TOT", uncert=10)
+    try:
+        doc = gps_views.read_detrend_params()
+        record, _src = gps_views.station_detrend_record(doc, STA)
+    except Exception:
+        return y, d, True
+    if record is None:
+        return y, d, True
+    try:
+        d_detrended = gps_views.apply_stored_detrend(
+            record, y, d, frame=record.get("frame")
         )
-    absent = any("absent from the detrend parameter" in str(w.message) for w in caught)
-    return y, d, absent
+    except ValueError:
+        return y, d, True
+    return y, d_detrended, False
 
 
 def _residual_trend(yearf: np.ndarray, series: np.ndarray) -> tuple[float, float]:
@@ -104,7 +119,13 @@ def _residual_trend(yearf: np.ndarray, series: np.ndarray) -> tuple[float, float
 
 
 def test_commit_then_detrended_view_consumes_the_record(gpsconfig, tmp_path):
-    """The whole point: commit a record, and production reads it back."""
+    """The whole point: commit a record, and the consumption path sees it.
+
+    ``apply_stored_detrend`` (the same function the plot driver's
+    ``--remove-steps`` pipeline calls) reads the deployed document and
+    returns the record-subtracted series.  Before commit: absent + raw;
+    after commit: present + detrended.
+    """
     import json
 
     from gps_plot.detrend_workbench import build_record, commit_record
@@ -191,6 +212,67 @@ def test_commit_rejects_a_frame_mismatch(gpsconfig):
     rec["frame"] = "itrf2008"
     with pytest.raises(RuntimeError, match="!= document frame"):
         commit_record(STA, rec, params_path=doc, force=True)
+
+
+def test_declare_step_writes_the_catalog_and_enters_the_fit(gpsconfig, monkeypatch):
+    """--declare-step merges the declaration BEFORE estimation, so the stored
+    row and the fitted step are the same event — one command, one epoch."""
+    from gps_parser.outlier_catalogs import read_steps
+    from gps_plot import detrend_workbench as wb
+
+    steps_yaml = gpsconfig / "steps.yaml"
+    before = read_steps(steps_yaml)
+    assert STA not in before, "the fixture station must start undeclared"
+
+    seen: dict[str, list[float]] = {}
+    original = wb.build_record
+
+    def capture(*a, **k):
+        rec, y, d, s, est = original(*a, **k)
+        seen["step_epochs"] = [float(e) for e in (rec.get("step_epochs") or ())]
+        return rec, y, d, s, est
+
+    monkeypatch.setattr(wb, "build_record", capture)
+    rc = wb.main(
+        [
+            STA,
+            "--tot-dir",
+            str(TOT),
+            "--no-tos",
+            "--max-gap-years",
+            "2.0",
+            "--declare-step",
+            "epoch=2015.5;kind=manual;comment=declared-by-test",
+            "--out",
+            str(gpsconfig / "decl.pdf"),
+        ]
+    )
+    assert rc == 0
+
+    after = read_steps(steps_yaml)
+    rows = after[STA]
+    assert len(rows) == 1
+    (row,) = rows
+    assert row.kind == "manual" and row.comment == "declared-by-test"
+    assert abs(row.epoch_yearf - 2015.5) < 1e-3
+    # and the declared epoch really entered the model: the record the command
+    # estimated carries it, not just a future one
+    assert any(abs(e - 2015.5) < 1e-3 for e in seen["step_epochs"])
+
+
+def test_declare_step_refuses_an_offvocabulary_kind(gpsconfig):
+    """kind is the metadata the catalog exists for — a bad one is refused
+    before anything is written."""
+    from gps_plot.detrend_workbench import main
+
+    with pytest.raises(SystemExit, match="kind"):
+        main(
+            [
+                STA_SELF,
+                "--declare-step",
+                "epoch=2008.4085;kind=explosion",
+            ]
+        )
 
 
 @pytest.mark.parametrize(
@@ -1392,3 +1474,289 @@ class TestTrajectoryCurveSpansGaps:
         before = json.dumps(record, sort_keys=True, default=str)
         trajectory_curve(record, yearf)
         assert json.dumps(record, sort_keys=True, default=str) == before
+
+
+def test_joint_commit_clears_a_stale_stage_plan(gpsconfig, tmp_path):
+    """Gate 2, the half that fails SILENTLY.
+
+    `gps-estimate-detrend` RECOMPUTES the record and reads the plan from
+    `analysis.yaml`. So committing the joint solve while leaving a stage plan
+    behind means the next batch run rebuilds a STAGED record and replaces the
+    committed numbers with different ones — no error, no warning, just other
+    science. Measured on SELF: the staged plan put step_amp_1 at -0.04 mm and
+    the joint solve at -150.74 mm, 1130 sigma apart.
+    """
+    import json
+
+    from geo_dataread.stage_plan import read_stage_plans
+    from gps_plot.detrend_workbench import main
+
+    doc = gpsconfig / "detrend_params.json"
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    plan_args = [
+        "--stage",
+        "clean:secular,periodic@2009.5443:2021.0394",
+        "--stage",
+        "st:step",
+        "--hold",
+        "st:secular=stage:clean",
+        "--hold",
+        "st:periodic=stage:clean",
+    ]
+    common = [
+        "SELF",
+        "--tot-dir",
+        str(TOT),
+        "--max-gap-years",
+        "1.5",
+        "--uncert",
+        "10",
+        "--commit",
+        "--force",
+        "--params",
+        str(doc),
+        "--analysis-yaml",
+        str(yaml_path),
+        "--out",
+        str(tmp_path / "x.png"),
+    ]
+
+    assert main(common + plan_args + ["--final", "staged"]) == 0
+    assert "SELF" in read_stage_plans(yaml_path), "staged commit stored no plan"
+    staged = json.loads(doc.read_text())["stations"]["SELF"]
+
+    assert main(common + plan_args + ["--final", "joint"]) == 0
+    assert "SELF" not in read_stage_plans(yaml_path), (
+        "the joint record was committed but the stage plan survived — the "
+        "next batch run will recompute a staged record over the top of it"
+    )
+    joint = json.loads(doc.read_text())["stations"]["SELF"]
+    assert joint["rms"] != staged["rms"], "the joint solve changed nothing"
+    # and the joint record carries no plan of its own to re-stage from
+    assert "stage_plan" not in joint
+
+
+def test_the_saved_background_can_be_held_later(gpsconfig, tmp_path):
+    """The workflow the secular store exists for, end to end.
+
+    Estimate s(t) on clean intervals, SAVE it, then come back and estimate
+    only the events with that background held. Before the store this could
+    only be spelled `--hold secular=donor:SELF`, borrowing from the station's
+    own finished record -- and that was refused outright for any station with
+    a declared step, because the donor mask was built from the model's width
+    (6) and compared to the record's (7).
+    """
+    from geo_dataread.secular_store import read_secular
+    from gps_plot.detrend_workbench import main
+
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    common = [
+        "SELF",
+        "--tot-dir",
+        str(TOT),
+        "--max-gap-years",
+        "2.0",
+        "--uncert",
+        "10",
+        "--analysis-yaml",
+        str(yaml_path),
+    ]
+
+    # 1. the background, on the clean intervals either side of the 2008 step
+    assert (
+        main(
+            common
+            + [
+                "--segment",
+                "2001.5:2008.40",
+                "--segment",
+                "2009.5:2020.83",
+                "--save-secular",
+                "--out",
+                str(tmp_path / "a.png"),
+            ]
+        )
+        == 0
+    )
+    entry = read_secular(yaml_path)["SELF"]
+    assert "step_amp_1" not in entry.param_names, "an event leaked into s(t)"
+    assert entry.segments == ((2001.5, 2008.4), (2009.5, 2020.83))
+
+    # 2. hold it, estimate only the events
+    assert (
+        main(
+            common
+            + [
+                "--stage",
+                "ev:step",
+                "--hold",
+                "secular=store:self",
+                "--hold",
+                "periodic=store:self",
+                "--out",
+                str(tmp_path / "b.png"),
+            ]
+        )
+        == 0
+    )
+
+
+def test_a_store_hold_without_a_saved_background_is_refused(gpsconfig, tmp_path):
+    """Never silently estimate what the operator asked to hold.
+
+    Quietly fitting a background instead would store different science under
+    the same command -- the failure mode every refusal in this grammar is
+    shaped against.
+    """
+    from gps_plot.detrend_workbench import main
+
+    yaml_path = tmp_path / "analysis.yaml"
+    yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
+    rc = main(
+        [
+            "RHOF",
+            "--tot-dir",
+            str(TOT),
+            "--max-gap-years",
+            "2.0",
+            "--analysis-yaml",
+            str(yaml_path),
+            "--stage",
+            "ev:secular",
+            "--hold",
+            "periodic=store:self",
+            "--out",
+            str(tmp_path / "c.png"),
+        ]
+    )
+    assert rc == 4, "expected a refusal, not a fit"
+
+
+def test_parse_anchor_window_happy_and_refusals():
+    """--anchor-window START,END: parsed, and its refusals mirror the
+    resolver's (degenerate window, malformed bounds) before any data is
+    read."""
+    from gps_plot.detrend_workbench import _parse_anchor_window
+
+    assert _parse_anchor_window(None) is None
+    assert _parse_anchor_window("2021.0,2021.5") == (2021.0, 2021.5)
+    for bad in ("2021.0", "a,b", "2021.5,2021.0", "2021.0,2021.0"):
+        with pytest.raises(SystemExit):
+            _parse_anchor_window(bad)
+
+
+def test_summarise_shows_held_group_provenance():
+    """The anchor window actually used must be visible in the printed
+    summary, not only inside the stored record: summarise renders every
+    non-self group provenance line, including the 'anchored [START,END]'
+    note of a re-anchored cross-station borrow."""
+    from gps_plot.detrend_workbench import summarise
+
+    record = {
+        "model": "lineperiodic",
+        "components": [],
+        "groups": {
+            "secular": {
+                "indices": [0, 1],
+                "stage": "apply",
+                "provenance": "store:SENG@2026-08-01 anchored [2021.0,2021.5]",
+            },
+            "periodic": {
+                "indices": [2, 3, 4, 5],
+                "stage": "apply",
+                "provenance": "store:SENG@2026-08-01",
+            },
+            "step": {"indices": [6], "stage": "fit", "provenance": "self"},
+        },
+    }
+    text = summarise(record, "ELDC")
+    assert "store:SENG@2026-08-01 anchored [2021.0,2021.5]" in text
+    assert "periodic       store:SENG@2026-08-01" in text
+    assert "self" not in text.split("borrowed")[1]  # self groups stay silent
+
+
+class TestConfoundedRateWarning:
+    """A rate fitted on split segments, with a step in the gap, is not a rate.
+
+    Measured on THOB (2026-08-29): clusters at 2015.778 and 2020.097, a
+    receiver+antenna change at 2020.075 between them. The fit returned north
+    -40.0 mm/yr where SENG 2.0 km away has -0.08 -- the antenna offset read
+    as four years of motion. Every validity gate passed: they count epochs
+    and coverage, and this is a rank problem neither can see.
+    """
+
+    def test_an_epoch_in_the_gap_is_flagged(self) -> None:
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        out = confounded_rate_warnings(
+            [(2015.76, 2015.79), (2020.08, 2020.11)],
+            [(2020.0751, "2020-01-28 (ant SEPCHOKE_B3E6)")],
+            [],
+        )
+        assert len(out) == 1
+        assert "2020.0751" in out[0] and "GAP" in out[0]
+
+    def test_an_epoch_INSIDE_a_segment_is_not(self) -> None:
+        """Data spanning the step is exactly what makes it estimable."""
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.0, 2021.0), (2022.0, 2023.0)],
+                [(2020.0751, "ant change")],
+                [],
+            )
+            == []
+        )
+
+    def test_one_segment_cannot_have_a_gap(self) -> None:
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.0, 2023.0)], [(2020.0751, "ant change")], []
+            )
+            == []
+        )
+
+    def test_silent_when_the_rate_is_not_being_fitted(self) -> None:
+        """Borrowing the rate is the FIX the warning recommends, so a plan
+        that holds `secular` must not then be nagged about it."""
+        import dataclasses
+
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        @dataclasses.dataclass
+        class _Spec:
+            free: tuple[str, ...]
+
+        @dataclasses.dataclass
+        class _Plan:
+            stages: tuple[_Spec, ...]
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.76, 2015.79), (2020.08, 2020.11)],
+                [(2020.0751, "ant change")],
+                [],
+                stage_plan=_Plan((_Spec(()),)),
+            )
+            == []
+        )
+        assert confounded_rate_warnings(
+            [(2015.76, 2015.79), (2020.08, 2020.11)],
+            [(2020.0751, "ant change")],
+            [],
+            stage_plan=_Plan((_Spec(("secular",)),)),
+        )
+
+    def test_declared_events_count_too(self) -> None:
+        """A seismic event in the gap carries an offset just as an antenna
+        change does; the identifiability problem does not care which."""
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert confounded_rate_warnings(
+            [(2015.0, 2016.0), (2020.0, 2021.0)], [], [(2018.3, "M6.0")]
+        )

@@ -53,6 +53,8 @@ from typing import Any, NamedTuple
 import numpy as np
 from matplotlib.figure import Figure
 
+from gps_plot.timesmatplt import add_event_lines
+
 __all__ = [
     "estimate_record",
     "build_record",
@@ -80,8 +82,9 @@ APPLY_TERMS_DEFAULT: str = "all"
 
 #: ``uncert`` default of :func:`geo_dataread.gps_read.getData`, which is what
 #: the batch estimator ``gps-estimate-detrend`` uses when ``--uncert`` is not
-#: passed.  The workbench screens harder by default (see ``--uncert``), so a
-#: commit says how to reproduce the record in batch rather than assuming it.
+#: passed.  The workbench and plot-gps-timeseries both default to 10 (tighter
+#: screen, aligned at 2026-08), so a commit says how to reproduce the record
+#: in batch rather than assuming it.
 BATCH_UNCERT_DEFAULT: int = 15
 
 #: The workbench's OWN ``--uncert`` default, screening harder than the batch
@@ -91,6 +94,11 @@ BATCH_UNCERT_DEFAULT: int = 15
 #: ``--uncert`` is ``type=int``: a picker that spelled it ``12.0`` emitted a
 #: command argparse refuses.
 WORKBENCH_UNCERT_DEFAULT: int = 10
+
+#: Deployed per-station curation-status catalog filename (gpsconfig-owned).
+#: Only ``skip`` rows are durable here — DONE lives in ``detrend_params.json``
+#: and PENDING is "active and in neither".
+DETREND_STATUS_FILENAME: str = "detrend_status.csv"
 
 
 def run_flags(
@@ -176,6 +184,8 @@ def estimate_with_abort_fallback(
     outlier_param: list[str] | None = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms: Sequence[str] | None = None,
     **kwargs: Any,
 ) -> tuple[Any, bool]:
@@ -214,6 +224,8 @@ def estimate_with_abort_fallback(
             outlier_params=params,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
+            lookup_secular=lookup_secular,
+            anchor_window=anchor_window,
             terms=terms,
             **kwargs,
         )
@@ -241,6 +253,36 @@ def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     from gps_plot.plot_gps_timeseries import _build_outlier_params, _stage_overrides
 
     return _build_outlier_params(extra or [], base=_stage_overrides(stages))
+
+
+def _parse_anchor_window(spec: str | None) -> tuple[float, float] | None:
+    """Parse ``--anchor-window START,END`` into a (start, end) pair.
+
+    A comma, not the ``:`` of ``--segment``: the anchor window is a single
+    closed interval, never a union with open bounds, and giving it the same
+    spelling would invite passing one where the other is meant.
+
+    Raises:
+        SystemExit: On a malformed value or a degenerate (END <= START)
+            window — the same refusal :func:`resolve_stage_plan` applies,
+            surfaced before any data is read.
+    """
+    if spec is None:
+        return None
+    lo_raw, sep, hi_raw = spec.partition(",")
+    if not sep:
+        raise SystemExit(
+            f"--anchor-window expects START,END [fractional years], got {spec!r}"
+        )
+    try:
+        lo, hi = float(lo_raw), float(hi_raw)
+    except ValueError:
+        raise SystemExit(
+            f"--anchor-window {spec!r}: bounds must be fractional years"
+        ) from None
+    if hi <= lo:
+        raise SystemExit(f"--anchor-window {spec!r}: END must be greater than START")
+    return (lo, hi)
 
 
 def _resolve_cli_segments(
@@ -292,7 +334,7 @@ def _resolve_cli_segments(
 def _declared_step_epochs(sta: str, *sources: Any) -> tuple[float, ...]:
     """Union of every step declaration in play, the deployed catalog included.
 
-    ``steps.csv`` is a FLOOR, never a fallback: the fit-catalog column and a
+    ``steps.yaml`` is a FLOOR, never a fallback: the fit-catalog column and a
     CLI ``--step`` add to it.  Consulting the catalog only when the other
     sources are empty is the precise bug this exists to prevent —
     ``station_record_from_arrays`` does exactly that, so declaring one
@@ -348,7 +390,7 @@ def _override_settings(
 
     Args:
         settings: The resolved catalog row.
-        sta: Station name, for the ``steps.csv`` lookup inside the merge.
+        sta: Station name, for the ``steps.yaml`` lookup inside the merge.
         quiet: Suppress the merge note.  The picker re-assembles on every
             drag of a region handle, so its note would be per-frame noise
             on stderr; it shows the merged set in the header instead.
@@ -363,7 +405,7 @@ def _override_settings(
         # MERGE with whatever is already declared, never replace -- the help
         # text reads additive, and _declared_step_epochs documents the cost of
         # getting it wrong.  The sources differ: settings.steps is the
-        # fit-catalog column, the lookup inside is steps.csv; both fold in.
+        # fit-catalog column, the lookup inside is steps.yaml; both fold in.
         declared = _declared_step_epochs(sta, settings.steps)
         merged = _declared_step_epochs(sta, settings.steps, changed["steps"])
         changed["steps"] = merged
@@ -390,6 +432,8 @@ def estimate_record(
     outlier_params: Any = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms: Sequence[str] | None = None,
     model: str | None = None,
     refs: Mapping[str, Any] | None = None,
@@ -447,6 +491,8 @@ def estimate_record(
         outlier_params=outlier_params,
         stage_plan=stage_plan,
         lookup_donor=lookup_donor,
+        lookup_secular=lookup_secular,
+        anchor_window=anchor_window,
         terms=terms,
         **extra,
     )
@@ -463,6 +509,8 @@ def build_record(
     stages: str | None = None,
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
+    lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms_spec: Sequence[str] | None = None,
     segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
@@ -542,6 +590,8 @@ def build_record(
             outlier_param=outlier_param,
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
+            lookup_secular=lookup_secular,
+            anchor_window=anchor_window,
             terms=terms_spec,
             **kwargs,
         )
@@ -905,7 +955,7 @@ def clip_events_to_span(
     """Split events into those inside the plotted span and those outside.
 
     Event epochs come from catalogs that describe the STATION, not this
-    figure: TOS knows when the receiver was installed, ``steps.csv`` knows
+    figure: TOS knows when the receiver was installed, ``steps.yaml`` knows
     every declared offset, and neither has an opinion about how much of
     the series has been processed.  BJTV is the case — the antenna went up
     2021-08-09 and the solution starts 2025-02, so the install sits 3.5
@@ -945,55 +995,10 @@ def clip_events_to_span(
     return inside, outside
 
 
-def add_event_lines(
-    fig: Figure, events: Sequence[tuple[float, str]], color: str
-) -> Figure:
-    """Vertical lines with a label on the top axis.
-
-    Lines go through ``timesmatplt.addEvent`` (the existing primitive —
-    ``axvline`` on every axis); only the text is new, and only on axis 0,
-    because repeating it on all three is noise.
-
-    The label is drawn in FULL.  It used to be ``label.split(" ")[0]`` —
-    the date and nothing else — which was right while the rest of the
-    string was a device count, and silently threw away the equipment names
-    the moment they existed.  Date and equipment go on two rotated lines
-    so the identifying part stays at the axis edge and the detail runs
-    beside it rather than after it.
-    """
-    import gps_plot.timesmatplt as tplt
-    from gtimes.timefunc import TimefromYearf
-
-    if not events:
-        return fig
-    tplt.addEvent({TimefromYearf(e): [color] for e, _ in events}, fig, linestyle=":")
-    ax = fig.axes[0]
-    _lo, hi = ax.get_ylim()
-    for epoch, label in events:
-        head, sep, tail = label.partition(" (")
-        text = f"{head}\n{tail.rstrip(')')}" if sep else label
-        ax.text(
-            TimefromYearf(epoch),
-            hi,
-            text,
-            rotation=90,
-            va="top",
-            ha="right",
-            fontsize=7,
-            linespacing=0.95,
-            color=color,
-            zorder=6,
-        )
-    return fig
-
-
 #: Colour of seismic-event lines.  Distinct from equipment (darkgreen) and
 #: from the fit overlay (royalblue): the whole value of tier A is telling the
 #: two apart at a glance.
 SEISMIC_COLOR: str = "darkred"
-
-#: ``steps.csv`` ``kind`` values treated as seismic rather than equipment.
-SEISMIC_KINDS: tuple[str, ...] = ("earthquake", "coseismic", "seismic")
 
 
 def declared_event_epochs(
@@ -1001,14 +1006,14 @@ def declared_event_epochs(
 ) -> tuple[list[tuple[float, str]], list[tuple[float, str]]]:
     """Declared steps for one station, split seismic vs other.
 
-    Reads ``steps.csv`` through :func:`gps_parser.outlier_catalogs.read_steps`
+    Reads ``steps.yaml`` through :func:`gps_parser.outlier_catalogs.read_steps`
     rather than ``gps_views.station_step_epochs``, because the latter flattens
     to bare epochs and DROPS ``kind``/``source``/``comment`` — and ``kind`` is
     exactly what distinguishes an earthquake from an antenna swap.
 
     There is deliberately no seismic-catalogue client here: none exists
     anywhere in the ecosystem (skjálftalísa appears only as a *planned*
-    source in ``analysis.yaml`` and the ``steps.csv`` header), and writing one
+    source in ``analysis.yaml``), and writing one
     is its own project.  The seismic half is therefore served from what an
     operator has already declared, plus ``--events`` for anything not yet
     declared.
@@ -1030,13 +1035,10 @@ def declared_event_epochs(
     other: dict[float, str] = {}
     for row in catalog.get(sta.upper(), ()):
         epoch = float(row.epoch_yearf)
-        kind = (row.kind or "").strip().lower()
-        note = (row.comment or "").strip()
-        label = f"{kind or 'step'}"
-        if note:
-            label = f"{label}: {note[:40]}"
-        bucket = seismic if kind in SEISMIC_KINDS else other
-        bucket.setdefault(epoch, label)
+        # ``label`` and ``is_seismic`` are the StepRecord properties both
+        # plotting paths share — one spelling of the label, one classification.
+        bucket = seismic if row.is_seismic else other
+        bucket.setdefault(epoch, row.label)
     return sorted(seismic.items()), sorted(other.items())
 
 
@@ -1044,8 +1046,8 @@ def parse_events(specs: Sequence[str]) -> list[tuple[float, str]]:
     """``--event YYYYMMDD[,label]`` -> ``[(yearf, label), …]``.
 
     The escape hatch for an event that is real but not yet declared in
-    ``steps.csv`` — which, while the catalogs are still templates, is nearly
-    all of them.
+    ``steps.yaml`` — which, while the catalog is young, is nearly all of
+    them.
     """
     from gtimes.timefunc import TimetoYearf
 
@@ -1060,6 +1062,109 @@ def parse_events(specs: Sequence[str]) -> list[tuple[float, str]]:
             (float(TimetoYearf(y, m, d)), label.strip() or f"{y}-{m:02d}-{d:02d}")
         )
     return sorted(out)
+
+
+def parse_declare_step(spec: str, marker: str) -> Any:
+    """``--declare-step 'date=2008-05-29;kind=earthquake;magnitude=6.3;comment=Ölfus'``
+
+    -> a :class:`gps_parser.outlier_catalogs.StepRecord` for merge-writing
+    into ``steps.yaml``.
+
+    Semicolon-separated ``k=v`` pairs — commas stay free for free-text
+    comments.  At least one of ``date`` (ISO; the epoch is derived from it)
+    or ``epoch`` (fractional year, NOON convention); both may be given when
+    they agree (within 1e-3 yr), which is how a caller that knows both
+    (e.g. the picker) stores the display date alongside the fitted epoch
+    without the two ever disagreeing.  ``kind`` is required; it is the
+    metadata the yaml catalog exists to formalise.  ``source`` defaults to
+    ``workbench`` (who wrote the row); knowledge provenance
+    (``tos``/``skjalftalisa``) can be named explicitly.
+    """
+    from gps_parser.outlier_catalogs import (
+        STEP_COMPONENTS,
+        STEP_KINDS,
+        STEP_SOURCES,
+        StepRecord,
+        _yearf_of_date,
+    )
+
+    pairs: dict[str, str] = {}
+    for part in spec.split(";"):
+        key, sep, value = part.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise SystemExit(
+                f"--declare-step expects ';'-separated k=v pairs "
+                f"(date|epoch, kind, [component], [magnitude], [event_id], "
+                f"[source], [comment]); got {part!r}"
+            )
+        if key in pairs:
+            raise SystemExit(f"--declare-step: duplicate key {key!r}")
+        pairs[key] = value.strip()
+
+    iso = pairs.get("date", "")
+    epoch_raw = pairs.get("epoch", "")
+    if not iso and not epoch_raw:
+        raise SystemExit(
+            f"--declare-step needs date=YYYY-MM-DD or epoch=YEARF (got {spec!r})"
+        )
+    derived: float | None = None
+    if iso:
+        try:
+            derived = _yearf_of_date(iso)
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: date {iso!r} is not ISO yyyy-mm-dd"
+            ) from None
+    if epoch_raw:
+        try:
+            epoch = float(epoch_raw)
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: epoch {epoch_raw!r} is not a fractional year"
+            ) from None
+        if derived is not None and abs(epoch - derived) > 1e-3:
+            raise SystemExit(
+                f"--declare-step: epoch {epoch} and date {iso} disagree "
+                f"(date is {derived:.5f} on the noon convention) — one step, "
+                "one epoch"
+            )
+    else:
+        assert derived is not None
+        epoch = derived
+
+    kind = pairs.get("kind", "").lower()
+    if kind not in STEP_KINDS:
+        raise SystemExit(f"--declare-step: kind {kind!r} must be one of {STEP_KINDS}")
+    component = pairs.get("component", "ALL").upper()
+    if component not in STEP_COMPONENTS:
+        raise SystemExit(
+            f"--declare-step: component {component!r} must be one of {STEP_COMPONENTS}"
+        )
+    source = pairs.get("source", "workbench").lower()
+    if source not in STEP_SOURCES:
+        raise SystemExit(
+            f"--declare-step: source {source!r} must be one of {STEP_SOURCES}"
+        )
+    magnitude = None
+    if pairs.get("magnitude"):
+        try:
+            magnitude = float(pairs["magnitude"])
+        except ValueError:
+            raise SystemExit(
+                f"--declare-step: magnitude {pairs['magnitude']!r} is not a number"
+            ) from None
+    return StepRecord(
+        marker=marker,
+        epoch_yearf=round(epoch, 6),
+        component=component,
+        kind=kind,
+        source=source,
+        comment=pairs.get("comment", ""),
+        date=iso,
+        event_id=pairs.get("event_id", ""),
+        magnitude=magnitude,
+    )
 
 
 def borrow_record(
@@ -1125,6 +1230,15 @@ def summarise(record: dict[str, Any], sta: str) -> str:
         f"  step_epochs    {record.get('step_epochs')}",
         f"  borrowed       {record.get('borrowed')}",
     ]
+    # Held-group provenance, for staged/borrowed records: which store/donor
+    # each non-self group came from, INCLUDING the anchor window of a
+    # re-anchored cross-station borrow ("... anchored [START,END]") -- the
+    # window actually used must be visible here, not only in the stored
+    # record.
+    for gname, gentry in (record.get("groups") or {}).items():
+        prov = gentry.get("provenance") if isinstance(gentry, dict) else None
+        if prov and prov != "self":
+            lines.append(f"  {gname:14s} {prov}")
     names = record.get("param_names") or []
     if "rate" in names:
         i = names.index("rate")
@@ -1234,15 +1348,19 @@ def screen_outside_window(
       is invisible to the record and over-flags around itself at ANY
       threshold — that hazard is why :func:`split_outliers` refuses to
       re-run the view detector *inside* the window.  Pass ``steps`` for a
-      CLI ``--step``; ``steps.csv`` is folded in either way;
+      CLI ``--step``; ``steps.yaml`` is folded in either way;
     - detection still runs over the whole series and only the verdict is
       narrowed, because a detector handed the post-window fragment alone
       would fit it worse.
 
     Expect these flags to differ from ``plot-gps-timeseries --view
-    cleaned`` on the same station: ``uncert`` screens σ at READ time and
-    the workbench defaults to 10 against the plot driver's 15, so the two
-    tools are not even looking at the same epochs.
+    cleaned`` on the same station: the mask SOURCE is different.  The
+    workbench shows the fit's own inlier verdict (epochs the detrend
+    estimator weighed and rejected), while ``plot-gps-timeseries`` runs
+    the standalone view detector over the whole series.  The ``uncert``
+    read screen is the same (both default to 10 as of 2026-08), so the
+    two tools DO see the same epochs -- but they judge them differently
+    by design.
 
     Returns:
         ``(flags, provisional)`` — bool arrays shaped like ``data``, False
@@ -1657,6 +1775,133 @@ def trajectory_curve(
     return grid, fit
 
 
+def staged_joint_deltas(
+    staged: Mapping[str, Any], joint: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """How far each parameter moved between the staged and the joint solve.
+
+    The staged build is how a model is IDENTIFIED — which windows, which
+    terms, which starting values. It is not automatically how the numbers
+    should be reported: every stage after the first conditions on earlier
+    values treated as known, so its uncertainties are conditional and any
+    covariance between a held group and a free one is missing.
+
+    A large movement here is the diagnostic that matters: it means two
+    stages were fighting over shared signal, and the staged partition was
+    claiming a separation the data does not support. Scaled by the JOINT
+    sigma, because that is the one that is not conditional.
+
+    No seeding is involved and none is needed. Everything the estimator
+    solves for is linear — τ and the step epochs are fixed inputs, not
+    parameters — so the joint solve has one minimum and reaches it from
+    anywhere. "Initialised at the staged solution" would be words.
+    """
+    from gps_analysis import trajectory_from_record
+
+    _, staged_fits = trajectory_from_record(staged)
+    _, joint_fits = trajectory_from_record(joint)
+    names = list(joint.get("param_names") or ())
+    rows: list[dict[str, Any]] = []
+    for index, (s_fit, j_fit) in enumerate(zip(staged_fits, joint_fits, strict=False)):
+        sigmas = np.asarray(j_fit.uncertainties, dtype=float)
+        for j, name in enumerate(names):
+            if j >= len(s_fit.params) or j >= len(j_fit.params):
+                continue
+            s_val = float(s_fit.params[j])
+            j_val = float(j_fit.params[j])
+            sigma = float(sigmas[j]) if j < sigmas.size else float("nan")
+            delta = j_val - s_val
+            rows.append(
+                {
+                    "component": s_fit.component,
+                    "index": index,
+                    "param": name,
+                    "staged": s_val,
+                    "joint": j_val,
+                    "delta": delta,
+                    "sigma": sigma,
+                    "ratio": abs(delta) / sigma if sigma > 0 else float("inf"),
+                }
+            )
+    return rows
+
+
+def format_staged_joint_deltas(
+    rows: Sequence[Mapping[str, Any]], *, threshold: float = 1.0
+) -> str:
+    """The delta table, loudest first, with the ones over threshold marked."""
+    if not rows:
+        return "(no comparable parameters)"
+    lines = [
+        f"  {'component':10s} {'parameter':16s} {'staged':>12s} "
+        f"{'joint':>12s} {'Δ':>10s} {'Δ/σ':>7s}"
+    ]
+    for row in sorted(rows, key=lambda r: -float(r["ratio"])):
+        mark = "  <-- stages disagreed" if float(row["ratio"]) > threshold else ""
+        lines.append(
+            f"  {str(row['component']):10s} {str(row['param']):16s} "
+            f"{row['staged']:12.4f} {row['joint']:12.4f} "
+            f"{row['delta']:10.4f} {row['ratio']:7.2f}{mark}"
+        )
+    return "\n".join(lines)
+
+
+def group_param_mask(record: Mapping[str, Any], groups: Sequence[str]) -> Any:
+    """Which of a RECORD's parameters belong to the named term groups.
+
+    One line, because the logic now lives beside the classifier it belongs
+    to: `gps_analysis.staged.record_group_mask`. It was written here first
+    and independently in the donor-borrow path, and the donor copy compared
+    the model's width against the record's -- so it refused every station
+    with a declared step. Two implementations of one rule, differing where
+    it mattered, which is the shape this lane keeps paying for.
+
+    Note this is the STAGED vocabulary. The apply-time one folds step
+    amplitudes into ``secular``, and using it here would remove the very
+    step a later stage is being set up to estimate.
+    """
+    from gps_analysis.staged import record_group_mask
+
+    return record_group_mask(record, list(groups))
+
+
+def group_contribution(
+    record: Mapping[str, Any], yearf: Any, groups: Sequence[str]
+) -> Any:
+    """Evaluate ONLY the named groups' terms of a fitted record.
+
+    What "data − s(t)" means when s(t) is part of a larger model: the model
+    is linear in every parameter it solves for (τ and the step epochs are
+    fixed inputs, not solved), so zeroing the other groups' coefficients and
+    evaluating gives exactly those terms' contribution. No re-fitting, and
+    no second evaluator — ``evaluate_record`` is the same one the trajectory
+    is drawn with.
+
+    ``offset`` belongs to ``secular``, so peeling a stage that estimated the
+    linear term removes the constant with it and the residual sits about
+    zero. Peeling ``periodic`` alone deliberately does not: the offset was
+    never that stage's to remove.
+    """
+    from gps_analysis import evaluate_record
+
+    mask = group_param_mask(record, groups)
+    if not mask.any():
+        y = np.asarray(yearf, dtype=float)
+        return np.zeros((len(record["components"]), y.size), dtype=float)
+    masked = dict(record)
+    masked["components"] = [
+        {
+            **component,
+            "params": [
+                float(p) if keep else 0.0
+                for p, keep in zip(component["params"], mask, strict=True)
+            ],
+        }
+        for component in record["components"]
+    ]
+    return np.asarray(evaluate_record(masked, yearf, terms="all"), dtype=float)
+
+
 def _to_datetime(yearf: Any) -> Any:
     from geo_dataread.gps_read import toDateTime
 
@@ -1739,6 +1984,86 @@ def resolve_out(out: str | None, sta: str) -> Path:
     if os.sep in out or out.startswith("~") or (os.altsep and os.altsep in out):
         return Path(out).expanduser()
     return default_figdir() / out
+
+
+def _secular_lookup(args: Any, sta: str) -> Any:
+    """The saved-background lookup a ``store:`` hold resolves against.
+
+    Same file the stage plans and models live in, resolved the same way, so
+    an operator has one answer to "where is my curation".
+    """
+    from geo_dataread.detrend_estimate import secular_lookup
+    from geo_dataread.stage_plan import default_analysis_yaml_path
+
+    return secular_lookup(args.analysis_yaml or default_analysis_yaml_path(), sta)
+
+
+def confounded_rate_warnings(
+    segments: Sequence[tuple[float | None, float | None]] | None,
+    tos_events: Sequence[tuple[float, str]],
+    declared: Sequence[tuple[float, str]],
+    *,
+    stage_plan: Any | None = None,
+) -> list[str]:
+    """Warn when a rate fitted on split segments cannot be separated from a step.
+
+    Equation (the identifiability, not an estimate):
+        Fitting ``x(t) = a₀ + a₁·t + A·H(t − t_s)`` on J disjoint segments
+        with the step epoch ``t_s`` lying in a GAP between them gives, per
+        segment, one linear constraint on (a₀, a₁) plus the same constant A
+        on every segment after ``t_s``.  With J = 2 the design has rank 2 for
+        3 unknowns, so ``a₁`` and ``A`` are perfectly confounded: any rate can
+        be matched by an offsetting step.  Adding segments does not help
+        unless one of them SPANS ``t_s``.
+
+    Symbols → args:
+        - segments → ``segments``: the fit domain, a union of
+          ``(start, end)`` intervals [fractional years]
+        - t_s → epochs from ``tos_events`` / ``declared``: equipment changes
+          and declared events, any of which can carry an offset
+
+    Returns:
+        Human-readable warning lines, empty when nothing is confounded.
+
+    Measured (THOB, 2026-08-29): two clusters at 2015.778 and 2020.097 with a
+    receiver+antenna change at 2020.075 in the gap.  The fit returned a north
+    rate of −40.0 mm/yr where SENG 2.0 km away has −0.08 — the antenna offset,
+    read as four years of motion.  The gates passed it: they count epochs and
+    coverage, and this is a rank problem neither can see.
+
+    Reference:
+        Standard rank deficiency of a partitioned design (Seber & Lee,
+        *Linear Regression Analysis* 2nd ed., §3.8); the GNSS instance is the
+        offset/velocity trade-off of Williams 2003 (J. Geodesy 76) §2.
+    """
+    segments = tuple(segments or ())
+    if len(segments) < 2:
+        return []
+    if stage_plan is not None:
+        frees_secular = any(
+            "secular" in getattr(spec, "free", ()) for spec in stage_plan.stages
+        )
+        if not frees_secular:
+            return []
+    spans = sorted(
+        (float(a), float(b)) for a, b in segments if a is not None and b is not None
+    )
+    gaps = [(spans[i][1], spans[i + 1][0]) for i in range(len(spans) - 1)]
+    out: list[str] = []
+    for epoch, label in list(tos_events) + list(declared):
+        for lo, hi in gaps:
+            if lo < epoch < hi:
+                out.append(
+                    f"warning: {label.strip()} at yearf {epoch:.4f} falls in a GAP "
+                    f"between fit segments ({lo:.4f}\u2013{hi:.4f}). Any offset it "
+                    f"carries is indistinguishable from the rate: with no data "
+                    f"spanning it, a step and a slope explain the same jump. The "
+                    f"fitted rate absorbs it in full. Either extend a segment "
+                    f"ACROSS the epoch, drop the segment on one side of it, or "
+                    f"borrow the rate instead of fitting it."
+                )
+                break
+    return out
 
 
 def commit_record(
@@ -1872,7 +2197,12 @@ def _build_parser() -> argparse.ArgumentParser:
             if block
         ),
     )
-    p.add_argument("station", help="four-letter station code")
+    p.add_argument(
+        "station",
+        nargs="?",
+        default=None,
+        help="four-letter station code (omitted only with --status)",
+    )
     p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
     p.add_argument(
         "--uncert",
@@ -1913,8 +2243,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="drop the grey overlay of the epochs the fit rejected. They are "
         "masked out of the plotted series either way — this decides only "
         "whether the figure still SHOWS them, and hiding them lets the "
-        "y-axis tighten to the fitted series. Same name and meaning as "
-        "plot-gps-timeseries --hide-outliers",
+        "y-axis tighten to the fitted series. The inverse of "
+        "plot-gps-timeseries --show-outliers (there the overlay is HIDDEN "
+        "by default; here it is shown unless --hide-outliers)",
     )
     emphasis.add_argument(
         "--show-outliers",
@@ -1934,7 +2265,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="YYYYMMDD[,LABEL]",
         help="draw a seismic/other event line (repeatable). For events not "
-        "yet declared in steps.csv — which, while the catalogs are "
+        "yet declared in steps.yaml — which, while the catalog is "
         "templates, is nearly all of them",
     )
     p.add_argument(
@@ -1971,6 +2302,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "FULL pipeline, falling back to S0 only if it aborts — an S0 "
         "record leaves model-visible outliers in the fit and its "
         "parameters are biased relative to a full-detection one",
+    )
+    p.add_argument(
+        "--save-secular",
+        action="store_true",
+        help="save this fit's BACKGROUND — linear + periodic only — to "
+        "analysis.yaml as this station's reusable s(t). Steps and transients "
+        "are events and are never part of it. Hold it later with "
+        "--hold secular=store:self, or from another station with "
+        "--hold periodic=store:STA. Separate from --commit, which stores the "
+        "finished f(t) that plot-gps-timeseries reads",
+    )
+    p.add_argument(
+        "--final",
+        choices=("staged", "joint"),
+        default="staged",
+        help="which solve produces the reported record when a stage plan is "
+        "given. 'staged' keeps each stage's own answer. 'joint' re-fits the "
+        "identified structure with every group free, over the domain, and "
+        "reports the staged->joint movement — the honest uncertainties, "
+        "since every stage after the first conditions on earlier values "
+        "treated as known. Under --commit, 'joint' stores NO stage plan (and "
+        "clears a stale one), because the batch must reproduce what was "
+        "stored",
     )
     p.add_argument(
         "--segment",
@@ -2010,6 +2364,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "'GROUP=clean' is refused. The STAGE: prefix is required once two "
         "or more stages are declared, since binding to the last --stage "
         "seen would make flag ORDER change the science",
+    )
+    p.add_argument(
+        "--anchor-window",
+        default=None,
+        metavar="START,END",
+        help="fractional-year window over which a CROSS-STATION store: "
+        "borrow is re-anchored to this station's own level (the donor's "
+        "offset is the donor's datum — off by tens of mm here). Default: "
+        "the full fit span. The window used is recorded in the held "
+        "group's provenance and shown in the summary. Refused if it "
+        "selects zero epochs",
     )
     p.add_argument(
         "--term",
@@ -2054,9 +2419,25 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=[],
         metavar="YEARF",
-        help="declare an offset epoch (repeatable). DECLARE-AND-FIT: the "
-        "epoch is yours, the amplitude is estimated and printed with "
-        "the record. No epoch detection happens here",
+        help="declare an offset epoch for THIS RUN (repeatable). "
+        "DECLARE-AND-FIT, fit-only: the epoch is yours, the amplitude is "
+        "estimated and printed with the record — but nothing is STORED. "
+        "Use --declare-step to make it durable",
+    )
+    p.add_argument(
+        "--declare-step",
+        action="append",
+        default=[],
+        metavar="K=V;…",
+        help="declare a step in steps.yaml — the DURABLE catalog "
+        "(repeatable). Semicolon-separated pairs, with an epoch from "
+        "'date=2008-05-29;kind=earthquake;magnitude=6.3' or "
+        "'epoch=2008.4085;kind=equipment;comment=antenna swap' (both "
+        "allowed when they agree). kind is "
+        "required (earthquake|equipment|icing|manual|other); component "
+        "defaults ALL, source defaults workbench. WRITES CONFIG (merge, "
+        "one station) BEFORE the fit, so the declaration is in the floor "
+        "the record is estimated against",
     )
     p.add_argument(
         "--max-gap-years",
@@ -2145,11 +2526,129 @@ def _build_parser() -> argparse.ArgumentParser:
         "out-of-window lane has this state — a fit has no provisional "
         "category",
     )
+    p.add_argument(
+        "--status",
+        action="store_true",
+        help="print the detrend-parameter curation status: every active "
+        "station in stations.cfg, split into done (has a detrend record), "
+        "skipped (listed in detrend_status.csv) and pending. The station "
+        "argument is ignored; this reads config only and exits.",
+    )
     return p
+
+
+def _print_status() -> int:
+    """Curation status: active stations split done / skipped / pending.
+
+    Reads three deployed sources and reconciles them:
+
+    - ``stations.cfg`` (via ``gps_parser.ConfigParser``) — the 4-char
+      sections with ``station_role`` active (NOT the passive global
+      reference sites);
+    - ``detrend_params.json`` — a station present here is DONE (the record
+      is the durable artifact of an estimate);
+    - ``detrend_status.csv`` — optional operator-maintained catalog with
+      ``sta,status,notes`` rows; ``status=skip`` marks a station decided to
+      NOT need detrending (no record, but no longer pending either).
+
+    This is a read-only reconcile: nothing is written, so it is safe to run
+    anywhere.  The authoritative "how many are done" lives in
+    ``detrend_params.json``, not here — this only counts against it.
+    """
+    import csv
+
+    from gps_parser import ConfigParser
+    from geo_dataread.gps_views import (
+        default_params_path,
+        read_detrend_params,
+    )
+    from gps_parser import outlier_catalogs as _oc
+
+    # active stations from the deployed stations.cfg
+    try:
+        cp = ConfigParser()
+        active = [
+            s
+            for s in cp.config.sections()
+            if len(s) == 4 and cp.getStationRole(s) == "active"
+        ]
+    except Exception as exc:
+        print(f"error: could not read stations.cfg ({exc})", file=sys.stderr)
+        return 1
+
+    # done = present in the deployed detrend record document
+    try:
+        params_path = default_params_path()
+        doc = read_detrend_params(params_path)
+    except Exception as exc:
+        print(f"error: could not read detrend_params.json ({exc})", file=sys.stderr)
+        return 1
+    done = set(doc.get("stations", {}).keys())
+
+    # skipped = status=skip rows in the optional detrend_status.csv
+    skipped: dict[str, str] = {}
+    status_path = _oc.catalog_path("detrend_status", DETREND_STATUS_FILENAME)
+    if status_path is not None and Path(status_path).is_file():
+        try:
+            with open(status_path, encoding="utf-8") as f:
+                lines = [
+                    ln
+                    for ln in f.read().splitlines()
+                    if ln.strip() and not ln.lstrip().startswith("#")
+                ]
+            for row in csv.DictReader(lines):
+                sta = (row.get("sta") or "").strip().upper()
+                status = (row.get("status") or "").strip().lower()
+                if sta and status == "skip":
+                    skipped[sta] = (row.get("notes") or "").strip()
+        except Exception as exc:
+            print(f"warning: detrend_status.csv unreadable ({exc})", file=sys.stderr)
+
+    pending = [s for s in active if s not in done and s not in skipped]
+    unknown_skips = [s for s in skipped if s not in active]
+
+    n_done = sum(1 for s in active if s in done)
+    n_skip = sum(1 for s in active if s in skipped)
+
+    print("detrend curation status:")
+    print(f"  active stations:  {len(active)}")
+    print(f"  done:             {n_done}")
+    print(f"  skipped:          {n_skip}")
+    print(f"  pending:          {len(pending)}")
+    if params_path:
+        print(f"  params:           {params_path}")
+    print()
+    if pending:
+        print(f"pending ({len(pending)}):")
+        _print_columns(sorted(pending))
+        print()
+    if skipped:
+        print(f"skipped ({n_skip}):")
+        for s in sorted(skipped):
+            note = f" — {skipped[s]}" if skipped[s] else ""
+            print(f"  {s}{note}")
+        print()
+    if unknown_skips:
+        print(
+            f"note: {len(unknown_skips)} skip row(s) for stations not in "
+            f"stations.cfg: {', '.join(sorted(unknown_skips))}"
+        )
+    return 0
+
+
+def _print_columns(items: list[str], width: int = 78) -> None:
+    """Print a list of 4-char codes, wrapped into columns."""
+    per_row = max(1, width // 6)
+    for i in range(0, len(items), per_row):
+        print("  " + "  ".join(items[i : i + per_row]))
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.status:
+        return _print_status()
+    if args.station is None:
+        _build_parser().error("station is required unless --status is given")
     sta = args.station.upper()
 
     if args.commit and args.terms != APPLY_TERMS_DEFAULT:
@@ -2172,6 +2671,7 @@ def main(argv: list[str] | None = None) -> int:
         return 5
 
     stage_plan = None
+    secular_lookup = None
     if args.stage or args.hold:
         # Parsed BEFORE any data is read, like the --terms refusal above: a
         # grammar error should cost nothing, and every message below names the
@@ -2206,7 +2706,7 @@ def main(argv: list[str] | None = None) -> int:
             read_detrend_params,
             station_detrend_record,
         )
-        from geo_dataread.stage_plan import resolve_stage_plan
+        from geo_dataread.stage_plan import check_stage_plan_sources
 
         def _donor(code: str) -> dict[str, Any]:
             doc = read_detrend_params(args.params or default_params_path())
@@ -2219,13 +2719,21 @@ def main(argv: list[str] | None = None) -> int:
             return dict(rec)
 
         try:
-            # component 0 only: the plan is resolved per component inside the
-            # estimator, this is the up-front existence check so a missing
-            # donor fails before any data is read.
-            # Up-front existence check only: a missing donor must fail
-            # before any data is read. The estimator re-resolves per
-            # component, since a donor hold borrows THAT component's numbers.
-            resolve_stage_plan(stage_plan, lookup_donor=_donor, component=0)
+            # Up-front existence check only: a missing donor or absent saved
+            # background must fail before any data is read. The estimator
+            # re-resolves per component, since a donor hold borrows THAT
+            # component's numbers. NOT resolve_stage_plan: that now refuses a
+            # cross-station store: hold without the borrower's series (it
+            # re-anchors the donor's datum against it), and no data has been
+            # read yet — the pointer check is all that can and should run.
+            secular_lookup = _secular_lookup(args, sta)
+            check_stage_plan_sources(
+                stage_plan,
+                lookup_donor=_donor,
+                component=0,
+                lookup_secular=secular_lookup,
+                station=sta,
+            )
             resolved_stages = stage_plan
             donor_lookup = _donor
         except (RuntimeError, ValueError, KeyError) as exc:
@@ -2233,6 +2741,21 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
     out = resolve_out(args.out, sta)
+
+    if args.declare_step:
+        # WRITES CONFIG — merge one station's declarations into steps.yaml
+        # BEFORE any estimation: the catalog is a floor the fit re-reads, so
+        # declaring here puts the step INTO this run's model, not just into
+        # tomorrow's. The record (with --commit) then stores the amplitude
+        # estimated against the declaration it also reads back.
+        from gps_parser.outlier_catalogs import merge_station_steps
+
+        entries = [parse_declare_step(spec, sta) for spec in args.declare_step]
+        path, _n_before, _n_after, migrated = merge_station_steps(None, sta, entries)
+        print(
+            f"declared {len(entries)} step(s) for {sta} in {path}"
+            + (f" (migrated legacy csv -> {migrated.name})" if migrated else "")
+        )
 
     try:
         record, yearf, data, sigma, estimate = build_record(
@@ -2245,6 +2768,8 @@ def main(argv: list[str] | None = None) -> int:
             stages=args.stages,
             stage_plan=resolved_stages,
             lookup_donor=donor_lookup,
+            lookup_secular=secular_lookup,
+            anchor_window=_parse_anchor_window(args.anchor_window),
             terms_spec=args.term or None,
             segments=_resolve_cli_segments(args),
             steps=args.step or None,
@@ -2257,6 +2782,47 @@ def main(argv: list[str] | None = None) -> int:
         # exit non-zero so a loop cannot mistake it for success.
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    joint_deltas: list[dict[str, Any]] = []
+    if args.final == "joint" and resolved_stages is not None and not args.donor:
+        # The whole RUN becomes joint, not just what gets stored. Plotting the
+        # staged fit and committing the joint one would put a figure and a
+        # record side by side that are not the same thing -- the divergence
+        # this tool exists to prevent.
+        #
+        # Nothing is seeded from the staged solution and nothing needs to be:
+        # every parameter the estimator solves for is linear, so there is one
+        # minimum. Staging chose the structure, the windows and tau; the joint
+        # solve is that structure with all groups free.
+        staged_record = record
+        try:
+            record, yearf, data, sigma, estimate = build_record(
+                sta,
+                tot_dir=args.tot_dir,
+                uncert=args.uncert,
+                outlier_param=args.outlier_param,
+                fit_catalog=args.fit_catalog,
+                model=args.model,
+                stages=args.stages,
+                stage_plan=None,
+                lookup_donor=None,
+                terms_spec=args.term or None,
+                segments=_resolve_cli_segments(args),
+                steps=args.step or None,
+                max_gap_years=args.max_gap_years,
+                min_epochs=args.min_epochs,
+                min_span_years=args.min_span_years,
+            )
+        except RuntimeError as exc:
+            print(
+                f"error: the staged fit succeeded but the joint re-fit was "
+                f"refused ({exc}). Re-run with --final staged to keep the "
+                f"staged answer, understanding that its uncertainties are "
+                f"conditional.",
+                file=sys.stderr,
+            )
+            return 2
+        joint_deltas = staged_joint_deltas(staged_record, record)
 
     if args.donor:
         try:
@@ -2276,6 +2842,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"\n{sta} — detrend record\n")
         print(summarise(record, sta))
+    if joint_deltas:
+        loud = [r for r in joint_deltas if float(r["ratio"]) > 1.0]
+        print(
+            "\n  JOINT re-fit — the staged build identified the structure, "
+            "these are the numbers with every group free.\n"
+            "  Movement is scaled by the JOINT sigma, the one that is not "
+            "conditional on an earlier stage.\n"
+        )
+        print(format_staged_joint_deltas(joint_deltas))
+        if loud:
+            print(
+                f"\n  {len(loud)} parameter(s) moved by more than one sigma: "
+                f"those stages were fitting the same signal, and the staged "
+                f"partition claimed a separation the data does not support."
+            )
     seismic, declared_other = declared_event_epochs(sta)
     seismic = sorted(seismic + parse_events(args.event))
     tos_events: list[tuple[float, str]] = []
@@ -2291,6 +2872,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  TOS equipment changes ({len(tos_events)}):")
         for epoch, label in tos_events:
             print(f"    {label}   yearf {epoch:.4f}")
+
+    for line in confounded_rate_warnings(
+        _resolve_cli_segments(args),
+        tos_events,
+        seismic + declared_other,
+        stage_plan=resolved_stages,
+    ):
+        print(line, file=sys.stderr)
 
     if seismic or declared_other:
         print(f"\n  declared / supplied events ({len(seismic) + len(declared_other)}):")
@@ -2390,6 +2979,38 @@ def main(argv: list[str] | None = None) -> int:
                 )
     print(f"\nwrote {path}")
 
+    if args.save_secular:
+        # The BACKGROUND store, not the finished one. Deliberately separate:
+        # a background committed into detrend_params.json would look complete
+        # and be wrong -- production would detrend the station with s(t) alone
+        # and serve a series with its coseismic offset still in it.
+        from geo_dataread.secular_store import secular_from_record, write_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
+
+        yaml_path = args.analysis_yaml or default_analysis_yaml_path()
+        if yaml_path is None:
+            print(
+                "  warning: background NOT saved — no analysis.yaml is "
+                "reachable (no gpsconfig on this host). Pass --analysis-yaml "
+                "to say where.",
+                file=sys.stderr,
+            )
+        else:
+            entry = secular_from_record(record, fitted_at=record.get("fitted_at"))
+            write_secular(yaml_path, sta, entry)
+            spans = (
+                "the fit's own domain"
+                if not entry.segments
+                else ", ".join(f"{a}:{b}" for a, b in entry.segments)
+            )
+            print(
+                f"  background s(t) -> {yaml_path}\n"
+                f"    {len(entry.param_names)} parameters per component, "
+                f"fitted on {spans}\n"
+                f"    hold it with: --hold secular=store:self "
+                f"--hold periodic=store:self"
+            )
+
     if args.commit:
         record.setdefault("refs", {})["generator"] = "gps-detrend-workbench"
         try:
@@ -2433,11 +3054,20 @@ def main(argv: list[str] | None = None) -> int:
             # ALONGSIDE the record rather than inside it: analysis.yaml is
             # what a batch re-run reads, and a plan living only in the record
             # would be invisible to gps-estimate-detrend.
+            #
+            # Under --final joint the committed record is the UNSTAGED solve,
+            # so storing the plan would make the batch recompute a staged
+            # record and replace this one with different numbers. The plan
+            # was scaffolding: it chose the structure, and the structure is
+            # stored as model/terms/steps/segments. A stale entry from an
+            # earlier staged commit is REMOVED for the same reason -- leaving
+            # it is the same failure, one commit later.
             from geo_dataread.stage_plan import (
                 default_analysis_yaml_path,
                 write_stage_plan,
             )
 
+            joint = args.final == "joint" and not args.donor
             yaml_path = args.analysis_yaml or default_analysis_yaml_path()
             if yaml_path is None:
                 print(
@@ -2446,6 +3076,13 @@ def main(argv: list[str] | None = None) -> int:
                     "committed, but a batch re-run will re-fit this station "
                     "single-stage. Pass --analysis-yaml to say where.",
                     file=sys.stderr,
+                )
+            elif joint:
+                write_stage_plan(yaml_path, sta, None)
+                print(
+                    f"  stage plan CLEARED in {yaml_path} — the committed "
+                    f"record is the joint solve, and a stored plan would make "
+                    f"the batch recompute a staged one"
                 )
             else:
                 write_stage_plan(yaml_path, sta, stage_plan)
