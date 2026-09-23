@@ -68,6 +68,7 @@ __all__ = [
     "MODE_BACKGROUND",
     "MODE_EVENTS",
     "background_command",
+    "borrow_command",
     "events_command",
     "declare_spec",
     "near_declared_step",
@@ -239,6 +240,84 @@ def background_command(
         parts += ["--model", model]
     if save:
         parts.append("--save-secular")
+    return shlex.join(parts + list(flags))
+
+
+def borrow_command(
+    station: str,
+    *,
+    borrow_from: str,
+    groups: Sequence[str] = BACKGROUND_GROUPS,
+    kind: str = "store",
+    segments: Sequence[tuple[float, float]] = (),
+    anchor: tuple[float, float] | None = None,
+    flags: Sequence[str] = (),
+) -> str:
+    """The command for a station that CANNOT fit its own background.
+
+    The Svartsengi case, and the reason this exists: of the 18 stations in
+    that cluster only SENG and SKSH have data from before the 2020 unrest —
+    the other 16 were installed in 2024, and ELDC/THOB in 2021.  A station
+    with no quiet epoch has no background to fit, so the background phase's
+    own question ("which intervals are clean?") has no answer for it.  What
+    it needs instead is somebody else's s(t), anchored to its own datum.
+
+    When every :data:`BACKGROUND_GROUPS` group is borrowed the plan is
+    **apply-only** (``--stage apply:`` with no free group): nothing is
+    estimated on this station at all, and the record says so.  Leaving a
+    group unticked frees it, which is the partial borrow — take the rate
+    from the donor, fit my own seasonal — and that still fits, so the stage
+    is named for what it estimates.
+
+    Groups, never components: a secular velocity is one 3-vector, and taking
+    north from one donor and east from another would not be a velocity.  The
+    donor code is therefore a single field, applied to N/E/U alike.
+
+    ``kind`` names WHICH store the code is looked up in, and the two are
+    different objects: ``store:`` is the secular store in ``analysis.yaml``
+    (s(t) as a saved component), ``donor:`` the finished record in
+    ``detrend_params.json`` (from which the hold takes only the named group).
+    Far more stations have a record than a saved background — 72 against 37
+    on 2026-08-29 — so the panel resolves the code against both and spells
+    the kind it found into the command, rather than making the operator know
+    which file a station lives in.  The kind is never INFERRED downstream:
+    what is emitted says it, which is the picker's invariant.
+
+    **What a picked interval means depends on whether anything is free.**
+
+    In a FULL borrow nothing is estimated, so the only thing an interval can
+    mean is "where the borrowed curve should sit level with my data" — it is
+    the ANCHOR, and the fit domain stays the whole series so the departure
+    remains visible.  The donor supplies rate and seasonal; the constant is
+    this station's own, and it has to come from somewhere in this series.
+
+    In a PARTIAL borrow a fit still happens, so the intervals are the fit
+    domain exactly as in the fitting phase, and no anchor exists because the
+    datum was never borrowed.  That case is the Askja manoeuvre
+    (``katlafitlong``): take the seasonal from a clean window elsewhere, fit
+    the line on the span you choose here — and it needs the interval control
+    to say where the line is fitted.
+
+    Which stretch is not a detail.  The default is the full fit span, and on
+    a station whose every epoch is deforming that mean is not a datum:
+    measured on THOB (2026-08-26) the full-span north mean is +192 mm while
+    the first half-year reads −78 mm, so the borrowed curve floated 270 mm
+    above the data it was supposed to sit on.  Anchoring on the quiet head of
+    the record is what makes the departure readable as deformation.
+    """
+    free = [g for g in BACKGROUND_GROUPS if g not in groups]
+    stage = "apply" if not free else "fit"
+    parts = ["gps-detrend-workbench", station]
+    # Exactly one of these is meaningful, and which one is decided by whether
+    # anything is free -- see the docstring. Emitting both would be a lie in
+    # one of the two directions.
+    for lo, hi in segments:
+        parts += ["--segment", f"{lo}:{hi}"]
+    if anchor is not None:
+        parts += ["--anchor-window", f"{anchor[0]},{anchor[1]}"]
+    parts += ["--stage", f"{stage}:{','.join(free)}"]
+    for group in groups:
+        parts += ["--hold", f"{stage}:{group}={kind}:{borrow_from}"]
     return shlex.join(parts + list(flags))
 
 
@@ -738,6 +817,46 @@ class PickerWindow:  # pragma: no cover - GUI
         )
         self.btn_save.clicked.connect(self.save_secular)
         bcol.addWidget(self.btn_save)
+
+        # --- borrow: for a station with no clean interval to fit on --------
+        brow = QtWidgets.QHBoxLayout()
+        brow.addWidget(QtWidgets.QLabel("or borrow s(t) from:"))
+        self._was_borrowing = False
+        self.borrow_from = QtWidgets.QLineEdit()
+        self.borrow_from.setPlaceholderText("station or cluster code")
+        self.borrow_from.setToolTip(
+            "For a station installed after the deformation started, which has "
+            "no quiet epoch of its own to fit a background on (ELDC, THOB and "
+            "the 2024 Svartsengi installs). Name the donor — a station code, "
+            "or a derived cluster background such as SVAR_NOAM — and its s(t) "
+            "is applied here, re-anchored to THIS station's own level.\n\n"
+            "The terms ticked above choose which groups are borrowed: both is "
+            "the usual case and estimates nothing on this station; unticking "
+            "one frees it to be fitted here instead.\n\n"
+            "Leave empty to fit this station's own background from the "
+            "intervals above.\n\n"
+            "PREFER UNTICKING 'linear' where the station's own trend is "
+            "usable: borrowing only the seasonal transfers no datum and no "
+            "rate, so it cannot go wrong — it is the legacy detrend-OLAC "
+            "manoeuvre (fit the line locally, take the seasonal from a "
+            "neighbour), and on SKSH it costs 0.2 mm of rms and 0.02 mm/yr "
+            "of rate. Borrow 'linear' too ONLY when the local trend is "
+            "itself deformation, as at ELDC and THOB.\n\n"
+            "What the intervals above mean depends on what you borrow:\n"
+            "  · periodic only (the default) — a fit still happens, so they "
+            "are the FIT DOMAIN for your own line, exactly as without a "
+            "donor. This is the Askja manoeuvre: seasonal from a neighbour, "
+            "line on the window you pick.\n"
+            "  · linear AND periodic — nothing is fitted, so they mark where "
+            "the borrowed curve is ANCHORED to this station's level. Pick a "
+            "quiet stretch, usually the start of the record; with none "
+            "picked the level is the mean over the whole series, which on a "
+            "station that deforms throughout is not a datum."
+        )
+        self.borrow_from.editingFinished.connect(self._borrow_changed)
+        brow.addWidget(self.borrow_from)
+        bcol.addLayout(brow)
+
         self.btn_bg_commit = QtWidgets.QPushButton("store…")
         self.btn_bg_commit.setToolTip(
             "For a station whose model IS the background — no events to "
@@ -1193,6 +1312,7 @@ class PickerWindow:  # pragma: no cover - GUI
         flags = self._run_flags()
         note = ""
         plan = lookup = None
+        anchor_window = None
 
         if events:
             steps = self._picked_steps()
@@ -1232,17 +1352,96 @@ class PickerWindow:  # pragma: no cover - GUI
                 self.base_settings,
                 self.sta,
                 quiet=True,
-                segments=tuple(segs) or None,
+                # A FULL borrow estimates nothing, so the intervals take
+                # their other meaning (anchor, below) and must not narrow the
+                # domain -- the whole series stays drawn against the borrowed
+                # curve, which is the departure being read. A PARTIAL borrow
+                # still fits, so its intervals are the fit domain as always;
+                # that is the Askja manoeuvre (`katlafitlong`: seasonal from
+                # a clean window, line on the span you choose), and stealing
+                # the interval control from it left no way to say where the
+                # line is fitted.
+                segments=None if self._full_borrow() else (tuple(segs) or None),
                 max_gap_years=self.max_gap_years,
             )
-            self.command_text = background_command(
-                self.sta, segments=segs, model=self.model, flags=flags
-            )
-            if self.model is None:
-                note = (
-                    "fit refused: linear and periodic are both off, which no "
-                    "--model value can express. Leave at least one of them in."
+            borrow_from = self.borrow_from.text().strip()
+            if borrow_from:
+                # Borrowing answers a different question from fitting, so the
+                # terms boxes mean something different here: which groups come
+                # from the donor, rather than which the model carries. The
+                # model itself stays whole -- a borrowed background is still
+                # lin+per, it is just not estimated here.
+                groups = [
+                    g
+                    for g, on in zip(
+                        BACKGROUND_GROUPS,
+                        (self.cb_linear.isChecked(), self.cb_periodic.isChecked()),
+                        strict=True,
+                    )
+                    if on
+                ]
+                self.model = DEFAULT_MODEL
+                # An anchor is only meaningful when a DATUM was borrowed. In
+                # a partial borrow the secular group is fitted here, so the
+                # level is this station's own already and there is nothing to
+                # re-anchor -- the intervals are the fit domain instead.
+                full = len(groups) == len(BACKGROUND_GROUPS)
+                anchor = (
+                    (min(lo for lo, _ in segs), max(hi for _, hi in segs))
+                    if (segs and full)
+                    else None
                 )
+                anchor_window = anchor
+                self.command_text = borrow_command(
+                    self.sta,
+                    borrow_from=borrow_from,
+                    groups=groups,
+                    segments=() if full else segs,
+                    anchor=anchor,
+                    flags=flags,
+                )
+                if not groups:
+                    note = (
+                        "nothing to borrow: tick linear, periodic or both to "
+                        "say which part of s(t) comes from " + borrow_from + "."
+                    )
+                else:
+                    plan, lookup, note = self._borrow_plan(groups, borrow_from)
+                    if plan is not None:
+                        # The kind the panel RESOLVED, not a guess -- the
+                        # emitted command must name the store it actually
+                        # read, or it no longer reproduces the figure.
+                        kind = next(
+                            iter(plan.stages[0].held.values()), None
+                        ).__class__.__name__
+                        self.command_text = borrow_command(
+                            self.sta,
+                            borrow_from=borrow_from,
+                            groups=groups,
+                            kind="donor" if kind == "DonorRef" else "store",
+                            segments=() if full else segs,
+                            anchor=anchor,
+                            flags=flags,
+                        )
+                    if not note and full and anchor is None:
+                        note = (
+                            "no interval picked, so the level is the mean over "
+                            "the WHOLE series. On a station that deforms "
+                            "throughout, that mean is not a datum and the "
+                            "borrowed curve will float above or below the data "
+                            "(THOB: 270 mm in north). Drag an interval over a "
+                            "quiet stretch — usually the start of the record — "
+                            "to anchor it there."
+                        )
+            else:
+                self.command_text = background_command(
+                    self.sta, segments=segs, model=self.model, flags=flags
+                )
+                if self.model is None:
+                    note = (
+                        "fit refused: linear and periodic are both off, which no "
+                        "--model value can express. Leave at least one of them in."
+                    )
 
         est = None
         if not note:
@@ -1257,6 +1456,7 @@ class PickerWindow:  # pragma: no cover - GUI
                     settings=settings,
                     stage_plan=plan,
                     lookup_secular=lookup,
+                    anchor_window=anchor_window,
                     model=self.model,
                     stages=(
                         USE_FLAGGED_STAGES if self.cb_use_flagged.isChecked() else None
@@ -1295,6 +1495,122 @@ class PickerWindow:  # pragma: no cover - GUI
         self._render(est, note)
         self.command.setText(self.command_text)
         self._update_header(events)
+
+    def _full_borrow(self) -> bool:
+        """Is EVERY background group coming from the donor?
+
+        The distinction decides what a picked interval means, so it is one
+        predicate rather than a condition spelled twice.
+        """
+        return bool(self.borrow_from.text().strip()) and (
+            self.cb_linear.isChecked() and self.cb_periodic.isChecked()
+        )
+
+    def _borrow_changed(self) -> None:
+        """Naming a donor defaults to the SAFE half of the borrow.
+
+        Borrowing only the seasonal is the legacy ``detrend-OLAC`` manoeuvre
+        (``katlafitlong``: remove the donor's periodic, then re-fit a plain
+        line on this station's own series).  Nothing that carries a station's
+        identity crosses — no datum, no rate — so it cannot be wrong; on SKSH
+        it costs 0.2 mm of rms and 0.02 mm/yr of rate against fitting its own
+        seasonal.  Holding ``secular`` as well is the sharper tool, for a
+        station whose own trend IS deformation (ELDC free-fits at −494 mm/yr
+        east), and that one an operator should reach for deliberately.
+
+        So the default is applied on the TRANSITION into borrowing, once, and
+        never again: after that the tickboxes are the operator's, and a
+        deliberate choice is not undone on the next edit of the field.
+        Clearing the donor restores ``linear``, because fitting needs it.
+        """
+        now_borrowing = bool(self.borrow_from.text().strip())
+        if now_borrowing != self._was_borrowing:
+            self._was_borrowing = now_borrowing
+            blocked = self.cb_linear.blockSignals(True)
+            self.cb_linear.setChecked(not now_borrowing)
+            self.cb_linear.blockSignals(blocked)
+        self.refit()
+
+    def _borrow_plan(
+        self, groups: Sequence[str], borrow_from: str
+    ) -> tuple[Any, Any, str]:
+        """The apply-only (or partial) plan behind the background borrow.
+
+        Resolved EAGERLY, like :meth:`_events_plan`, so a missing donor or a
+        plate-frame mismatch is reported here with the action that fixes it,
+        rather than surfacing later as an opaque fit failure.  The frame
+        check is the one that matters: NOAM and EURA differ by the full
+        spreading rate on Reykjanes, so a crossed frame would not look like
+        an error, it would look like an intrusion.
+        """
+        from geo_dataread.stage_plan import build_stage_plan, default_analysis_yaml_path
+
+        from gps_plot.detrend_workbench import _secular_lookup
+
+        class _Args:
+            analysis_yaml = None
+
+        free = [g for g in BACKGROUND_GROUPS if g not in groups]
+        stage = "apply" if not free else "fit"
+
+        # Resolve the code against BOTH stores. The secular store is the
+        # purpose-built object so it wins, but many more stations have a
+        # finished record than a saved background, and an operator typing a
+        # station code should not have to know which file it lives in.
+        lookup = _secular_lookup(_Args(), self.sta)
+        kind, store_exc = "store", None
+        try:
+            lookup(borrow_from)
+        except (RuntimeError, ValueError) as exc:
+            store_exc = exc
+            try:
+                self._donor_lookup()(borrow_from)
+                kind = "donor"
+            except (RuntimeError, ValueError, KeyError):
+                return (
+                    None,
+                    None,
+                    f"{exc}\n\nStore: {default_analysis_yaml_path()}",
+                )
+        try:
+            plan = build_stage_plan(
+                [f"{stage}:{','.join(free)}"],
+                [f"{stage}:{g}={kind}:{borrow_from}" for g in groups],
+            )
+        except ValueError as exc:
+            return None, None, f"stage plan refused: {exc}"
+        note = ""
+        if store_exc is not None:
+            note = (
+                f"{borrow_from} has no saved background, so its FINISHED "
+                f"record is being used instead (--hold …=donor:{borrow_from}). "
+                f"The hold takes only the borrowed group out of that record, "
+                f"and is re-anchored to this station's level exactly as a "
+                f"store hold would be."
+            )
+        return plan, lookup, note
+
+    def _donor_lookup(self) -> Any:
+        """The finished-record lookup a ``donor:`` hold resolves against.
+
+        The DEPLOYED document, like the workbench's own — never a run's
+        output — so which record a borrow resolved against does not depend on
+        what else is being written.
+        """
+        from geo_dataread.gps_views import (
+            default_params_path,
+            read_detrend_params,
+            station_detrend_record,
+        )
+
+        def lookup(code: str) -> dict[str, Any]:
+            doc = read_detrend_params(default_params_path())
+            rec, _src = station_detrend_record(doc, code)
+            if rec is None:
+                raise RuntimeError(f"donor {code} has no stored record")
+            return dict(rec)
+
+        return lookup
 
     def _events_plan(self, free: Sequence[str], hold_from: str) -> tuple[Any, Any, str]:
         """The one-stage plan and the store lookup, or an explanation."""
@@ -1856,6 +2172,7 @@ class PickerWindow:  # pragma: no cover - GUI
             "note": "picker convenience only — the emitted command is the record",
             "mode": self.mode.currentText(),
             "terms": {
+                "borrow_from": self.borrow_from.text().strip(),
                 "linear": self.cb_linear.isChecked(),
                 "periodic": self.cb_periodic.isChecked(),
             },
@@ -1921,6 +2238,10 @@ class PickerWindow:  # pragma: no cover - GUI
                 "them non-overlapping if they were meant)"
             )
 
+        self.borrow_from.setText(str(d.get("terms", {}).get("borrow_from", "")))
+        # A restored session carries its own tickboxes; adopting the
+        # default here would overwrite what was saved.
+        self._was_borrowing = bool(self.borrow_from.text().strip())
         self.cb_linear.setChecked(bool(terms.get("linear", True)))
         self.cb_periodic.setChecked(bool(terms.get("periodic", True)))
         self._clear_segments()

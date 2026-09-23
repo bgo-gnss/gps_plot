@@ -685,3 +685,299 @@ class TestAutoSaveBackground:
         amp = abs(float(w.record["components"][0]["params"][-1]))
         assert amp > 50.0, f"step_amp {amp:.1f} — not the ~0 mm of an extrapolated bg"
         assert "auto-saved" in w.summary.toPlainText()
+
+
+class TestBackgroundBorrow:
+    """The background phase for a station that cannot fit its own s(t).
+
+    Of the 18 stations in the Svartsengi cluster only SENG and SKSH have
+    pre-2020 data; ELDC/THOB start 2021 and the rest were installed in 2024.
+    Before this the picker could only ask "which intervals are clean?", which
+    those stations cannot answer.
+    """
+
+    def test_borrowing_both_groups_is_apply_only(self) -> None:
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        cmd = borrow_command("THOB", borrow_from="SVAR_NOAM")
+        assert "--stage apply:" in cmd
+        assert "--hold apply:secular=store:SVAR_NOAM" in cmd
+        assert "--hold apply:periodic=store:SVAR_NOAM" in cmd
+        # nothing is estimated on this station, so no group is freed
+        assert "fit:" not in cmd
+
+    def test_a_partial_borrow_names_what_it_fits(self) -> None:
+        """Rate from the donor, seasonal fitted here: the stage is a FIT,
+        and it is named for the group it estimates."""
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        cmd = borrow_command("THOB", borrow_from="SKSH", groups=["secular"])
+        assert "--stage fit:periodic" in cmd
+        assert "--hold fit:secular=store:SKSH" in cmd
+        assert "periodic=store:" not in cmd
+
+    def test_intervals_anchor_the_level_they_do_not_fit(self) -> None:
+        """In the fitting phase an interval is clean data to estimate on.
+        Here nothing is estimated, so it can only mean "sit level with my
+        data HERE" -- and it must not narrow the domain, or the departure
+        being read would be clipped to the anchor stretch."""
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        cmd = borrow_command("THOB", borrow_from="SVAR_NOAM", anchor=(2021.0, 2021.5))
+        assert "--anchor-window 2021.0,2021.5" in cmd
+        assert "--segment" not in cmd
+
+    def test_no_anchor_means_the_full_span_default(self) -> None:
+        """Measured on THOB 2026-08-26: the full-span north mean is +192 mm
+        where the first half-year reads -78, so an unanchored borrow floated
+        270 mm above its data. The flag is omitted (the CLI default is the
+        same thing) but the panel says so."""
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        assert "--anchor-window" not in borrow_command("THOB", borrow_from="SKSH")
+
+    def test_one_donor_for_all_three_components(self) -> None:
+        """A secular velocity is one 3-vector. The donor is a single field,
+        so north-from-A / east-from-B is not expressible -- deliberately."""
+        import inspect
+
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        sig = inspect.signature(borrow_command)
+        assert "borrow_from" in sig.parameters
+        assert not any(
+            p in sig.parameters for p in ("north_from", "east_from", "component")
+        )
+
+    def test_the_emitted_command_is_what_the_cli_parses(self) -> None:
+        """The picker's standing invariant: the shown command reproduces the
+        figure, because the CLI re-parses it through the same grammar."""
+        import shlex
+
+        from geo_dataread.stage_plan import build_stage_plan
+
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        parts = shlex.split(borrow_command("THOB", borrow_from="SVAR_NOAM"))
+        stages = [parts[i + 1] for i, a in enumerate(parts) if a == "--stage"]
+        holds = [parts[i + 1] for i, a in enumerate(parts) if a == "--hold"]
+        plan = build_stage_plan(stages, holds)
+        assert [s.free for s in plan.stages] == [()]
+        assert set(plan.stages[0].held) == {"secular", "periodic"}
+
+
+def _picker_window(monkeypatch, sta: str):
+    """A live PickerWindow on real deployed data, or a clean skip."""
+    import dataclasses
+
+    import numpy as np
+    import pytest as _pytest
+
+    pg = _pytest.importorskip("pyqtgraph")
+    _pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
+    from gps_plot.detrend_picker_qt import PickerWindow
+
+    try:
+        yearf, data, sigma, _ = gpsr.getData(sta, ref="plate", tType="TOT", uncert=10)
+    except Exception as exc:  # noqa: BLE001
+        _pytest.skip(f"no deployed TOT data for {sta}: {exc}")
+    if yearf is None or len(yearf) == 0:
+        _pytest.skip(f"no deployed TOT data for {sta}")
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    settings = dataclasses.replace(
+        resolve_fit_settings(sta, None, FitDefaults()), max_gap_years=1.2
+    )
+    assert pg is not None
+    return PickerWindow(
+        sta,
+        np.asarray(yearf, float),
+        np.atleast_2d(np.asarray(data, float)),
+        np.atleast_2d(np.asarray(sigma, float)),
+        settings,
+        max_gap_years=1.2,
+        uncert=10,
+    )
+
+
+class TestBorrowDefaultsToTheSafeHalf:
+    """Naming a donor defaults to seasonal-only, once, on the transition.
+
+    Borrowing only the seasonal is the legacy detrend-OLAC manoeuvre and
+    nothing carrying a station's identity crosses -- no datum, no rate. It is
+    the right default; holding `secular` as well is the sharper tool for a
+    station whose own trend IS deformation, and should be reached for
+    deliberately.
+    """
+
+    def _win(self, monkeypatch):
+        return _picker_window(monkeypatch, "SKSH")
+
+    def test_naming_a_donor_unticks_linear(self, monkeypatch) -> None:
+        w = self._win(monkeypatch)
+        assert w.cb_linear.isChecked()
+        w.borrow_from.setText("SENG")
+        w._borrow_changed()
+        assert not w.cb_linear.isChecked()
+        assert w.cb_periodic.isChecked()
+        assert "--stage fit:secular" in w.command_text
+        assert "--hold fit:periodic=store:SENG" in w.command_text
+
+    def test_a_deliberate_choice_survives_editing_the_donor(self, monkeypatch) -> None:
+        """The default applies to the TRANSITION into borrowing, not to every
+        edit -- otherwise re-typing the donor would silently undo the
+        operator's decision to borrow the rate too."""
+        w = self._win(monkeypatch)
+        w.borrow_from.setText("SENG")
+        w._borrow_changed()
+        w.cb_linear.setChecked(True)  # the ELDC case, chosen on purpose
+        w.borrow_from.setText("SKSH")
+        w._borrow_changed()
+        assert w.cb_linear.isChecked()
+        assert "--stage apply:" in w.command_text
+
+    def test_clearing_the_donor_restores_linear(self, monkeypatch) -> None:
+        """Fitting needs it: a background with the linear term off is a model
+        no --model value can express, and the panel refuses it."""
+        w = self._win(monkeypatch)
+        w.borrow_from.setText("SENG")
+        w._borrow_changed()
+        w.borrow_from.setText("")
+        w._borrow_changed()
+        assert w.cb_linear.isChecked()
+        assert "--hold" not in w.command_text
+
+
+class TestTheDonorCodeFindsItsStore:
+    """The operator types a station code, not a filename.
+
+    Two stores hold different objects and the CLI grammar refuses to infer
+    between them -- rightly, since `stage:` and `donor:` produce different
+    provenance. But the picker sits ABOVE that grammar: it resolves the code
+    against both, and spells the kind it found into the emitted command, so
+    nothing is inferred downstream and the command still reproduces the
+    figure. Far more stations have a finished record than a saved background
+    (72 vs 37 on 2026-08-29).
+    """
+
+    def test_the_kind_is_spelled_into_the_command(self) -> None:
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        store = borrow_command("THOB", borrow_from="SENG", kind="store")
+        donor = borrow_command("THOB", borrow_from="HS02", kind="donor")
+        assert "=store:SENG" in store and "=donor:" not in store
+        assert "=donor:HS02" in donor and "=store:" not in donor
+
+    def test_both_kinds_round_trip_through_the_cli_grammar(self) -> None:
+        """The invariant: whatever the panel resolved, the CLI re-parses."""
+        import shlex
+
+        from geo_dataread.stage_plan import DonorRef, StoreRef, build_stage_plan
+
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        for kind, ref in (("store", StoreRef), ("donor", DonorRef)):
+            parts = shlex.split(borrow_command("THOB", borrow_from="SENG", kind=kind))
+            stages = [parts[i + 1] for i, a in enumerate(parts) if a == "--stage"]
+            holds = [parts[i + 1] for i, a in enumerate(parts) if a == "--hold"]
+            plan = build_stage_plan(stages, holds)
+            assert all(isinstance(r, ref) for r in plan.stages[0].held.values())
+
+    def test_a_station_with_only_a_record_resolves_to_donor(self, monkeypatch) -> None:
+        """HS02 has a finished record and no saved background -- the case
+        that sent the operator to a dead end before this."""
+        import json
+
+        import pytest as _pytest
+
+        from geo_dataread.gps_views import default_params_path
+        from geo_dataread.secular_store import read_secular
+        from geo_dataread.stage_plan import default_analysis_yaml_path
+
+        yaml_path = default_analysis_yaml_path()
+        params = default_params_path()
+        if not (yaml_path and yaml_path.is_file() and params and params.is_file()):
+            _pytest.skip("no deployed config on this host")
+        recs = json.loads(params.read_text()).get("stations", {})
+        sec = read_secular(yaml_path)
+        only = sorted(set(recs) - set(sec))
+        if not only:
+            _pytest.skip("every station with a record also has a background")
+
+        w = _picker_window(monkeypatch, "THOB")
+        w.borrow_from.setText(only[0])
+        w._borrow_changed()
+        assert f"=donor:{only[0]}" in w.command_text
+        assert "no saved background" in w.summary.toPlainText()
+
+
+class TestTheAskjaManoeuvreInThePicker:
+    """Seasonal from elsewhere, MY line on MY window.
+
+    `gps_data_analyses/detrend-OLAC/detrend_test.py::katlafitlong` fits the
+    seasonal on a clean window (2001.6-2019.5) and the LINE on a different,
+    longer span. Two domains. A first cut at the borrow control made every
+    picked interval an anchor as soon as a donor was named, which left no way
+    to say where the line is fitted -- the operator could not express the
+    manoeuvre at all.
+    """
+
+    def test_a_partial_borrow_emits_the_fit_domain(self) -> None:
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        cmd = borrow_command(
+            "SKSH",
+            borrow_from="SENG",
+            groups=["periodic"],
+            segments=[(2015.5, 2019.9)],
+        )
+        assert "--segment 2015.5:2019.9" in cmd
+        assert "--stage fit:secular" in cmd
+        assert "--hold fit:periodic=store:SENG" in cmd
+        # nothing was borrowed that carries a datum, so no anchor exists
+        assert "--anchor-window" not in cmd
+
+    def test_a_full_borrow_emits_the_anchor_instead(self) -> None:
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        cmd = borrow_command("SKSH", borrow_from="SENG", anchor=(2015.5, 2019.9))
+        assert "--anchor-window 2015.5,2019.9" in cmd
+        assert "--segment" not in cmd
+
+    def test_the_two_meanings_are_never_emitted_together(self) -> None:
+        """One interval, one meaning. Emitting both would be a lie in one of
+        the two directions, and the panel decides which by whether anything
+        is free."""
+        from gps_plot.detrend_picker_qt import borrow_command
+
+        for groups in (["periodic"], ["secular", "periodic"]):
+            cmd = borrow_command(
+                "SKSH",
+                borrow_from="SENG",
+                groups=groups,
+                segments=[(2015.5, 2019.9)] if len(groups) == 1 else [],
+                anchor=(2015.5, 2019.9) if len(groups) == 2 else None,
+            )
+            assert ("--segment" in cmd) != ("--anchor-window" in cmd)
+
+    def test_the_fit_domain_reaches_the_estimator(self, monkeypatch) -> None:
+        """Not just the command: the domain must change the answer, or the
+        control is decorative. Two windows, two rates."""
+        w = _picker_window(monkeypatch, "SKSH")
+        w.borrow_from.setText("SENG")
+        w._borrow_changed()  # defaults to seasonal-only
+        if w.cb_linear.isChecked():  # pragma: no cover - default changed
+            w.cb_linear.setChecked(False)
+
+        rates = []
+        for lo, hi in ((2013.9, 2019.9), (2015.5, 2019.9)):
+            while w.segment_regions:
+                w.remove_segment()
+            w.add_segment((lo, hi))
+            assert f"--segment {lo}:{hi}" in w.command_text
+            rates.append(w.summary.toPlainText())
+        assert rates[0] != rates[1], "the fit domain did not reach the estimator"

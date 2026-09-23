@@ -185,6 +185,7 @@ def estimate_with_abort_fallback(
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
     lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms: Sequence[str] | None = None,
     **kwargs: Any,
 ) -> tuple[Any, bool]:
@@ -224,6 +225,7 @@ def estimate_with_abort_fallback(
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
             lookup_secular=lookup_secular,
+            anchor_window=anchor_window,
             terms=terms,
             **kwargs,
         )
@@ -251,6 +253,36 @@ def _stage_params(stages: str | None, extra: list[str] | None = None) -> Any:
     from gps_plot.plot_gps_timeseries import _build_outlier_params, _stage_overrides
 
     return _build_outlier_params(extra or [], base=_stage_overrides(stages))
+
+
+def _parse_anchor_window(spec: str | None) -> tuple[float, float] | None:
+    """Parse ``--anchor-window START,END`` into a (start, end) pair.
+
+    A comma, not the ``:`` of ``--segment``: the anchor window is a single
+    closed interval, never a union with open bounds, and giving it the same
+    spelling would invite passing one where the other is meant.
+
+    Raises:
+        SystemExit: On a malformed value or a degenerate (END <= START)
+            window — the same refusal :func:`resolve_stage_plan` applies,
+            surfaced before any data is read.
+    """
+    if spec is None:
+        return None
+    lo_raw, sep, hi_raw = spec.partition(",")
+    if not sep:
+        raise SystemExit(
+            f"--anchor-window expects START,END [fractional years], got {spec!r}"
+        )
+    try:
+        lo, hi = float(lo_raw), float(hi_raw)
+    except ValueError:
+        raise SystemExit(
+            f"--anchor-window {spec!r}: bounds must be fractional years"
+        ) from None
+    if hi <= lo:
+        raise SystemExit(f"--anchor-window {spec!r}: END must be greater than START")
+    return (lo, hi)
 
 
 def _resolve_cli_segments(
@@ -401,6 +433,7 @@ def estimate_record(
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
     lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms: Sequence[str] | None = None,
     model: str | None = None,
     refs: Mapping[str, Any] | None = None,
@@ -459,6 +492,7 @@ def estimate_record(
         stage_plan=stage_plan,
         lookup_donor=lookup_donor,
         lookup_secular=lookup_secular,
+        anchor_window=anchor_window,
         terms=terms,
         **extra,
     )
@@ -476,6 +510,7 @@ def build_record(
     stage_plan: object | None = None,
     lookup_donor: object | None = None,
     lookup_secular: object | None = None,
+    anchor_window: tuple[float, float] | None = None,
     terms_spec: Sequence[str] | None = None,
     segments: Sequence[tuple[float | None, float | None]] | None = None,
     steps: Sequence[float] | None = None,
@@ -556,6 +591,7 @@ def build_record(
             stage_plan=stage_plan,
             lookup_donor=lookup_donor,
             lookup_secular=lookup_secular,
+            anchor_window=anchor_window,
             terms=terms_spec,
             **kwargs,
         )
@@ -1194,6 +1230,15 @@ def summarise(record: dict[str, Any], sta: str) -> str:
         f"  step_epochs    {record.get('step_epochs')}",
         f"  borrowed       {record.get('borrowed')}",
     ]
+    # Held-group provenance, for staged/borrowed records: which store/donor
+    # each non-self group came from, INCLUDING the anchor window of a
+    # re-anchored cross-station borrow ("... anchored [START,END]") -- the
+    # window actually used must be visible here, not only in the stored
+    # record.
+    for gname, gentry in (record.get("groups") or {}).items():
+        prov = gentry.get("provenance") if isinstance(gentry, dict) else None
+        if prov and prov != "self":
+            lines.append(f"  {gname:14s} {prov}")
     names = record.get("param_names") or []
     if "rate" in names:
         i = names.index("rate")
@@ -1953,6 +1998,74 @@ def _secular_lookup(args: Any, sta: str) -> Any:
     return secular_lookup(args.analysis_yaml or default_analysis_yaml_path(), sta)
 
 
+def confounded_rate_warnings(
+    segments: Sequence[tuple[float | None, float | None]] | None,
+    tos_events: Sequence[tuple[float, str]],
+    declared: Sequence[tuple[float, str]],
+    *,
+    stage_plan: Any | None = None,
+) -> list[str]:
+    """Warn when a rate fitted on split segments cannot be separated from a step.
+
+    Equation (the identifiability, not an estimate):
+        Fitting ``x(t) = a₀ + a₁·t + A·H(t − t_s)`` on J disjoint segments
+        with the step epoch ``t_s`` lying in a GAP between them gives, per
+        segment, one linear constraint on (a₀, a₁) plus the same constant A
+        on every segment after ``t_s``.  With J = 2 the design has rank 2 for
+        3 unknowns, so ``a₁`` and ``A`` are perfectly confounded: any rate can
+        be matched by an offsetting step.  Adding segments does not help
+        unless one of them SPANS ``t_s``.
+
+    Symbols → args:
+        - segments → ``segments``: the fit domain, a union of
+          ``(start, end)`` intervals [fractional years]
+        - t_s → epochs from ``tos_events`` / ``declared``: equipment changes
+          and declared events, any of which can carry an offset
+
+    Returns:
+        Human-readable warning lines, empty when nothing is confounded.
+
+    Measured (THOB, 2026-08-29): two clusters at 2015.778 and 2020.097 with a
+    receiver+antenna change at 2020.075 in the gap.  The fit returned a north
+    rate of −40.0 mm/yr where SENG 2.0 km away has −0.08 — the antenna offset,
+    read as four years of motion.  The gates passed it: they count epochs and
+    coverage, and this is a rank problem neither can see.
+
+    Reference:
+        Standard rank deficiency of a partitioned design (Seber & Lee,
+        *Linear Regression Analysis* 2nd ed., §3.8); the GNSS instance is the
+        offset/velocity trade-off of Williams 2003 (J. Geodesy 76) §2.
+    """
+    segments = tuple(segments or ())
+    if len(segments) < 2:
+        return []
+    if stage_plan is not None:
+        frees_secular = any(
+            "secular" in getattr(spec, "free", ()) for spec in stage_plan.stages
+        )
+        if not frees_secular:
+            return []
+    spans = sorted(
+        (float(a), float(b)) for a, b in segments if a is not None and b is not None
+    )
+    gaps = [(spans[i][1], spans[i + 1][0]) for i in range(len(spans) - 1)]
+    out: list[str] = []
+    for epoch, label in list(tos_events) + list(declared):
+        for lo, hi in gaps:
+            if lo < epoch < hi:
+                out.append(
+                    f"warning: {label.strip()} at yearf {epoch:.4f} falls in a GAP "
+                    f"between fit segments ({lo:.4f}\u2013{hi:.4f}). Any offset it "
+                    f"carries is indistinguishable from the rate: with no data "
+                    f"spanning it, a step and a slope explain the same jump. The "
+                    f"fitted rate absorbs it in full. Either extend a segment "
+                    f"ACROSS the epoch, drop the segment on one side of it, or "
+                    f"borrow the rate instead of fitting it."
+                )
+                break
+    return out
+
+
 def commit_record(
     sta: str,
     record: dict[str, Any],
@@ -2253,6 +2366,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "seen would make flag ORDER change the science",
     )
     p.add_argument(
+        "--anchor-window",
+        default=None,
+        metavar="START,END",
+        help="fractional-year window over which a CROSS-STATION store: "
+        "borrow is re-anchored to this station's own level (the donor's "
+        "offset is the donor's datum — off by tens of mm here). Default: "
+        "the full fit span. The window used is recorded in the held "
+        "group's provenance and shown in the summary. Refused if it "
+        "selects zero epochs",
+    )
+    p.add_argument(
         "--term",
         action="append",
         default=[],
@@ -2463,14 +2587,13 @@ def _print_status() -> int:
 
     # skipped = status=skip rows in the optional detrend_status.csv
     skipped: dict[str, str] = {}
-    status_path = _oc.catalog_path(
-        "detrend_status", DETREND_STATUS_FILENAME
-    )
+    status_path = _oc.catalog_path("detrend_status", DETREND_STATUS_FILENAME)
     if status_path is not None and Path(status_path).is_file():
         try:
             with open(status_path, encoding="utf-8") as f:
                 lines = [
-                    ln for ln in f.read().splitlines()
+                    ln
+                    for ln in f.read().splitlines()
                     if ln.strip() and not ln.lstrip().startswith("#")
                 ]
             for row in csv.DictReader(lines):
@@ -2583,7 +2706,7 @@ def main(argv: list[str] | None = None) -> int:
             read_detrend_params,
             station_detrend_record,
         )
-        from geo_dataread.stage_plan import resolve_stage_plan
+        from geo_dataread.stage_plan import check_stage_plan_sources
 
         def _donor(code: str) -> dict[str, Any]:
             doc = read_detrend_params(args.params or default_params_path())
@@ -2596,14 +2719,15 @@ def main(argv: list[str] | None = None) -> int:
             return dict(rec)
 
         try:
-            # component 0 only: the plan is resolved per component inside the
-            # estimator, this is the up-front existence check so a missing
-            # donor fails before any data is read.
-            # Up-front existence check only: a missing donor must fail
-            # before any data is read. The estimator re-resolves per
-            # component, since a donor hold borrows THAT component's numbers.
+            # Up-front existence check only: a missing donor or absent saved
+            # background must fail before any data is read. The estimator
+            # re-resolves per component, since a donor hold borrows THAT
+            # component's numbers. NOT resolve_stage_plan: that now refuses a
+            # cross-station store: hold without the borrower's series (it
+            # re-anchors the donor's datum against it), and no data has been
+            # read yet — the pointer check is all that can and should run.
             secular_lookup = _secular_lookup(args, sta)
-            resolve_stage_plan(
+            check_stage_plan_sources(
                 stage_plan,
                 lookup_donor=_donor,
                 component=0,
@@ -2645,6 +2769,7 @@ def main(argv: list[str] | None = None) -> int:
             stage_plan=resolved_stages,
             lookup_donor=donor_lookup,
             lookup_secular=secular_lookup,
+            anchor_window=_parse_anchor_window(args.anchor_window),
             terms_spec=args.term or None,
             segments=_resolve_cli_segments(args),
             steps=args.step or None,
@@ -2747,6 +2872,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  TOS equipment changes ({len(tos_events)}):")
         for epoch, label in tos_events:
             print(f"    {label}   yearf {epoch:.4f}")
+
+    for line in confounded_rate_warnings(
+        _resolve_cli_segments(args),
+        tos_events,
+        seismic + declared_other,
+        stage_plan=resolved_stages,
+    ):
+        print(line, file=sys.stderr)
 
     if seismic or declared_other:
         print(f"\n  declared / supplied events ({len(seismic) + len(declared_other)}):")

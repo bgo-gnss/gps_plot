@@ -824,3 +824,222 @@ holds**: the record spells them `explicit:donor:STA@<fitted_at>`, which
 `parse_hold_spec` refuses. The existing round-trip test only covers `stage:`
 holds. Nothing here depends on it, but the claim needs correcting or the
 spelling reconciling.
+
+## Cross-station borrowing: re-anchoring + the apply-only plan (2026-08-26)
+
+A `--hold GROUP=store:STA` naming ANOTHER station used to pin this station's
+LEVEL to the donor's: the stored `offset` is the intercept at t = 0 in
+absolute fractional years, so it is wildly station-specific. Measured on SENG
+holding SKSH's s(t) over [2015.5, 2019.9]: mean residual (−2.9, −30.1,
++41.5) mm N/E/U — pure datum error that lands in whatever is free.
+`geo_dataread.resolve_stage_plan` now RE-ANCHORS such a borrow at resolution
+time: only the offset is replaced (found by NAME, never position) with the
+1/σ²-weighted mean of the borrower's own residual against the datum-free
+donor model; rate and every seasonal coefficient stay the donor's verbatim.
+
+- **`--anchor-window START,END`** (workbench only) picks the averaging
+  window; absent, the full fit span is used. The window actually used shows
+  in the summary's per-group provenance line and is stored in the record —
+  `store:STA@<fitted_at> anchored [START,END]`, distinguishable both from a
+  verbatim `store:` hold and from `donor:`. A window selecting zero epochs is
+  refused, naming the station. `store:self` is untouched, byte-identical.
+- **Apply-only stage** `--stage apply:` (empty free list) + holds for every
+  group: the fully-borrowed station (ELDC, THOB — no pre-unrest data).
+  Nothing is fitted, `held_covariance="applied"`, covariance all-zero, and
+  the record carries `borrowed={from, terms: "all", donor_fitted_at}`.
+- The pre-flight existence check is `check_stage_plan_sources` — it verifies
+  pointers before any data is read; the series-needing refusal stays on
+  `resolve_stage_plan`, whose values are actually used.
+- `gps-estimate-detrend` cannot run store: holds at all today (its `main`
+  wires no `lookup_secular`), so a committed store-borrow plan re-runs only
+  through the workbench until that gap is closed.
+
+## Background borrow — the station with no clean interval (2026-08-26)
+
+The background phase asks "which intervals are clean?". For a station
+installed after the deformation started that question has no answer, and
+until now the phase had nothing to offer it. Measured on the Svartsengi
+cluster (band ELDC→SUDV, lat 63.80–63.95): **18 stations, and only SENG and
+SKSH have any data from before the 2020 unrest** — ELDC and THOB start 2021
+(bar two stray 2015 epochs), the other 14 were installed in 2024.
+
+`or borrow s(t) from:` in the background box takes a donor code and emits
+`borrow_command`:
+
+```
+gps-detrend-workbench THOB --stage apply: \
+  --hold apply:secular=store:SVAR_NOAM --hold apply:periodic=store:SVAR_NOAM
+```
+
+THOB fitting its own background:  `rate [138.62, -494.49, -33.47] mm/yr`
+THOB borrowing `SVAR_NOAM`:       `rate [  0.11,    7.41, -16.75] mm/yr`
+
+The first is the unrest, not a background. The donor's datum is NOT carried:
+the offset is re-anchored to THOB's own level (see the re-anchoring section),
+so only rate and seasonal cross.
+
+**One donor for all three components, by contract.** A secular velocity is a
+single 3-vector; north-from-A / east-from-B is not a velocity. The terms
+tickboxes select which term GROUPS are borrowed (both = apply-only, nothing
+estimated here; unticking one frees it to be fitted locally) — groups, never
+components.
+
+**The plate-frame refusal.** `getData(ref="plate")` removes a PER-STATION
+plate model, and the Svartsengi assignment is mixed: SENG/SKSH/ELDC/THOB and
+9 others are NOAM, while GRIV/AUSV/VMOS/SUDV and 3 more are EURA. Measured on
+SENG's own series through both models, **EURA − NOAM = N +2.26, E −15.97
+mm/yr** — the size of the deformation these stations are watched for. A
+crossed frame would not look like an error, it would look like an intrusion,
+so a `derived` store entry carries a `frame` and the lookup refuses to cross
+it, in the panel rather than at fit time.
+
+The deployed store carries two cluster backgrounds (`SVAR_NOAM`,
+`SVAR_EURA`), the inverse-variance mean of SENG's and SKSH's pre-2020
+backgrounds with SKSH's seasonal — SENG's horizontal annual is 2–3× every
+other station in the region and is plausibly the plant's production cycle.
+Half-separation between the two donors is N 0.14 / E 2.89 / U 1.24 mm/yr:
+the honest error on any station borrowing it, and small against a constant
+rate offset's effect on change detection (a velocity CHANGE is a change in
+slope, which a constant slope error does not hide).
+
+### The anchor is the whole point (2026-08-26)
+
+The donor supplies rate and seasonal; the **constant is this station's own**
+and has to come from somewhere in this station's series. In borrow mode the
+picked intervals therefore mean ANCHOR, not fit domain — nothing is fitted,
+so an interval can only mark where the borrowed curve sits level with the
+data. The domain is deliberately NOT narrowed: the whole series stays drawn
+against the borrowed curve, because that departure is what is being read.
+
+**This applies to a FULL borrow only.** In a partial borrow (seasonal from
+the donor, line fitted here) the datum was never borrowed, so there is
+nothing to re-anchor and the intervals keep their usual meaning — the fit
+domain. That case is the Askja manoeuvre and it *needs* the interval
+control: `katlafitlong` fits the seasonal on 2001.6-2019.5 and the line on a
+different, longer span. A first cut made every interval an anchor as soon as
+a donor was named, which left no way to say where the line is fitted.
+Verified on SKSH: `--segment 2013.9:2019.9` gives rate 0.177/9.321/-18.069,
+`--segment 2015.5:2019.9` gives 0.222/9.200/-17.210, and the emitted command
+reproduces each.
+
+Default is the full fit span, and on a station deforming throughout its
+record that mean is not a datum. Measured on THOB borrowing SENG, model minus
+data at 2021.25:
+
+| | full span | anchored 2021.0–2021.5 |
+|---|---|---|
+| north | **+295.9 mm** | −0.6 mm |
+| east | **−966.3 mm** | −0.2 mm |
+| up | −80.8 mm | +1.3 mm |
+
+Unanchored, the curve floats at the mean of a series that moved metres. The
+panel says so when no interval is picked rather than leaving it to be noticed
+on the plot.
+
+### `store:` vs `donor:` — two stores, one datum problem (2026-08-26)
+
+The two hold kinds read different objects and that distinction is real:
+
+| | reads | holds | stations |
+|---|---|---|---|
+| `store:STA` | `analysis.yaml` `detrend.secular` | s(t) as a component | 18 |
+| `donor:STA` | `detrend_params.json` | the finished f(t); the hold takes only the named group out of it | 53 |
+
+So `donor:` is the one most stations actually have, and a `--hold
+secular=store:X` failure on a station that has a record is usually asking for
+`donor:X` instead. The lookup's error message now says so.
+
+**Both are re-anchored.** The datum problem belongs to the hold KIND, not the
+store: the offset in either object is the level of the station it was fitted
+on. Measured, THOB holding SENG through `donor:`, before the fix: +75.3 /
+-34.3 / -124.6 mm N/E/U off THOB's own data, with `--anchor-window` silently
+ignored on that path. After: -0.5 / -0.2 / +1.3, identical to the `store:`
+route. Provenance keeps the kinds distinct (`donor:SENG@… anchored […]`).
+
+The split the fix makes explicit: **the donor's RATE crosses, its DATUM does
+not.** Pointer semantics are unchanged — re-estimate a donor and every
+borrower's rate follows — but the level is now the borrower's own.
+
+### The legacy manoeuvre, and when to prefer it (detrend-OLAC)
+
+`gps_data_analyses/detrend-OLAC/detrend_test.py::katlafitlong` (lines
+422-439) applies parameters between stations without ever transferring a
+polynomial:
+
+```python
+pb, _  = fittimes(lineperiodic, syearf, sdata, sDdata, p0=p0)   # clean window
+ddata  = detrend(yearf, data, Ddata, fitfunc=periodic, p=pb)    # seasonal ONLY
+pl1, _ = fittimes(line, ryearf, rdata, rDdata)                  # line, full span
+data   = detrend(yearf, data, Ddata, fitfunc=line, p=pl1)       # remove it
+```
+
+The load-bearing detail is that the legacy `periodic(x, p0..p5)` **silently
+ignores p0 and p1**, so a whole `lineperiodic` vector can be handed to it and
+only the seasonal is evaluated. The level and trend are then re-estimated on
+the target's own series. That is why `detrend_itrf2008.csv` has no offset
+column and why the legacy never had the datum problem: **the seasonal
+transfers, the polynomial is always local.**
+
+Our grammar spells it directly:
+
+```
+--stage fit:secular --hold fit:periodic=store:<donor>
+```
+
+Measured on SKSH borrowing SENG's seasonal versus fitting its own:
+rms 2.17/1.84/4.24 vs 2.03/1.73/4.06 mm, rate 0.18/9.32/-18.07 vs
+0.20/9.34/-18.11 mm/yr. No anchoring is involved — `periodic` has no DC term,
+so the re-anchor pass skips it by construction.
+
+**Prefer this wherever the station's own trend is usable.** It cannot go
+wrong: no datum and no rate cross. Holding `secular` as well is for the case
+the legacy never had — a station whose local trend IS the deformation
+(ELDC free-fits at -494 mm/yr east), and that is what the re-anchoring above
+exists for. In the Qt picker the terms tickboxes select between them, and **naming a
+donor defaults to seasonal-only** (2026-08-26): `linear` is unticked on the
+TRANSITION into borrowing, once. After that the boxes are the operator's — a
+deliberate decision to borrow the rate too survives re-editing the donor
+field, which it would not if the default reapplied on every edit. Clearing
+the donor restores `linear`, because fitting needs it (a background with the
+linear term off is a model no `--model` value can express).
+
+### The picker resolves the donor code against both stores (2026-08-29)
+
+The CLI grammar refuses to infer a hold kind — `stage:`, `donor:` and
+`store:` produce different provenance, so a bare value is an error. The
+picker sits above that grammar and can resolve: it tries the secular store
+first (the purpose-built object), falls back to the finished record, and
+**spells the kind it found into the emitted command**. Nothing is inferred
+downstream; the command still reproduces the figure.
+
+This matters because the two stores are very unevenly populated — on
+2026-08-29, 72 stations have a finished record and 37 a saved background.
+Typing `HS02` used to dead-end on "has no saved background" even though the
+station had a perfectly good record.
+
+| donor | resolves to | emitted |
+|---|---|---|
+| SENG (both) | secular store | `--hold fit:periodic=store:SENG` |
+| HS02 (record only) | finished record, with a note | `--hold fit:periodic=donor:HS02` |
+| NOPE (neither) | refused, naming both stores | — |
+
+## ⚠️ The secular store is operator state, not deployable config
+
+`deploy.py` overwrote `~/.config/gpsconfig/analysis.yaml` on **2026-08-27
+12:19**, replacing 1310 lines with the repo's 109-line skeleton and
+destroying **38 curated secular backgrounds**. The file was in
+`SHARED_CONFIGS` and in neither `PROTECTED_CONFIGS` nor `NEVER_WRITE`.
+
+37 were reconstructed (16 from a backup as-saved, 19 rebuilt from
+`detrend_params.json` via `secular_from_record`, 2 cluster entries from a
+working copy); THOB had no record and was lost. Fidelity of the rebuild,
+measured on the 16 present in both sources: 15 bit-identical, DYNC differing
+(rate 0.079 mm/yr, seasonal 0.287 mm) because its saved background was fitted
+on different segments than its committed record.
+
+`analysis.yaml` is now in `deploy.py`'s `NEVER_WRITE` and out of
+`SHARED_CONFIGS`. The lesson generalises: **anything `--save-secular` or
+`--commit` merge-writes one station at a time is operator state**, and the
+deploy lists have to know it — `detrend_params.json` already did, and the
+comment above `NEVER_WRITE` had warned that "safe by omission is precisely
+how such a thing breaks two years later".

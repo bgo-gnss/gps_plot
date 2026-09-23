@@ -1632,3 +1632,131 @@ def test_a_store_hold_without_a_saved_background_is_refused(gpsconfig, tmp_path)
         ]
     )
     assert rc == 4, "expected a refusal, not a fit"
+
+
+def test_parse_anchor_window_happy_and_refusals():
+    """--anchor-window START,END: parsed, and its refusals mirror the
+    resolver's (degenerate window, malformed bounds) before any data is
+    read."""
+    from gps_plot.detrend_workbench import _parse_anchor_window
+
+    assert _parse_anchor_window(None) is None
+    assert _parse_anchor_window("2021.0,2021.5") == (2021.0, 2021.5)
+    for bad in ("2021.0", "a,b", "2021.5,2021.0", "2021.0,2021.0"):
+        with pytest.raises(SystemExit):
+            _parse_anchor_window(bad)
+
+
+def test_summarise_shows_held_group_provenance():
+    """The anchor window actually used must be visible in the printed
+    summary, not only inside the stored record: summarise renders every
+    non-self group provenance line, including the 'anchored [START,END]'
+    note of a re-anchored cross-station borrow."""
+    from gps_plot.detrend_workbench import summarise
+
+    record = {
+        "model": "lineperiodic",
+        "components": [],
+        "groups": {
+            "secular": {
+                "indices": [0, 1],
+                "stage": "apply",
+                "provenance": "store:SENG@2026-08-01 anchored [2021.0,2021.5]",
+            },
+            "periodic": {
+                "indices": [2, 3, 4, 5],
+                "stage": "apply",
+                "provenance": "store:SENG@2026-08-01",
+            },
+            "step": {"indices": [6], "stage": "fit", "provenance": "self"},
+        },
+    }
+    text = summarise(record, "ELDC")
+    assert "store:SENG@2026-08-01 anchored [2021.0,2021.5]" in text
+    assert "periodic       store:SENG@2026-08-01" in text
+    assert "self" not in text.split("borrowed")[1]  # self groups stay silent
+
+
+class TestConfoundedRateWarning:
+    """A rate fitted on split segments, with a step in the gap, is not a rate.
+
+    Measured on THOB (2026-08-29): clusters at 2015.778 and 2020.097, a
+    receiver+antenna change at 2020.075 between them. The fit returned north
+    -40.0 mm/yr where SENG 2.0 km away has -0.08 -- the antenna offset read
+    as four years of motion. Every validity gate passed: they count epochs
+    and coverage, and this is a rank problem neither can see.
+    """
+
+    def test_an_epoch_in_the_gap_is_flagged(self) -> None:
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        out = confounded_rate_warnings(
+            [(2015.76, 2015.79), (2020.08, 2020.11)],
+            [(2020.0751, "2020-01-28 (ant SEPCHOKE_B3E6)")],
+            [],
+        )
+        assert len(out) == 1
+        assert "2020.0751" in out[0] and "GAP" in out[0]
+
+    def test_an_epoch_INSIDE_a_segment_is_not(self) -> None:
+        """Data spanning the step is exactly what makes it estimable."""
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.0, 2021.0), (2022.0, 2023.0)],
+                [(2020.0751, "ant change")],
+                [],
+            )
+            == []
+        )
+
+    def test_one_segment_cannot_have_a_gap(self) -> None:
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.0, 2023.0)], [(2020.0751, "ant change")], []
+            )
+            == []
+        )
+
+    def test_silent_when_the_rate_is_not_being_fitted(self) -> None:
+        """Borrowing the rate is the FIX the warning recommends, so a plan
+        that holds `secular` must not then be nagged about it."""
+        import dataclasses
+
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        @dataclasses.dataclass
+        class _Spec:
+            free: tuple[str, ...]
+
+        @dataclasses.dataclass
+        class _Plan:
+            stages: tuple[_Spec, ...]
+
+        assert (
+            confounded_rate_warnings(
+                [(2015.76, 2015.79), (2020.08, 2020.11)],
+                [(2020.0751, "ant change")],
+                [],
+                stage_plan=_Plan((_Spec(()),)),
+            )
+            == []
+        )
+        assert confounded_rate_warnings(
+            [(2015.76, 2015.79), (2020.08, 2020.11)],
+            [(2020.0751, "ant change")],
+            [],
+            stage_plan=_Plan((_Spec(("secular",)),)),
+        )
+
+    def test_declared_events_count_too(self) -> None:
+        """A seismic event in the gap carries an offset just as an antenna
+        change does; the identifiability problem does not care which."""
+        from gps_plot.detrend_workbench import confounded_rate_warnings
+
+        assert confounded_rate_warnings(
+            [(2015.0, 2016.0), (2020.0, 2021.0)], [], [(2018.3, "M6.0")]
+        )

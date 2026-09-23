@@ -212,6 +212,10 @@ def _install_gps_views_stub(
         calls["window_sta"] = sta
         return tuple(windows), None
 
+    def resolve_excluded_epochs(sta, exclude_epochs=None):
+        calls["exclude_sta"] = sta
+        return (), None
+
     def resolve_outlier_detection(
         sta, *, outlier_params=None, min_outlier=None, outlier_overrides=None
     ):
@@ -239,6 +243,7 @@ def _install_gps_views_stub(
 
     gps_views.station_step_epochs = station_step_epochs
     gps_views.resolve_protect_windows = resolve_protect_windows
+    gps_views.resolve_excluded_epochs = resolve_excluded_epochs
     gps_views.resolve_outlier_detection = resolve_outlier_detection
     gps_views.detect_view_outliers = detect_view_outliers
     package = types.ModuleType("geo_dataread")
