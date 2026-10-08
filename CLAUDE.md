@@ -118,7 +118,10 @@ Defaults to `--ref plate`; every `--ref`/`--view` works. A **detrended**
 baseline refuses an end without a stored record (it would difference
 detrended against plate). Titles name both stations and both plates when
 they differ; files are `VFLN_VFLS-baseline-<ref>…` (underscore, because the
-publish convention splits on `-`). The same change made `--view detrended`
+publish convention splits on `-`). `--show-ends` also draws both stations'
+own series behind the baseline (A light grey, B dark grey, both zeroed at the
+baseline's first common epoch, so red = their visible gap; files `-ends`).
+The same change made `--view detrended`
 work at all — plotTime used to reject it — and tags its files `-detrended`.
 
 ## Dev-viz → `docs/dev-viz.md` 📄

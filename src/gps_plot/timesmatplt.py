@@ -659,6 +659,7 @@ def plotTime(
     annotate_steps: bool | Sequence[str] | None = False,
     steps_catalog: str | None = None,
     params: str | None = None,
+    show_ends: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -816,6 +817,18 @@ def plotTime(
         # Per-station overlays do not survive differencing (their epochs and
         # masks belong to one end); the masked epochs are NaN in the baseline.
         outliers = provisional = None
+        if show_ends:
+            # each end referenced to the baseline's first common epoch, so
+            # the baseline is exactly the visible difference of the two
+            ends_zeroed = []
+            for e in ends:
+                ref_i = int(np.argmin(np.abs(np.asarray(e.yearf) - yearf[0])))
+                d = np.array(e.data, dtype=float)
+                for c in range(d.shape[0]):
+                    finite = np.flatnonzero(np.isfinite(d[c, ref_i:]))
+                    if finite.size:
+                        d[c] = d[c] - d[c, ref_i + finite[0]]
+                ends_zeroed.append((list(gpsr.toDateTime(e.yearf)), d))
         aborts = [e.aborted for e in ends if e.aborted is not None]
         aborted = [any(c) for c in zip(*aborts)] if aborts else None
 
@@ -845,6 +858,16 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
     )
+
+    if show_ends:
+        if pair is None:
+            warnings.warn(
+                f"{sta}: --show-ends applies to baselines (AAAA-BBBB) only; ignored",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            fig = add_baseline_ends(fig, pair, ends_zeroed)
 
     if outliers is not None and not hide_outliers:
         # cleaned view: flagged epochs overlaid in grey on top of the masked
@@ -941,6 +964,8 @@ def plotTime(
             filend += "-cleaned"
         elif view == "detrended":
             filend += "-detrended"
+        if show_ends and pair is not None:
+            filend += "-ends"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType != "TOT":
@@ -1160,6 +1185,52 @@ def stdTimesPlot(
     if highlight_last:
         fig = addPoints(x[-1], [y[i][-1] for i in range(3)], fig)
 
+    return fig
+
+
+#: ``--show-ends``: the baseline's two stations behind the red baseline
+#: points — A (the minuend) light, B (the subtrahend) dark.
+BASELINE_END_COLORS = ("#a6a6a6", "#4d4d4d")
+
+
+def add_baseline_ends(
+    fig: Figure,
+    pair: tuple[str, str],
+    ends: Sequence[tuple[Any, Any]],
+) -> Figure:
+    """Draw a baseline's two stations behind it, in two greys, with a legend.
+
+    ``ends`` holds ``(x, data)`` per station, already referenced to the
+    baseline's first common epoch, so the red baseline points are exactly
+    the visible gap between the two grey series. Markers only — two more
+    sets of error bars would bury the baseline — and drawn at a lower
+    z-order so the baseline stays on top.
+    """
+    from matplotlib.lines import Line2D
+
+    for (x, data), color in zip(ends, BASELINE_END_COLORS, strict=True):
+        for i in range(3):
+            fig.axes[i].plot(
+                x,
+                data[i],
+                linestyle="none",
+                marker="o",
+                markersize=2.5,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                zorder=1.5,
+            )
+    handles = [
+        Line2D([], [], ls="none", marker="o", markersize=4, color="r"),
+        *(
+            Line2D([], [], ls="none", marker="o", markersize=4, color=c)
+            for c in BASELINE_END_COLORS
+        ),
+    ]
+    labels = [f"{pair[0]} $-$ {pair[1]}", pair[0], pair[1]]
+    fig.axes[0].legend(
+        handles, labels, loc="best", fontsize="small", framealpha=0.8, numpoints=1
+    )
     return fig
 
 
