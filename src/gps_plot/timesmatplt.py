@@ -44,7 +44,6 @@ __version__ = "$Revision: 0.2 $"[11:-2]
 import dataclasses
 import datetime
 import os
-import re
 import warnings
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -58,6 +57,12 @@ import matplotlib.pyplot as plt
 import matplotlib.style
 import numpy as np
 from gtimes.timefunc import currDate, currDatetime, currTime, currYearfDate, toDatetimel
+
+# The baseline layer (parsing, matching, differencing, the referenced ends,
+# the mixed-view check) is numpy-only and lives in geo_dataread so every
+# consumer forms a baseline the same way; this module only draws it.
+from geo_dataread.baseline import baseline as compute_baseline
+from geo_dataread.baseline import check_same_view, split_baseline
 from matplotlib import transforms
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -174,16 +179,6 @@ class StationTitle:
     status: str
     created: str
     status_color: tuple[float, float, float]
-
-
-#: ``AAAA-BBBB``: a baseline from station AAAA to station BBBB.
-_BASELINE_RE = re.compile(r"^([A-Za-z0-9]{4})-([A-Za-z0-9]{4})$")
-
-
-def split_baseline(sta: str) -> tuple[str, str] | None:
-    """``"VFLN-VFLS"`` → ``("VFLN", "VFLS")``; a plain station → ``None``."""
-    m = _BASELINE_RE.match(sta)
-    return (m.group(1).upper(), m.group(2).upper()) if m else None
 
 
 def baseline_file_stem(sta: str) -> str:
@@ -659,6 +654,7 @@ def plotTime(
     annotate_steps: bool | Sequence[str] | None = False,
     steps_catalog: str | None = None,
     params: str | None = None,
+    show_ends: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -795,29 +791,26 @@ def plotTime(
         yearf, data, Ddata = one.yearf, one.data, one.Ddata
         outliers, provisional, aborted = one.outliers, one.provisional, one.aborted
     else:
-        from geo_dataread import gps_views as _gvb
-
         if tType == "JOIN":
             raise ValueError(f"baseline {sta}: tType JOIN is not supported")
         ends = [station_series(s, **series_kw) for s in pair]
         if view == "detrended" or ref == "detrend":
-            missing = [s for s, e in zip(pair, ends) if not e.detrend_applied]
-            if missing:
-                raise ValueError(
-                    f"baseline {sta}: the detrended view needs a stored record "
-                    f"for BOTH stations; {', '.join(missing)} has none, so the "
-                    "baseline would difference a detrended series against a "
-                    "plate one. Use --ref plate, or curate the missing record."
-                )
-        yearf, data, Ddata = _gvb.baseline_arrays(
+            check_same_view(pair, [e.detrend_applied for e in ends], spec=sta)
+        bl = compute_baseline(
             (ends[0].yearf, ends[0].data, ends[0].Ddata),
             (ends[1].yearf, ends[1].data, ends[1].Ddata),
+            stations=pair,
         )
+        yearf, data, Ddata = bl.yearf, bl.data, bl.sigma
         # Per-station overlays do not survive differencing (their epochs and
         # masks belong to one end); the masked epochs are NaN in the baseline.
         outliers = provisional = None
         aborts = [e.aborted for e in ends if e.aborted is not None]
         aborted = [any(c) for c in zip(*aborts)] if aborts else None
+        if show_ends:
+            # the data layer already referenced both ends to the baseline's
+            # zero epoch; only the time axis is converted here
+            ends_zeroed = [(list(gpsr.toDateTime(t)), d) for t, d in bl.ends]
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
@@ -845,6 +838,16 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
     )
+
+    if show_ends:
+        if pair is None:
+            warnings.warn(
+                f"{sta}: --show-ends applies to baselines (AAAA-BBBB) only; ignored",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            fig = add_baseline_ends(fig, pair, ends_zeroed)
 
     if outliers is not None and not hide_outliers:
         # cleaned view: flagged epochs overlaid in grey on top of the masked
@@ -941,6 +944,8 @@ def plotTime(
             filend += "-cleaned"
         elif view == "detrended":
             filend += "-detrended"
+        if show_ends and pair is not None:
+            filend += "-ends"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType != "TOT":
@@ -1160,6 +1165,57 @@ def stdTimesPlot(
     if highlight_last:
         fig = addPoints(x[-1], [y[i][-1] for i in range(3)], fig)
 
+    return fig
+
+
+#: ``--show-ends``: the baseline's two stations behind the red baseline
+#: points — A (the minuend) light, B (the subtrahend) dark.
+BASELINE_END_COLORS = ("#a6a6a6", "#4d4d4d")
+
+
+def add_baseline_ends(
+    fig: Figure,
+    labels: tuple[str, str],
+    ends: Sequence[tuple[Any, Any]],
+) -> Figure:
+    """Draw a baseline's two stations behind it, in two greys, with a legend.
+
+    Presentation only: ``ends`` comes from
+    :attr:`geo_dataread.baseline.Baseline.ends` (time axis converted to
+    datetimes by the caller), ``labels`` names the two series. Works on any
+    figure with three component axes, not only one built by plotTime.
+
+    ``ends`` holds ``(x, data)`` per station, already referenced to the
+    baseline's first common epoch, so the red baseline points are exactly
+    the visible gap between the two grey series. Markers only — two more
+    sets of error bars would bury the baseline — and drawn at a lower
+    z-order so the baseline stays on top.
+    """
+    from matplotlib.lines import Line2D
+
+    for (x, data), color in zip(ends, BASELINE_END_COLORS, strict=True):
+        for i in range(3):
+            fig.axes[i].plot(
+                x,
+                data[i],
+                linestyle="none",
+                marker="o",
+                markersize=3.5,  # same as the baseline points (addData)
+                markerfacecolor=color,
+                markeredgecolor=color,
+                zorder=1.5,
+            )
+    handles = [
+        Line2D([], [], ls="none", marker="o", markersize=4, color="r"),
+        *(
+            Line2D([], [], ls="none", marker="o", markersize=4, color=c)
+            for c in BASELINE_END_COLORS
+        ),
+    ]
+    names = [f"{labels[0]} $-$ {labels[1]}", labels[0], labels[1]]
+    fig.axes[0].legend(
+        handles, names, loc="best", fontsize="small", framealpha=0.8, numpoints=1
+    )
     return fig
 
 

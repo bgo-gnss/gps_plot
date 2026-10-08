@@ -110,15 +110,23 @@ and cannot see a decision that lives only inside it. Detail in the lane doc.
 `plot-gps-timeseries VFLN-VFLS` plots the **baseline** A − B instead of one
 station: N/E/U differences on common days (matched within half a day, never
 by float equality), re-zeroed at the first common epoch, σ combined in
-quadrature (conservative — common-mode errors are counted twice). The pure
-differencing is `geo_dataread.gps_views.baseline_arrays` (so `gps_api` can
-serve the same thing); both ends go through ONE per-station pipeline,
-`timesmatplt.station_series` (read → clean → remove steps → detrend).
+quadrature (conservative — common-mode errors are counted twice).
+**Layering, for reuse:** everything that is not drawing lives in
+`geo_dataread.baseline` (numpy only — parsing, day matching, the difference,
+both ends referenced alike, the mixed-view check), so `gps_api` or a notebook
+forms the same baseline from `read_gps_view` output. gps_plot keeps only
+presentation: titles, `baseline_file_stem`, `add_baseline_ends(fig, labels,
+ends)` (works on any 3-axis figure). Both ends of a plotted baseline go
+through ONE per-station pipeline, `timesmatplt.station_series` (which
+partly duplicates `read_gps_view` — unifying them is a separate refactor).
 Defaults to `--ref plate`; every `--ref`/`--view` works. A **detrended**
 baseline refuses an end without a stored record (it would difference
 detrended against plate). Titles name both stations and both plates when
 they differ; files are `VFLN_VFLS-baseline-<ref>…` (underscore, because the
-publish convention splits on `-`). The same change made `--view detrended`
+publish convention splits on `-`). `--show-ends` also draws both stations'
+own series behind the baseline (A light grey, B dark grey, both zeroed at the
+baseline's first common epoch, so red = their visible gap; files `-ends`).
+The same change made `--view detrended`
 work at all — plotTime used to reject it — and tags its files `-detrended`.
 
 ## Dev-viz → `docs/dev-viz.md` 📄

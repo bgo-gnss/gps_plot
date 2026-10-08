@@ -544,6 +544,14 @@ def main():
         "— unlike --ref detrend which keeps step offsets visible)",
     )
     parser.add_argument(
+        "--show-ends",
+        action="store_true",
+        help="baselines only (AAAA-BBBB): also draw each station's own "
+        "series behind the baseline, AAAA light grey and BBBB dark grey, "
+        "both referenced to the baseline's first common epoch so the red "
+        "baseline is their visible difference. Adds -ends to the file name",
+    )
+    parser.add_argument(
         "--tType",
         type=str,
         default="TOT",

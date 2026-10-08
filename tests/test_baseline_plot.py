@@ -173,3 +173,56 @@ def test_save_creates_a_missing_output_directory(tmp_path, capsys) -> None:
     tplt.saveFig(str(target), "png", fig)
     assert (tmp_path / "not" / "there" / "plot.png").is_file()
     assert "created output directory" in capsys.readouterr().out
+
+
+def test_show_ends_draws_both_stations_behind_the_baseline(
+    monkeypatch, tmp_path
+) -> None:
+    n = 30
+    ramp = np.arange(n, dtype=float)
+    a = np.vstack([3 * ramp + 7, ramp, ramp])
+    b = np.vstack([ramp + 2, ramp, ramp])
+    _stub(monkeypatch, {"AAAA": a, "BBBB": b}, n)
+    _, saved = _capture(monkeypatch)
+    fig = tplt.plotTime(
+        "AAAA-BBBB",
+        ref="itrf2008",
+        show_ends=True,
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        special="90d",
+    )
+    greys = {
+        c: [ln for ln in fig.axes[0].get_lines() if ln.get_markerfacecolor() == c]
+        for c in tplt.BASELINE_END_COLORS
+    }
+    a_line, b_line = (
+        greys[tplt.BASELINE_END_COLORS[0]][0],
+        greys[tplt.BASELINE_END_COLORS[1]][0],
+    )
+    # both ends start at 0 at the baseline's first epoch, so A − B is the baseline
+    np.testing.assert_allclose(a_line.get_ydata(), 3 * ramp)
+    np.testing.assert_allclose(b_line.get_ydata(), ramp)
+    assert a_line.get_zorder() < 2  # behind the red baseline points
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert labels[1:] == ["AAAA", "BBBB"]
+    assert saved == [str(tmp_path / "AAAA_BBBB-baseline-itrf2008-ends-90d")]
+
+
+def test_show_ends_on_a_single_station_warns_and_is_ignored(
+    monkeypatch, tmp_path
+) -> None:
+    _stub(monkeypatch, {"AAAA": np.zeros((3, 30))})
+    _, saved = _capture(monkeypatch)
+    with pytest.warns(UserWarning, match="baselines"):
+        tplt.plotTime(
+            "AAAA",
+            ref="itrf2008",
+            show_ends=True,
+            save="png",
+            figDir=str(tmp_path),
+            logo=False,
+            special="90d",
+        )
+    assert saved == [str(tmp_path / "AAAA-itrf2008-90d")]
