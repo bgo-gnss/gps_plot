@@ -227,8 +227,9 @@ def make_title(
 
     pair = split_baseline(sta)
     if pair:
-        # a baseline names both ends, and says it is a baseline
-        NameStr = "%s -- %s" % (full_name(pair[0]), full_name(pair[1]))
+        # a baseline names both ends by MARKER only: two full station names
+        # overflow the title line (BGÓ 2026-10-08, VFLN–VFLS)
+        NameStr = "%s -- %s" % pair
         refFr = "Baseline, reference frame: %s" % ref
     else:
         NameStr = full_name(sta)
