@@ -161,3 +161,15 @@ def test_detrended_view_is_accepted_and_tagged(monkeypatch, tmp_path) -> None:
     )
     assert saved == [str(tmp_path / "AAAA-itrf2008-detrended-90d")]
     assert "detrended" in seen["title"].main
+
+
+def test_save_creates_a_missing_output_directory(tmp_path, capsys) -> None:
+    """-d to a directory that does not exist used to die in matplotlib."""
+    import matplotlib.figure
+
+    fig = matplotlib.figure.Figure()
+    fig.add_subplot().plot([0, 1])
+    target = tmp_path / "not" / "there" / "plot"
+    tplt.saveFig(str(target), "png", fig)
+    assert (tmp_path / "not" / "there" / "plot.png").is_file()
+    assert "created output directory" in capsys.readouterr().out

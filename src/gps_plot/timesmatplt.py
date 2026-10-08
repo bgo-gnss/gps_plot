@@ -1381,6 +1381,14 @@ def saveFig(
     """
     formats = _save_formats(fType)
 
+    # A missing output directory used to surface as a bare FileNotFoundError
+    # deep inside matplotlib (typically a relative -d run from another cwd).
+    # Create it, and say where, so a mistyped path is still noticed.
+    out_dir = os.path.dirname(fileName)
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"created output directory {os.path.abspath(out_dir)}")
+
     bbox: Any
     try:
         pad = float(mpl.rcParams["savefig.pad_inches"])
