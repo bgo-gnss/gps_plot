@@ -34,8 +34,11 @@ def tryTimes(sta, **kwargs):
 
     try:  # Trying to plot
         print("%s Plotting" % sta)
-        tplt.plotTime(sta, **kwargs)
-        print("plotted %s using: %s, %s" % (sta, kwargs["ref"], kwargs["special"]))
+        fig = tplt.plotTime(sta, **kwargs)
+        print(
+            "plotted %s using: %s, %s"
+            % (sta, getattr(fig, "_gps_ref", kwargs["ref"]), kwargs["special"])
+        )
     except IndexError as e:
         top = traceback.extract_stack()[-1]
         errorstr = "%s: %s, %s: " % (sta, kwargs["ref"], kwargs["special"])
@@ -466,7 +469,14 @@ def main():
         ),
     )
 
-    parser.add_argument("Stations", nargs="+", help="List of stations")
+    parser.add_argument(
+        "Stations",
+        nargs="+",
+        help="List of stations. AAAA-BBBB plots the BASELINE AAAA minus BBBB "
+        "(N/E/U differences on common days, re-zeroed at the first, sigma "
+        "combined in quadrature); it defaults to --ref plate and can be "
+        "mixed with single stations, e.g. VFLN-VFLS VFLN",
+    )
     parser.add_argument(
         "--events", nargs="+", default=None, help="list of individual events to add"
     )
@@ -515,9 +525,12 @@ def main():
     parser.add_argument(
         "--ref",
         type=str,
-        default="itrf2008",
+        default=None,
         choices=ref_allow,
-        help="Reference frame: defaults to itrf2008, remove plate velocity (plate), detrend (subtract rate + seasonal — step offsets remain visible)",
+        help="Reference frame: itrf2008, remove plate velocity (plate), detrend "
+        "(subtract rate + seasonal — step offsets remain visible). Default: "
+        "plate for a baseline (AAAA-BBBB) or --view detrended, itrf2008 "
+        "otherwise",
     )
     parser.add_argument(
         "--view",

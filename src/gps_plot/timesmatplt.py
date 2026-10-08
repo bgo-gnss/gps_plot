@@ -44,6 +44,7 @@ __version__ = "$Revision: 0.2 $"[11:-2]
 import dataclasses
 import datetime
 import os
+import re
 import warnings
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -175,6 +176,27 @@ class StationTitle:
     status_color: tuple[float, float, float]
 
 
+#: ``AAAA-BBBB``: a baseline from station AAAA to station BBBB.
+_BASELINE_RE = re.compile(r"^([A-Za-z0-9]{4})-([A-Za-z0-9]{4})$")
+
+
+def split_baseline(sta: str) -> tuple[str, str] | None:
+    """``"VFLN-VFLS"`` → ``("VFLN", "VFLS")``; a plain station → ``None``."""
+    m = _BASELINE_RE.match(sta)
+    return (m.group(1).upper(), m.group(2).upper()) if m else None
+
+
+def baseline_file_stem(sta: str) -> str:
+    """Filename stem: ``VFLN_VFLS-baseline`` for a baseline, else ``sta``.
+
+    Not ``VFLN-VFLS``: the publish globs and the ``{STA}-{ref}-…`` naming
+    convention split on ``-``, so a hyphenated pair would read as station
+    ``VFLN`` with reference frame ``VFLS``.
+    """
+    pair = split_baseline(sta)
+    return f"{pair[0]}_{pair[1]}-baseline" if pair else sta
+
+
 def make_title(
     sta: str,
     lastData: datetime.datetime,
@@ -193,19 +215,27 @@ def make_title(
 
     timeofPlot = currTime("(Plot created on %b %d %Y %H:%M %Z)")
 
-    # station full name from the station config, marker as fallback
-    try:
-        import gps_parser as cp
+    def full_name(marker: str) -> str:
+        # station full name from the station config, marker as fallback
+        try:
+            import gps_parser as cp
 
-        stName = cp.ConfigParser().get_config(sta, "station_name")
-    except Exception:
-        stName = sta
-    stName = convLatex(stName)
+            name = cp.ConfigParser().get_config(marker, "station_name")
+        except Exception:
+            name = marker
+        return "%s (%s)" % (convLatex(name), marker)
 
-    NameStr = "%s (%s)" % (stName, sta)
+    pair = split_baseline(sta)
+    if pair:
+        # a baseline names both ends by MARKER only: two full station names
+        # overflow the title line (BGÓ 2026-10-08, VFLN–VFLS)
+        NameStr = "%s -- %s" % pair
+        refFr = "Baseline, reference frame: %s" % ref
+    else:
+        NameStr = full_name(sta)
+        refFr = "Reference frame: %s" % ref
     if sta == "hekla":
         NameStr = "Hekla (Summit)"
-    refFr = "Reference frame: %s" % ref
     if ref == "Multigas":
         refFr = "%s: %s" % (ref, "Uncorrected")
 
@@ -450,129 +480,62 @@ def _mask_outliers(
     return cleaned, overlay, provisional, aborted
 
 
-def plotTime(
+@dataclasses.dataclass
+class StationSeries:
+    """One station's series after the per-station view pipeline.
+
+    ``detrend_applied`` says whether a stored trajectory was actually
+    subtracted (``--view detrended`` / ``--ref detrend``): a station with
+    no record degrades to its plate series with a warning, which a
+    single-station plot can live with but a baseline cannot (it would
+    difference a detrended series against a plate one).
+    """
+
+    yearf: Any
+    data: Any
+    Ddata: Any
+    outliers: tuple[Any, Any] | None
+    provisional: tuple[Any, Any] | None
+    aborted: list[bool] | None
+    detrend_applied: bool
+
+
+def station_series(
     sta: str,
-    start: datetime.datetime | None = None,
-    end: datetime.datetime | None = None,
-    save: str | Sequence[str] | None = None,
-    ylim: Sequence[float] | Sequence[Sequence[float]] = (),
-    special: str | None = None,
-    ref: str = "itrf2008",
-    figDir: str = "",
-    events: dict[Any, Any] | None = None,
-    fix: bool = False,
-    Dir: str | None = None,
-    tType: str = "TOT",
-    uncert: int = 15,
-    logo: bool = True,
-    fig: Figure | None = None,
-    view: str = "raw",
-    name: str | None = None,
+    *,
+    fstart: float | None,
+    fend: float | None,
+    ref: str,
+    Dir: str | None,
+    tType: str,
+    uncert: int,
+    view: str,
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
-    hide_outliers: bool = False,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
-    annotate_steps: bool | Sequence[str] | None = False,
     steps_catalog: str | None = None,
     params: str | None = None,
-) -> Figure:
-    """Plot a standard GPS North/East/Up time series for one station.
+) -> StationSeries:
+    """Read one station and apply the requested view: clean, remove steps, detrend.
 
-    Reads the series (``geo_dataread``), builds the figure and either saves
-    it (``save`` = format or list/comma-string of formats, e.g. ``"png"``
-    or ``"eps,pdf,png"`` -- each written by one native ``savefig``) or
-    shows it interactively.  Returns the Figure (REPL-friendly).
-
-    ``view`` is the first-class raw|cleaned toggle of the internal delivery
-    path (geo_dataread ``gps_views``, design DESIGN_live_detrending §0):
-    ``"raw"`` (default) plots exactly before; ``"cleaned"`` masks outlier
-    epochs from the main series and overlays them as GREY points (mask only
-    — raw stays retrievable).  Use ``remove_kinds`` (--remove-steps) for
-    selective step removal per-kind from the deployed record. Degrades
-    gracefully (warning + undegraded series), so a plot never fails for a
-    view reason.
-
-    ``outlier_params`` / ``outlier_overrides`` reach the ``cleaned`` view
-    only.  Both are thresholds-level levers of
-    :func:`geo_dataread.gps_views.resolve_outlier_detection`: an explicit
-    ``OutlierParams`` beats the station's catalog row, which beats the
-    spec defaults; ``outlier_overrides`` points at a specific
-    ``outlier_overrides.csv`` instead of the deployed one.  Declared step
-    epochs and protect windows always resolve from their own catalogs —
-    see :func:`_mask_outliers` for why they are not optional.
-
-    ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
-    view.  It changes DISPLAY ONLY -- the flagged epochs are already
-    absent from the main series (masked to NaN by :func:`_mask_outliers`),
-    so this decides whether the plot still SHOWS what was set aside.  Two
-    consequences worth knowing: the y-axis tightens to the cleaned series
-    (nothing sets explicit limits unless ``ylim`` is given, so matplotlib
-    autoscales over whatever artists exist, overlay included), and the
-    figure no longer carries the evidence of what the detector removed --
-    which is exactly why the overlay is the default.
-
-    ``name`` fixes the output basename: with ``save`` set the figure is
-    written to ``<figDir>/<name>.<fmt>``, BYPASSING the
-    ref/view/tType/period filename construction entirely.  Every call with
-    the same ``name`` overwrites the same path -- that is the point (watch
-    one file in a viewer while re-rendering), but it also means a
-    multi-station or multi-variant run leaves only the last render.
+    The single per-station pipeline behind :func:`plotTime`. A baseline
+    runs BOTH of its stations through this same function, so the two ends
+    can never be prepared differently. Order: read (``getData``, in
+    ``ref``) → ``cleaned`` masking → ``remove_kinds`` step removal →
+    stored-trajectory subtraction (``view="detrended"`` subtracts the full
+    trajectory, ``ref="detrend"`` keeps the step offsets visible).
     """
-    if view not in ("raw", "cleaned"):
-        raise ValueError(f"view must be 'raw' or 'cleaned', got {view!r}")
-
-    # heavy production deps are imported lazily so the module (and the
-    # figure-building seam) stays importable without them
     import geo_dataread.gps_read as gpsr
 
-    if not save:
-        mpl.use("WebAgg")
-
-    fstart = fend = None
-    if start:
-        fstart = currYearfDate(refday=start)
-    if end:
-        fend = currYearfDate(refday=end)
-
-    # standard sub-periods for routine plots
-    if special:
-        if not end:
-            end = currDatetime(-1)
-            fend = currYearfDate(refday=end)
-
-        if special == "90d":
-            start = currDatetime(days=-91, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "year":
-            start = currDatetime(days=-366, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "fixedstart":
-            pass
-        if special == "full":
-            start = None
-            fstart = None
-
-    if not (fix or special):  # only plot the extent of the data
-        start = end = None
-
-    # graph title reference-frame string
-    if ref == "plate":
-        import geofunc.geofunc as gf
-
-        refTitle = gf.plateFullname(gf.plateDict()[sta])
-    elif ref == "detrend":
-        refTitle = "Detrended"
-    else:
-        refTitle = ref.upper()
-
-    yearf, data, Ddata, offset = gpsr.getData(
+    yearf, data, Ddata, _offset = gpsr.getData(
         sta, fstart=fstart, fend=fend, ref=ref, Dir=Dir, tType=tType, uncert=uncert
     )
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
     outliers = provisional = aborted = None
+    detrend_applied = False
     if view == "cleaned":
         data, outliers, provisional, aborted = _mask_outliers(
             sta,
@@ -656,6 +619,7 @@ def plotTime(
                                 data[_ci] = data[_ci] + np.where(
                                     _yr >= float(_ep), _amp, 0.0
                                 )
+                detrend_applied = True
             except ValueError as exc:
                 warnings.warn(
                     f"{sta}: could not apply detrend record ({exc}); "
@@ -663,6 +627,197 @@ def plotTime(
                     UserWarning,
                     stacklevel=2,
                 )
+
+    return StationSeries(
+        yearf, data, Ddata, outliers, provisional, aborted, detrend_applied
+    )
+
+
+def plotTime(
+    sta: str,
+    start: datetime.datetime | None = None,
+    end: datetime.datetime | None = None,
+    save: str | Sequence[str] | None = None,
+    ylim: Sequence[float] | Sequence[Sequence[float]] = (),
+    special: str | None = None,
+    ref: str | None = "itrf2008",
+    figDir: str = "",
+    events: dict[Any, Any] | None = None,
+    fix: bool = False,
+    Dir: str | None = None,
+    tType: str = "TOT",
+    uncert: int = 15,
+    logo: bool = True,
+    fig: Figure | None = None,
+    view: str = "raw",
+    name: str | None = None,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
+    hide_outliers: bool = False,
+    provisional_days: float | None = None,
+    remove_kinds: Sequence[str] | None = None,
+    annotate_steps: bool | Sequence[str] | None = False,
+    steps_catalog: str | None = None,
+    params: str | None = None,
+) -> Figure:
+    """Plot a standard GPS North/East/Up time series for one station.
+
+    Reads the series (``geo_dataread``), builds the figure and either saves
+    it (``save`` = format or list/comma-string of formats, e.g. ``"png"``
+    or ``"eps,pdf,png"`` -- each written by one native ``savefig``) or
+    shows it interactively.  Returns the Figure (REPL-friendly).
+
+    ``view`` is the first-class raw|cleaned toggle of the internal delivery
+    path (geo_dataread ``gps_views``, design DESIGN_live_detrending §0):
+    ``"raw"`` (default) plots exactly before; ``"cleaned"`` masks outlier
+    epochs from the main series and overlays them as GREY points (mask only
+    — raw stays retrievable).  Use ``remove_kinds`` (--remove-steps) for
+    selective step removal per-kind from the deployed record. Degrades
+    gracefully (warning + undegraded series), so a plot never fails for a
+    view reason.
+
+    ``outlier_params`` / ``outlier_overrides`` reach the ``cleaned`` view
+    only.  Both are thresholds-level levers of
+    :func:`geo_dataread.gps_views.resolve_outlier_detection`: an explicit
+    ``OutlierParams`` beats the station's catalog row, which beats the
+    spec defaults; ``outlier_overrides`` points at a specific
+    ``outlier_overrides.csv`` instead of the deployed one.  Declared step
+    epochs and protect windows always resolve from their own catalogs —
+    see :func:`_mask_outliers` for why they are not optional.
+
+    ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
+    view.  It changes DISPLAY ONLY -- the flagged epochs are already
+    absent from the main series (masked to NaN by :func:`_mask_outliers`),
+    so this decides whether the plot still SHOWS what was set aside.  Two
+    consequences worth knowing: the y-axis tightens to the cleaned series
+    (nothing sets explicit limits unless ``ylim`` is given, so matplotlib
+    autoscales over whatever artists exist, overlay included), and the
+    figure no longer carries the evidence of what the detector removed --
+    which is exactly why the overlay is the default.
+
+    ``name`` fixes the output basename: with ``save`` set the figure is
+    written to ``<figDir>/<name>.<fmt>``, BYPASSING the
+    ref/view/tType/period filename construction entirely.  Every call with
+    the same ``name`` overwrites the same path -- that is the point (watch
+    one file in a viewer while re-rendering), but it also means a
+    multi-station or multi-variant run leaves only the last render.
+    """
+    if view not in ("raw", "cleaned", "detrended"):
+        raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
+
+    # heavy production deps are imported lazily so the module (and the
+    # figure-building seam) stays importable without them
+    import geo_dataread.gps_read as gpsr
+
+    if not save:
+        mpl.use("WebAgg")
+
+    fstart = fend = None
+    if start:
+        fstart = currYearfDate(refday=start)
+    if end:
+        fend = currYearfDate(refday=end)
+
+    # standard sub-periods for routine plots
+    if special:
+        if not end:
+            end = currDatetime(-1)
+            fend = currYearfDate(refday=end)
+
+        if special == "90d":
+            start = currDatetime(days=-91, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "year":
+            start = currDatetime(days=-366, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "fixedstart":
+            pass
+        if special == "full":
+            start = None
+            fstart = None
+
+    if not (fix or special):  # only plot the extent of the data
+        start = end = None
+
+    # graph title reference-frame string
+    if ref is None:  # baselines and the detrended view default to plate
+        ref = "plate" if (split_baseline(sta) or view == "detrended") else "itrf2008"
+    if ref == "plate":
+        import geofunc.geofunc as gf
+
+        table = gf.plateDict()
+        ends = split_baseline(sta) or (sta,)
+        unknown = [s for s in ends if s not in table]
+        if unknown:
+            # the plate-removed series cannot be formed without a plate; say
+            # which catalog to fix instead of surfacing a bare KeyError
+            raise ValueError(
+                f"{sta}: no plate assigned to {', '.join(unknown)} in the "
+                "deployed station-plate catalog (postprocess.cfg platefile). "
+                "Add it in gps-config-data and deploy, or plot with --ref itrf2008."
+            )
+        plates = [gf.plateFullname(table[s]) for s in ends]
+        # a cross-rift baseline has two plates; say so rather than pick one
+        refTitle = (
+            plates[0]
+            if len(set(plates)) == 1
+            else " / ".join(
+                f"{s}: {p}" for s, p in zip(split_baseline(sta) or (), plates)
+            )
+        )
+    elif ref == "detrend":
+        refTitle = "Detrended"
+    else:
+        refTitle = ref.upper()
+    if view == "detrended" and ref != "detrend":
+        # the full stored trajectory is subtracted from the plate series; the
+        # title must say so, or it reads exactly like the plain plate plot
+        refTitle = f"{refTitle}, detrended"
+
+    pair = split_baseline(sta)
+    series_kw = dict(
+        fstart=fstart,
+        fend=fend,
+        ref=ref,
+        Dir=Dir,
+        tType=tType,
+        uncert=uncert,
+        view=view,
+        outlier_params=outlier_params,
+        outlier_overrides=outlier_overrides,
+        provisional_days=provisional_days,
+        remove_kinds=remove_kinds,
+        steps_catalog=steps_catalog,
+        params=params,
+    )
+    if pair is None:
+        one = station_series(sta, **series_kw)
+        yearf, data, Ddata = one.yearf, one.data, one.Ddata
+        outliers, provisional, aborted = one.outliers, one.provisional, one.aborted
+    else:
+        from geo_dataread import gps_views as _gvb
+
+        if tType == "JOIN":
+            raise ValueError(f"baseline {sta}: tType JOIN is not supported")
+        ends = [station_series(s, **series_kw) for s in pair]
+        if view == "detrended" or ref == "detrend":
+            missing = [s for s, e in zip(pair, ends) if not e.detrend_applied]
+            if missing:
+                raise ValueError(
+                    f"baseline {sta}: the detrended view needs a stored record "
+                    f"for BOTH stations; {', '.join(missing)} has none, so the "
+                    "baseline would difference a detrended series against a "
+                    "plate one. Use --ref plate, or curate the missing record."
+                )
+        yearf, data, Ddata = _gvb.baseline_arrays(
+            (ends[0].yearf, ends[0].data, ends[0].Ddata),
+            (ends[1].yearf, ends[1].data, ends[1].Ddata),
+        )
+        # Per-station overlays do not survive differencing (their epochs and
+        # masks belong to one end); the masked epochs are NaN in the baseline.
+        outliers = provisional = None
+        aborts = [e.aborted for e in ends if e.aborted is not None]
+        aborted = [any(c) for c in zip(*aborts)] if aborts else None
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
@@ -765,10 +920,13 @@ def plotTime(
             and not isinstance(annotate_steps, str)
             else None
         )
-        for epoch, label, color in step_annotations(
-            sta, steps_catalog, kinds=kind_filter
-        ):
-            add_event_lines(fig, [(epoch, label)], color)
+        pair = split_baseline(sta)
+        for end in pair or (sta,):
+            for epoch, label, color in step_annotations(
+                end, steps_catalog, kinds=kind_filter
+            ):
+                tag = f"{end}: {label}" if pair else label
+                add_event_lines(fig, [(epoch, tag)], color)
 
     if logo:
         inpLogo(fig)
@@ -781,6 +939,8 @@ def plotTime(
         filend = "-%s" % (ref,)
         if view == "cleaned":
             filend += "-cleaned"
+        elif view == "detrended":
+            filend += "-detrended"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType != "TOT":
@@ -797,11 +957,12 @@ def plotTime(
                 lastpoint.strftime("%Y%m%d"),
             )
 
-        fileName = os.path.join(figDir, sta + filend)
+        fileName = os.path.join(figDir, baseline_file_stem(sta) + filend)
         saveFig(fileName, save, fig)
     else:
         plt.show()
 
+    fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
     return fig
 
 
@@ -1220,6 +1381,14 @@ def saveFig(
     ``bbox_inches="tight"`` re-rendered the figure to measure it).
     """
     formats = _save_formats(fType)
+
+    # A missing output directory used to surface as a bare FileNotFoundError
+    # deep inside matplotlib (typically a relative -d run from another cwd).
+    # Create it, and say where, so a mistyped path is still noticed.
+    out_dir = os.path.dirname(fileName)
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"created output directory {os.path.abspath(out_dir)}")
 
     bbox: Any
     try:
