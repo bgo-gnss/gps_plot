@@ -744,9 +744,18 @@ def plotTime(
     if ref == "plate":
         import geofunc.geofunc as gf
 
-        plates = [
-            gf.plateFullname(gf.plateDict()[s]) for s in (split_baseline(sta) or (sta,))
-        ]
+        table = gf.plateDict()
+        ends = split_baseline(sta) or (sta,)
+        unknown = [s for s in ends if s not in table]
+        if unknown:
+            # the plate-removed series cannot be formed without a plate; say
+            # which catalog to fix instead of surfacing a bare KeyError
+            raise ValueError(
+                f"{sta}: no plate assigned to {', '.join(unknown)} in the "
+                "deployed station-plate catalog (postprocess.cfg platefile). "
+                "Add it in gps-config-data and deploy, or plot with --ref itrf2008."
+            )
+        plates = [gf.plateFullname(table[s]) for s in ends]
         # a cross-rift baseline has two plates; say so rather than pick one
         refTitle = (
             plates[0]
