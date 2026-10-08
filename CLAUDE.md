@@ -105,6 +105,22 @@ three places a batch re-run must find — `detrend_params.json` plus two
 `analysis.yaml` keys — because `gps-estimate-detrend` RECOMPUTES the record
 and cannot see a decision that lives only inside it. Detail in the lane doc.
 
+## Baselines (2026-10-08)
+
+`plot-gps-timeseries VFLN-VFLS` plots the **baseline** A − B instead of one
+station: N/E/U differences on common days (matched within half a day, never
+by float equality), re-zeroed at the first common epoch, σ combined in
+quadrature (conservative — common-mode errors are counted twice). The pure
+differencing is `geo_dataread.gps_views.baseline_arrays` (so `gps_api` can
+serve the same thing); both ends go through ONE per-station pipeline,
+`timesmatplt.station_series` (read → clean → remove steps → detrend).
+Defaults to `--ref plate`; every `--ref`/`--view` works. A **detrended**
+baseline refuses an end without a stored record (it would difference
+detrended against plate). Titles name both stations and both plates when
+they differ; files are `VFLN_VFLS-baseline-<ref>…` (underscore, because the
+publish convention splits on `-`). The same change made `--view detrended`
+work at all — plotTime used to reject it — and tags its files `-detrended`.
+
 ## Dev-viz → `docs/dev-viz.md` 📄
 
 `dev_viz.py` — three shared-axis panels for one station/component (observed +
@@ -155,7 +171,8 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-08-26 — cross-station borrow re-anchoring +
+*Last reviewed: 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
 the lane docs, history in `git log --follow CLAUDE.md docs/`).*
