@@ -1200,7 +1200,7 @@ def add_baseline_ends(
                 data[i],
                 linestyle="none",
                 marker="o",
-                markersize=2.5,
+                markersize=3.5,  # same as the baseline points (addData)
                 markerfacecolor=color,
                 markeredgecolor=color,
                 zorder=1.5,
