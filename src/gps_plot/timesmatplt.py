@@ -657,6 +657,8 @@ def plotTime(
     show_ends: bool = False,
     baseline_rho: Sequence[float] | None = None,
     baseline_sigma_scale: tuple[Sequence[float], Sequence[float]] | None = None,
+    baseline_sigma: str = "formal",
+    baseline_noise: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -706,6 +708,14 @@ def plotTime(
     the shared daily-error fraction per component and each station's
     σ scale factor (``gps_analysis.empirical_sigma``). The ends drawn by
     ``show_ends`` keep their FORMAL σ.
+
+    ``baseline_sigma="empirical"`` derives them from the fitted record
+    (``geo_dataread.baseline_noise``; ``baseline_noise`` overrides its
+    path): the pair's OWN shared fraction once it has enough consecutive
+    common days, else ρ at the stations' distance (stations.cfg
+    coordinates); each station's scale k, or the network median. Missing
+    record/coordinates warn and fall back to the formal σ; a note on the
+    plot says which σ is shown. Adds ``-empsig`` to the file name.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -780,6 +790,9 @@ def plotTime(
         refTitle = f"{refTitle}, detrended"
 
     pair = split_baseline(sta)
+    if baseline_sigma not in ("formal", "empirical"):
+        raise ValueError(f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}")
+    sigma_note: str | None = None
     series_kw = dict(
         fstart=fstart,
         fend=fend,
@@ -805,6 +818,10 @@ def plotTime(
         ends = [station_series(s, **series_kw) for s in pair]
         if view == "detrended" or ref == "detrend":
             check_same_view(pair, [e.detrend_applied for e in ends], spec=sta)
+        if baseline_sigma == "empirical" and baseline_rho is None:
+            baseline_rho, baseline_sigma_scale, sigma_note = _empirical_pair_inputs(
+                pair, ends, baseline_noise
+            )
         bl = compute_baseline(
             (ends[0].yearf, ends[0].data, ends[0].Ddata),
             (ends[1].yearf, ends[1].data, ends[1].Ddata),
@@ -852,6 +869,17 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
     )
+
+    if sigma_note is not None:
+        fig.axes[2].text(
+            0.01,
+            0.02,
+            # the figure renders text through LaTeX (usetex): no raw σ/ρ
+            "baseline $\\sigma$: "
+            + sigma_note.replace("ρ", "$\\rho$").replace("σ", "$\\sigma$"),
+            transform=fig.axes[2].transAxes,
+            fontsize="small", color="0.3", va="bottom",
+        )
 
     if show_ends:
         if pair is None:
@@ -960,6 +988,8 @@ def plotTime(
             filend += "-detrended"
         if show_ends and pair is not None:
             filend += "-ends"
+        if pair is not None and baseline_rho is not None:
+            filend += "-empsig"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType != "TOT":
@@ -1185,6 +1215,47 @@ def stdTimesPlot(
 #: ``--show-ends``: the baseline's two stations behind the red baseline
 #: points — A (the minuend) light, B (the subtrahend) dark.
 BASELINE_END_COLORS = ("#a6a6a6", "#4d4d4d")
+
+
+def _empirical_pair_inputs(
+    pair: tuple[str, str], ends: Sequence[Any], path: str | None
+) -> tuple[Any, Any, str | None]:
+    """``(rho, (k_a, k_b), note)`` from the baseline noise record, or formal.
+
+    Never fails the plot: anything missing warns and returns
+    ``(None, None, "formal (…)")`` so the baseline keeps its quadrature σ.
+    """
+    try:
+        import gps_parser as cp
+        from geo_dataread import baseline_noise as bn
+        from geofunc import local
+
+        rec = bn.read_baseline_noise(Path(path) if path else None)
+        cfg = cp.ConfigParser()
+        xyz = []
+        for s in pair:
+            info = cfg.getStationInfo(s)["station"]
+            xyz.append(
+                local.geodetic_to_ecef(
+                    np.radians(float(info["latitude"])),
+                    np.radians(float(info["longitude"])),
+                    float(info.get("height") or 0.0),
+                )
+            )
+        d_km = float(np.linalg.norm(xyz[0] - xyz[1])) / 1e3
+        own = bn.own_shared_fraction(
+            (ends[0].yearf, ends[0].data, ends[0].Ddata),
+            (ends[1].yearf, ends[1].data, ends[1].Ddata),
+        )
+        rho, k, how = bn.pair_inputs(rec, *pair, distance_km=d_km, own_rho=own)
+        return rho.tolist(), (k[0].tolist(), k[1].tolist()), f"empirical, {how}; fit {rec.fitted_at[:10]}"
+    except Exception as exc:  # noqa: BLE001 - a plot never fails for a sigma reason
+        warnings.warn(
+            f"baseline {'-'.join(pair)}: empirical σ unavailable ({exc}); showing formal σ",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None, None, "formal (empirical unavailable)"
 
 
 def add_baseline_ends(
