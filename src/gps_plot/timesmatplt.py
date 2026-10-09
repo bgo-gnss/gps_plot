@@ -655,6 +655,8 @@ def plotTime(
     steps_catalog: str | None = None,
     params: str | None = None,
     show_ends: bool = False,
+    baseline_rho: Sequence[float] | None = None,
+    baseline_sigma_scale: tuple[Sequence[float], Sequence[float]] | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -697,6 +699,13 @@ def plotTime(
     the same ``name`` overwrites the same path -- that is the point (watch
     one file in a viewer while re-rendering), but it also means a
     multi-station or multi-variant run leaves only the last render.
+
+    ``baseline_rho`` / ``baseline_sigma_scale`` (baselines only) replace
+    the quadrature σ of the baseline by the empirical one —
+    :func:`geo_dataread.baseline.baseline` ``rho=`` / ``sigma_scale=``:
+    the shared daily-error fraction per component and each station's
+    σ scale factor (``gps_analysis.empirical_sigma``). The ends drawn by
+    ``show_ends`` keep their FORMAL σ.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -800,6 +809,8 @@ def plotTime(
             (ends[0].yearf, ends[0].data, ends[0].Ddata),
             (ends[1].yearf, ends[1].data, ends[1].Ddata),
             stations=pair,
+            rho=baseline_rho,
+            sigma_scale=baseline_sigma_scale,
         )
         yearf, data, Ddata = bl.yearf, bl.data, bl.sigma
         # Per-station overlays do not survive differencing (their epochs and
@@ -810,7 +821,10 @@ def plotTime(
         if show_ends:
             # the data layer already referenced both ends to the baseline's
             # zero epoch; only the time axis is converted here
-            ends_zeroed = [(list(gpsr.toDateTime(t)), d) for t, d in bl.ends]
+            ends_zeroed = [
+                (list(gpsr.toDateTime(t)), d, e.Ddata)
+                for (t, d), e in zip(bl.ends, ends, strict=True)
+            ]
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
@@ -1176,7 +1190,7 @@ BASELINE_END_COLORS = ("#a6a6a6", "#4d4d4d")
 def add_baseline_ends(
     fig: Figure,
     labels: tuple[str, str],
-    ends: Sequence[tuple[Any, Any]],
+    ends: Sequence[tuple[Any, ...]],
 ) -> Figure:
     """Draw a baseline's two stations behind it, in two greys, with a legend.
 
@@ -1185,16 +1199,24 @@ def add_baseline_ends(
     datetimes by the caller), ``labels`` names the two series. Works on any
     figure with three component axes, not only one built by plotTime.
 
-    ``ends`` holds ``(x, data)`` per station, already referenced to the
-    baseline's first common epoch, so the red baseline points are exactly
-    the visible gap between the two grey series. Markers only — two more
-    sets of error bars would bury the baseline — and drawn at a lower
-    z-order so the baseline stays on top.
+    ``ends`` holds ``(x, data)`` or ``(x, data, sigma)`` per station,
+    already referenced to the baseline's first common epoch, so the red
+    baseline points are exactly the visible gap between the two grey
+    series. With ``sigma`` each station gets its FORMAL error bars, thin
+    and in its own grey (BGÓ 2026-10-09: compare them with the baseline's
+    empirical σ); drawn at a lower z-order so the baseline stays on top.
     """
     from matplotlib.lines import Line2D
 
-    for (x, data), color in zip(ends, BASELINE_END_COLORS, strict=True):
+    for end, color in zip(ends, BASELINE_END_COLORS, strict=True):
+        x, data = end[0], end[1]
+        sigma = end[2] if len(end) > 2 else None
         for i in range(3):
+            if sigma is not None:
+                fig.axes[i].errorbar(
+                    x, data[i], yerr=sigma[i], ls="none", ecolor=color,
+                    elinewidth=0.6, alpha=0.6, zorder=1.4,
+                )
             fig.axes[i].plot(
                 x,
                 data[i],
