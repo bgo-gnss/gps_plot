@@ -195,7 +195,11 @@ def test_show_ends_draws_both_stations_behind_the_baseline(
         special="90d",
     )
     greys = {
-        c: [ln for ln in fig.axes[0].get_lines() if ln.get_markerfacecolor() == c]
+        c: [
+            ln
+            for ln in fig.axes[0].get_lines()
+            if ln.get_markerfacecolor() == c and ln.get_marker() == "o"
+        ]
         for c in tplt.BASELINE_END_COLORS
     }
     a_line, b_line = (

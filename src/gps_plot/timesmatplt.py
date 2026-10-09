@@ -1214,8 +1214,8 @@ def add_baseline_ends(
         for i in range(3):
             if sigma is not None:
                 fig.axes[i].errorbar(
-                    x, data[i], yerr=sigma[i], ls="none", ecolor=color,
-                    elinewidth=0.6, alpha=0.6, zorder=1.4,
+                    x, data[i], yerr=sigma[i], fmt="none", ecolor=color,
+                    elinewidth=0.6, capsize=0, alpha=0.6, zorder=1.4,
                 )
             fig.axes[i].plot(
                 x,
