@@ -6,6 +6,7 @@ import datetime
 import sys
 import types
 
+import matplotlib.colors
 import numpy as np
 import pytest
 from geo_dataread.gps_views import baseline_arrays
@@ -226,3 +227,36 @@ def test_show_ends_on_a_single_station_warns_and_is_ignored(
             special="90d",
         )
     assert saved == [str(tmp_path / "AAAA-itrf2008-90d")]
+
+
+def test_empirical_sigma_on_the_baseline_formal_sigma_on_the_ends(
+    monkeypatch, tmp_path
+) -> None:
+    """ρ/k reach the baseline σ; the grey ends keep their formal error bars."""
+    n = 30
+    ramp = np.arange(n, dtype=float)
+    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    seen, _ = _capture(monkeypatch)
+    fig = tplt.plotTime(
+        "AAAA-BBBB",
+        ref="itrf2008",
+        show_ends=True,
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        special="90d",
+        baseline_rho=[0.75, 0.0, 1.0],
+        baseline_sigma_scale=([1.0, 1.0, 1.0], [1.0, 1.0, 1.0]),
+    )
+    np.testing.assert_allclose(seen["Ddata"][0], 2.0 * np.sqrt(0.5))  # √(4+4−2·.75·4)
+    np.testing.assert_allclose(seen["Ddata"][1], np.sqrt(8.0))  # ρ = 0: quadrature
+    np.testing.assert_allclose(seen["Ddata"][2], 0.0)
+    end_bars = [
+        c
+        for c in fig.axes[0].collections
+        if tuple(np.round(c.get_colors()[0][:3], 3))
+        in {tuple(np.round(matplotlib.colors.to_rgb(g), 3)) for g in tplt.BASELINE_END_COLORS}
+    ]
+    assert len(end_bars) == 2  # one formal error-bar set per end
+    seg = end_bars[0].get_segments()[0]
+    assert abs(seg[1][1] - seg[0][1]) == pytest.approx(4.0)  # ±2 formal σ
