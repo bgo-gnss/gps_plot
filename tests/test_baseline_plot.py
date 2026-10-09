@@ -264,3 +264,70 @@ def test_empirical_sigma_on_the_baseline_formal_sigma_on_the_ends(
     assert len(end_bars) == 2  # one formal error-bar set per end
     seg = end_bars[0].get_segments()[0]
     assert abs(seg[1][1] - seg[0][1]) == pytest.approx(4.0)  # ±2 formal σ
+
+
+def _noise_record(tmp_path):
+    from geo_dataread import baseline_noise as bn
+    from gps_analysis import empirical_sigma as es
+
+    rec = bn.BaselineNoiseRecord(
+        model=es.CommonModeModel((0.95, 0.9, 0.95), (0.5, 0.5, 0.5), (10.0, 30.0, 6.0)),
+        station_scale={"AAAA": (1.0, 1.0, 0.5)},
+        median_scale=(1.0, 1.0, 0.5),
+        fit_window=(2024.8, 2026.8),
+        fitted_at="2026-10-09T00:00:00Z",
+        source="test",
+        n_stations=1,
+        n_pairs=5,
+    )
+    return bn, bn.write_baseline_noise(rec, tmp_path / "noise.json")
+
+
+def _stub_parser(monkeypatch):
+    class Cfg:
+        def getStationInfo(self, s):
+            lon = {"AAAA": "-19.030752", "BBBB": "-19.029"}[s]
+            return {"station": {"latitude": "64.196", "longitude": lon, "height": "600"}}
+
+    mod = types.ModuleType("gps_parser")
+    mod.ConfigParser = Cfg
+    monkeypatch.setitem(sys.modules, "gps_parser", mod)
+
+
+def test_empirical_baseline_sigma_from_the_record(monkeypatch, tmp_path) -> None:
+    bn, path = _noise_record(tmp_path)  # import the real modules before the stub
+    n = 30
+    ramp = np.arange(n, dtype=float)
+    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    monkeypatch.setitem(sys.modules, "geo_dataread.baseline_noise", bn)
+    _stub_parser(monkeypatch)
+    seen, saved = _capture(monkeypatch)
+    fig = tplt.plotTime(
+        "AAAA-BBBB", ref="itrf2008", save="png", figDir=str(tmp_path), logo=False,
+        special="90d", baseline_sigma="empirical", baseline_noise=str(path),
+    )
+    d_km = 0.0835  # 0.001752° of longitude at 64.196° N
+    rho = bn.es.shared_fraction_model(d_km, bn.read_baseline_noise(path).model)
+    k_b = np.array([1.0, 1.0, 0.5])  # BBBB: network median
+    expect = bn.es.baseline_sigma(np.array([1.0, 1.0, 0.5]) * 2, k_b * 2, rho)
+    np.testing.assert_allclose(seen["Ddata"][:, 0], expect, rtol=2e-3)
+    notes = [t.get_text() for t in fig.axes[2].texts]
+    assert any("empirical" in t and "median k for BBBB" in t for t in notes)
+    assert saved == [str(tmp_path / "AAAA_BBBB-baseline-itrf2008-empsig-90d")]
+
+
+def test_empirical_without_a_record_warns_and_keeps_formal(monkeypatch, tmp_path) -> None:
+    n = 30
+    ramp = np.arange(n, dtype=float)
+    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    seen, saved = _capture(monkeypatch)
+    with pytest.warns(UserWarning, match="empirical σ unavailable"):
+        tplt.plotTime(
+            "AAAA-BBBB", ref="itrf2008", save="png", figDir=str(tmp_path), logo=False,
+            special="90d", baseline_sigma="empirical",
+            baseline_noise=str(tmp_path / "missing.json"),
+        )
+    np.testing.assert_allclose(seen["Ddata"], np.sqrt(8.0))
+    assert saved == [str(tmp_path / "AAAA_BBBB-baseline-itrf2008-90d")]
+    with pytest.raises(ValueError, match="baseline_sigma must be"):
+        tplt.plotTime("AAAA-BBBB", baseline_sigma="best")

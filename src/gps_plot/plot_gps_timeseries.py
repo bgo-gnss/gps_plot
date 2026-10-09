@@ -552,6 +552,21 @@ def main():
         "baseline is their visible difference. Adds -ends to the file name",
     )
     parser.add_argument(
+        "--baseline-sigma",
+        choices=("formal", "empirical"),
+        default="formal",
+        help="baselines only: 'formal' (default) = quadrature of the two "
+        "stations' GLOBK sigma; 'empirical' = realistic daily sigma from the "
+        "fitted baseline noise record (shared daily error + station scale, "
+        "geo_dataread.baseline_noise / gps-baseline-noise). Adds -empsig",
+    )
+    parser.add_argument(
+        "--baseline-noise",
+        default=None,
+        help="path of the baseline noise record (default: "
+        "$GPS_API_STORE/noise/baseline_noise.json)",
+    )
+    parser.add_argument(
         "--tType",
         type=str,
         default="TOT",
