@@ -589,7 +589,7 @@ def main():
         dest="pos_id",
         default=None,
         help="--tType POS: which .pos product in pos_dir — itr08 (default, the "
-        "okada glorg/ITRF2008 set), igb14, igb20 or itrf2020 (gps-realign, laptop) "
+        "okada glorg/ITRF2008 set), igb14, itrf2020 or igb20 (experimental) (gps-realign, laptop) "
         "or a "
         "full id; plate removal uses that frame's plate-motion model",
     )
