@@ -241,6 +241,9 @@ class TestTheWindow:
         from geo_dataread.detrend_estimate import FitDefaults, resolve_fit_settings
         from gps_plot.detrend_picker_qt import PickerWindow, _require_qt
 
+        # Qt lives in the dev group (uv sync); the mamba env has no pyqtgraph
+        pytest.importorskip("pyqtgraph")
+        pytest.importorskip("PySide6")
         _pg, qtw = _require_qt()
         qtw.QApplication.instance() or qtw.QApplication([])
         try:
