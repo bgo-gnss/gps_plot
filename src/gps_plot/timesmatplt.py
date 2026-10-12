@@ -805,7 +805,9 @@ def plotTime(
 
     pair = split_baseline(sta)
     if baseline_sigma not in ("formal", "empirical"):
-        raise ValueError(f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}")
+        raise ValueError(
+            f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"
+        )
     sigma_note: str | None = None
     series_kw = dict(
         fstart=fstart,
@@ -894,7 +896,9 @@ def plotTime(
             "baseline $\\sigma$: "
             + sigma_note.replace("ρ", "$\\rho$").replace("σ", "$\\sigma$"),
             transform=fig.axes[2].transAxes,
-            fontsize="small", color="0.3", va="bottom",
+            fontsize="small",
+            color="0.3",
+            va="bottom",
         )
 
     if show_ends:
@@ -1264,7 +1268,11 @@ def _empirical_pair_inputs(
             (ends[1].yearf, ends[1].data, ends[1].Ddata),
         )
         rho, k, how = bn.pair_inputs(rec, *pair, distance_km=d_km, own_rho=own)
-        return rho.tolist(), (k[0].tolist(), k[1].tolist()), f"empirical, {how}; fit {rec.fitted_at[:10]}"
+        return (
+            rho.tolist(),
+            (k[0].tolist(), k[1].tolist()),
+            f"empirical, {how}; fit {rec.fitted_at[:10]}",
+        )
     except Exception as exc:  # noqa: BLE001 - a plot never fails for a sigma reason
         warnings.warn(
             f"baseline {'-'.join(pair)}: empirical σ unavailable ({exc}); showing formal σ",
@@ -1301,8 +1309,15 @@ def add_baseline_ends(
         for i in range(3):
             if sigma is not None:
                 fig.axes[i].errorbar(
-                    x, data[i], yerr=sigma[i], fmt="none", ecolor=color,
-                    elinewidth=0.6, capsize=0, alpha=0.6, zorder=1.4,
+                    x,
+                    data[i],
+                    yerr=sigma[i],
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=0.6,
+                    capsize=0,
+                    alpha=0.6,
+                    zorder=1.4,
                 )
             fig.axes[i].plot(
                 x,
