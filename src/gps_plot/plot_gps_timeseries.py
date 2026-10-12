@@ -802,7 +802,9 @@ def main():
         kwargs["annotate_steps"] = _normalize_kinds([annotate_raw])
 
     if kwargs["Dir"] is None:
-        kwargs["Dir"] = _config_dir(config, "pos_dir" if args.tType == "POS" else "totPath")
+        kwargs["Dir"] = _config_dir(
+            config, "pos_dir" if args.tType == "POS" else "totPath"
+        )
 
     stations = args.Stations  # station list
     del kwargs["Stations"]
