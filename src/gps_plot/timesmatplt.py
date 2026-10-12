@@ -511,6 +511,8 @@ def station_series(
     remove_kinds: Sequence[str] | None = None,
     steps_catalog: str | None = None,
     params: str | None = None,
+    ref_position: str | None = None,
+    convention: str = "geodetic",
 ) -> StationSeries:
     """Read one station and apply the requested view: clean, remove steps, detrend.
 
@@ -523,8 +525,18 @@ def station_series(
     """
     import geo_dataread.gps_read as gpsr
 
+    pos_kw: dict[str, Any] = {}
+    if ref_position is not None or convention != "geodetic":
+        pos_kw = dict(ref_position=ref_position, convention=convention)
     yearf, data, Ddata, _offset = gpsr.getData(
-        sta, fstart=fstart, fend=fend, ref=ref, Dir=Dir, tType=tType, uncert=uncert
+        sta,
+        fstart=fstart,
+        fend=fend,
+        ref=ref,
+        Dir=Dir,
+        tType=tType,
+        uncert=uncert,
+        **pos_kw,
     )
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
@@ -641,6 +653,8 @@ def plotTime(
     fix: bool = False,
     Dir: str | None = None,
     tType: str = "TOT",
+    ref_position: str | None = None,
+    convention: str = "geodetic",
     uncert: int = 15,
     logo: bool = True,
     fig: Figure | None = None,
@@ -807,6 +821,8 @@ def plotTime(
         remove_kinds=remove_kinds,
         steps_catalog=steps_catalog,
         params=params,
+        ref_position=ref_position,
+        convention=convention,
     )
     if pair is None:
         one = station_series(sta, **series_kw)

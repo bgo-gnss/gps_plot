@@ -83,8 +83,9 @@ def _install_raw_read_cache(maxsize=4):
     raw_read = functools.lru_cache(maxsize=maxsize)(gpsr.openGlobkTimes)
 
     @functools.wraps(gpsr.openGlobkTimes)
-    def cached_openGlobkTimes(sta, Dir=None, tType="TOT"):
-        yearf, data, ddata = raw_read(sta, Dir, tType)
+    def cached_openGlobkTimes(sta, Dir=None, tType="TOT", **kw):
+        # kw (POS ref_position/convention) are strings: hashable cache keys
+        yearf, data, ddata = raw_read(sta, Dir, tType, **kw)
         return yearf.copy(), data.copy(), ddata.copy()
 
     cached_openGlobkTimes._gps_plot_raw_read_cache = True
@@ -443,7 +444,7 @@ def main():
     # initialising  few variables
     start = end = None
     eventDict = {}
-    Type_allow = ["TOT", "08h", "JOIN"]
+    Type_allow = ["TOT", "08h", "JOIN", "POS"]
     ref_allow = ["all", "plate", "detrend", "itrf2008"]
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
     view_allow = ["raw", "cleaned", "detrended"]
@@ -571,7 +572,24 @@ def main():
         type=str,
         default="TOT",
         choices=Type_allow,
-        help='Choose a three letter string to determain the ??? in mb_STAT_???.data[123] (Gamit time series name convention). defaults to "TOT" standard 24 hour time seriess. "08h" for 8 hour time series',
+        help='Choose a three letter string to determain the ??? in mb_STAT_???.data[123] (Gamit time series name convention). defaults to "TOT" standard 24 hour time seriess. "08h" for 8 hour time series. "POS": the PBO .pos files of the daily SINEX archive (N/E/U computed from X/Y/Z, junction offsets applied)',
+    )
+    parser.add_argument(
+        "--ref-position",
+        dest="ref_position",
+        default=None,
+        choices=["wmean", "mean", "median", "first", "apriori", "tssum"],
+        help="--tType POS: the reference position of the N/E/U, kept as the "
+        "zero of the plot: least-squares mean (wmean), mean, median, first "
+        "epoch, the station's a-priori coordinate (station_coord.xyz) or "
+        "tssum's own columns. Default: zero on the first samples, as for TOT",
+    )
+    parser.add_argument(
+        "--convention",
+        default="geodetic",
+        choices=["geodetic", "globk"],
+        help="--tType POS: local frame of the N/E/U — geodetic (true local "
+        "level, default) or globk (glorg Loc., the convention of the TOT files)",
     )
     parser.add_argument(
         "--ylim",
@@ -613,8 +631,9 @@ def main():
         "--Dir",
         type=str,
         nargs="?",
-        default=_config_dir(config, "totPath"),
-        help="Time series input directory",
+        default=None,
+        help="Time series input directory (default: postprocess totPath, or "
+        "pos_dir with --tType POS)",
     )
     parser.add_argument(
         "--outlier-param",
@@ -781,6 +800,11 @@ def main():
         kwargs["annotate_steps"] = True
     else:
         kwargs["annotate_steps"] = _normalize_kinds([annotate_raw])
+
+    if kwargs["Dir"] is None:
+        kwargs["Dir"] = _config_dir(
+            config, "pos_dir" if args.tType == "POS" else "totPath"
+        )
 
     stations = args.Stations  # station list
     del kwargs["Stations"]
