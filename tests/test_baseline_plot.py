@@ -239,7 +239,9 @@ def test_empirical_sigma_on_the_baseline_formal_sigma_on_the_ends(
     """ρ/k reach the baseline σ; the grey ends keep their formal error bars."""
     n = 30
     ramp = np.arange(n, dtype=float)
-    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    _stub(
+        monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n
+    )
     seen, _ = _capture(monkeypatch)
     fig = tplt.plotTime(
         "AAAA-BBBB",
@@ -259,7 +261,10 @@ def test_empirical_sigma_on_the_baseline_formal_sigma_on_the_ends(
         c
         for c in fig.axes[0].collections
         if tuple(np.round(c.get_colors()[0][:3], 3))
-        in {tuple(np.round(matplotlib.colors.to_rgb(g), 3)) for g in tplt.BASELINE_END_COLORS}
+        in {
+            tuple(np.round(matplotlib.colors.to_rgb(g), 3))
+            for g in tplt.BASELINE_END_COLORS
+        }
     ]
     assert len(end_bars) == 2  # one formal error-bar set per end
     seg = end_bars[0].get_segments()[0]
@@ -287,7 +292,9 @@ def _stub_parser(monkeypatch):
     class Cfg:
         def getStationInfo(self, s):
             lon = {"AAAA": "-19.030752", "BBBB": "-19.029"}[s]
-            return {"station": {"latitude": "64.196", "longitude": lon, "height": "600"}}
+            return {
+                "station": {"latitude": "64.196", "longitude": lon, "height": "600"}
+            }
 
     mod = types.ModuleType("gps_parser")
     mod.ConfigParser = Cfg
@@ -298,13 +305,21 @@ def test_empirical_baseline_sigma_from_the_record(monkeypatch, tmp_path) -> None
     bn, path = _noise_record(tmp_path)  # import the real modules before the stub
     n = 30
     ramp = np.arange(n, dtype=float)
-    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    _stub(
+        monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n
+    )
     monkeypatch.setitem(sys.modules, "geo_dataread.baseline_noise", bn)
     _stub_parser(monkeypatch)
     seen, saved = _capture(monkeypatch)
     fig = tplt.plotTime(
-        "AAAA-BBBB", ref="itrf2008", save="png", figDir=str(tmp_path), logo=False,
-        special="90d", baseline_sigma="empirical", baseline_noise=str(path),
+        "AAAA-BBBB",
+        ref="itrf2008",
+        save="png",
+        figDir=str(tmp_path),
+        logo=False,
+        special="90d",
+        baseline_sigma="empirical",
+        baseline_noise=str(path),
     )
     d_km = 0.0835  # 0.001752° of longitude at 64.196° N
     rho = bn.es.shared_fraction_model(d_km, bn.read_baseline_noise(path).model)
@@ -316,15 +331,24 @@ def test_empirical_baseline_sigma_from_the_record(monkeypatch, tmp_path) -> None
     assert saved == [str(tmp_path / "AAAA_BBBB-baseline-itrf2008-empsig-90d")]
 
 
-def test_empirical_without_a_record_warns_and_keeps_formal(monkeypatch, tmp_path) -> None:
+def test_empirical_without_a_record_warns_and_keeps_formal(
+    monkeypatch, tmp_path
+) -> None:
     n = 30
     ramp = np.arange(n, dtype=float)
-    _stub(monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n)
+    _stub(
+        monkeypatch, {"AAAA": np.vstack([ramp] * 3), "BBBB": np.vstack([ramp] * 3)}, n
+    )
     seen, saved = _capture(monkeypatch)
     with pytest.warns(UserWarning, match="empirical σ unavailable"):
         tplt.plotTime(
-            "AAAA-BBBB", ref="itrf2008", save="png", figDir=str(tmp_path), logo=False,
-            special="90d", baseline_sigma="empirical",
+            "AAAA-BBBB",
+            ref="itrf2008",
+            save="png",
+            figDir=str(tmp_path),
+            logo=False,
+            special="90d",
+            baseline_sigma="empirical",
             baseline_noise=str(tmp_path / "missing.json"),
         )
     np.testing.assert_allclose(seen["Ddata"], np.sqrt(8.0))
