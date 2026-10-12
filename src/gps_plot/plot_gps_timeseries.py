@@ -585,6 +585,14 @@ def main():
         "tssum's own columns. Default: zero on the first samples, as for TOT",
     )
     parser.add_argument(
+        "--pos-id",
+        dest="pos_id",
+        default=None,
+        help="--tType POS: which .pos product in pos_dir — itr08 (default, the "
+        "okada glorg/ITRF2008 set), igb14 or itrf2020 (gps-realign, laptop) or a "
+        "full id; plate removal uses that frame's plate-motion model",
+    )
+    parser.add_argument(
         "--convention",
         default="geodetic",
         choices=["geodetic", "globk"],

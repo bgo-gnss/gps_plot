@@ -513,6 +513,7 @@ def station_series(
     params: str | None = None,
     ref_position: str | None = None,
     convention: str = "geodetic",
+    pos_id: str | None = None,
 ) -> StationSeries:
     """Read one station and apply the requested view: clean, remove steps, detrend.
 
@@ -528,6 +529,8 @@ def station_series(
     pos_kw: dict[str, Any] = {}
     if ref_position is not None or convention != "geodetic":
         pos_kw = dict(ref_position=ref_position, convention=convention)
+    if pos_id is not None:
+        pos_kw["pos_id"] = pos_id
     yearf, data, Ddata, _offset = gpsr.getData(
         sta,
         fstart=fstart,
@@ -655,6 +658,7 @@ def plotTime(
     tType: str = "TOT",
     ref_position: str | None = None,
     convention: str = "geodetic",
+    pos_id: str | None = None,
     uncert: int = 15,
     logo: bool = True,
     fig: Figure | None = None,
@@ -800,6 +804,11 @@ def plotTime(
         refTitle = "Detrended"
     else:
         refTitle = ref.upper()
+        if ref == "itrf2008" and tType == "POS" and pos_id is not None:
+            # "itrf2008" means "no plate removal": name the series' own frame
+            from geo_dataread.pos import POS_PRODUCTS, pos_product
+
+            refTitle = POS_PRODUCTS.get(pos_product(pos_id), (refTitle, ""))[0]
     if view == "detrended" and ref != "detrend":
         # the full stored trajectory is subtracted from the plate series; the
         # title must say so, or it reads exactly like the plain plate plot
@@ -827,6 +836,7 @@ def plotTime(
         params=params,
         ref_position=ref_position,
         convention=convention,
+        pos_id=pos_id,
     )
     if pair is None:
         one = station_series(sta, **series_kw)
