@@ -772,9 +772,11 @@ def plotTime(
     if ref is None:  # baselines and the detrended view default to plate
         ref = "plate" if (split_baseline(sta) or view == "detrended") else "itrf2008"
     if ref == "plate":
-        import geofunc.geofunc as gf
+        from geofunc.plates import plate_name
 
-        table = gf.plateDict()
+        from geo_dataread.station_catalog import plate_table
+
+        table = plate_table()
         ends = split_baseline(sta) or (sta,)
         unknown = [s for s in ends if s not in table]
         if unknown:
@@ -785,7 +787,7 @@ def plotTime(
                 "deployed station-plate catalog (postprocess.cfg platefile). "
                 "Add it in gps-config-data and deploy, or plot with --ref itrf2008."
             )
-        plates = [gf.plateFullname(table[s]) for s in ends]
+        plates = [plate_name(table[s]) for s in ends]
         # a cross-rift baseline has two plates; say so rather than pick one
         refTitle = (
             plates[0]

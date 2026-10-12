@@ -87,11 +87,12 @@ def test_baseline_plots_a_minus_b_with_combined_sigma(monkeypatch, tmp_path) -> 
 
 def test_baseline_defaults_to_plate_and_names_two_plates(monkeypatch, tmp_path) -> None:
     n = _stub(monkeypatch, {"AAAA": np.zeros((3, 30)), "BBBB": np.zeros((3, 30))})
-    import geofunc.geofunc as gf
-
-    monkeypatch.setattr(gf, "plateDict", lambda: {"AAAA": "NA", "BBBB": "EU"})
+    catalog = types.ModuleType("geo_dataread.station_catalog")
+    catalog.plate_table = lambda: {"AAAA": "NA", "BBBB": "EU"}
+    monkeypatch.setitem(sys.modules, "geo_dataread.station_catalog", catalog)
     monkeypatch.setattr(
-        gf, "plateFullname", lambda p: {"NA": "North American", "EU": "Eurasian"}[p]
+        "geofunc.plates.plate_name",
+        lambda p: {"NA": "North American", "EU": "Eurasian"}[p],
     )
     seen, saved = _capture(monkeypatch)
     fig = tplt.plotTime(
