@@ -377,6 +377,10 @@ def exit_gracefully(signum, frame):
 ####    ------------------------------------------------   ####
 
 
+#: the reference frame plotted when neither --tType nor --frame is given
+DEFAULT_PLOT_FRAME = "itrf14"
+
+
 def _config_dir(config, option, default=None):
     """Resolve a directory from postprocess.cfg, or `default` if unavailable.
 
@@ -570,9 +574,13 @@ def main():
     parser.add_argument(
         "--tType",
         type=str,
-        default="TOT",
+        default=None,
         choices=Type_allow,
-        help='Choose a three letter string to determain the ??? in mb_STAT_???.data[123] (Gamit time series name convention). defaults to "TOT" standard 24 hour time seriess. "08h" for 8 hour time series. "POS": the PBO .pos files of the daily SINEX archive (N/E/U computed from X/Y/Z, junction offsets applied)',
+        help='the series to read. Default (since 2026-10-13): "POS" in the '
+        f'{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX '
+        "archive (N/E/U from X/Y/Z, junction offsets applied); --frame picks "
+        'another frame. "TOT": the GLOBK mb_STA_TOT.dat[123] files (the '
+        'previous default), "08h" their 8-hour series, "JOIN" both',
     )
     parser.add_argument(
         "--ref-position",
@@ -588,10 +596,24 @@ def main():
         "--pos-id",
         dest="pos_id",
         default=None,
-        help="--tType POS: which .pos product in pos_dir — itr08 (default, the "
-        "okada glorg/ITRF2008 set, 1995 on), igb14 (the same re-aligned to IGb14, laptop), "
-        "igb20 = itrf2020 (gamit-p01's IGS20 processing, 2017 on, laptop) or a full id; "
-        "plate removal uses that frame's plate-motion model",
+        help="--tType POS: which .pos product in pos_dir — a frame (as --frame, "
+        "which is the simpler switch) or a full product id, e.g. imo.24hr_itrf14",
+    )
+    parser.add_argument(
+        "--frame",
+        default=None,
+        help="reference frame of the .pos series: itrf08 (okada, 1995 on), "
+        "itrf14 (IGb14, the same re-aligned, 1995 on) or itrf20 (IGb20, "
+        "gamit-p01, 2017 on); aliases itrf2008/igb14/itrf2014/igb20/itrf2020. "
+        "Implies --tType POS; plate removal and the detrend parameters follow "
+        "the frame (detrend_params[.<frame>].json)",
+    )
+    parser.add_argument(
+        "--session",
+        default="24h",
+        choices=["24h", "8h"],
+        help="with --frame: 24h daily solutions (default) or 8h sessions "
+        "(<SITE>.imo.08hr_<frame>.pos)",
     )
     parser.add_argument(
         "--convention",
@@ -809,6 +831,25 @@ def main():
         kwargs["annotate_steps"] = True
     else:
         kwargs["annotate_steps"] = _normalize_kinds([annotate_raw])
+
+    # --frame/--session pick the .pos product; --pos-id stays as an alias.
+    # With neither --tType nor a product, the default is the .pos series in
+    # DEFAULT_PLOT_FRAME.
+    frame, session = kwargs.pop("frame"), kwargs.pop("session")
+    if args.tType is None:
+        kwargs["tType"] = args.tType = "POS"
+    if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
+        frame = DEFAULT_PLOT_FRAME
+    if frame is not None or session != "24h":
+        from geo_dataread.pos import pos_product
+
+        if kwargs.get("pos_id") is not None:
+            parser.error("give --frame/--session or --pos-id, not both")
+        try:
+            kwargs["pos_id"] = pos_product(frame, session)
+        except ValueError as exc:
+            parser.error(str(exc))
+        kwargs["tType"] = args.tType = "POS"
 
     if kwargs["Dir"] is None:
         kwargs["Dir"] = _config_dir(
