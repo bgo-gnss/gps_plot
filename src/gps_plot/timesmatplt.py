@@ -623,9 +623,7 @@ def station_series(
                         f"{sta}: frame mismatch: record frame {record_frame!r} != "
                         f"series frame {series_frame!r} - refusing to apply"
                     )
-                data = _gv.apply_stored_detrend(
-                    record, yearf, data, frame=series_frame
-                )
+                data = _gv.apply_stored_detrend(record, yearf, data, frame=series_frame)
                 # --ref detrend: subtract rate + seasonal but KEEP step
                 # offsets visible (trends removed, discrete events stay).
                 # apply_stored_detrend subtracted the FULL trajectory
@@ -696,6 +694,7 @@ def plotTime(
     baseline_sigma_scale: tuple[Sequence[float], Sequence[float]] | None = None,
     baseline_sigma: str = "formal",
     baseline_noise: str | None = None,
+    overlay_pos_id: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -846,6 +845,40 @@ def plotTime(
             f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"
         )
     sigma_note: str | None = None
+    # 8 h sessions: epochs are matched within 2 h (a missing session must not
+    # pair with its neighbour 8 h away); the daily default is half a day
+    from geo_dataread.baseline import BASELINE_EPOCH_TOLERANCE_YEARS
+
+    def _is_8h(pid: str | None) -> bool:
+        if pid is None:
+            return False
+        from geo_dataread.pos import pos_product
+
+        return pos_product(pid).startswith("imo.08hr")
+
+    epoch_tol = (
+        2.0 / 24.0 / 365.25
+        if tType == "POS" and _is_8h(pos_id)
+        else BASELINE_EPOCH_TOLERANCE_YEARS
+    )
+    if (
+        overlay_pos_id is not None
+        and pair is None
+        and ref_position is None
+        and tType == "POS"
+    ):
+        # one zero for both series: the main series' first position, so the
+        # overlay sits where its positions are, not re-zeroed on its own
+        from geo_dataread import pos as _pos
+
+        ref_position = _pos.read_pos(
+            _pos.pos_path(sta, Dir, _pos.pos_product(pos_id))
+        ).xyz[0]
+    if baseline_sigma == "empirical" and pair is not None and _is_8h(pos_id):
+        raise ValueError(
+            f"baseline {sta}: the empirical baseline noise record is fitted on "
+            "daily solutions; use --baseline-sigma formal for 8 h sessions"
+        )
     series_kw = dict(
         fstart=fstart,
         fend=fend,
@@ -884,6 +917,7 @@ def plotTime(
             stations=pair,
             rho=baseline_rho,
             sigma_scale=baseline_sigma_scale,
+            tol=epoch_tol,
         )
         yearf, data, Ddata = bl.yearf, bl.data, bl.sigma
         # Per-station overlays do not survive differencing (their epochs and
@@ -983,6 +1017,16 @@ def plotTime(
             markeredgecolor=PROVISIONAL_EDGE_COLOR,
         )
 
+    if overlay_pos_id is not None:
+        fig = _add_session_overlay(
+            fig,
+            sta,
+            pair,
+            overlay_pos_id,
+            series_kw,
+            main=(yearf, data, Ddata, x),
+        )
+
     if aborted is not None and any(aborted):
         # after the overlays so the badge is never painted under them
         fig = addAbortBadge(fig, aborted)
@@ -1058,6 +1102,8 @@ def plotTime(
             filend += f"-{pos_frame(_pid)}"
             if _pid.startswith("imo.08hr"):
                 filend += "-8h"
+            elif overlay_pos_id is not None:
+                filend += "-24h8h"
         elif tType != "TOT":
             filend += "-{0:s}".format(tType)
 
@@ -1078,6 +1124,76 @@ def plotTime(
         plt.show()
 
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
+    return fig
+
+
+#: marker colour of the overlaid sub-daily (8 h) series
+SESSION_OVERLAY_COLOR = "tab:blue"
+
+
+def _add_session_overlay(
+    fig: Figure,
+    sta: str,
+    pair: tuple[str, str] | None,
+    overlay_pos_id: str,
+    series_kw: dict[str, Any],
+    *,
+    main: tuple[Any, Any, Any, Any],
+) -> Figure:
+    """Draw another session's series (8 h) behind the main (24 h) one.
+
+    Same frame, reference, view and plate removal as the main series. A
+    single station shares the main series' reference position, so the two
+    sit where their positions are. A baseline is re-zeroed at its own first
+    epoch, so the overlay is shifted by the median difference on common days
+    (stated in the legend). The main series is re-drawn on top.
+    """
+    from geo_dataread.baseline import baseline as compute_baseline
+
+    kw = dict(series_kw, pos_id=overlay_pos_id)
+    if pair is None:
+        one = station_series(sta, **kw)
+        t8, d8, s8 = one.yearf, np.asarray(one.data), np.asarray(one.Ddata)
+        note = None
+    else:
+        ends = [station_series(s, **kw) for s in pair]
+        bl = compute_baseline(
+            (ends[0].yearf, ends[0].data, ends[0].Ddata),
+            (ends[1].yearf, ends[1].data, ends[1].Ddata),
+            stations=pair,
+            tol=2.0 / 24.0 / 365.25,
+        )
+        t8, d8, s8 = bl.yearf, np.asarray(bl.data), np.asarray(bl.sigma)
+        # align on the days both have: the median of 8 h minus the daily value
+        yearf, data = main[0], np.asarray(main[1])
+        day = np.floor(np.asarray(yearf) * 365.25)
+        idx = {int(k): i for i, k in enumerate(day)}
+        diffs = [
+            d8[:, j] - data[:, idx[int(k)]]
+            for j, k in enumerate(np.floor(np.asarray(t8) * 365.25))
+            if int(k) in idx
+        ]
+        if diffs:
+            d8 = d8 - np.nanmedian(np.array(diffs), axis=0)[:, None]
+        note = "median-aligned"
+    import geo_dataread.gps_read as gpsr
+
+    x8 = list(gpsr.toDateTime(t8))
+    label = "8 h sessions" + (f" ({note})" if note else "")
+    fig = addData(
+        x8,
+        d8,
+        s8,
+        fig,
+        markersize=2.0,
+        ecolor="0.75",
+        elinewidth=0.3,
+        markerfacecolor=SESSION_OVERLAY_COLOR,
+        markeredgecolor=SESSION_OVERLAY_COLOR,
+        label=label,
+    )
+    fig = addData(main[3], main[1], main[2], fig, label="24 h")
+    fig.axes[0].legend(loc="upper left", fontsize="small")
     return fig
 
 

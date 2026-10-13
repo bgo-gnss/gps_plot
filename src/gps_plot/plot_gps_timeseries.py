@@ -80,12 +80,20 @@ def _install_raw_read_cache(maxsize=4):
     if getattr(gpsr.openGlobkTimes, "_gps_plot_raw_read_cache", False):
         return
 
-    raw_read = functools.lru_cache(maxsize=maxsize)(gpsr.openGlobkTimes)
+    uncached = gpsr.openGlobkTimes
+    raw_read = functools.lru_cache(maxsize=maxsize)(uncached)
 
     @functools.wraps(gpsr.openGlobkTimes)
     def cached_openGlobkTimes(sta, Dir=None, tType="TOT", **kw):
-        # kw (POS ref_position/convention) are strings: hashable cache keys
-        yearf, data, ddata = raw_read(sta, Dir, tType, **kw)
+        # kw (POS ref_position/convention/pos_id) are normally strings and so
+        # hashable cache keys; a reference POSITION (an XYZ array, as the 8 h
+        # overlay passes) is not, and such a read goes around the cache
+        try:
+            yearf, data, ddata = raw_read(sta, Dir, tType, **kw)
+        except TypeError as exc:
+            if "unhashable" not in str(exc):
+                raise
+            yearf, data, ddata = uncached(sta, Dir=Dir, tType=tType, **kw)
         return yearf.copy(), data.copy(), ddata.copy()
 
     cached_openGlobkTimes._gps_plot_raw_read_cache = True
@@ -577,7 +585,7 @@ def main():
         default=None,
         choices=Type_allow,
         help='the series to read. Default (since 2026-10-13): "POS" in the '
-        f'{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX '
+        f"{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX "
         "archive (N/E/U from X/Y/Z, junction offsets applied); --frame picks "
         'another frame. "TOT": the GLOBK mb_STA_TOT.dat[123] files (the '
         'previous default), "08h" their 8-hour series, "JOIN" both',
@@ -611,9 +619,11 @@ def main():
     parser.add_argument(
         "--session",
         default="24h",
-        choices=["24h", "8h"],
-        help="with --frame: 24h daily solutions (default) or 8h sessions "
-        "(<SITE>.imo.08hr_<frame>.pos)",
+        choices=["24h", "8h", "both"],
+        help="24h daily solutions (default), 8h sessions "
+        "(<SITE>.imo.08hr_<frame>.pos; so far only itrf20, gamit-p01 2023 on), "
+        "or both: the 8h sessions drawn behind the daily series, same frame "
+        "and reference",
     )
     parser.add_argument(
         "--convention",
@@ -839,14 +849,19 @@ def main():
     if args.tType is None:
         kwargs["tType"] = args.tType = "POS"
     if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
-        frame = DEFAULT_PLOT_FRAME
+        # the 8 h sessions exist only in itrf20 (gamit-p01) so far
+        frame = DEFAULT_PLOT_FRAME if session == "24h" else "itrf20"
     if frame is not None or session != "24h":
         from geo_dataread.pos import pos_product
 
         if kwargs.get("pos_id") is not None:
             parser.error("give --frame/--session or --pos-id, not both")
         try:
-            kwargs["pos_id"] = pos_product(frame, session)
+            kwargs["pos_id"] = pos_product(
+                frame, "24h" if session == "both" else session
+            )
+            if session == "both":
+                kwargs["overlay_pos_id"] = pos_product(frame, "8h")
         except ValueError as exc:
             parser.error(str(exc))
         kwargs["tType"] = args.tType = "POS"
