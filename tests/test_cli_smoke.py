@@ -56,7 +56,7 @@ def test_help_exits_zero() -> None:
     assert proc.returncode == 0, (
         f"plot-gps-timeseries --help exited {proc.returncode}\n{proc.stderr}"
     )
-    assert "Plot tool for GPS time series" in proc.stdout
+    assert "Plot GPS time series" in proc.stdout
 
 
 @requires_installed_cli
