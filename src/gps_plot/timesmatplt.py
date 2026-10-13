@@ -509,6 +509,7 @@ def station_series(
     outlier_overrides: str | None = None,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
     steps_catalog: str | None = None,
     params: str | None = None,
     ref_position: str | None = None,
@@ -623,14 +624,31 @@ def station_series(
                         f"{sta}: frame mismatch: record frame {record_frame!r} != "
                         f"series frame {series_frame!r} - refusing to apply"
                     )
-                data = _gv.apply_stored_detrend(record, yearf, data, frame=series_frame)
+                # --view detrended (legacy): the whole trajectory. --ref
+                # detrend: the chosen terms (default linear + periodic);
+                # "linear" is the library's "secular" (offset + rate + step
+                # amplitudes), so the steps are added back below
+                if view == "detrended":
+                    _sel: Any = "all"
+                else:
+                    _sel = tuple(
+                        DETREND_TERM_SELECTORS[t]
+                        for t in (detrend_terms or DEFAULT_DETREND_TERMS)
+                    )
+                data = _gv.apply_stored_detrend(
+                    record, yearf, data, terms=_sel, frame=series_frame
+                )
                 # --ref detrend: subtract rate + seasonal but KEEP step
                 # offsets visible (trends removed, discrete events stay).
                 # apply_stored_detrend subtracted the FULL trajectory
                 # including steps; add the step contributions back so
                 # earthquake/equipment offsets remain in the data.
                 # --view detrended keeps the full subtraction.
-                if ref == "detrend" and view != "detrended":
+                if (
+                    ref == "detrend"
+                    and view != "detrended"
+                    and "linear" in (detrend_terms or DEFAULT_DETREND_TERMS)
+                ):
                     _step_epochs = record.get("step_epochs", [])
                     if _step_epochs:
                         _yr = np.asarray(yearf, dtype=np.float64)
@@ -684,8 +702,10 @@ def plotTime(
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
     hide_outliers: bool = False,
+    outlier_tail: int | None = None,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
     steps_catalog: str | None = None,
     params: str | None = None,
@@ -720,6 +740,9 @@ def plotTime(
     ``outlier_overrides.csv`` instead of the deployed one.  Declared step
     epochs and protect windows always resolve from their own catalogs —
     see :func:`_mask_outliers` for why they are not optional.
+
+    ``outlier_tail`` = N draws only the outliers among the series' last N
+    epochs (``--show-outliers N``).
 
     ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
     view.  It changes DISPLAY ONLY -- the flagged epochs are already
@@ -807,7 +830,7 @@ def plotTime(
             raise ValueError(
                 f"{sta}: no plate assigned to {', '.join(unknown)} in the "
                 "deployed station-plate catalog (postprocess.cfg platefile). "
-                "Add it in gps-config-data and deploy, or plot with --ref itrf2008."
+                "Add it in gps-config-data and deploy, or plot with --ref ref_frame."
             )
         plates = [plate_name(table[s]) for s in ends]
         # a cross-rift baseline has two plates; say so rather than pick one
@@ -820,6 +843,8 @@ def plotTime(
         )
     elif ref == "detrend":
         refTitle = "Detrended"
+        if detrend_terms and tuple(detrend_terms) != DEFAULT_DETREND_TERMS:
+            refTitle += f" ({' + '.join(detrend_terms)})"
     else:
         refTitle = ref.upper()
         if ref == "itrf2008" and tType == "POS" and pos_id is not None:
@@ -867,13 +892,22 @@ def plotTime(
         and ref_position is None
         and tType == "POS"
     ):
-        # one zero for both series: the main series' first position, so the
-        # overlay sits where its positions are, not re-zeroed on its own
+        # one zero for both series: the main series' first position IN THE
+        # PLOTTED WINDOW, so the plot starts at zero and the overlay sits
+        # where its positions are, not re-zeroed on its own
         from geo_dataread import pos as _pos
 
-        ref_position = _pos.read_pos(
-            _pos.pos_path(sta, Dir, _pos.pos_product(pos_id))
-        ).xyz[0]
+        _main = _pos.read_pos(_pos.pos_path(sta, Dir, _pos.pos_product(pos_id)))
+        _first = 0
+        if fstart is not None:
+            _first = min(
+                # fstart (gtimes day/365) and .pos yearf (GLOBK, noon epochs,
+                # 365.25) differ by up to half a day: allow it, or the first
+                # plotted day is skipped
+                int(np.searchsorted(np.asarray(_main.yearf), fstart - 0.5 / 365.25)),
+                len(_main.xyz) - 1,
+            )
+        ref_position = _main.xyz[_first]
     if baseline_sigma == "empirical" and pair is not None and _is_8h(pos_id):
         raise ValueError(
             f"baseline {sta}: the empirical baseline noise record is fitted on "
@@ -891,6 +925,7 @@ def plotTime(
         outlier_overrides=outlier_overrides,
         provisional_days=provisional_days,
         remove_kinds=remove_kinds,
+        detrend_terms=detrend_terms,
         steps_catalog=steps_catalog,
         params=params,
         ref_position=ref_position,
@@ -988,11 +1023,15 @@ def plotTime(
         # main series (mask only — nothing is deleted, matching the
         # geo_dataread raw-preservation rule).  Colors are passed at the call
         # site, not as addData defaults, because the JOIN overlay below still
-        # wants the standard red markers.
+        # wants the standard red markers.  ``outlier_tail`` = N keeps only
+        # those among the last N epochs.
+        oy, ody = outliers
+        if outlier_tail:
+            oy, ody = last_flagged(oy, ody, outlier_tail)
         fig = addData(
             x,
-            outliers[0],
-            outliers[1],
+            oy,
+            ody,
             fig,
             ecolor=OUTLIER_ERRORBAR_COLOR,
             markerfacecolor=OUTLIER_FACE_COLOR,
@@ -1086,6 +1125,12 @@ def plotTime(
         # .pos series name their frame below; "itrf2008" (= nothing removed)
         # would read as a second frame there
         filend = "" if (tType == "POS" and ref == "itrf2008") else "-%s" % (ref,)
+        if (
+            ref == "detrend"
+            and detrend_terms
+            and tuple(detrend_terms) != DEFAULT_DETREND_TERMS
+        ):
+            filend += "-" + "-".join(detrend_terms)
         if view == "cleaned":
             filend += "-cleaned"
         elif view == "detrended":
@@ -1097,11 +1142,11 @@ def plotTime(
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType == "POS":
-            # one file per frame (and session): itrf08/itrf14/itrf20, 8h
-            from geo_dataread.pos import pos_frame, pos_product
+            # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
+            from geo_dataread.pos import frame_name, pos_product
 
             _pid = pos_product(pos_id)
-            filend += f"-{pos_frame(_pid)}"
+            filend += f"-{frame_name(_pid)}"
             if _pid.startswith("imo.08hr"):
                 filend += "-8h"
             elif overlay_pos_id is not None:
@@ -1126,7 +1171,58 @@ def plotTime(
         plt.show()
 
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
+    fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
     return fig
+
+
+def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:
+    """Keep the flagged epochs among the series' last ``n`` epochs only.
+
+    ``y``/``dy`` are the outlier overlay (components × epochs, NaN where not
+    flagged), aligned with the main series; anything flagged before its
+    last ``n`` epochs is dropped.
+    """
+    y = np.array(y, dtype=float)
+    dy = np.array(dy, dtype=float)
+    cut = max(y.shape[1] - n, 0)
+    y[:, :cut] = np.nan
+    dy[:, :cut] = np.nan
+    return y, dy
+
+
+def _ref_label(
+    ref: str, tType: str, pos_id: str | None, overlay_pos_id: str | None = None
+) -> str:
+    """Human label for the console log: what was removed, in which frame.
+
+    ``ref == "itrf2008"`` is the internal token for "nothing removed" (the CLI
+    calls it ``ref_frame``); for .pos series the frame and session come from
+    the product id, e.g. ``ref_frame, itrf2020 24h+8h``.
+    """
+    name = "ref_frame" if ref == "itrf2008" else ref
+    if tType == "POS" and pos_id is not None:
+        from geo_dataread.pos import frame_name, pos_product
+
+        prod = pos_product(pos_id)  # imo.24hr_itrf20
+        session = prod[4:8].lstrip("0").replace("hr", "h")
+        if overlay_pos_id is not None:
+            session += "+" + pos_product(overlay_pos_id)[4:8].lstrip("0").replace(
+                "hr", "h"
+            )
+        return f"{name}, {frame_name(prod)} {session}"
+    return f"{name}, {tType}"
+
+
+#: --detrend-terms vocabulary → gps_analysis select_terms selector. "linear"
+#: is offset + rate; the library's "secular" also holds the step amplitudes,
+#: which --ref detrend adds back (steps are --remove-steps' business)
+DETREND_TERM_SELECTORS: dict[str, str] = {
+    "linear": "secular",
+    "periodic": "periodic",
+    "transient": "transient",
+}
+#: what --ref detrend removes when --detrend-terms is not given
+DEFAULT_DETREND_TERMS: tuple[str, ...] = ("linear", "periodic")
 
 
 #: marker colour of the overlaid sub-daily (8 h) series

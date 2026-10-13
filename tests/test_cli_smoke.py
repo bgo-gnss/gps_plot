@@ -53,9 +53,9 @@ def _run_cli(
 def test_help_exits_zero() -> None:
     """`--help` must work. This is the regression that broke the console script."""
     proc = _run_cli("--help")
-    assert proc.returncode == 0, (
-        f"plot-gps-timeseries --help exited {proc.returncode}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 0
+    ), f"plot-gps-timeseries --help exited {proc.returncode}\n{proc.stderr}"
     assert "Plot GPS time series" in proc.stdout
 
 
@@ -69,9 +69,9 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
     the CLI unrunnable in exactly the environments we are moving to.
     """
     proc = _run_cli("--help", env={"GPS_CONFIG_PATH": str(tmp_path)})
-    assert proc.returncode == 0, (
-        f"--help must survive a missing config; exited {proc.returncode}\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 0
+    ), f"--help must survive a missing config; exited {proc.returncode}\n{proc.stderr}"
 
 
 @requires_installed_cli
@@ -112,9 +112,9 @@ def test_legacy_flag_surface_present(flag: str) -> None:
     """Pin the CLI contract shared with the legacy 2018 scripts."""
     proc = _run_cli("--help")
     assert proc.returncode == 0
-    assert flag in proc.stdout, (
-        f"{flag} missing from the CLI — the gpsplot port depends on it"
-    )
+    assert (
+        flag in proc.stdout
+    ), f"{flag} missing from the CLI — the gpsplot port depends on it"
 
 
 def test_stage_overrides_maps_named_stages_on_unnamed_off() -> None:
@@ -181,3 +181,62 @@ def test_stage_overrides_rejects_unknown_stage() -> None:
 
     with _pytest.raises(SystemExit, match="unknown stage"):
         _stage_overrides("S0,S9")
+
+
+def test_ref_choice_maps_legacy_alias_and_rejects_frames():
+    import argparse
+
+    from gps_plot.plot_gps_timeseries import REF_FRAME, _ref_choice
+
+    assert _ref_choice("ref_frame") == REF_FRAME
+    assert _ref_choice("itrf2008") == REF_FRAME  # legacy cron spelling
+    assert _ref_choice("plate") == "plate"
+    with pytest.raises(argparse.ArgumentTypeError, match="--frame itrf2020"):
+        _ref_choice("itrf2020")
+
+
+def test_ref_label_names_frame_and_session():
+    pytest.importorskip("geo_dataread.pos")
+    from gps_plot.timesmatplt import _ref_label
+
+    assert _ref_label("itrf2008", "POS", "imo.24hr_itrf20") == "ref_frame, itrf2020 24h"
+    assert (
+        _ref_label("plate", "POS", "imo.24hr_itrf20", "imo.08hr_itrf20")
+        == "plate, itrf2020 24h+8h"
+    )
+    assert _ref_label("itrf2008", "TOT", None) == "ref_frame, TOT"
+
+
+def test_last_flagged_keeps_only_the_last_n_epochs():
+    import numpy as np
+
+    from gps_plot.timesmatplt import last_flagged
+
+    nan = np.nan
+    y = np.array([[1, nan, 2, 3, nan], [nan, nan, nan, nan, 4], [5, 6, 7, 8, 9]])
+    ky, kdy = last_flagged(y, y * 0.1, 2)
+    np.testing.assert_array_equal(np.isnan(ky[0]), [1, 1, 1, 0, 1])
+    np.testing.assert_array_equal(np.isnan(ky[1]), [1, 1, 1, 1, 0])
+    np.testing.assert_array_equal(np.isnan(ky[2]), [1, 1, 1, 0, 0])
+    assert np.isnan(kdy).sum() == np.isnan(ky).sum()
+    assert not np.isnan(last_flagged(y, y, 99)[0][2]).any()
+
+
+def test_remove_steps_all_expands_to_every_kind():
+    pytest.importorskip("gps_parser.outlier_catalogs")
+    from gps_parser.outlier_catalogs import STEP_KINDS
+
+    from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+    assert _normalize_kinds(["all"]) == list(STEP_KINDS)
+    assert _normalize_kinds(["earthquake,all"])[0] == "earthquake"
+
+
+def test_detrend_terms_parse_to_canonical_order():
+    from gps_plot.plot_gps_timeseries import _detrend_terms
+
+    assert _detrend_terms(None) is None
+    assert _detrend_terms("periodic,linear") == ("linear", "periodic")
+    assert _detrend_terms("Transient") == ("transient",)
+    with pytest.raises(ValueError, match="seasonal"):
+        _detrend_terms("seasonal")
