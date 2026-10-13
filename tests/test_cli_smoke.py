@@ -205,3 +205,27 @@ def test_ref_label_names_frame_and_session():
         == "plate, itrf2020 24h+8h"
     )
     assert _ref_label("itrf2008", "TOT", None) == "ref_frame, TOT"
+
+
+def test_last_flagged_keeps_last_n_per_component():
+    import numpy as np
+
+    from gps_plot.timesmatplt import last_flagged
+
+    nan = np.nan
+    y = np.array([[1, nan, 2, 3, nan], [nan, nan, nan, nan, 4], [5, 6, 7, 8, 9]])
+    ky, kdy = last_flagged(y, y * 0.1, 2)
+    np.testing.assert_array_equal(np.isnan(ky[0]), [1, 1, 0, 0, 1])
+    np.testing.assert_array_equal(np.isnan(ky[1]), [1, 1, 1, 1, 0])
+    np.testing.assert_array_equal(np.isnan(ky[2]), [1, 1, 1, 0, 0])
+    assert np.isnan(kdy).sum() == np.isnan(ky).sum()
+
+
+def test_remove_steps_all_expands_to_every_kind():
+    pytest.importorskip("gps_parser.outlier_catalogs")
+    from gps_parser.outlier_catalogs import STEP_KINDS
+
+    from gps_plot.plot_gps_timeseries import _normalize_kinds
+
+    assert _normalize_kinds(["all"]) == list(STEP_KINDS)
+    assert _normalize_kinds(["earthquake,all"])[0] == "earthquake"

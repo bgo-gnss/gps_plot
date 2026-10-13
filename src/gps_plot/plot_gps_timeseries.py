@@ -392,7 +392,11 @@ EXAMPLES = """examples:
                                                       the itrf2020 series instead
   plot-gps-timeseries RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
                                                       whole series, nothing removed
-  plot-gps-timeseries SENG --view detrended --save pdf
+  plot-gps-timeseries SENG --ref detrend --save pdf  rate + seasonals removed
+  plot-gps-timeseries SENG --ref detrend --remove-steps all --save pdf
+                                                      residuals (steps removed too)
+  plot-gps-timeseries SENG --view cleaned --show-outliers 5 --save pdf
+                                                      last 5 outliers, empty circles
   plot-gps-timeseries SENG --session both -s 20250101 --save pdf
                                                       24 h + 8 h, itrf2020
   plot-gps-timeseries SENG --session 8h -u 20 --save pdf
@@ -472,10 +476,14 @@ def _normalize_kinds(raw: Sequence[str]) -> list[str] | None:
             if not part:
                 continue
             k = _KIND_ALIASES.get(part.lower(), part.lower())
+            if k == "all":
+                kinds.extend(x for x in STEP_KINDS if x not in kinds)
+                continue
             if k not in STEP_KINDS:
                 raise SystemExit(
                     f"--remove-steps/--annotate-steps: kind {part!r} is not "
-                    f"one of {STEP_KINDS} (aliases accepted: {sorted(_KIND_ALIASES)})"
+                    f"one of {STEP_KINDS} or 'all' (aliases accepted: "
+                    f"{sorted(_KIND_ALIASES)})"
                 )
             if k not in kinds:
                 kinds.append(k)
@@ -498,7 +506,7 @@ def main():
     Type_allow = ["TOT", "08h", "JOIN", "POS"]
     ref_allow = ["all", "plate", "detrend", REF_FRAME]
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
-    view_allow = ["raw", "cleaned", "detrended"]
+    view_allow = ["raw", "cleaned"]
 
     # Raw*Description* leaves the epilog alone (argument help is still
     # auto-wrapped), which is what lets the generated NAME table keep its
@@ -599,18 +607,21 @@ def main():
         "plate = the station's plate velocity in that frame's plate-motion "
         "model, detrend = plate + the stored rate and seasonals (step offsets "
         "stay visible); all = one plot of each. Default: plate for a baseline "
-        "(AAAA-BBBB) or --view detrended, ref_frame otherwise",
+        "(AAAA-BBBB), ref_frame otherwise",
     )
     parser.add_argument(
         "--view",
         type=str,
         default="raw",
-        choices=view_allow,
-        help="Data view (geo_dataread apply-on-read toggle): raw (default), "
-        "cleaned (outlier epochs masked from the main series; the grey "
-        "overlay is OFF by default -- add --show-outliers to see what was "
-        "set aside), detrended (subtract full trajectory including steps "
-        "— unlike --ref detrend which keeps step offsets visible)",
+        # "detrended" is still accepted (old scripts) but no longer offered:
+        # detrending is --ref detrend; --ref detrend --remove-steps all is
+        # the same full-trajectory removal
+        choices=view_allow + ["detrended"],
+        metavar="{" + ",".join(view_allow) + "}",
+        help="data view: raw (default) or cleaned (outlier epochs masked "
+        "from the main series; the grey overlay is OFF by default -- add "
+        "--show-outliers to see what was set aside). Detrending is --ref "
+        "detrend (add --remove-steps all to remove the steps as well)",
     )
     parser.add_argument(
         "--show-ends",
@@ -781,13 +792,19 @@ def main():
     )
     parser.add_argument(
         "--show-outliers",
-        action="store_true",
-        help="overlay the grey outlier points on the --view cleaned figure. "
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="overlay the outlier points on the --view cleaned figure. "
         "Off by default: the flagged epochs are masked from the series and "
         "the overlay is HIDDEN, so the plot shows only the cleaned series "
-        "(and the y-axis tightens to it). Turning this on restores the "
-        "evidence of what the detector set aside, at the cost of the "
-        "y-axis stretching back out. Ignored unless --view cleaned",
+        "(and the y-axis tightens to it). --show-outliers alone draws all "
+        "of them (grey); --show-outliers N draws only the last N in each "
+        "component, as empty circles -- what was set aside recently, "
+        "without stretching the y-axis for old ones. Ignored unless --view "
+        "cleaned",
     )
     parser.add_argument(
         "--provisional-days",
@@ -811,6 +828,7 @@ def main():
         "for declared steps of these kinds. Repeatable, and each argument "
         "accepts a comma-separated list "
         "(e.g. --remove-steps equipment,earthquake). "
+        "'all' = every declared kind. "
         "Kind is the steps.yaml vocabulary: equipment (= instrument / "
         "antenna / receiver changes), earthquake, icing, manual, other "
         "('instrumental' is accepted as an alias for 'equipment'). Needs a "
@@ -819,8 +837,8 @@ def main():
         "with --view cleaned (cleaning runs first, then step removal).  "
         "Independent of --ref detrend (which subtracts rate + seasonal "
         "only; they compose — rate+seasonal removal + selective step "
-        "removal).  Redundant with --view detrended (which already "
-        "subtracts the full trajectory including steps)",
+        "removal): --ref detrend --remove-steps all removes the whole "
+        "stored trajectory, leaving the residuals",
     )
     parser.add_argument(
         "--annotate-steps",
@@ -894,7 +912,11 @@ def main():
     # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
     # default); the CLI inverts it -- the grey overlay is OFF unless
     # ``--show-outliers`` asks for it, so ``hide_outliers = not show``.
-    kwargs["hide_outliers"] = not kwargs.pop("show_outliers")
+    show_outliers = kwargs.pop("show_outliers")
+    kwargs["hide_outliers"] = show_outliers is None
+    if show_outliers is not None and show_outliers < 0:
+        parser.error("--show-outliers N: N must be positive")
+    kwargs["outlier_tail"] = show_outliers or None
     # ``--remove-steps`` kinds -> plotTime's ``remove_kinds`` (validated +
     # aliased); ``--annotate-steps`` -> ``True`` (all kinds), a list of
     # kinds (filtered), or ``False`` (the flag was not passed at all).

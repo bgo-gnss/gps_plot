@@ -684,6 +684,7 @@ def plotTime(
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
     hide_outliers: bool = False,
+    outlier_tail: int | None = None,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -720,6 +721,9 @@ def plotTime(
     ``outlier_overrides.csv`` instead of the deployed one.  Declared step
     epochs and protect windows always resolve from their own catalogs —
     see :func:`_mask_outliers` for why they are not optional.
+
+    ``outlier_tail`` = N draws only the last N flagged epochs of each
+    component, as empty circles (``--show-outliers N``).
 
     ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
     view.  It changes DISPLAY ONLY -- the flagged epochs are already
@@ -997,14 +1001,19 @@ def plotTime(
         # main series (mask only — nothing is deleted, matching the
         # geo_dataread raw-preservation rule).  Colors are passed at the call
         # site, not as addData defaults, because the JOIN overlay below still
-        # wants the standard red markers.
+        # wants the standard red markers.  ``outlier_tail`` = N keeps only
+        # the last N per component, drawn as empty circles.
+        oy, ody = outliers
+        if outlier_tail:
+            oy, ody = last_flagged(oy, ody, outlier_tail)
         fig = addData(
             x,
-            outliers[0],
-            outliers[1],
+            oy,
+            ody,
             fig,
+            markersize=4.5 if outlier_tail else 3.5,
             ecolor=OUTLIER_ERRORBAR_COLOR,
-            markerfacecolor=OUTLIER_FACE_COLOR,
+            markerfacecolor="none" if outlier_tail else OUTLIER_FACE_COLOR,
             markeredgecolor=OUTLIER_EDGE_COLOR,
         )
 
@@ -1137,6 +1146,18 @@ def plotTime(
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
     fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
     return fig
+
+
+def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:
+    """Keep only the last ``n`` non-NaN epochs of each component (row)."""
+    y = np.array(y, dtype=float)
+    dy = np.array(dy, dtype=float)
+    for i in range(y.shape[0]):
+        idx = np.flatnonzero(~np.isnan(y[i]))
+        drop = idx[:-n] if n < len(idx) else idx[:0]
+        y[i, drop] = np.nan
+        dy[i, drop] = np.nan
+    return y, dy
 
 
 def _ref_label(
