@@ -1083,7 +1083,9 @@ def plotTime(
         # renders land on exactly the same path
         saveFig(os.path.join(figDir, name), save, fig)
     elif save:
-        filend = "-%s" % (ref,)
+        # .pos series name their frame below; "itrf2008" (= nothing removed)
+        # would read as a second frame there
+        filend = "" if (tType == "POS" and ref == "itrf2008") else "-%s" % (ref,)
         if view == "cleaned":
             filend += "-cleaned"
         elif view == "detrended":

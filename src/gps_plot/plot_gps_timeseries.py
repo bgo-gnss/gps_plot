@@ -385,6 +385,22 @@ def exit_gracefully(signum, frame):
 ####    ------------------------------------------------   ####
 
 
+EXAMPLES = """examples:
+  plot-gps-timeseries REYK --save pdf                 itrf14 daily, own frame
+  plot-gps-timeseries REYK --ref plate --save pdf     plate velocity removed
+  plot-gps-timeseries REYK --frame itrf20 --save pdf  the IGb20 series instead
+  plot-gps-timeseries SENG --view detrended --save pdf
+  plot-gps-timeseries SENG --session both -s 20250101 --save pdf
+                                                      24 h + 8 h, itrf20
+  plot-gps-timeseries SENG --session 8h -u 20 --save pdf
+  plot-gps-timeseries VFLN-VFLS --show-ends --save pdf
+                                                      baseline + both ends
+  plot-gps-timeseries VFLN-VFLS --baseline-sigma empirical --save pdf
+  plot-gps-timeseries REYK --tType TOT --save pdf     the old TOT series
+  plot-gps-timeseries REYK --name REYK-test --save png
+                                                      one fixed file to keep open
+Always pass --save (without it the plot opens interactively)."""
+
 #: the reference frame plotted when neither --tType nor --frame is given
 DEFAULT_PLOT_FRAME = "itrf14"
 
@@ -465,11 +481,19 @@ def main():
     # auto-wrapped), which is what lets the generated NAME table keep its
     # columns instead of being reflowed into a comma wall.
     parser = argparse.ArgumentParser(
-        description="Plot tool for GPS time series.",
+        description="Plot GPS time series: one station, or a baseline AAAA-BBBB.\n\n"
+        + textwrap.fill(
+            "By default the daily .pos series in the ITRF2014 (IGb14) frame is "
+            "read from pos_dir; --frame switches frame (itrf08, itrf14, itrf20) "
+            "and --session picks 24 h, 8 h or both. Plate removal and the "
+            "detrend parameters always follow the frame.",
+            width=78,
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n\n".join(
             block
             for block in (
+                EXAMPLES,
                 outlier_param_help(),
                 textwrap.fill(
                     "For any issues regarding this program or the GPS system "
@@ -485,9 +509,10 @@ def main():
     parser.add_argument(
         "Stations",
         nargs="+",
-        help="List of stations. AAAA-BBBB plots the BASELINE AAAA minus BBBB "
-        "(N/E/U differences on common days, re-zeroed at the first, sigma "
-        "combined in quadrature); it defaults to --ref plate and can be "
+        help="stations (4-char codes), or 'all'. AAAA-BBBB plots the BASELINE "
+        "AAAA minus BBBB (N/E/U differences on common epochs — days, or 8 h "
+        "sessions within 2 h — re-zeroed at the first; sigma in quadrature, or "
+        "--baseline-sigma empirical); it defaults to --ref plate and can be "
         "mixed with single stations, e.g. VFLN-VFLS VFLN",
     )
     parser.add_argument(
@@ -501,8 +526,12 @@ def main():
         const=sys.stdin,
         help="read in a list of events from a file: defaults to stdin",
     )
-    parser.add_argument("-s", "--start", type=str, default=None, help="Start of plot")
-    parser.add_argument("-e", "--end", type=str, default=None, help="End of plot")
+    parser.add_argument(
+        "-s", "--start", type=str, default=None, help="start of the plot, YYYYMMDD"
+    )
+    parser.add_argument(
+        "-e", "--end", type=str, default=None, help="end of the plot, YYYYMMDD"
+    )
     parser.add_argument(
         "-D",
         type=int,
@@ -540,10 +569,12 @@ def main():
         type=str,
         default=None,
         choices=ref_allow,
-        help="Reference frame: itrf2008, remove plate velocity (plate), detrend "
-        "(subtract rate + seasonal — step offsets remain visible). Default: "
-        "plate for a baseline (AAAA-BBBB) or --view detrended, itrf2008 "
-        "otherwise",
+        help="what is removed from the positions: itrf2008 = nothing (the "
+        "positions in the series' own frame, --frame; the name is historical), "
+        "plate = the station's plate velocity in that frame's plate-motion "
+        "model, detrend = plate + the stored rate and seasonals (step offsets "
+        "stay visible); all = one plot of each. Default: plate for a baseline "
+        "(AAAA-BBBB) or --view detrended, itrf2008 otherwise",
     )
     parser.add_argument(
         "--view",
@@ -586,7 +617,8 @@ def main():
         choices=Type_allow,
         help='the series to read. Default (since 2026-10-13): "POS" in the '
         f"{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX "
-        "archive (N/E/U from X/Y/Z, junction offsets applied); --frame picks "
+        "archive (N/E/U from X/Y/Z; okada's junction offsets applied to the itrf08/"
+        "itrf14 sets); --frame picks "
         'another frame. "TOT": the GLOBK mb_STA_TOT.dat[123] files (the '
         'previous default), "08h" their 8-hour series, "JOIN" both',
     )
@@ -611,8 +643,9 @@ def main():
         "--frame",
         default=None,
         help="reference frame of the .pos series: itrf08 (okada, 1995 on), "
-        "itrf14 (IGb14, the same re-aligned, 1995 on) or itrf20 (IGb20, "
-        "gamit-p01, 2017 on); aliases itrf2008/igb14/itrf2014/igb20/itrf2020. "
+        "itrf14 (IGb14, the same re-aligned, 1995 on; the DEFAULT) or itrf20 "
+        "(IGb20, gamit-p01, 2017 on; the only frame with 8 h sessions); aliases "
+        "itrf2008/igb14/itrf2014/igb20/itrf2020. "
         "Implies --tType POS; plate removal and the detrend parameters follow "
         "the frame (detrend_params[.<frame>].json)",
     )
@@ -621,9 +654,11 @@ def main():
         default="24h",
         choices=["24h", "8h", "both"],
         help="24h daily solutions (default), 8h sessions "
-        "(<SITE>.imo.08hr_<frame>.pos; so far only itrf20, gamit-p01 2023 on), "
-        "or both: the 8h sessions drawn behind the daily series, same frame "
-        "and reference",
+        "(<SITE>.imo.08hr_<frame>.pos: itrf20 only, gamit-p01 2023 on, ~13 IMO "
+        "stations; the frame defaults to itrf20), or both: the 8h sessions "
+        "(blue) behind the daily series (red), same frame, view and reference. "
+        "8 h sigmas are larger: -u 10 drops the noisier sessions, -u 20 keeps "
+        "more",
     )
     parser.add_argument(
         "--convention",
@@ -673,8 +708,8 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        help="Time series input directory (default: postprocess totPath, or "
-        "pos_dir with --tType POS)",
+        help="time series input directory (default: postprocess pos_dir for "
+        "the .pos series, totPath for --tType TOT/08h/JOIN)",
     )
     parser.add_argument(
         "--outlier-param",
