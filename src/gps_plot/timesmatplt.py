@@ -807,7 +807,7 @@ def plotTime(
             raise ValueError(
                 f"{sta}: no plate assigned to {', '.join(unknown)} in the "
                 "deployed station-plate catalog (postprocess.cfg platefile). "
-                "Add it in gps-config-data and deploy, or plot with --ref itrf2008."
+                "Add it in gps-config-data and deploy, or plot with --ref ref_frame."
             )
         plates = [plate_name(table[s]) for s in ends]
         # a cross-rift baseline has two plates; say so rather than pick one
@@ -867,13 +867,22 @@ def plotTime(
         and ref_position is None
         and tType == "POS"
     ):
-        # one zero for both series: the main series' first position, so the
-        # overlay sits where its positions are, not re-zeroed on its own
+        # one zero for both series: the main series' first position IN THE
+        # PLOTTED WINDOW, so the plot starts at zero and the overlay sits
+        # where its positions are, not re-zeroed on its own
         from geo_dataread import pos as _pos
 
-        ref_position = _pos.read_pos(
-            _pos.pos_path(sta, Dir, _pos.pos_product(pos_id))
-        ).xyz[0]
+        _main = _pos.read_pos(_pos.pos_path(sta, Dir, _pos.pos_product(pos_id)))
+        _first = 0
+        if fstart is not None:
+            _first = min(
+                # fstart (gtimes day/365) and .pos yearf (GLOBK, noon epochs,
+                # 365.25) differ by up to half a day: allow it, or the first
+                # plotted day is skipped
+                int(np.searchsorted(np.asarray(_main.yearf), fstart - 0.5 / 365.25)),
+                len(_main.xyz) - 1,
+            )
+        ref_position = _main.xyz[_first]
     if baseline_sigma == "empirical" and pair is not None and _is_8h(pos_id):
         raise ValueError(
             f"baseline {sta}: the empirical baseline noise record is fitted on "
@@ -1097,11 +1106,11 @@ def plotTime(
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if tType == "POS":
-            # one file per frame (and session): itrf08/itrf14/itrf20, 8h
-            from geo_dataread.pos import pos_frame, pos_product
+            # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
+            from geo_dataread.pos import frame_name, pos_product
 
             _pid = pos_product(pos_id)
-            filend += f"-{pos_frame(_pid)}"
+            filend += f"-{frame_name(_pid)}"
             if _pid.startswith("imo.08hr"):
                 filend += "-8h"
             elif overlay_pos_id is not None:
@@ -1126,7 +1135,31 @@ def plotTime(
         plt.show()
 
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
+    fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
     return fig
+
+
+def _ref_label(
+    ref: str, tType: str, pos_id: str | None, overlay_pos_id: str | None = None
+) -> str:
+    """Human label for the console log: what was removed, in which frame.
+
+    ``ref == "itrf2008"`` is the internal token for "nothing removed" (the CLI
+    calls it ``ref_frame``); for .pos series the frame and session come from
+    the product id, e.g. ``ref_frame, itrf2020 24h+8h``.
+    """
+    name = "ref_frame" if ref == "itrf2008" else ref
+    if tType == "POS" and pos_id is not None:
+        from geo_dataread.pos import frame_name, pos_product
+
+        prod = pos_product(pos_id)  # imo.24hr_itrf20
+        session = prod[4:8].lstrip("0").replace("hr", "h")
+        if overlay_pos_id is not None:
+            session += "+" + pos_product(overlay_pos_id)[4:8].lstrip("0").replace(
+                "hr", "h"
+            )
+        return f"{name}, {frame_name(prod)} {session}"
+    return f"{name}, {tType}"
 
 
 #: marker colour of the overlaid sub-daily (8 h) series

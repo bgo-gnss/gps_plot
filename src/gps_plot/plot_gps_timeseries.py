@@ -37,7 +37,7 @@ def tryTimes(sta, **kwargs):
         fig = tplt.plotTime(sta, **kwargs)
         print(
             "plotted %s using: %s, %s"
-            % (sta, getattr(fig, "_gps_ref", kwargs["ref"]), kwargs["special"])
+            % (sta, getattr(fig, "_gps_label", kwargs["ref"]), kwargs["special"])
         )
     except IndexError as e:
         top = traceback.extract_stack()[-1]
@@ -386,12 +386,15 @@ def exit_gracefully(signum, frame):
 
 
 EXAMPLES = """examples:
-  plot-gps-timeseries REYK --save pdf                 itrf14 daily, own frame
+  plot-gps-timeseries REYK --save pdf                 itrf2014 daily, nothing removed
   plot-gps-timeseries REYK --ref plate --save pdf     plate velocity removed
-  plot-gps-timeseries REYK --frame itrf20 --save pdf  the IGb20 series instead
+  plot-gps-timeseries REYK --frame itrf2020 --save pdf
+                                                      the itrf2020 series instead
+  plot-gps-timeseries RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
+                                                      whole series, nothing removed
   plot-gps-timeseries SENG --view detrended --save pdf
   plot-gps-timeseries SENG --session both -s 20250101 --save pdf
-                                                      24 h + 8 h, itrf20
+                                                      24 h + 8 h, itrf2020
   plot-gps-timeseries SENG --session 8h -u 20 --save pdf
   plot-gps-timeseries VFLN-VFLS --show-ends --save pdf
                                                       baseline + both ends
@@ -402,7 +405,27 @@ EXAMPLES = """examples:
 Always pass --save (without it the plot opens interactively)."""
 
 #: the reference frame plotted when neither --tType nor --frame is given
-DEFAULT_PLOT_FRAME = "itrf14"
+DEFAULT_PLOT_FRAME = "itrf2014"
+
+#: ``--ref`` value for "nothing removed": the positions in the frame that
+#: ``--frame`` picks.  Internally (plotTime, geo_dataread) this is still the
+#: historical token ``"itrf2008"``, which the CLI also accepts as an alias.
+REF_FRAME = "ref_frame"
+_REF_FRAME_INTERNAL = "itrf2008"
+_ITRF_REF_NAMES = ("itrf2014", "itrf2020", "itrf08", "itrf14", "itrf20")
+
+
+def _ref_choice(value: str) -> str:
+    """argparse type for ``--ref``: map the legacy alias, explain frame names."""
+    v = value.strip().lower()
+    if v == _REF_FRAME_INTERNAL:
+        return REF_FRAME
+    if v in _ITRF_REF_NAMES:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is a reference frame, not a --ref choice: use "
+            f"--ref ref_frame --frame {value} (--frame picks the frame)"
+        )
+    return v
 
 
 def _config_dir(config, option, default=None):
@@ -473,7 +496,7 @@ def main():
     start = end = None
     eventDict = {}
     Type_allow = ["TOT", "08h", "JOIN", "POS"]
-    ref_allow = ["all", "plate", "detrend", "itrf2008"]
+    ref_allow = ["all", "plate", "detrend", REF_FRAME]
     special_allow = ["all", "90d", "year", "full", "fixedstart"]
     view_allow = ["raw", "cleaned", "detrended"]
 
@@ -483,10 +506,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Plot GPS time series: one station, or a baseline AAAA-BBBB.\n\n"
         + textwrap.fill(
-            "By default the daily .pos series in the ITRF2014 (IGb14) frame is "
-            "read from pos_dir; --frame switches frame (itrf08, itrf14, itrf20) "
-            "and --session picks 24 h, 8 h or both. Plate removal and the "
-            "detrend parameters always follow the frame.",
+            "By default the daily .pos series in itrf2014 is read from "
+            "pos_dir; --frame switches the reference frame (itrf2008, "
+            "itrf2014, itrf2020), --ref says what is removed (ref_frame = "
+            "nothing, plate, detrend) and --session picks 24 h, 8 h or both. "
+            "Plate removal and the detrend parameters always follow the frame.",
             width=78,
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -566,15 +590,16 @@ def main():
     )
     parser.add_argument(
         "--ref",
-        type=str,
+        type=_ref_choice,
         default=None,
         choices=ref_allow,
-        help="what is removed from the positions: itrf2008 = nothing (the "
-        "positions in the series' own frame, --frame; the name is historical), "
+        help="what is removed from the positions: ref_frame = nothing (the "
+        "positions in the reference frame picked by --frame; the old name "
+        "itrf2008 still works), "
         "plate = the station's plate velocity in that frame's plate-motion "
         "model, detrend = plate + the stored rate and seasonals (step offsets "
         "stay visible); all = one plot of each. Default: plate for a baseline "
-        "(AAAA-BBBB) or --view detrended, itrf2008 otherwise",
+        "(AAAA-BBBB) or --view detrended, ref_frame otherwise",
     )
     parser.add_argument(
         "--view",
@@ -617,8 +642,8 @@ def main():
         choices=Type_allow,
         help='the series to read. Default (since 2026-10-13): "POS" in the '
         f"{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX "
-        "archive (N/E/U from X/Y/Z; okada's junction offsets applied to the itrf08/"
-        "itrf14 sets); --frame picks "
+        "archive (N/E/U from X/Y/Z; okada's junction offsets applied to the "
+        "itrf2008/itrf2014 sets); --frame picks "
         'another frame. "TOT": the GLOBK mb_STA_TOT.dat[123] files (the '
         'previous default), "08h" their 8-hour series, "JOIN" both',
     )
@@ -637,15 +662,17 @@ def main():
         dest="pos_id",
         default=None,
         help="--tType POS: which .pos product in pos_dir — a frame (as --frame, "
-        "which is the simpler switch) or a full product id, e.g. imo.24hr_itrf14",
+        "which is the simpler switch) or a full product id, e.g. imo.24hr_itrf14 "
+        "(the .pos file names keep the short frame key: tssum's 15-character "
+        "product id has no room for itrf2014)",
     )
     parser.add_argument(
         "--frame",
         default=None,
-        help="reference frame of the .pos series: itrf08 (okada, 1995 on), "
-        "itrf14 (IGb14, the same re-aligned, 1995 on; the DEFAULT) or itrf20 "
-        "(IGb20, gamit-p01, 2017 on; the only frame with 8 h sessions); aliases "
-        "itrf2008/igb14/itrf2014/igb20/itrf2020. "
+        help="reference frame of the .pos series: itrf2008 (okada, 1995 on), "
+        "itrf2014 (IGb14: okada re-aligned, 1995 on; the DEFAULT) or itrf2020 "
+        "(IGb20: gamit-p01, 2017 on; the only frame with 8 h sessions). Short "
+        "names itrf08/itrf14/itrf20 and igb14/igb20 also work. "
         "Implies --tType POS; plate removal and the detrend parameters follow "
         "the frame (detrend_params[.<frame>].json)",
     )
@@ -654,8 +681,8 @@ def main():
         default="24h",
         choices=["24h", "8h", "both"],
         help="24h daily solutions (default), 8h sessions "
-        "(<SITE>.imo.08hr_<frame>.pos: itrf20 only, gamit-p01 2023 on, ~13 IMO "
-        "stations; the frame defaults to itrf20), or both: the 8h sessions "
+        "(<SITE>.imo.08hr_itrf20.pos: itrf2020 only, gamit-p01 2023 on, ~13 IMO "
+        "stations; the frame defaults to itrf2020), or both: the 8h sessions "
         "(blue) behind the daily series (red), same frame, view and reference. "
         "8 h sigmas are larger: -u 10 drops the noisier sessions, -u 20 keeps "
         "more",
@@ -887,8 +914,8 @@ def main():
     if args.tType is None:
         kwargs["tType"] = args.tType = "POS"
     if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
-        # the 8 h sessions exist only in itrf20 (gamit-p01) so far
-        frame = DEFAULT_PLOT_FRAME if session == "24h" else "itrf20"
+        # the 8 h sessions exist only in itrf2020 (gamit-p01) so far
+        frame = DEFAULT_PLOT_FRAME if session == "24h" else "itrf2020"
     if frame is not None or session != "24h":
         from geo_dataread.pos import pos_product
 
@@ -944,7 +971,13 @@ def main():
     # each station's data files once per sub-period; station-outer order
     # lets plotStation read each station's raw series once and reuse it
     # across all its variants.
-    variants = _expand_variants(kwargs, ref_allow[1:], special_allow[1:])
+    if kwargs.get("ref") == REF_FRAME:
+        kwargs["ref"] = _REF_FRAME_INTERNAL
+    variants = _expand_variants(
+        kwargs,
+        [_REF_FRAME_INTERNAL if r == REF_FRAME else r for r in ref_allow[1:]],
+        special_allow[1:],
+    )
 
     # --name is a FIXED path by design (re-render into one open viewer), so
     # a fan-out silently overwrites itself; warn rather than auto-suffix.
