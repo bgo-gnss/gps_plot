@@ -509,6 +509,7 @@ def station_series(
     outlier_overrides: str | None = None,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
     steps_catalog: str | None = None,
     params: str | None = None,
     ref_position: str | None = None,
@@ -623,14 +624,31 @@ def station_series(
                         f"{sta}: frame mismatch: record frame {record_frame!r} != "
                         f"series frame {series_frame!r} - refusing to apply"
                     )
-                data = _gv.apply_stored_detrend(record, yearf, data, frame=series_frame)
+                # --view detrended (legacy): the whole trajectory. --ref
+                # detrend: the chosen terms (default linear + periodic);
+                # "linear" is the library's "secular" (offset + rate + step
+                # amplitudes), so the steps are added back below
+                if view == "detrended":
+                    _sel: Any = "all"
+                else:
+                    _sel = tuple(
+                        DETREND_TERM_SELECTORS[t]
+                        for t in (detrend_terms or DEFAULT_DETREND_TERMS)
+                    )
+                data = _gv.apply_stored_detrend(
+                    record, yearf, data, terms=_sel, frame=series_frame
+                )
                 # --ref detrend: subtract rate + seasonal but KEEP step
                 # offsets visible (trends removed, discrete events stay).
                 # apply_stored_detrend subtracted the FULL trajectory
                 # including steps; add the step contributions back so
                 # earthquake/equipment offsets remain in the data.
                 # --view detrended keeps the full subtraction.
-                if ref == "detrend" and view != "detrended":
+                if (
+                    ref == "detrend"
+                    and view != "detrended"
+                    and "linear" in (detrend_terms or DEFAULT_DETREND_TERMS)
+                ):
                     _step_epochs = record.get("step_epochs", [])
                     if _step_epochs:
                         _yr = np.asarray(yearf, dtype=np.float64)
@@ -687,6 +705,7 @@ def plotTime(
     outlier_tail: int | None = None,
     provisional_days: float | None = None,
     remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
     steps_catalog: str | None = None,
     params: str | None = None,
@@ -824,6 +843,8 @@ def plotTime(
         )
     elif ref == "detrend":
         refTitle = "Detrended"
+        if detrend_terms and tuple(detrend_terms) != DEFAULT_DETREND_TERMS:
+            refTitle += f" ({' + '.join(detrend_terms)})"
     else:
         refTitle = ref.upper()
         if ref == "itrf2008" and tType == "POS" and pos_id is not None:
@@ -904,6 +925,7 @@ def plotTime(
         outlier_overrides=outlier_overrides,
         provisional_days=provisional_days,
         remove_kinds=remove_kinds,
+        detrend_terms=detrend_terms,
         steps_catalog=steps_catalog,
         params=params,
         ref_position=ref_position,
@@ -1103,6 +1125,12 @@ def plotTime(
         # .pos series name their frame below; "itrf2008" (= nothing removed)
         # would read as a second frame there
         filend = "" if (tType == "POS" and ref == "itrf2008") else "-%s" % (ref,)
+        if (
+            ref == "detrend"
+            and detrend_terms
+            and tuple(detrend_terms) != DEFAULT_DETREND_TERMS
+        ):
+            filend += "-" + "-".join(detrend_terms)
         if view == "cleaned":
             filend += "-cleaned"
         elif view == "detrended":
@@ -1183,6 +1211,18 @@ def _ref_label(
             )
         return f"{name}, {frame_name(prod)} {session}"
     return f"{name}, {tType}"
+
+
+#: --detrend-terms vocabulary → gps_analysis select_terms selector. "linear"
+#: is offset + rate; the library's "secular" also holds the step amplitudes,
+#: which --ref detrend adds back (steps are --remove-steps' business)
+DETREND_TERM_SELECTORS: dict[str, str] = {
+    "linear": "secular",
+    "periodic": "periodic",
+    "transient": "transient",
+}
+#: what --ref detrend removes when --detrend-terms is not given
+DEFAULT_DETREND_TERMS: tuple[str, ...] = ("linear", "periodic")
 
 
 #: marker colour of the overlaid sub-daily (8 h) series

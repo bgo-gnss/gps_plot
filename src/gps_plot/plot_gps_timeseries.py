@@ -393,6 +393,8 @@ EXAMPLES = """examples:
   plot-gps-timeseries RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
                                                       whole series, nothing removed
   plot-gps-timeseries SENG --ref detrend --save pdf  rate + seasonals removed
+  plot-gps-timeseries SENG --ref detrend --detrend-terms periodic --save pdf
+                                                      seasonals only removed
   plot-gps-timeseries SENG --ref detrend --remove-steps all --save pdf
                                                       residuals (steps removed too)
   plot-gps-timeseries SENG --view cleaned --show-outliers 5 --save pdf
@@ -489,6 +491,22 @@ def _normalize_kinds(raw: Sequence[str]) -> list[str] | None:
                 kinds.append(k)
     return kinds or None
     return kinds
+
+
+def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
+    """Parse ``--detrend-terms``: comma list → canonical-order tuple."""
+    if raw is None:
+        return None
+    from gps_plot.timesmatplt import DETREND_TERM_SELECTORS
+
+    want = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    bad = want - set(DETREND_TERM_SELECTORS)
+    if bad or not want:
+        raise ValueError(
+            f"--detrend-terms: {', '.join(sorted(bad)) or 'nothing given'}; "
+            f"use any of {', '.join(DETREND_TERM_SELECTORS)}"
+        )
+    return tuple(t for t in DETREND_TERM_SELECTORS if t in want)
 
 
 # Main
@@ -605,7 +623,7 @@ def main():
         "positions in the reference frame picked by --frame; the old name "
         "itrf2008 still works), "
         "plate = the station's plate velocity in that frame's plate-motion "
-        "model, detrend = plate + the stored rate and seasonals (step offsets "
+        "model, detrend = plate + the stored rate and seasonals (--detrend-terms; step offsets "
         "stay visible); all = one plot of each. Default: plate for a baseline "
         "(AAAA-BBBB), ref_frame otherwise",
     )
@@ -622,6 +640,16 @@ def main():
         "from the main series; the grey overlay is OFF by default -- add "
         "--show-outliers to see what was set aside). Detrending is --ref "
         "detrend (add --remove-steps all to remove the steps as well)",
+    )
+    parser.add_argument(
+        "--detrend-terms",
+        default=None,
+        metavar="TERM[,TERM...]",
+        help="with --ref detrend: which stored terms to subtract, any "
+        "combination of linear (offset + rate), periodic (annual + "
+        "semi-annual) and transient (if the record has one). Default "
+        "linear,periodic. Steps are not terms here: --remove-steps removes "
+        "them. Non-default terms are named in the title and the file name",
     )
     parser.add_argument(
         "--show-ends",
@@ -920,6 +948,15 @@ def main():
     # aliased); ``--annotate-steps`` -> ``True`` (all kinds), a list of
     # kinds (filtered), or ``False`` (the flag was not passed at all).
     kwargs["remove_kinds"] = _normalize_kinds(kwargs.pop("remove_steps"))
+    try:
+        kwargs["detrend_terms"] = _detrend_terms(kwargs["detrend_terms"])
+    except ValueError as exc:
+        parser.error(str(exc))
+    if kwargs["detrend_terms"] is not None and kwargs.get("ref") not in (
+        "detrend",
+        "all",
+    ):
+        parser.error("--detrend-terms needs --ref detrend")
     annotate_raw = kwargs.pop("annotate_steps")
     if annotate_raw is None:
         kwargs["annotate_steps"] = False

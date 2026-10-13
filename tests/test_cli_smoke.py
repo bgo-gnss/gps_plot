@@ -230,3 +230,13 @@ def test_remove_steps_all_expands_to_every_kind():
 
     assert _normalize_kinds(["all"]) == list(STEP_KINDS)
     assert _normalize_kinds(["earthquake,all"])[0] == "earthquake"
+
+
+def test_detrend_terms_parse_to_canonical_order():
+    from gps_plot.plot_gps_timeseries import _detrend_terms
+
+    assert _detrend_terms(None) is None
+    assert _detrend_terms("periodic,linear") == ("linear", "periodic")
+    assert _detrend_terms("Transient") == ("transient",)
+    with pytest.raises(ValueError, match="seasonal"):
+        _detrend_terms("seasonal")
