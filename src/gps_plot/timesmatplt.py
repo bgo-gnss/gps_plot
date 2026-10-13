@@ -544,6 +544,19 @@ def station_series(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
+    # detrend parameters belong to one reference frame: the series' frame
+    # tag guards the record, and a .pos frame other than ITRF2008 reads its
+    # own document (detrend_params.<frame>.json) unless one is given
+    series_frame = None
+    if view == "detrended" or ref == "detrend" or remove_kinds:
+        from geo_dataread import gps_views as _gv
+
+        frame_of = pos_id if tType == "POS" else None
+        series_frame = _gv.series_frame(frame_of)
+        if params is None and series_frame != _gv.PLATE_REMOVED_FRAME:
+            _p = _gv.default_params_path(frame_of)
+            params = str(_p) if _p is not None else None
+
     outliers = provisional = aborted = None
     detrend_applied = False
     if view == "cleaned":
@@ -604,8 +617,14 @@ def station_series(
             )
         else:
             try:
+                record_frame = record.get("frame")
+                if record_frame is not None and record_frame != series_frame:
+                    raise RuntimeError(
+                        f"{sta}: frame mismatch: record frame {record_frame!r} != "
+                        f"series frame {series_frame!r} - refusing to apply"
+                    )
                 data = _gv.apply_stored_detrend(
-                    record, yearf, data, frame=record.get("frame")
+                    record, yearf, data, frame=series_frame
                 )
                 # --ref detrend: subtract rate + seasonal but KEEP step
                 # offsets visible (trends removed, discrete events stay).
@@ -809,6 +828,13 @@ def plotTime(
             from geo_dataread.pos import POS_PRODUCTS, pos_product
 
             refTitle = POS_PRODUCTS.get(pos_product(pos_id), (refTitle, ""))[0]
+    if tType == "POS" and ref != "itrf2008":
+        # name the series' frame: plate-removed or detrended in which ITRF
+        from geo_dataread.pos import POS_PRODUCTS, pos_product
+
+        _label = POS_PRODUCTS.get(pos_product(pos_id), ("", ""))[0]
+        if _label:
+            refTitle = f"{refTitle}, {_label}"
     if view == "detrended" and ref != "detrend":
         # the full stored trajectory is subtracted from the plate series; the
         # title must say so, or it reads exactly like the plain plate plot
@@ -1024,7 +1050,15 @@ def plotTime(
             filend += "-empsig"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
-        if tType != "TOT":
+        if tType == "POS":
+            # one file per frame (and session): itrf08/itrf14/itrf20, 8h
+            from geo_dataread.pos import pos_frame, pos_product
+
+            _pid = pos_product(pos_id)
+            filend += f"-{pos_frame(_pid)}"
+            if _pid.startswith("imo.08hr"):
+                filend += "-8h"
+        elif tType != "TOT":
             filend += "-{0:s}".format(tType)
 
         if special:

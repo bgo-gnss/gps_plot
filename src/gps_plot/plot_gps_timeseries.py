@@ -588,10 +588,24 @@ def main():
         "--pos-id",
         dest="pos_id",
         default=None,
-        help="--tType POS: which .pos product in pos_dir — itr08 (default, the "
-        "okada glorg/ITRF2008 set, 1995 on), igb14 (the same re-aligned to IGb14, laptop), "
-        "igb20 = itrf2020 (gamit-p01's IGS20 processing, 2017 on, laptop) or a full id; "
-        "plate removal uses that frame's plate-motion model",
+        help="--tType POS: which .pos product in pos_dir — a frame (as --frame, "
+        "which is the simpler switch) or a full product id, e.g. imo.24hr_itrf14",
+    )
+    parser.add_argument(
+        "--frame",
+        default=None,
+        help="reference frame of the .pos series: itrf08 (okada, 1995 on), "
+        "itrf14 (IGb14, the same re-aligned, 1995 on) or itrf20 (IGb20, "
+        "gamit-p01, 2017 on); aliases itrf2008/igb14/itrf2014/igb20/itrf2020. "
+        "Implies --tType POS; plate removal and the detrend parameters follow "
+        "the frame (detrend_params[.<frame>].json)",
+    )
+    parser.add_argument(
+        "--session",
+        default="24h",
+        choices=["24h", "8h"],
+        help="with --frame: 24h daily solutions (default) or 8h sessions "
+        "(<SITE>.imo.08hr_<frame>.pos)",
     )
     parser.add_argument(
         "--convention",
@@ -809,6 +823,19 @@ def main():
         kwargs["annotate_steps"] = True
     else:
         kwargs["annotate_steps"] = _normalize_kinds([annotate_raw])
+
+    # --frame/--session pick the .pos product; --pos-id stays as an alias
+    frame, session = kwargs.pop("frame"), kwargs.pop("session")
+    if frame is not None or session != "24h":
+        from geo_dataread.pos import pos_product
+
+        if kwargs.get("pos_id") is not None:
+            parser.error("give --frame/--session or --pos-id, not both")
+        try:
+            kwargs["pos_id"] = pos_product(frame, session)
+        except ValueError as exc:
+            parser.error(str(exc))
+        kwargs["tType"] = args.tType = "POS"
 
     if kwargs["Dir"] is None:
         kwargs["Dir"] = _config_dir(
