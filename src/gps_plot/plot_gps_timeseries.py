@@ -698,9 +698,12 @@ def main():
         "--figDir",
         type=str,
         nargs="?",
-        default="",
-        const=_config_dir(config, "figDir", ""),
-        help="Figure save directory",
+        default=None,
+        const=None,
+        help="figure save directory (default: fig_dir in postprocess.cfg "
+        "[PATHS], deployed from gps-config-data; currently "
+        f"{_config_dir(config, 'fig_dir', None) or 'unset -> current directory'}). "
+        "Use -d . for the current directory.",
     )
     parser.add_argument(
         "-i",
@@ -900,6 +903,9 @@ def main():
         except ValueError as exc:
             parser.error(str(exc))
         kwargs["tType"] = args.tType = "POS"
+
+    if kwargs["figDir"] is None:
+        kwargs["figDir"] = _config_dir(config, "fig_dir", "")
 
     if kwargs["Dir"] is None:
         kwargs["Dir"] = _config_dir(
