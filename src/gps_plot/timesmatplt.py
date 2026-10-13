@@ -722,8 +722,8 @@ def plotTime(
     epochs and protect windows always resolve from their own catalogs —
     see :func:`_mask_outliers` for why they are not optional.
 
-    ``outlier_tail`` = N draws only the last N flagged epochs of each
-    component, as empty circles (``--show-outliers N``).
+    ``outlier_tail`` = N draws only the outliers among the series' last N
+    epochs (``--show-outliers N``).
 
     ``hide_outliers`` suppresses the grey overlay of the ``cleaned``
     view.  It changes DISPLAY ONLY -- the flagged epochs are already
@@ -1002,7 +1002,7 @@ def plotTime(
         # geo_dataread raw-preservation rule).  Colors are passed at the call
         # site, not as addData defaults, because the JOIN overlay below still
         # wants the standard red markers.  ``outlier_tail`` = N keeps only
-        # the last N per component, drawn as empty circles.
+        # those among the last N epochs.
         oy, ody = outliers
         if outlier_tail:
             oy, ody = last_flagged(oy, ody, outlier_tail)
@@ -1011,9 +1011,8 @@ def plotTime(
             oy,
             ody,
             fig,
-            markersize=4.5 if outlier_tail else 3.5,
             ecolor=OUTLIER_ERRORBAR_COLOR,
-            markerfacecolor="none" if outlier_tail else OUTLIER_FACE_COLOR,
+            markerfacecolor=OUTLIER_FACE_COLOR,
             markeredgecolor=OUTLIER_EDGE_COLOR,
         )
 
@@ -1149,14 +1148,17 @@ def plotTime(
 
 
 def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:
-    """Keep only the last ``n`` non-NaN epochs of each component (row)."""
+    """Keep the flagged epochs among the series' last ``n`` epochs only.
+
+    ``y``/``dy`` are the outlier overlay (components × epochs, NaN where not
+    flagged), aligned with the main series; anything flagged before its
+    last ``n`` epochs is dropped.
+    """
     y = np.array(y, dtype=float)
     dy = np.array(dy, dtype=float)
-    for i in range(y.shape[0]):
-        idx = np.flatnonzero(~np.isnan(y[i]))
-        drop = idx[:-n] if n < len(idx) else idx[:0]
-        y[i, drop] = np.nan
-        dy[i, drop] = np.nan
+    cut = max(y.shape[1] - n, 0)
+    y[:, :cut] = np.nan
+    dy[:, :cut] = np.nan
     return y, dy
 
 

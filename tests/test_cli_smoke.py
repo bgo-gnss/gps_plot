@@ -207,7 +207,7 @@ def test_ref_label_names_frame_and_session():
     assert _ref_label("itrf2008", "TOT", None) == "ref_frame, TOT"
 
 
-def test_last_flagged_keeps_last_n_per_component():
+def test_last_flagged_keeps_only_the_last_n_epochs():
     import numpy as np
 
     from gps_plot.timesmatplt import last_flagged
@@ -215,10 +215,11 @@ def test_last_flagged_keeps_last_n_per_component():
     nan = np.nan
     y = np.array([[1, nan, 2, 3, nan], [nan, nan, nan, nan, 4], [5, 6, 7, 8, 9]])
     ky, kdy = last_flagged(y, y * 0.1, 2)
-    np.testing.assert_array_equal(np.isnan(ky[0]), [1, 1, 0, 0, 1])
+    np.testing.assert_array_equal(np.isnan(ky[0]), [1, 1, 1, 0, 1])
     np.testing.assert_array_equal(np.isnan(ky[1]), [1, 1, 1, 1, 0])
     np.testing.assert_array_equal(np.isnan(ky[2]), [1, 1, 1, 0, 0])
     assert np.isnan(kdy).sum() == np.isnan(ky).sum()
+    assert not np.isnan(last_flagged(y, y, 99)[0][2]).any()
 
 
 def test_remove_steps_all_expands_to_every_kind():

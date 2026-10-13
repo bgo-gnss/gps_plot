@@ -396,7 +396,7 @@ EXAMPLES = """examples:
   plot-gps-timeseries SENG --ref detrend --remove-steps all --save pdf
                                                       residuals (steps removed too)
   plot-gps-timeseries SENG --view cleaned --show-outliers 5 --save pdf
-                                                      last 5 outliers, empty circles
+                                                      outliers in the last 5 days only
   plot-gps-timeseries SENG --session both -s 20250101 --save pdf
                                                       24 h + 8 h, itrf2020
   plot-gps-timeseries SENG --session 8h -u 20 --save pdf
@@ -801,10 +801,9 @@ def main():
         "Off by default: the flagged epochs are masked from the series and "
         "the overlay is HIDDEN, so the plot shows only the cleaned series "
         "(and the y-axis tightens to it). --show-outliers alone draws all "
-        "of them (grey); --show-outliers N draws only the last N in each "
-        "component, as empty circles -- what was set aside recently, "
-        "without stretching the y-axis for old ones. Ignored unless --view "
-        "cleaned",
+        "of them (grey); --show-outliers N only those among the last N "
+        "data points -- what was set aside recently, without stretching the "
+        "y-axis for old ones. Ignored unless --view cleaned",
     )
     parser.add_argument(
         "--provisional-days",
