@@ -2136,7 +2136,15 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
     first attempt to make the time scale on the x axis look good
     """
 
-    if period <= timedelta(6):
+    if period <= timedelta(hours=36):
+        # RTK spans (gpsplot rtk: 6h, 12h, day)
+        minorLoc = mpl.dates.HourLocator(byhour=range(0, 24, 2))
+        minorFmt = mpl.dates.DateFormatter("%H:%M")
+
+        majorLoc = mpl.dates.DayLocator()
+        majorFmt = mpl.dates.DateFormatter("%d %b %y")
+
+    elif period <= timedelta(6):
         minorLoc = mpl.dates.HourLocator(byhour=[0, 8, 16])
         minorFmt = mpl.dates.DateFormatter("%H:%M")
 

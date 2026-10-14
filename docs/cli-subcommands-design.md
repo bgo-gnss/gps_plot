@@ -133,6 +133,37 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
   Gate: the 23 station `--ref detrend` plots change (intended), the other
   37 are byte-identical.
 
+- **Step 6** (2026-10-14, branches geo_dataread `feat/rtk-read`, gps_plot
+  `feat/rtk`; step 5 seismic on ice by BGÓ): `gpsplot rtk`.
+  - Reader `geo_dataread.rtk_read` (decision #6: rtk_gps stays separate,
+    only reading moves): the RTKLIB day files `ROVER-BASE<date>0000b.pos` on
+    rtk.vedur.is (`/mnt_data/rtgpsdata`, `$GPS_RTK_DIR`, `--rtk-dir`).
+    Found: the columns are ENU for the vector AND the sigmas (rtk_gps
+    mislabels the sigmas sdn/sde), times are UTC (the coordinate files beside
+    them are GPS time, 18 s apart), each day file runs ~1 min into the next
+    day (a UTC day reads two files, duplicates dropped), rover − base = A − B
+    (SEY1-SEYD against the daily GLOBK positions: same vector to 2 mm
+    horizontally). Q=5 and σ ≥ 0.1 m out (rtk_gps defaults), interval
+    medians; complete days cached under `$GPS_RTK_CACHE`/XDG cache (a week:
+    4 s cold, 0.2 s cached); nothing written under the mount.
+  - `gpsplot rtk "SEY?-SEYD" [--special 6h|12h|day|twodays|threedays|week|month]
+    [-s/-e YYYYMMDD[-HH:MM] UTC] [--interval 10min] [--offset MM]
+    [--keep-float|--keep-single] [--daily]`: lines in mm with English labels
+    (BGÓ; rtk_gps plots cm, Icelandic), each zeroed on its first hour;
+    patterns match the existing RTK directories (rover and base sides).
+    Fixed solutions only by default (BGÓ): the floats (Q=2) carry most of
+    the spikes; `--keep-float` is the rtk_gps behaviour.
+  - `--daily` (decision #2, the join): the daily GLOBK baseline of each pair
+    (`sources.gps.fetch`, plate ref, itrf2014 or `--frame`) as dark-edged
+    points over the RTK line, placed by the MEDIAN of rtk(t_day) − daily over
+    the overlap: an estimate, stated on the figure (SEY1..3-SEYD, a month:
+    0–5 mm). RTK and daily stay independent sources.
+  - `compose.stack_figure` gained per-series styles (points / marked /
+    line, lines drawn first) and colours; `tslabels` hourly ticks below 36 h.
+  - `rtk_dir` in postprocess.cfg [PATHS] (gps-config-data `dc70271`, BGÓ):
+    the default data directory; `--rtk-dir`, then `$GPS_RTK_DIR`, then the
+    mount as fallbacks.
+
 ## Request (BGÓ)
 
 Split `plot-gps-timeseries` into subcommands (as tostools/receivers) and make it

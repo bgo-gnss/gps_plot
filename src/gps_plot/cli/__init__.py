@@ -56,6 +56,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.stack:run",
     ),
     Command(
+        "rtk",
+        'RTK baselines from rtk.vedur.is, e.g. "SEY?-SEYD" (--daily adds GLOBK)',
+        "gps_plot.cli.rtk:run",
+    ),
+    Command(
         "devviz",
         "analysis-lane dev plot (same as gps-analysis-devviz)",
         "gps_plot.cli.tools:devviz",
