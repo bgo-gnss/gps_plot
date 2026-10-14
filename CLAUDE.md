@@ -21,11 +21,13 @@ modules `ignore_errors`, `tests/` out). Scope rationale: `docs/mypy-status.md`.
 ```
 gps_plot/
 ├── src/gps_plot/
-│   ├── cli/                          # gpsplot: dispatcher (ts, stack, devviz, workbench, picker); common.py = shared options
+│   ├── cli/                          # gpsplot: dispatcher (ts, stack, rtk, map, devviz, workbench, picker); common.py = shared options
 │   ├── stack.py                      # gpsplot stack: several stations/baselines, patterns ("SEY?-SEYD")
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
+│   ├── map.py                        # gpsplot map: station/velocity/deformation/slip over maps.py
+│   ├── sources/velocity.py           # per-station windowed velocity / displacement / stored secular rate
 │   ├── plot_gps_timeseries.py        # time-series driver: build_parser + run (gpsplot ts)
 │   ├── series.py                     # Series: what every source returns, plots draw
 │   ├── sources/gps.py                # station / baseline -> Series (fetch); model line (fetch_model)
@@ -79,8 +81,10 @@ series (line = what the model still has in the data, in the window's datum;
 `--model-terms` picks the line's terms independently of the data's).
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
 (patterns match stations.cfg). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
-RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). Planned: `map`, seismic
-panels (on ice) — the staged plan and BGÓ's
+RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
+--region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
+window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
+Planned: seismic panels (on ice) — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).
 
@@ -204,7 +208,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

@@ -97,7 +97,22 @@ NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
     "rtksey": (["rtk", "SEY?-SEYD", "--special", "day"], 1),
     "rtkdaily": (["rtk", "SEY[1-2]-SEYD", "--special", "week", "--interval",
                   "10min", "--daily"], 1),
+    # gpsplot map (step 7): PyGMT output is not byte-stable, so counts only;
+    # the Reykjanes windows of the gps_data_analyses maps, the stored rates,
+    # a displacement with a Mogi field (station maps take no -e: STATIC)
+    "mapsta": (["map", "station", "SEY?", "HOFN"], 1),
+    "mapvel": (["map", "velocity", "--region=-22.8/-21.9/63.75/64.1",
+                "--window", "20231027:20231109", "--window", "20231123:20231205",
+                "--ref", "plate"], 1),
+    "mapvert": (["map", "velocity", "--region=-22.8/-21.9/63.75/64.1",
+                 "--last", "30", "--vertical", "--ref", "plate"], 1),
+    "mapsec": (["map", "velocity", "--region=-24.6/-13.2/63.2/66.7"], 1),
+    "mapdef": (["map", "deformation", "--region=-22.8/-21.9/63.75/64.1",
+                "-s", "20231101", "--ref", "plate",
+                "--mogi=-22.46,63.87,4.5,1.2e7"], 1),
 }  # fmt: skip
+#: variants without an -e (the gate appends one to every other)
+STATIC = {"mapsta"}
 
 OLD = (
     "import sys\nfrom gps_plot.plot_gps_timeseries import main\n"
@@ -136,6 +151,7 @@ def _render(
 ) -> None:
     for name, argv in variants.items():
         d = out / name
+        end_args = [] if name in STATIC else ["-e", end]
         d.mkdir(parents=True, exist_ok=True)
         env = dict(
             os.environ,
@@ -144,7 +160,7 @@ def _render(
             GPS_RTK_CACHE=str(out / "rtk-cache"),
             MPLBACKEND="Agg",
         )
-        argv = argv + ["-e", end, "--save", "png", "-d", str(d)]
+        argv = argv + [*end_args, "--save", "png", "-d", str(d)]
         p = subprocess.run(
             [sys.executable, "-c", boot, *argv], env=env, capture_output=True, text=True
         )

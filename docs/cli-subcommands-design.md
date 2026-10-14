@@ -2,7 +2,7 @@
 
 *Status: proposal, 2026-10-13. Review by Fable 5.1 of BGÓ's request (two passes; the
 second after BGÓ freed the command name), edited after the `feat/ref-frame-option`
-merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
+merge (main `ff4e1f4`). Steps 0–4, 6, 7 done 2026-10-14; 5 (seismic) on ice.*
 
 ## Decisions (BGÓ, 2026-10-14)
 
@@ -163,6 +163,42 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
   - `rtk_dir` in postprocess.cfg [PATHS] (gps-config-data `dc70271`, BGÓ):
     the default data directory; `--rtk-dir`, then `$GPS_RTK_DIR`, then the
     mount as fallbacks.
+
+- **Step 7** (2026-10-14, branch `feat-map-cli`): `gpsplot map
+  station|velocity|deformation|slip` over `maps.py` (`map.py`, `cli/map.py`,
+  adapters in `sources/velocity.py`). Modelled on BGÓ's Reykjanes maps
+  (`gps_data_analyses/pygmt_test/volcano_longterm.py`, `gpsvelo` +
+  `velomap`). BGÓ's choices: velocities from windowed fits AND the stored
+  records AND a gps_api GeoJSON; displacement −s→−e for deformation;
+  `--dem` only (no config key).
+  - Stations: stations.cfg patterns and/or every station inside
+    `--region W/E/S/N` (a negative longitude after `--region`/`--mogi` is
+    joined to the option, argparse would read it as one); `--exclude`.
+  - `velocity --window START:END` (repeatable) / `--last DAYS`: a straight
+    line (`gps_analysis.estimate_velocity`, model linear) fitted to each
+    station's series over the window — `--ref detrend` (default: relative to
+    the stored background, as `gpsvelo` on the detrended series) or `plate`;
+    one colour per window (blue, red, …, legend = the dates). `--vertical`:
+    up as a north-pointing arrow (the `gpsvelo` convention). `--min-snr`:
+    the |v|/|2σ| filter of the Reykjanes maps. Without a window: the
+    secular rate of the stored record (borrowed secular refused). Arrow
+    scale and legend arrow automatic (90th percentile → 2 cm).
+    Found: 19–21 of the 44 Reykjanes-box stations have no detrend record in
+    any frame, so a detrended Reykjanes map is mostly empty; the command
+    says so and points to `--ref plate`. Several stored secular rates are
+    hundreds of mm/yr (records fitted across unrest) — curation, not maps.
+  - `deformation -s -e`: end level − start level per station (1/σ-weighted
+    means of 5 epochs, σ in quadrature), `--mogi LON,LAT,DEPTH_KM,DV_M3`
+    model fields. `slip PRODUCT.json`: the gps_api Okada product.
+  - Every map view: Veðurstofa logo (`logos/`, `--logo none`), scale bar of
+    ~⅕ the map width, light-grey hillshade with `--dem` (the Reykjanes
+    `lightgrey.cpt`). GMT's remote `@earth_relief_15s` is the finest remote
+    grid for Iceland (SRTM 03s/01s stop at 60°N); a detailed map needs a
+    local DEM via `--dem`.
+  - `maps.velocity_map(ellipse_pen=)`: thin grey ellipses under coloured
+    arrows (default unchanged: the arrow pen).
+  - Gate: 60/60 byte-identical; 5 map variants (counts only — PyGMT
+    output is not byte-stable).
 
 ## Request (BGÓ)
 

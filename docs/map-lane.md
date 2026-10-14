@@ -47,6 +47,20 @@ The dormant `gmtplot.py::velomap` recipe is now fully absorbed (velo layers,
 DEM hillshade; its `fig.text` lon/lat swap fixed). Render tests are env-gated
 on pygmt/GMT (`GMT_LIBRARY_PATH=$HOME/git/gmt/install/lib uv run pytest`).
 
+## Command line: `gpsplot map`
+
+`gpsplot map station|velocity|deformation|slip` (`map.py`) draws these
+functions from stations.cfg patterns or a `--region` box: windowed velocity
+fits (`--window`, `--last`, `--vertical`), the stored secular rates, a
+gps_api GeoJSON, displacements with Mogi fields, slip products. Design and
+measured behaviour: `cli-subcommands-design.md`, step 7.
+
+```bash
+gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --ref plate \
+    --window 20231027:20231109 --window 20231123:20231205 \
+    --dem @earth_relief_15s --save pdf
+```
+
 ## Installing the lane
 
 The `maps` extra is `pygmt>=0.19` (PyPI) on top of a **system GMT ≥ 6** C
