@@ -63,7 +63,8 @@ examples:
       --window 20231027:20231109 --window 20231123:20231205 --save pdf
                         two windows, detrended series, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
-  gpsplot map velocity "*" --save pdf            stored secular rates, all stations
+  gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
+                        stored secular rates, Iceland
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
       --mogi -22.46,63.87,4.5,1.2e7 --save pdf
   gpsplot map slip models/reykjanes_slip.json --view plane --save pdf

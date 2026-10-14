@@ -223,7 +223,8 @@ def _record(rates, sigmas, borrowed=None):
         for r, s, c in zip(rates, sigmas, ("north", "east", "up"), strict=True)
     ]
     return {"record_version": 1, "model": "linear", "step_epochs": [],
-            "components": comps, "borrowed": borrowed, "n_epochs": 900}  # fmt: skip
+            "param_names": ["offset", "rate"], "components": comps[::-1],
+            "borrowed": borrowed, "n_epochs": 900}  # fmt: skip
 
 
 def test_record_velocity_reads_the_secular_rate(monkeypatch):
@@ -238,7 +239,7 @@ def test_record_velocity_reads_the_secular_rate(monkeypatch):
 def test_record_velocity_refuses_a_borrowed_secular(monkeypatch):
     monkeypatch.setattr(vsource.gps_source, "station_record",
                         lambda sta, req: _record([1, 1, 1], [1, 1, 1], "SKSH"))  # fmt: skip
-    with pytest.raises(ValueError, match="borrowed from SKSH"):
+    with pytest.raises(ValueError, match="record borrowed from SKSH"):
         vsource.record_velocity("ELDC", _req())
 
 
@@ -419,3 +420,22 @@ def test_velocity_map_renders(monkeypatch, tmp_path):
     except Exception as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"GMT unavailable: {exc}")
     assert (tmp_path / "smoke.png").stat().st_size > 1000
+
+
+def test_slip_dispatch(fake_maps, tmp_path):
+    from test_maps import _slip_product
+
+    path = tmp_path / "reykjanes_slip.json"
+    path.write_text(json.dumps(_slip_product()))
+    assert (
+        _run(["slip", str(path), "--view", "plane", "--stations", "SEY?"], tmp_path)
+        == 0
+    )
+    (product,), kw = fake_maps["slip_map"]
+    assert kw["view"] == "plane" and [c.marker for c in kw["stations"]] == [
+        "SEY1",
+        "SEY2",
+    ]
+    fig = fake_maps["fig"]
+    assert fig.calls == []  # no scale bar / logo on the plane section
+    assert fig.saved[0].endswith(f"map_slip_{product['region']}-plane.png")

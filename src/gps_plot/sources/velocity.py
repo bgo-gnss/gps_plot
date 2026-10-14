@@ -117,10 +117,18 @@ def record_velocity(sta: str, req: gps_source.SeriesRequest) -> StationRate:
 
     record = gps_source.station_record(sta, req)
     if record.get("borrowed"):
-        raise ValueError(f"secular rate borrowed from {record['borrowed']}")
+        # which groups were borrowed is not checked: refuse rather than
+        # draw a donor's rate as this station's
+        raise ValueError(f"record borrowed from {record['borrowed']}")
+    names = list(record.get("param_names") or ())
+    if "rate" not in names:
+        raise ValueError(f"record has no secular rate (params {names})")
+    k = names.index("rate")
     _model, fits = trajectory_from_record(record)
-    if len(fits) != 3:
-        raise ValueError(f"record has {len(fits)} components, not N/E/U")
-    rate = np.array([float(f.params[1]) for f in fits])
-    sigma = np.array([float(f.uncertainties[1]) for f in fits])
+    by_name = {f.component: f for f in fits}
+    if set(by_name) != {"north", "east", "up"}:
+        raise ValueError(f"record components {sorted(map(str, by_name))}, not N/E/U")
+    rows = [by_name[c] for c in ("north", "east", "up")]
+    rate = np.array([float(f.params[k]) for f in rows])
+    sigma = np.array([float(f.uncertainties[k]) for f in rows])
     return StationRate(sta, rate, sigma, int(record.get("n_epochs") or 0))
