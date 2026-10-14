@@ -24,7 +24,9 @@ gps_plot/
 │   ├── cli/                          # gpsplot: subcommand dispatcher (ts, devviz, workbench, picker)
 │   ├── plot_gps_timeseries.py        # time-series driver: build_parser + run (gpsplot ts)
 │   ├── series.py                     # Series: what every source returns, plots draw
-│   ├── sources/gps.py                # station / baseline -> Series (fetch)
+│   ├── sources/gps.py                # station / baseline -> Series (fetch); model line (fetch_model)
+│   ├── layers/model.py               # the stored-model line (gpsplot ts --model)
+│   ├── trajectory.py                 # model sampled for drawing (dense grid, steps bracketed)
 │   ├── timesmatplt.py                # time-series matplotlib plots
 │   ├── gasmatplt.py                  # GAS plots (legacy, ruff-excluded)
 │   ├── gmtplot.py                    # dormant velomap seed — absorbed into maps.py
@@ -67,8 +69,10 @@ gps-detrend-picker-qt ... # entry: gps_plot.detrend_picker_qt:main (pyqtgraph)
 
 One command, `gpsplot`, one subcommand per plot kind (`cli/__init__.py`
 `COMMANDS`; only the chosen one is imported). `ts` options live once in
-`plot_gps_timeseries.build_parser`, shared with the old name. Planned:
-`stack`, `--model`, `map`, `rtk`, seismic panels — the staged plan and BGÓ's
+`plot_gps_timeseries.build_parser`, shared with the old name. `--model
+curve|residual|both` draws the stored model over the plate / detrended
+series (line = what the model still has in the data, in the window's datum).
+Planned: `stack`, `map`, `rtk`, seismic panels — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).
 
@@ -192,7 +196,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-14 — gpsplot subcommand CLI; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-14 — gpsplot subcommand CLI, --model; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

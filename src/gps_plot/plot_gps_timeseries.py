@@ -138,6 +138,12 @@ def _expand_variants(kwargs, refs, specials):
     return [base]
 
 
+def _model_variants(variants, model):
+    """Give each variant its ``--model`` plot(s): both = curve then residual."""
+    kinds = ["curve", "residual"] if model == "both" else [model]
+    return [dict(v, ref=MODEL_REFS[k], model=k) for v in variants for k in kinds]
+
+
 def _coerce_outlier_param(name, typ, raw):
     """Coerce one ``NAME=VALUE`` string to an OutlierParams field type."""
     if typ is bool:
@@ -398,6 +404,8 @@ is the old name of the same command):
                                                seasonals only removed
   gpsplot SENG --ref detrend --remove-steps all --save pdf
                                                residuals (steps removed too)
+  gpsplot HOFN --model both --save pdf         stored model over the plate
+                                               series, and over the detrended
   gpsplot SENG --view cleaned --show-outliers 5 --save pdf
                                                outliers in the last 5 days only
   gpsplot SENG --session both -s 20250101 --save pdf
@@ -513,6 +521,9 @@ TYPE_ALLOW = ["TOT", "08h", "JOIN", "POS"]
 REF_ALLOW = ["all", "plate", "detrend", REF_FRAME]
 SPECIAL_ALLOW = ["all", "90d", "year", "full", "fixedstart"]
 VIEW_ALLOW = ["raw", "cleaned"]
+MODEL_ALLOW = ["curve", "residual", "both"]
+#: the ref each --model plot is drawn in (the record is plate-frame)
+MODEL_REFS = {"curve": "plate", "residual": "detrend"}
 
 
 def _load_config() -> Any:
@@ -653,6 +664,17 @@ def build_parser(
         "from the main series; the grey overlay is OFF by default -- add "
         "--show-outliers to see what was set aside). Detrending is --ref "
         "detrend (add --remove-steps all to remove the steps as well)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        choices=MODEL_ALLOW,
+        help="draw the stored detrend model as a line: curve = over the "
+        "plate series (--ref plate), residual = over the detrended series "
+        "(--ref detrend; the line is what the model still has in the data, "
+        "e.g. the steps), both = one file of each. Solid in the record's fit "
+        "window, dashed where extrapolated. Files end in -model / -resid. "
+        "Stations only; leave --ref out (or give the matching one)",
     )
     parser.add_argument(
         "--detrend-terms",
@@ -984,9 +1006,20 @@ def run(
         kwargs["detrend_terms"] = _detrend_terms(kwargs["detrend_terms"])
     except ValueError as exc:
         parser.error(str(exc))
-    if kwargs["detrend_terms"] is not None and kwargs.get("ref") not in (
-        "detrend",
-        "all",
+    model = kwargs.pop("model")
+    if model is not None:
+        wanted = MODEL_REFS.get(model)
+        if kwargs.get("ref") is not None and kwargs.get("ref") != wanted:
+            parser.error(
+                "--model %s draws over --ref %s; leave --ref out"
+                % (model, wanted or "plate and detrend")
+            )
+        from geo_dataread.baseline import split_baseline
+
+        if any(split_baseline(s) for s in args.Stations):
+            parser.error("--model: baselines (AAAA-BBBB) are not supported yet")
+    if kwargs["detrend_terms"] is not None and not (
+        kwargs.get("ref") in ("detrend", "all") or model in ("residual", "both")
     ):
         parser.error("--detrend-terms needs --ref detrend")
     annotate_raw = kwargs.pop("annotate_steps")
@@ -1001,6 +1034,8 @@ def run(
     # With neither --tType nor a product, the default is the .pos series in
     # DEFAULT_PLOT_FRAME.
     frame, session = kwargs.pop("frame"), kwargs.pop("session")
+    if model is not None and session != "24h":
+        parser.error("--model: daily series only (no --session 8h/both) for now")
     if args.tType is None:
         kwargs["tType"] = args.tType = "POS"
     if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
@@ -1068,6 +1103,8 @@ def run(
         [_REF_FRAME_INTERNAL if r == REF_FRAME else r for r in ref_allow[1:]],
         special_allow[1:],
     )
+    if model is not None:
+        variants = _model_variants(variants, model)
 
     # --name is a FIXED path by design (re-render into one open viewer), so
     # a fan-out silently overwrites itself; warn rather than auto-suffix.

@@ -13,7 +13,13 @@ import dataclasses
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
+
 from gps_plot.series import Series
+
+#: the refs a model line can be drawn over: the stored record is fitted to
+#: the plate-removed series ("detrend" reads that same series)
+MODEL_REFS = ("plate", "detrend")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -148,6 +154,106 @@ def fetch(
         detrend_applied=all(e.detrend_applied for e in ends),
         ends=(zeroed[0], zeroed[1]),
         meta={"rho": rho, "sigma_scale": sigma_scale, "sigma_note": sigma_note},
+    )
+
+
+def station_record(sta: str, req: SeriesRequest) -> Any:
+    """The stored detrend record a request's series is detrended with.
+
+    Raises:
+        ValueError: no record for the station, or one in another frame.
+    """
+    from geo_dataread import gps_views as gv
+
+    from gps_plot import timesmatplt as tplt
+
+    series_frame, params = tplt.record_context(req.tType, req.pos_id, req.params)
+    record, _src = gv.station_detrend_record(gv.read_detrend_params(params), sta)
+    if record is None:
+        raise ValueError(f"{sta}: no stored detrend record to draw")
+    frame = record.get("frame")
+    if frame is not None and frame != series_frame:
+        raise ValueError(
+            f"{sta}: record frame {frame!r} != series frame {series_frame!r}"
+        )
+    return record
+
+
+def model_values(sta: str, req: SeriesRequest, t: Any, record: Any) -> Any:
+    """The stored model of what is still in the plotted series, at ``t``.
+
+    ``model − removed − shift``: the full trajectory, minus what the view
+    takes out of the data (``--remove-steps`` kinds, the ``--ref detrend``
+    terms; found by running the same :func:`trajectory_views` on zeros),
+    in the plotted window's datum (``window_datum_shift``: a windowed read
+    is zeroed at its own start, the record at the full series'). So
+    ``data − line`` is the same in every view: the residual from the model.
+
+    Returns:
+        ``(3, len(t))`` [mm].
+    """
+    from geo_dataread.gps_views import window_datum_shift
+    from gps_analysis import evaluate_record
+
+    from gps_plot import timesmatplt as tplt
+
+    if req.ref not in MODEL_REFS:
+        raise ValueError(
+            f"{sta}: a model line needs ref plate or detrend, not {req.ref!r}"
+        )
+    t = np.asarray(t, dtype=float)
+    full = np.asarray(evaluate_record(record, t), dtype=float)
+    removed, _ = tplt.trajectory_views(
+        sta,
+        t,
+        np.zeros_like(full),
+        ref=req.ref,
+        view=req.view,
+        tType=req.tType,
+        pos_id=req.pos_id,
+        remove_kinds=req.remove_kinds,
+        detrend_terms=req.detrend_terms,
+        steps_catalog=req.steps_catalog,
+        params=req.params,
+    )
+    shift = window_datum_shift(
+        sta,
+        fstart=req.fstart,
+        fend=req.fend,
+        ref="plate",
+        Dir=req.Dir,
+        tType=req.tType,
+        uncert=req.uncert,
+        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
+    )
+    return full + np.asarray(removed, dtype=float) - shift[:, None]
+
+
+def fetch_model(spec: str, req: SeriesRequest, t: Any) -> Series:
+    """The model line over a station's series, sampled for drawing.
+
+    Dense over the extent of ``t`` (the plotted epochs) with step epochs
+    bracketed (:func:`gps_plot.trajectory.curve_grid`). ``meta["window"]``
+    is the record's fit window, so a layer can mark where it extrapolates.
+
+    Raises:
+        ValueError: a baseline (not supported yet), no record, a frame
+            mismatch, or a ref the record does not apply to.
+    """
+    from geo_dataread.baseline import split_baseline
+
+    from gps_plot.trajectory import curve_grid
+
+    if split_baseline(spec) is not None:
+        raise ValueError(f"{spec}: a model line over a baseline is not supported yet")
+    record = station_record(spec, req)
+    grid = curve_grid(record, t)
+    return Series(
+        label=f"{spec} model",
+        t=grid,
+        y=model_values(spec, req, grid, record),
+        sigma=None,
+        meta={"window": record.get("window")},
     )
 
 
