@@ -23,6 +23,8 @@ gps_plot/
 ├── src/gps_plot/
 │   ├── cli/                          # gpsplot: subcommand dispatcher (ts, devviz, workbench, picker)
 │   ├── plot_gps_timeseries.py        # time-series driver: build_parser + run (gpsplot ts)
+│   ├── series.py                     # Series: what every source returns, plots draw
+│   ├── sources/gps.py                # station / baseline -> Series (fetch)
 │   ├── timesmatplt.py                # time-series matplotlib plots
 │   ├── gasmatplt.py                  # GAS plots (legacy, ruff-excluded)
 │   ├── gmtplot.py                    # dormant velomap seed — absorbed into maps.py

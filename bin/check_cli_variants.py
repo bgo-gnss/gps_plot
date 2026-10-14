@@ -42,6 +42,30 @@ VARIANTS: dict[str, list[str]] = {
     "vfln": ["VFLN-VFLS", "--show-ends", "--special", "year"],
     "rhof08": ["RHOF", "--ref", "ref_frame", "--frame", "itrf2008", "--special", "full"],
     "prod": ["RHOF", "SENG", "HOFN", "--ref", "all", "--special", "all", "-j", "6"],
+    # stepped detrend records (SELF itrf14 + itrf08, HOFN itrf08): the step
+    # offsets must stay in --ref detrend and go with --remove-steps
+    "selfdet": ["SELF", "--ref", "detrend", "--special", "full"],
+    "selfeq": ["SELF", "--ref", "detrend", "--remove-steps", "earthquake", "--special", "full"],
+    "selflin": ["SELF", "--ref", "detrend", "--detrend-terms", "linear", "--special", "full"],
+    "self08": ["SELF", "--ref", "detrend", "--frame", "itrf2008", "--special", "full"],
+    "hofn08": ["HOFN", "--ref", "detrend", "--frame", "itrf2008", "--special", "full"],
+    "hofn08eq": [
+        "HOFN", "--ref", "detrend", "--frame", "itrf2008", "--remove-steps", "equipment",
+        "--special", "full",
+    ],
+    # baselines through gps_plot.sources.gps: empirical σ, 8 h overlay, detrended
+    "vflnemp": ["VFLN-VFLS", "--baseline-sigma", "empirical", "--special", "year"],
+    "sengboth-bl": ["SENG-SKSH", "--session", "both", "-s", "20250101"],
+    "sengdet-bl": ["SENG-SKSH", "--ref", "detrend", "--special", "year"],
+    # OutlierParams objects must reach station_series intact
+    "sengop": [
+        "SENG", "--view", "cleaned", "--outlier-param", "window_n_sigma=3.0",
+        "--show-outliers", "--special", "year",
+    ],
+    "sengstages": [
+        "SENG", "--view", "cleaned", "--stages", "S0,S4", "--outlier-param",
+        "window_n_sigma=4.0", "--show-outliers", "--special", "year",
+    ],
 }  # fmt: skip
 
 OLD = (
@@ -112,8 +136,11 @@ def main() -> int:
 
     _render(args.src_a, OLD, args.out / "reference", shim, frozen, args.end)
     ref = _hashes(args.out / "reference")
-    if not ref:
-        print("FAIL: the reference produced no PNGs")
+    # a driver error is caught per station (exit 0, no file), so an empty
+    # variant would otherwise pass as "nothing differs"
+    empty = [v for v in VARIANTS if not any((args.out / "reference" / v).glob("*.png"))]
+    if not ref or empty:
+        print(f"FAIL: the reference rendered nothing for {empty or 'any variant'}")
         return 2
     (args.out / "reference_hashes.txt").write_text(
         "".join(f"{h}  {n}\n" for n, h in ref.items())
