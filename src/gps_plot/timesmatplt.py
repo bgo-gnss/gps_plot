@@ -920,6 +920,19 @@ def plotTime(
                 f"{sta}: --model draws the stored model, which is fitted to the "
                 f"plate series: use --ref plate or detrend, not {ref!r}"
             )
+        if (
+            overlay_pos_id is not None
+            or ref_position is not None
+            or convention != "geodetic"
+            or (pos_id is not None and pos_id.startswith("imo.08hr"))
+        ):
+            # the record's datum is the full daily read, zeroed by getData;
+            # an 8 h series or a chosen reference position is zeroed
+            # elsewhere and shares no epoch to align on exactly
+            raise ValueError(
+                f"{sta}: --model is for the daily series only (no 8 h "
+                "sessions, --session both or a reference position) for now"
+            )
     if baseline_sigma not in ("formal", "empirical"):
         raise ValueError(
             f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"

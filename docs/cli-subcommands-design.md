@@ -52,8 +52,8 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
     still in the plotted data. `curve` = over the plate series, the full
     trajectory (all groups, transient included) minus any `--remove-steps`
     kinds; `residual` = over the `--ref detrend` series, what the
-    `--detrend-terms` left in (the steps, unless removed), so it is the
-    zero line only when nothing is left. `data − line` is then the same
+    `--detrend-terms` left in (the steps, unless removed), so it is flat
+    (at the window's datum) when nothing is left. `data − line` is then the same
     residual in every view. Built by running `station_series`' own removal
     step (`timesmatplt.trajectory_views`, factored out) on zeros, so line
     and data cannot disagree.
@@ -72,7 +72,10 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
     so with its level (SENG's pre-unrest background in the year view: N
     −1263, E +2591, U −1044 mm — the 2023 dike, not an error). Files
     `-model` / `-resid`; `both` = two files. Refused: `--ref ref_frame`/`all`
-    or a mismatched `--ref`, baselines (later).
+    or a mismatched `--ref`, baselines, and (follow-up) 8 h sessions /
+    `--session both` / a reference position: those series are zeroed elsewhere
+    and share no epoch with the daily read the record is fitted to, so no
+    exact shift exists (seen: HOFN `--session both` line ~118 mm off).
   - Tests: the acceptance identity `data − line = D_full(plate) − M` at the
     data epochs on the deployed SELF itrf14 record (step 2008.41): full,
     2007–2010 and 2024– windows × raw/cleaned × plate/detrend × with/without

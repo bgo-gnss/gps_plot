@@ -104,6 +104,8 @@ def test_model_variants_both_is_curve_then_residual():
         (["HOFN", "--model", "both", "--ref", "plate"], "leave --ref out"),
         (["HOFN", "--model", "curve", "--ref", "all"], "leave --ref out"),
         (["SENG-SKSH", "--model", "curve"], "baselines"),
+        (["HOFN", "--model", "curve", "--session", "both"], "daily series only"),
+        (["HOFN", "--model", "residual", "--session", "8h"], "daily series only"),
         (
             ["HOFN", "--model", "curve", "--detrend-terms", "periodic"],
             "--detrend-terms needs --ref detrend",
@@ -126,6 +128,25 @@ def test_plot_time_refuses_a_model_over_the_reference_frame():
         plotTime("HOFN", ref="itrf2008", model="curve", save="png")
     with pytest.raises(ValueError, match="baseline"):
         plotTime("SENG-SKSH", ref="plate", model="curve", save="png")
+    with pytest.raises(ValueError, match="daily series only"):
+        plotTime(
+            "HOFN",
+            ref="plate",
+            model="curve",
+            save="png",
+            tType="POS",
+            pos_id="imo.24hr_itrf20",
+            overlay_pos_id="imo.08hr_itrf20",
+        )
+    with pytest.raises(ValueError, match="daily series only"):
+        plotTime(
+            "HOFN",
+            ref="plate",
+            model="curve",
+            save="png",
+            tType="POS",
+            pos_id="imo.08hr_itrf20",
+        )
 
 
 # ---------------------------------------------------------------------------

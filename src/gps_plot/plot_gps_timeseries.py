@@ -1034,6 +1034,8 @@ def run(
     # With neither --tType nor a product, the default is the .pos series in
     # DEFAULT_PLOT_FRAME.
     frame, session = kwargs.pop("frame"), kwargs.pop("session")
+    if model is not None and session != "24h":
+        parser.error("--model: daily series only (no --session 8h/both) for now")
     if args.tType is None:
         kwargs["tType"] = args.tType = "POS"
     if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
