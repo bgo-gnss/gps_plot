@@ -38,9 +38,14 @@ merge (main `ff4e1f4`). Steps 0–1 done 2026-10-14 (branch `feat/gpsplot-cli`).
     a station or a baseline (`ends`, empirical σ in `meta`). `plotTime` and the
     8 h overlay both read through `fetch`, so the station-or-baseline code
     exists once.
-  - Gate: 15 variant sets, 52 PNGs byte-identical to main (stepped SELF/HOFN
+  - Gate: 17 variant sets, 54 PNGs byte-identical to main (stepped SELF/HOFN
     records, `--remove-steps`, empirical σ, `SENG-SKSH` with `--session both`
-    and `--ref detrend`); an empty variant now fails the gate.
+    and `--ref detrend`, `--outlier-param`, `--stages`); an empty variant now
+    fails the gate. Every deployed record (3 documents × 7 `--detrend-terms`
+    combinations) gives the same detrend through `groups=` to 3e-14 mm.
+  - Found on the way: `--stages` without `--outlier-param` crashed on main
+    (`'NoneType' object is not iterable`); fixed. `SeriesRequest.kwargs()` is
+    shallow on purpose (`asdict` would turn OutlierParams into a dict).
 
 ## Request (BGÓ)
 

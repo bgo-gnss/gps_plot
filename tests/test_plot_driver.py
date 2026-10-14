@@ -171,6 +171,15 @@ def test_build_outlier_params_none_when_nothing_assigned():
 
 
 @requires_gps_analysis
+def test_build_outlier_params_stages_without_outlier_param():
+    """--stages S0,S4 alone crashed: 'NoneType' object is not iterable."""
+    over = driver._stage_overrides("S0,S4")
+    params = driver._build_outlier_params(None, base=over)
+    assert params is not None
+    for name, field in driver.STAGE_FLAGS.items():
+        assert getattr(params, field) is (name in ("S0", "S4"))
+
+
 def test_build_outlier_params_coerces_field_types():
     params = driver._build_outlier_params(
         ["window_n_sigma=3.5", "window_min_count=7", "scale_estimator=qn"]

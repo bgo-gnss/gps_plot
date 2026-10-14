@@ -41,6 +41,14 @@ class SeriesRequest:
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)
 
+    def kwargs(self) -> dict[str, Any]:
+        """The fields as keywords, values untouched.
+
+        Not ``dataclasses.asdict``: that recurses into dataclass values and
+        would hand ``station_series`` a dict instead of the OutlierParams.
+        """
+        return {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
+
 
 @dataclasses.dataclass(frozen=True)
 class BaselineOptions:
@@ -69,7 +77,7 @@ def fetch_station(sta: str, req: SeriesRequest) -> Series:
     """One station through the per-station view pipeline."""
     from gps_plot import timesmatplt as tplt
 
-    one = tplt.station_series(sta, **dataclasses.asdict(req))
+    one = tplt.station_series(sta, **req.kwargs())
     return Series(
         label=sta,
         t=one.yearf,

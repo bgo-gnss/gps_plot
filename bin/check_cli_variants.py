@@ -57,6 +57,15 @@ VARIANTS: dict[str, list[str]] = {
     "vflnemp": ["VFLN-VFLS", "--baseline-sigma", "empirical", "--special", "year"],
     "sengboth-bl": ["SENG-SKSH", "--session", "both", "-s", "20250101"],
     "sengdet-bl": ["SENG-SKSH", "--ref", "detrend", "--special", "year"],
+    # OutlierParams objects must reach station_series intact
+    "sengop": [
+        "SENG", "--view", "cleaned", "--outlier-param", "window_n_sigma=3.0",
+        "--show-outliers", "--special", "year",
+    ],
+    "sengstages": [
+        "SENG", "--view", "cleaned", "--stages", "S0,S4", "--outlier-param",
+        "window_n_sigma=4.0", "--show-outliers", "--special", "year",
+    ],
 }  # fmt: skip
 
 OLD = (

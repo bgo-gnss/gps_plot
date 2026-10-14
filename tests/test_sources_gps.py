@@ -85,3 +85,15 @@ def test_join_baseline_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_station_series(monkeypatch)
     with pytest.raises(ValueError, match="JOIN"):
         gps.fetch("AAAA-BBBB", REQ.replace(tType="JOIN"))
+
+
+def test_outlier_params_reach_station_series_as_the_same_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gps_analysis.outliers import OutlierParams
+
+    calls = _fake_station_series(monkeypatch)
+    params = OutlierParams(window_n_sigma=3.0)
+    gps.fetch("AAAA-BBBB", REQ.replace(view="cleaned", outlier_params=params))
+    assert [kw["outlier_params"] for _, kw in calls] == [params, params]
+    assert all(kw["outlier_params"] is params for _, kw in calls)

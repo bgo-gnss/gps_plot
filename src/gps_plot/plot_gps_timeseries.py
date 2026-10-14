@@ -184,7 +184,8 @@ def _build_outlier_params(
     hints = typing.get_type_hints(OutlierParams)
     values = dict(base or {})
     valid = sorted(f.name for f in dataclasses.fields(OutlierParams))
-    for item in assignments:
+    # --stages alone: assignments is None (the flag was not given)
+    for item in assignments or ():
         name, sep, raw = item.partition("=")
         name = name.strip()
         if not sep:
