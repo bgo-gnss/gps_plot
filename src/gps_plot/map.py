@@ -61,7 +61,7 @@ examples:
   gpsplot map station "*" --region -22.8/-21.9/63.75/64.1 --save pdf
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 \\
       --window 20231027:20231109 --window 20231123:20231205 --save pdf
-                        two windows, detrended series, one colour each
+                        two windows, plate removed, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
   gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
                         stored secular rates, Iceland
@@ -185,10 +185,11 @@ def _add_series_args(p: argparse.ArgumentParser) -> None:
     common.add_series_options(
         p,
         refs=REFS,
-        ref_help="series the vectors are measured on: detrend (default) = "
-        "plate velocity and the stored secular + seasonal model removed, so "
-        "the vectors are relative to each station's background; plate = "
-        "only the plate velocity removed",
+        ref_help="series the vectors are measured on: detrend = plate "
+        "velocity and the stored secular + seasonal model removed, so the "
+        "vectors are relative to each station's background; plate = only "
+        "the plate velocity removed. Default: plate for --window/--last "
+        "velocity maps, detrend otherwise",
         views=["raw", "cleaned"],
         types=["POS", "TOT"],
         sessions=["24h", "8h"],
@@ -532,6 +533,10 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
 
     now = args.end or dt.datetime.now()
     windows = resolve_windows(args.window, args.last, now)
+    if windows and args.ref is None:
+        # over days to weeks the secular rate is negligible, and plate covers
+        # every station (about half lack a stored detrend record)
+        args.ref = "plate"
     comp = 2 if args.vertical else None
     vectors, dropped, notes = [], [], []
     groups: list[tuple[str | None, str]] = []
@@ -567,7 +572,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         print("nothing plotted", file=sys.stderr)
         return 1
     no_record = sum("no stored detrend record" in d for d in dropped)
-    if no_record and windows:
+    if no_record and args.ref == "detrend":
         print(f"{no_record} without a stored detrend record: --ref plate draws "
               "them (plate velocity removed only)", file=sys.stderr)  # fmt: skip
     scale, ref = auto_scale([math.hypot(v.east, v.north) for v in kept])

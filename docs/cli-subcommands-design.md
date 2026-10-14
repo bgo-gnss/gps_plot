@@ -184,8 +184,10 @@ merge (main `ff4e1f4`). Steps 0–4, 6, 7 done 2026-10-14; 5 (seismic) on ice.*
     secular rate of the stored record (borrowed secular refused). Arrow
     scale and legend arrow automatic (90th percentile → 2 cm).
     Found: 19–21 of the 44 Reykjanes-box stations have no detrend record in
-    any frame, so a detrended Reykjanes map is mostly empty; the command
-    says so and points to `--ref plate`. Several stored secular rates are
+    any frame, so a detrended Reykjanes map is mostly empty: windowed maps
+    therefore default to `--ref plate` (BGÓ; the secular rate is negligible
+    over days–weeks), and an explicit `--ref detrend` says how many it
+    dropped. Several stored secular rates are
     hundreds of mm/yr (records fitted across unrest) — curation, not maps.
   - `deformation -s -e`: end level − start level per station (1/σ-weighted
     means of 5 epochs, σ in quadrature), `--mogi LON,LAT,DEPTH_KM,DV_M3`

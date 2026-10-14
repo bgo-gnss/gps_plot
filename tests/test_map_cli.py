@@ -313,16 +313,20 @@ def test_station_map_dispatch(fake_maps, tmp_path):
 
 def test_velocity_windows_one_colour_each(fake_maps, monkeypatch, tmp_path, capsys):
     rates = {"SENG": [100.0, -300.0, 50.0], "SKSH": [0.0, 400.0, 0.0]}
+    refs = set()
 
     def window_velocity(sta, req, min_epochs=3):
+        refs.add(req.ref)
         if sta not in rates:
             raise ValueError("no stored detrend record (the series is not detrended)")
         return vsource.StationRate(sta, np.array(rates[sta]), np.ones(3), 10)
 
     monkeypatch.setattr(vsource, "window_velocity", window_velocity)
     argv = ["velocity", "--region", "-23/-14/63/66", "--window", "20231027:20231109",
-            "--window", "20231123:20231205", "--min-snr", "1"]  # fmt: skip
+            "--window", "20231123:20231205", "--min-snr", "1",
+            "--ref", "detrend"]  # fmt: skip
     assert _run(argv, tmp_path) == 0
+    assert refs == {"detrend"}
     (vectors,), kw = fake_maps["velocity_map"]
     assert {v.method for v in vectors} == {"2023/10/27 - 2023/11/09",
                                            "2023/11/23 - 2023/12/05"}  # fmt: skip
@@ -337,6 +341,18 @@ def test_velocity_windows_one_colour_each(fake_maps, monkeypatch, tmp_path, caps
             "map_velocity_HOFN_5-20231027-20231109_20231123-20231205-horizontal.png"
         )
     )
+
+
+def test_velocity_windows_default_to_plate(fake_maps, monkeypatch, tmp_path):
+    refs = set()
+
+    def window_velocity(sta, req, min_epochs=3):
+        refs.add(req.ref)
+        return vsource.StationRate(sta, np.array([5.0, 5.0, 0.0]), np.ones(3), 10)
+
+    monkeypatch.setattr(vsource, "window_velocity", window_velocity)
+    assert _run(["velocity", "SENG", "--last", "14"], tmp_path) == 0
+    assert refs == {"plate"}
 
 
 def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, capsys):
