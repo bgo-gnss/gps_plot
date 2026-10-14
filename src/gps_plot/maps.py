@@ -412,8 +412,12 @@ def _draw_vector_layer(
     head: str,
     pen_width: str,
     ellipse_fill: str | None = None,
+    ellipse_pen: str | None = None,
 ) -> None:
-    """One ``fig.velo`` layer; rows with non-finite components are dropped."""
+    """One ``fig.velo`` layer; rows with non-finite components are dropped.
+
+    The ellipses are outlined with the arrow pen, or ``ellipse_pen``.
+    """
     zeros = np.zeros(lon.shape, dtype=np.float64)
     se = zeros if sigma_east is None else sigma_east
     sn = zeros if sigma_north is None else sigma_north
@@ -434,7 +438,8 @@ def _draw_vector_layer(
     )
     kwargs: dict[str, Any] = _velo_style(color, scale, confidence, head, pen_width)
     if sigma_east is not None or sigma_north is not None:
-        kwargs["line"] = True  # outline the uncertainty ellipse with the pen
+        # outline the uncertainty ellipse with the arrow pen or its own
+        kwargs["line"] = True if ellipse_pen is None else ellipse_pen
         if ellipse_fill is not None:
             kwargs["uncertainty_fill"] = ellipse_fill
     fig.velo(data=data, **kwargs)
@@ -809,6 +814,7 @@ def velocity_map(
     color: str = DEFAULT_VELOCITY_COLOR,
     method_colors: Mapping[str, str] | None = None,
     ellipse_fill: str | None = None,
+    ellipse_pen: str | None = None,
     vector_head: str = DEFAULT_VECTOR_HEAD,
     pen_width: str = DEFAULT_VECTOR_PEN_WIDTH,
     station_style: str = DEFAULT_VECTOR_STATION_STYLE,
@@ -862,6 +868,7 @@ def velocity_map(
             :data:`DEFAULT_METHOD_COLORS`.
         ellipse_fill: Optional fill of the uncertainty ellipses (outline
             only when None).
+        ellipse_pen: Outline pen of the ellipses (default: the arrow pen).
         vector_head: Arrow-head size spec.
         pen_width: Arrow/ellipse pen width.
         station_style: Station dot symbol spec.
@@ -952,6 +959,7 @@ def velocity_map(
             head=vector_head,
             pen_width=pen_width,
             ellipse_fill=ellipse_fill,
+            ellipse_pen=ellipse_pen,
         )
         legend_entries.append((method if method else "velocity", layer_color))
 

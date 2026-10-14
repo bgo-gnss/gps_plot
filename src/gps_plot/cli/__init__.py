@@ -61,6 +61,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.rtk:run",
     ),
     Command(
+        "map",
+        "PyGMT maps: station, velocity (windowed fits), deformation, slip",
+        "gps_plot.cli.map:run",
+    ),
+    Command(
         "devviz",
         "analysis-lane dev plot (same as gps-analysis-devviz)",
         "gps_plot.cli.tools:devviz",
