@@ -53,9 +53,9 @@ def _run_cli(
 def test_help_exits_zero() -> None:
     """`--help` must work. This is the regression that broke the console script."""
     proc = _run_cli("--help")
-    assert (
-        proc.returncode == 0
-    ), f"plot-gps-timeseries --help exited {proc.returncode}\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"plot-gps-timeseries --help exited {proc.returncode}\n{proc.stderr}"
+    )
     assert "Plot GPS time series" in proc.stdout
 
 
@@ -69,9 +69,9 @@ def test_help_works_without_any_deployed_config(tmp_path) -> None:
     the CLI unrunnable in exactly the environments we are moving to.
     """
     proc = _run_cli("--help", env={"GPS_CONFIG_PATH": str(tmp_path)})
-    assert (
-        proc.returncode == 0
-    ), f"--help must survive a missing config; exited {proc.returncode}\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"--help must survive a missing config; exited {proc.returncode}\n{proc.stderr}"
+    )
 
 
 @requires_installed_cli
@@ -112,9 +112,9 @@ def test_legacy_flag_surface_present(flag: str) -> None:
     """Pin the CLI contract shared with the legacy 2018 scripts."""
     proc = _run_cli("--help")
     assert proc.returncode == 0
-    assert (
-        flag in proc.stdout
-    ), f"{flag} missing from the CLI — the gpsplot port depends on it"
+    assert flag in proc.stdout, (
+        f"{flag} missing from the CLI — the gpsplot port depends on it"
+    )
 
 
 def test_stage_overrides_maps_named_stages_on_unnamed_off() -> None:

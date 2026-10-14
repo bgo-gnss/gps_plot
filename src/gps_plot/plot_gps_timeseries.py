@@ -385,29 +385,27 @@ def exit_gracefully(signum, frame):
 ####    ------------------------------------------------   ####
 
 
-EXAMPLES = """examples:
-  plot-gps-timeseries REYK --save pdf                 itrf2014 daily, nothing removed
-  plot-gps-timeseries REYK --ref plate --save pdf     plate velocity removed
-  plot-gps-timeseries REYK --frame itrf2020 --save pdf
-                                                      the itrf2020 series instead
-  plot-gps-timeseries RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
-                                                      whole series, nothing removed
-  plot-gps-timeseries SENG --ref detrend --save pdf  rate + seasonals removed
-  plot-gps-timeseries SENG --ref detrend --detrend-terms periodic --save pdf
-                                                      seasonals only removed
-  plot-gps-timeseries SENG --ref detrend --remove-steps all --save pdf
-                                                      residuals (steps removed too)
-  plot-gps-timeseries SENG --view cleaned --show-outliers 5 --save pdf
-                                                      outliers in the last 5 days only
-  plot-gps-timeseries SENG --session both -s 20250101 --save pdf
-                                                      24 h + 8 h, itrf2020
-  plot-gps-timeseries SENG --session 8h -u 20 --save pdf
-  plot-gps-timeseries VFLN-VFLS --show-ends --save pdf
-                                                      baseline + both ends
-  plot-gps-timeseries VFLN-VFLS --baseline-sigma empirical --save pdf
-  plot-gps-timeseries REYK --tType TOT --save pdf     the old TOT series
-  plot-gps-timeseries REYK --name REYK-test --save png
-                                                      one fixed file to keep open
+EXAMPLES = """examples (gpsplot STA ... is short for gpsplot ts STA ...; plot-gps-timeseries
+is the old name of the same command):
+  gpsplot REYK --save pdf                      itrf2014 daily, nothing removed
+  gpsplot REYK --ref plate --save pdf          plate velocity removed
+  gpsplot REYK --frame itrf2020 --save pdf     the itrf2020 series instead
+  gpsplot RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
+                                               whole series, nothing removed
+  gpsplot SENG --ref detrend --save pdf        rate + seasonals removed
+  gpsplot SENG --ref detrend --detrend-terms periodic --save pdf
+                                               seasonals only removed
+  gpsplot SENG --ref detrend --remove-steps all --save pdf
+                                               residuals (steps removed too)
+  gpsplot SENG --view cleaned --show-outliers 5 --save pdf
+                                               outliers in the last 5 days only
+  gpsplot SENG --session both -s 20250101 --save pdf
+                                               24 h + 8 h, itrf2020
+  gpsplot SENG --session 8h -u 20 --save pdf
+  gpsplot VFLN-VFLS --show-ends --save pdf     baseline + both ends
+  gpsplot VFLN-VFLS --baseline-sigma empirical --save pdf
+  gpsplot REYK --tType TOT --save pdf          the old TOT series
+  gpsplot REYK --name REYK-test --save png     one fixed file to keep open
 Always pass --save (without it the plot opens interactively)."""
 
 #: the reference frame plotted when neither --tType nor --frame is given
@@ -510,26 +508,40 @@ def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
 
 
 # Main
-def main():
-    """ """
+TYPE_ALLOW = ["TOT", "08h", "JOIN", "POS"]
+REF_ALLOW = ["all", "plate", "detrend", REF_FRAME]
+SPECIAL_ALLOW = ["all", "90d", "year", "full", "fixedstart"]
+VIEW_ALLOW = ["raw", "cleaned"]
+
+
+def _load_config() -> Any:
     import gps_parser as cp
 
-    config = cp.ConfigParser()
-    # date to use defaults to today ----
-    dstr = "%Y%m%d"  # Default input string
+    return cp.ConfigParser()
 
-    # initialising  few variables
-    start = end = None
-    eventDict = {}
-    Type_allow = ["TOT", "08h", "JOIN", "POS"]
-    ref_allow = ["all", "plate", "detrend", REF_FRAME]
-    special_allow = ["all", "90d", "year", "full", "fixedstart"]
-    view_allow = ["raw", "cleaned"]
+
+def build_parser(
+    parser: argparse.ArgumentParser | None = None, config: Any = None
+) -> argparse.ArgumentParser:
+    """Add the time-series options to ``parser`` (a new one if None).
+
+    ``gpsplot ts`` passes its subparser here, ``plot-gps-timeseries``
+    builds a standalone one, so both carry the same flags and help.
+    """
+    if config is None:
+        config = _load_config()
+    Type_allow = TYPE_ALLOW
+    ref_allow = REF_ALLOW
+    special_allow = SPECIAL_ALLOW
+    view_allow = VIEW_ALLOW
+    if parser is None:
+        parser = argparse.ArgumentParser(prog="plot-gps-timeseries")
 
     # Raw*Description* leaves the epilog alone (argument help is still
     # auto-wrapped), which is what lets the generated NAME table keep its
     # columns instead of being reflowed into a comma wall.
-    parser = argparse.ArgumentParser(
+    _set_parser_text(
+        parser,
         description="Plot GPS time series: one station, or a baseline AAAA-BBBB.\n\n"
         + textwrap.fill(
             "By default the daily .pos series in itrf2014 is read from "
@@ -893,7 +905,26 @@ def main():
         "mode (no --save) is always serial.",
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def _set_parser_text(parser, description, formatter_class, epilog):
+    parser.description = description
+    parser.formatter_class = formatter_class
+    parser.epilog = epilog
+
+
+def run(
+    args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any = None
+) -> None:
+    """Plot what the parsed ``args`` ask for; ``parser`` reports errors."""
+    if config is None:
+        config = _load_config()
+    dstr = "%Y%m%d"  # Default input string
+    start = end = None
+    eventDict = {}
+    ref_allow = REF_ALLOW
+    special_allow = SPECIAL_ALLOW
 
     # processing command line arguments --------------
     if args.fix or args.D:  # set the end date as yesterday
@@ -1063,6 +1094,13 @@ def main():
     else:
         for sta in stations:
             plotStation(sta, variants)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """``plot-gps-timeseries``: the same as ``gpsplot ts``."""
+    config = _load_config()
+    parser = build_parser(config=config)
+    run(parser.parse_args(argv), parser, config)
 
 
 if __name__ == "__main__":
