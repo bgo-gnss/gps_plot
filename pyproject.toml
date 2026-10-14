@@ -43,7 +43,8 @@ dependencies = [
 maps = ["pygmt>=0.19"]
 
 [project.scripts]
-gps_plot = "gps_plot:main"
+gpsplot = "gps_plot.cli:main"
+gps_plot = "gps_plot.cli:main"
 plot-gps-timeseries = "gps_plot.plot_gps_timeseries:main"
 gps-analysis-devviz = "gps_plot.dev_viz:main"
 gps-detrend-workbench = "gps_plot.detrend_workbench:main"
