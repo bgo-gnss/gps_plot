@@ -68,6 +68,19 @@ VARIANTS: dict[str, list[str]] = {
     ],
 }  # fmt: skip
 
+#: candidate-only variants (no reference on main): each must render exactly
+#: the given number of PNGs, so a caught per-station error cannot pass
+NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
+    "hofnmodel": (["HOFN", "--model", "both", "--special", "full"], 2),
+    "sengmodel": (["SENG", "--model", "curve", "--special", "year"], 1),
+    "selfmodel": (
+        ["SELF", "--model", "both", "--remove-steps", "earthquake", "--special", "full"], 2,
+    ),
+    "selfresid": (
+        ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"], 1,
+    ),
+}  # fmt: skip
+
 OLD = (
     "import sys\nfrom gps_plot.plot_gps_timeseries import main\n"
     "sys.argv = ['plot-gps-timeseries'] + sys.argv[1:]\nmain()\n"
@@ -94,8 +107,16 @@ def _src(tree: Path) -> Path:
     return tree / "src" if (tree / "src" / "gps_plot").is_dir() else tree
 
 
-def _render(src: Path, boot: str, out: Path, shim: Path, frozen: str, end: str) -> None:
-    for name, argv in VARIANTS.items():
+def _render(
+    src: Path,
+    boot: str,
+    out: Path,
+    shim: Path,
+    frozen: str,
+    end: str,
+    variants: dict[str, list[str]] = VARIANTS,
+) -> None:
+    for name, argv in variants.items():
         d = out / name
         d.mkdir(parents=True, exist_ok=True)
         env = dict(
@@ -154,6 +175,15 @@ def main() -> int:
         )
         print(f"{name}: " + (f"OK, {len(got)} PNGs" if not bad else f"FAIL {bad}"))
         status |= bool(bad)
+    new = args.out / "new"
+    _render(
+        args.src_b, CANDIDATES["gpsplot-ts"], new, shim, frozen, args.end,
+        {k: v[0] for k, v in NEW_VARIANTS.items()},
+    )  # fmt: skip
+    for name, (_argv, want) in NEW_VARIANTS.items():
+        n = len(list((new / name).glob("*.png")))
+        print(f"new/{name}: " + ("OK" if n == want else "FAIL") + f", {n}/{want} PNGs")
+        status |= n != want
     return status
 
 

@@ -60,8 +60,8 @@ from gps_plot.detrend_workbench import (
     estimate_with_abort_fallback,
     group_contribution,
     run_flags,
-    trajectory_curve,
 )
+from gps_plot.trajectory import trajectory_curve
 
 __all__ = [
     "EVENT_STAGE",

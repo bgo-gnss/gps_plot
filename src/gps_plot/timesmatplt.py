@@ -495,81 +495,64 @@ class StationSeries:
     detrend_applied: bool
 
 
-def station_series(
-    sta: str,
-    *,
-    fstart: float | None,
-    fend: float | None,
-    ref: str,
-    Dir: str | None,
-    tType: str,
-    uncert: int,
-    view: str,
-    outlier_params: Any = None,
-    outlier_overrides: str | None = None,
-    provisional_days: float | None = None,
-    remove_kinds: Sequence[str] | None = None,
-    detrend_terms: Sequence[str] | None = None,
-    steps_catalog: str | None = None,
-    params: str | None = None,
-    ref_position: str | None = None,
-    convention: str = "geodetic",
-    pos_id: str | None = None,
-) -> StationSeries:
-    """Read one station and apply the requested view: clean, remove steps, detrend.
-
-    The single per-station pipeline behind :func:`plotTime`. A baseline
-    runs BOTH of its stations through this same function, so the two ends
-    can never be prepared differently. Order: read (``getData``, in
-    ``ref``) → ``cleaned`` masking → ``remove_kinds`` step removal →
-    stored-trajectory subtraction (``view="detrended"`` subtracts the full
-    trajectory, ``ref="detrend"`` keeps the step offsets visible).
-    """
-    import geo_dataread.gps_read as gpsr
-
+def pos_read_kwargs(
+    ref_position: Any, convention: str, pos_id: str | None
+) -> dict[str, Any]:
+    """The .pos keywords ``getData`` is called with (none for the defaults)."""
     pos_kw: dict[str, Any] = {}
     if ref_position is not None or convention != "geodetic":
         pos_kw = dict(ref_position=ref_position, convention=convention)
     if pos_id is not None:
         pos_kw["pos_id"] = pos_id
-    yearf, data, Ddata, _offset = gpsr.getData(
-        sta,
-        fstart=fstart,
-        fend=fend,
-        ref=ref,
-        Dir=Dir,
-        tType=tType,
-        uncert=uncert,
-        **pos_kw,
-    )
-    if yearf is None or len(yearf) == 0:
-        raise ValueError("no data for station %s" % sta)
+    return pos_kw
 
-    # detrend parameters belong to one reference frame: the series' frame
-    # tag guards the record, and a .pos frame other than ITRF2008 reads its
-    # own document (detrend_params.<frame>.json) unless one is given
+
+def record_context(
+    tType: str, pos_id: str | None, params: str | None
+) -> tuple[str, str | None]:
+    """The series frame and the detrend document that belongs to it.
+
+    Detrend parameters belong to one reference frame: the series' frame tag
+    guards the record, and a .pos frame other than ITRF2008 reads its own
+    document (``detrend_params.<frame>.json``) unless ``params`` is given.
+    """
+    from geo_dataread import gps_views as _gv
+
+    frame_of = pos_id if tType == "POS" else None
+    series_frame = _gv.series_frame(frame_of)
+    if params is None and series_frame != _gv.PLATE_REMOVED_FRAME:
+        _p = _gv.default_params_path(frame_of)
+        params = str(_p) if _p is not None else None
+    return series_frame, params
+
+
+def trajectory_views(
+    sta: str,
+    yearf: Any,
+    data: Any,
+    *,
+    ref: str,
+    view: str,
+    tType: str,
+    pos_id: str | None,
+    remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
+    steps_catalog: str | None = None,
+    params: str | None = None,
+) -> tuple[Any, bool]:
+    """Remove the requested parts of the stored trajectory from ``data``.
+
+    ``remove_kinds`` step removal, then ``view="detrended"`` (the whole
+    trajectory) or ``ref="detrend"`` (the ``detrend_terms`` groups; step
+    offsets stay). Returns ``(data, detrend_applied)``. Every term is a
+    function of time subtracted from the data, so applied to zeros this
+    returns minus what it removes: ``gpsplot ts --model`` draws the model
+    line through this same function, so line and data cannot disagree.
+    """
     series_frame = None
     if view == "detrended" or ref == "detrend" or remove_kinds:
-        from geo_dataread import gps_views as _gv
-
-        frame_of = pos_id if tType == "POS" else None
-        series_frame = _gv.series_frame(frame_of)
-        if params is None and series_frame != _gv.PLATE_REMOVED_FRAME:
-            _p = _gv.default_params_path(frame_of)
-            params = str(_p) if _p is not None else None
-
-    outliers = provisional = aborted = None
+        series_frame, params = record_context(tType, pos_id, params)
     detrend_applied = False
-    if view == "cleaned":
-        data, outliers, provisional, aborted = _mask_outliers(
-            sta,
-            yearf,
-            data,
-            Ddata,
-            outlier_params=outlier_params,
-            outlier_overrides=outlier_overrides,
-            provisional_days=provisional_days,
-        )
 
     # Selective step removal: subtract the RECORDED step amplitudes (from
     # the deployed detrend record) for declared steps whose kind is in
@@ -600,8 +583,7 @@ def station_series(
     # --view detrended: subtract the FULL trajectory (rate + seasonal +
     # steps).  --ref detrend: subtract rate + seasonal only — step
     # offsets remain visible (the user wants trends removed, not discrete
-    # events).  Both trigger this block; the distinction is handled after
-    # the full subtraction by adding step contributions back.
+    # events).
     if view == "detrended" or ref == "detrend":
         from geo_dataread import gps_views as _gv
 
@@ -614,7 +596,7 @@ def station_series(
             warnings.warn(
                 f"{sta}: no detrend record for this station; serving raw series",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         else:
             try:
@@ -649,8 +631,82 @@ def station_series(
                     f"{sta}: could not apply detrend record ({exc}); "
                     "serving raw series",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=3,
                 )
+
+    return data, detrend_applied
+
+
+def station_series(
+    sta: str,
+    *,
+    fstart: float | None,
+    fend: float | None,
+    ref: str,
+    Dir: str | None,
+    tType: str,
+    uncert: int,
+    view: str,
+    outlier_params: Any = None,
+    outlier_overrides: str | None = None,
+    provisional_days: float | None = None,
+    remove_kinds: Sequence[str] | None = None,
+    detrend_terms: Sequence[str] | None = None,
+    steps_catalog: str | None = None,
+    params: str | None = None,
+    ref_position: str | None = None,
+    convention: str = "geodetic",
+    pos_id: str | None = None,
+) -> StationSeries:
+    """Read one station and apply the requested view: clean, remove steps, detrend.
+
+    The single per-station pipeline behind :func:`plotTime`. A baseline
+    runs BOTH of its stations through this same function, so the two ends
+    can never be prepared differently. Order: read (``getData``, in
+    ``ref``) → ``cleaned`` masking → ``remove_kinds`` step removal →
+    stored-trajectory subtraction (``view="detrended"`` subtracts the full
+    trajectory, ``ref="detrend"`` keeps the step offsets visible).
+    """
+    import geo_dataread.gps_read as gpsr
+
+    yearf, data, Ddata, _offset = gpsr.getData(
+        sta,
+        fstart=fstart,
+        fend=fend,
+        ref=ref,
+        Dir=Dir,
+        tType=tType,
+        uncert=uncert,
+        **pos_read_kwargs(ref_position, convention, pos_id),
+    )
+    if yearf is None or len(yearf) == 0:
+        raise ValueError("no data for station %s" % sta)
+
+    outliers = provisional = aborted = None
+    if view == "cleaned":
+        data, outliers, provisional, aborted = _mask_outliers(
+            sta,
+            yearf,
+            data,
+            Ddata,
+            outlier_params=outlier_params,
+            outlier_overrides=outlier_overrides,
+            provisional_days=provisional_days,
+        )
+
+    data, detrend_applied = trajectory_views(
+        sta,
+        yearf,
+        data,
+        ref=ref,
+        view=view,
+        tType=tType,
+        pos_id=pos_id,
+        remove_kinds=remove_kinds,
+        detrend_terms=detrend_terms,
+        steps_catalog=steps_catalog,
+        params=params,
+    )
 
     return StationSeries(
         yearf, data, Ddata, outliers, provisional, aborted, detrend_applied
@@ -694,6 +750,7 @@ def plotTime(
     baseline_sigma: str = "formal",
     baseline_noise: str | None = None,
     overlay_pos_id: str | None = None,
+    model: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -732,6 +789,13 @@ def plotTime(
     autoscales over whatever artists exist, overlay included), and the
     figure no longer carries the evidence of what the detector removed --
     which is exactly why the overlay is the default.
+
+    ``model`` (``--model``) draws the stored trajectory model as a line:
+    ``"curve"`` over the plate series (``ref="plate"``), ``"residual"``
+    over the detrended one (``ref="detrend"``), where the line is the part
+    of the model still in the data (the steps, unless removed). Solid in
+    the record's fit window, dashed where it is extrapolated. Files get
+    ``-model`` / ``-resid``. Stations only, for now.
 
     ``name`` fixes the output basename: with ``save`` set the figure is
     written to ``<figDir>/<name>.<fmt>``, BYPASSING the
@@ -844,6 +908,18 @@ def plotTime(
         refTitle = f"{refTitle}, detrended"
 
     pair = split_baseline(sta)
+    if model is not None:
+        from gps_plot.sources.gps import MODEL_REFS
+
+        if model not in ("curve", "residual"):
+            raise ValueError(f"model must be 'curve' or 'residual', got {model!r}")
+        if pair is not None:
+            raise ValueError(f"{sta}: --model over a baseline is not supported yet")
+        if ref not in MODEL_REFS:
+            raise ValueError(
+                f"{sta}: --model draws the stored model, which is fitted to the "
+                f"plate series: use --ref plate or detrend, not {ref!r}"
+            )
     if baseline_sigma not in ("formal", "empirical"):
         raise ValueError(
             f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"
@@ -1036,6 +1112,23 @@ def plotTime(
             main=(yearf, data, Ddata, x),
         )
 
+    if model is not None:
+        # after every data overlay: the line goes over the points, and its
+        # layer keeps the axis limits the data set
+        from gps_plot.layers.model import add_model_curve, model_note
+
+        model_series = gps_source.fetch_model(sta, request, yearf)
+        fig = add_model_curve(fig, model_series)
+        fig.axes[0].text(
+            0.01,
+            0.02,
+            model_note(model_series),
+            transform=fig.axes[0].transAxes,
+            fontsize="small",
+            color="0.3",
+            va="bottom",
+        )
+
     if aborted is not None and any(aborted):
         # after the overlays so the badge is never painted under them
         fig = addAbortBadge(fig, aborted)
@@ -1111,6 +1204,8 @@ def plotTime(
             filend += "-empsig"
         if remove_kinds:
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
+        if model is not None:
+            filend += "-model" if model == "curve" else "-resid"
         if tType == "POS":
             # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
             from geo_dataread.pos import frame_name, pos_product

@@ -2,7 +2,7 @@
 
 *Status: proposal, 2026-10-13. Review by Fable 5.1 of BGÓ's request (two passes; the
 second after BGÓ freed the command name), edited after the `feat/ref-frame-option`
-merge (main `ff4e1f4`). Steps 0–1 done 2026-10-14 (branch `feat/gpsplot-cli`).*
+merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
 
 ## Decisions (BGÓ, 2026-10-14)
 
@@ -46,6 +46,39 @@ merge (main `ff4e1f4`). Steps 0–1 done 2026-10-14 (branch `feat/gpsplot-cli`).
   - Found on the way: `--stages` without `--outlier-param` crashed on main
     (`'NoneType' object is not iterable`); fixed. `SeriesRequest.kwargs()` is
     shallow on purpose (`asdict` would turn OutlierParams into a dict).
+- **Step 3** (2026-10-14, branch `feat/model-curve`): `gpsplot ts --model
+  curve|residual|both`.
+  - **What the line is** (refines decision 4): the part of the stored model
+    still in the plotted data. `curve` = over the plate series, the full
+    trajectory (all groups, transient included) minus any `--remove-steps`
+    kinds; `residual` = over the `--ref detrend` series, what the
+    `--detrend-terms` left in (the steps, unless removed), so it is the
+    zero line only when nothing is left. `data − line` is then the same
+    residual in every view. Built by running `station_series`' own removal
+    step (`timesmatplt.trajectory_views`, factored out) on zeros, so line
+    and data cannot disagree.
+  - **Window datum**: `getData` zeroes a series on its first kept samples
+    and anchors the plate motion at its first epoch, inside the window; the
+    record is fitted to the full span. So the line is shifted by
+    geo_dataread `gps_views.window_datum_shift` (exact: full − window over
+    common epochs, spread 0). Without it HOFN from 2024 is off by
+    64/−143/−350 mm. Existing `--ref detrend` plots with `--special` carry
+    that constant too (unchanged here, pixel gate); their residual is
+    not zero-centred.
+  - Drawing: `trajectory.py` (the workbench's dense, step-bracketed
+    `trajectory_curve`, moved; `curve_grid` split out), `layers/model.py`:
+    solid in the record's fit window, dashed where extrapolated; the data
+    keep the axis scale, and a panel where the whole line is off scale says
+    so with its level (SENG's pre-unrest background in the year view: N
+    −1263, E +2591, U −1044 mm — the 2023 dike, not an error). Files
+    `-model` / `-resid`; `both` = two files. Refused: `--ref ref_frame`/`all`
+    or a mismatched `--ref`, baselines (later).
+  - Tests: the acceptance identity `data − line = D_full(plate) − M` at the
+    data epochs on the deployed SELF itrf14 record (step 2008.41): full,
+    2007–2010 and 2024– windows × raw/cleaned × plate/detrend × with/without
+    `--remove-steps` (15 cases). Gate: the step-2 variants still identical,
+    plus 4 candidate-only `--model` variants that must render their PNG
+    count.
 
 ## Request (BGÓ)
 
