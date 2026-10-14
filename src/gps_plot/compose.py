@@ -64,6 +64,8 @@ def stack_figure(
     end: datetime.datetime | None = None,
     ylim: Sequence[Any] = (),
     offset: float = 0.0,
+    styles: Sequence[str] | None = None,
+    colors: Sequence[str] | None = None,
     fig: Figure | None = None,
 ) -> Figure:
     """Overlay ``series`` on the N/E/U frame; series ``k`` is moved by k·offset.
@@ -75,13 +77,19 @@ def stack_figure(
         start, end: Axis span (None: the union of the series' epochs).
         ylim: ``--ylim`` semantics of ``timesmatplt.setYlim``.
         offset: Vertical spacing [mm] between consecutive series.
+        styles: Per series ``"points"`` (markers with error bars, the
+            default), ``"marked"`` (larger, dark-edged points, to stand out
+            over lines) or ``"line"`` (a thin line, no error bars: dense
+            series such as 1-minute RTK medians). Lines are drawn first.
+        colors: Per series colours (default: :func:`series_colors`).
     """
     from gps_plot import timesmatplt as tplt
 
     if not series:
         raise ValueError("nothing to stack")
     labels = list(labels or [s.label for s in series])
-    colors = series_colors([s.label for s in series])
+    colors = list(colors or series_colors([s.label for s in series]))
+    styles = list(styles or ["points"] * len(series))
     xs = [tplt._as_datetime_list(s.t) for s in series]
 
     fig, axes = tplt.stdFrame(None, title, fig=fig)
@@ -97,17 +105,28 @@ def stack_figure(
     ymax = [max(float(np.nanmax(y[i])) for y in shifted) for i in range(3)]
     fig = tplt.setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
-    for k, (s, x, y, color) in enumerate(zip(series, xs, shifted, colors, strict=True)):
+    # lines first, then markers: dense line series must not hide points
+    order = sorted(range(len(series)), key=lambda k: styles[k] != "line")
+    for k in order:
+        s, x, y, color, style = series[k], xs[k], shifted[k], colors[k], styles[k]
+        label = offset_label(labels[k], k, offset)
+        if style == "line":
+            for i, ax in enumerate(axes[:3]):
+                ax.plot(
+                    x, y[i], color=color, linewidth=1.0,
+                    label=label if i == 0 else None,
+                )  # fmt: skip
+            continue
         tplt.addData(
             x,
             y,
             s.sigma,
             fig,
-            ecolor="0.75",
-            markersize=3.0,
+            ecolor="0.3" if style == "marked" else "0.75",
+            markersize=5.0 if style == "marked" else 3.0,
             markerfacecolor=color,
-            markeredgecolor=color,
-            label=offset_label(labels[k], k, offset),
+            markeredgecolor="black" if style == "marked" else color,
+            label=label,
         )
     axes[0].legend(
         loc="upper left",

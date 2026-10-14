@@ -92,6 +92,11 @@ NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
                   "--offset", "20", "--special", "full"], 1),
     "stackdet": (["stack", "BLEI", "SEYD", "HOFN", "--ref", "detrend",
                   "--special", "year"], 1),
+    # gpsplot rtk (step 6): the live RTK mount, a span ending at the gate's
+    # fixed -e (past days do not change), with the daily GLOBK join
+    "rtksey": (["rtk", "SEY?-SEYD", "--special", "day"], 1),
+    "rtkdaily": (["rtk", "SEY[1-2]-SEYD", "--special", "week", "--interval",
+                  "10min", "--daily"], 1),
 }  # fmt: skip
 
 OLD = (
@@ -136,6 +141,7 @@ def _render(
             os.environ,
             PYTHONPATH=f"{shim}{os.pathsep}{_src(src)}",
             GPS_PLOT_FREEZE_CREATED=frozen,
+            GPS_RTK_CACHE=str(out / "rtk-cache"),
             MPLBACKEND="Agg",
         )
         argv = argv + ["-e", end, "--save", "png", "-d", str(d)]
