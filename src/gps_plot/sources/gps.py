@@ -21,6 +21,14 @@ from gps_plot.series import Series
 #: the plate-removed series ("detrend" reads that same series)
 MODEL_REFS = ("plate", "detrend")
 
+#: --model-terms names -> staged term groups (gps_analysis.terms.GROUP_ORDER)
+MODEL_TERM_GROUPS: dict[str, str] = {
+    "linear": "secular",
+    "periodic": "periodic",
+    "steps": "step",
+    "transient": "transient",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class SeriesRequest:
@@ -179,15 +187,28 @@ def station_record(sta: str, req: SeriesRequest) -> Any:
     return record
 
 
-def model_values(sta: str, req: SeriesRequest, t: Any, record: Any) -> Any:
-    """The stored model of what is still in the plotted series, at ``t``.
+def model_values(
+    sta: str,
+    req: SeriesRequest,
+    t: Any,
+    record: Any,
+    terms: Sequence[str] | None = None,
+) -> Any:
+    """The stored model line at ``t``, in the plotted window's datum.
 
-    ``model − removed − shift``: the full trajectory, minus what the view
+    Default (``terms`` None): what is still in the plotted series,
+    ``model − removed − shift`` — the full trajectory minus what the view
     takes out of the data (``--remove-steps`` kinds, the ``--ref detrend``
-    terms; found by running the same :func:`trajectory_views` on zeros),
-    in the plotted window's datum (``window_datum_shift``: a windowed read
-    is zeroed at its own start, the record at the full series'). So
+    terms; found by running the same :func:`trajectory_views` on zeros). So
     ``data − line`` is the same in every view: the residual from the model.
+
+    With ``terms`` (``--model-terms``, names of :data:`MODEL_TERM_GROUPS`)
+    the line is exactly those groups, ``model[terms] − shift``, whatever was
+    removed from the data, e.g. the seasonal line over data with the
+    seasonal removed.
+
+    The shift (``window_datum_shift``) moves the record, fitted to the full
+    series, to the window's zero (a windowed read is zeroed at its start).
 
     Returns:
         ``(3, len(t))`` [mm].
@@ -202,6 +223,23 @@ def model_values(sta: str, req: SeriesRequest, t: Any, record: Any) -> Any:
             f"{sta}: a model line needs ref plate or detrend, not {req.ref!r}"
         )
     t = np.asarray(t, dtype=float)
+    shift = window_datum_shift(
+        sta,
+        fstart=req.fstart,
+        fend=req.fend,
+        ref="plate",
+        Dir=req.Dir,
+        tType=req.tType,
+        uncert=req.uncert,
+        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
+    )
+    if terms:
+        bad = set(terms) - set(MODEL_TERM_GROUPS)
+        if bad:
+            raise ValueError(f"unknown model term(s) {sorted(bad)}")
+        groups = tuple(MODEL_TERM_GROUPS[x] for x in terms)
+        line = np.asarray(evaluate_record(record, t, groups=groups), dtype=float)
+        return line - shift[:, None]
     full = np.asarray(evaluate_record(record, t), dtype=float)
     removed, _ = tplt.trajectory_views(
         sta,
@@ -216,25 +254,19 @@ def model_values(sta: str, req: SeriesRequest, t: Any, record: Any) -> Any:
         steps_catalog=req.steps_catalog,
         params=req.params,
     )
-    shift = window_datum_shift(
-        sta,
-        fstart=req.fstart,
-        fend=req.fend,
-        ref="plate",
-        Dir=req.Dir,
-        tType=req.tType,
-        uncert=req.uncert,
-        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
-    )
     return full + np.asarray(removed, dtype=float) - shift[:, None]
 
 
-def fetch_model(spec: str, req: SeriesRequest, t: Any) -> Series:
+def fetch_model(
+    spec: str, req: SeriesRequest, t: Any, terms: Sequence[str] | None = None
+) -> Series:
     """The model line over a station's series, sampled for drawing.
 
     Dense over the extent of ``t`` (the plotted epochs) with step epochs
     bracketed (:func:`gps_plot.trajectory.curve_grid`). ``meta["window"]``
-    is the record's fit window, so a layer can mark where it extrapolates.
+    is the record's fit window, so a layer can mark where it extrapolates;
+    ``meta["terms"]`` the ``--model-terms`` drawn (None = what is left in
+    the data; see :func:`model_values`).
 
     Raises:
         ValueError: a baseline (not supported yet), no record, a frame
@@ -251,9 +283,41 @@ def fetch_model(spec: str, req: SeriesRequest, t: Any) -> Series:
     return Series(
         label=f"{spec} model",
         t=grid,
-        y=model_values(spec, req, grid, record),
+        y=model_values(spec, req, grid, record, terms),
         sigma=None,
-        meta={"window": record.get("window")},
+        meta={"window": record.get("window"), "terms": tuple(terms or ()) or None},
+    )
+
+
+def centre_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
+    """A detrended station as its residual from the stored model, about zero.
+
+    ``getData`` zeroes a series at the window start, the stored record at
+    the full span's, so a windowed detrended station keeps a constant
+    (HOFN, one year: ~65/−150/−375 mm). Adding the exact window shift back
+    (``window_datum_shift``) makes it ``data − model`` whatever the window.
+    Baselines (re-zeroed at their first common epoch) and series without
+    an applied detrend are returned unchanged.
+    """
+    from geo_dataread.baseline import split_baseline
+    from geo_dataread.gps_views import window_datum_shift
+
+    from gps_plot import timesmatplt as tplt
+
+    if split_baseline(spec) is not None or not series.detrend_applied:
+        return series
+    shift = window_datum_shift(
+        spec,
+        fstart=req.fstart,
+        fend=req.fend,
+        ref="plate",
+        Dir=req.Dir,
+        tType=req.tType,
+        uncert=req.uncert,
+        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
+    )
+    return dataclasses.replace(
+        series, y=np.asarray(series.y, dtype=float) + shift[:, None]
     )
 
 

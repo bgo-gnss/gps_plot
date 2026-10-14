@@ -88,10 +88,12 @@ def off_scale_note(row: Any, ylim: tuple[float, float]) -> str | None:
 
 def model_note(model: Series) -> str:
     """One line for the figure: what the line is and where it was fitted."""
+    terms = model.meta.get("terms")
+    what = "stored model" + (f" ({' + '.join(terms)})" if terms else "")
     window = model.meta.get("window")
     if window and len(window) == 2:
         return (
-            f"line: stored model, fitted {float(window[0]):.2f} to "
+            f"line: {what}, fitted {float(window[0]):.2f} to "
             f"{float(window[1]):.2f}, dashed outside"
         )
-    return "line: stored model"
+    return f"line: {what}"

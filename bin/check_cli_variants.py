@@ -66,19 +66,32 @@ VARIANTS: dict[str, list[str]] = {
         "SENG", "--view", "cleaned", "--stages", "S0,S4", "--outlier-param",
         "window_n_sigma=4.0", "--show-outliers", "--special", "year",
     ],
+    # --model (step 3): the stored-model line over plate / detrended series
+    "hofnmodel": ["HOFN", "--model", "both", "--special", "full"],
+    "sengmodel": ["SENG", "--model", "curve", "--special", "year"],
+    "selfmodel": [
+        "SELF", "--model", "both", "--remove-steps", "earthquake", "--special", "full",
+    ],
+    "selfresid": ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"],
 }  # fmt: skip
 
 #: candidate-only variants (no reference on main): each must render exactly
 #: the given number of PNGs, so a caught per-station error cannot pass
 NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
-    "hofnmodel": (["HOFN", "--model", "both", "--special", "full"], 2),
-    "sengmodel": (["SENG", "--model", "curve", "--special", "year"], 1),
-    "selfmodel": (
-        ["SELF", "--model", "both", "--remove-steps", "earthquake", "--special", "full"], 2,
+    "selfterms": (
+        ["ts", "SELF", "--model", "residual", "--detrend-terms", "periodic",
+         "--model-terms", "linear,periodic,steps", "--special", "full"], 1,
     ),
-    "selfresid": (
-        ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"], 1,
-    ),
+    # gpsplot stack (step 4): a baseline pattern, a station + baseline mix,
+    # --offset, and a detrend stack with a station that has no record
+    # (BLEI: labelled "not detrended")
+    "stacksey": (["stack", "SEY?-SEYD", "--special", "year"], 1),
+    "stackmix": (["stack", "SEY[1-3]-SEYD", "SEYD", "--ref", "plate",
+                  "--special", "90d"], 1),
+    "stackoff": (["stack", "HOFN", "SELF", "RHOF", "--ref", "plate",
+                  "--offset", "20", "--special", "full"], 1),
+    "stackdet": (["stack", "BLEI", "SEYD", "HOFN", "--ref", "detrend",
+                  "--special", "year"], 1),
 }  # fmt: skip
 
 OLD = (
@@ -177,7 +190,7 @@ def main() -> int:
         status |= bool(bad)
     new = args.out / "new"
     _render(
-        args.src_b, CANDIDATES["gpsplot-ts"], new, shim, frozen, args.end,
+        args.src_b, CANDIDATES["gpsplot"], new, shim, frozen, args.end,
         {k: v[0] for k, v in NEW_VARIANTS.items()},
     )  # fmt: skip
     for name, (_argv, want) in NEW_VARIANTS.items():

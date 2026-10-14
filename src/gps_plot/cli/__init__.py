@@ -51,6 +51,11 @@ COMMANDS: tuple[Command, ...] = (
         aliases=("timeseries",),
     ),
     Command(
+        "stack",
+        'several stations and/or baselines in one figure, e.g. "SEY?-SEYD"',
+        "gps_plot.cli.stack:run",
+    ),
+    Command(
         "devviz",
         "analysis-lane dev plot (same as gps-analysis-devviz)",
         "gps_plot.cli.tools:devviz",

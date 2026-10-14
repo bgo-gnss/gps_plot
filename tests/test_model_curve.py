@@ -222,3 +222,74 @@ def test_data_minus_line_is_the_model_residual(window, ref, view, remove):
     ok = np.isfinite(got)
     assert ok.sum() > 100
     np.testing.assert_allclose(got[ok], want[ok], atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# --model-terms: the line's terms, independent of the data's
+# ---------------------------------------------------------------------------
+
+
+def test_model_terms_parse_in_canonical_order():
+    from gps_plot.plot_gps_timeseries import _model_terms
+
+    assert _model_terms(None) is None
+    assert _model_terms("periodic, linear") == ("linear", "periodic")
+    assert _model_terms("steps,transient") == ("steps", "transient")
+    with pytest.raises(ValueError, match="seasonal"):
+        _model_terms("seasonal")
+
+
+def test_model_terms_needs_model(capsys):
+    from gps_plot import plot_gps_timeseries as driver
+
+    parser = driver.build_parser(config=None)
+    with pytest.raises(SystemExit):
+        driver.run(
+            parser.parse_args(["HOFN", "--model-terms", "periodic", "--save", "png"]),
+            parser,
+            None,
+        )
+    assert "--model-terms needs --model" in capsys.readouterr().err
+
+
+def test_model_note_names_the_terms():
+    s = Series("X model", np.array([2000.0]), np.zeros((3, 1)), None,
+               meta={"terms": ("linear", "periodic")})  # fmt: skip
+    assert model_note(s) == "line: stored model (linear + periodic)"
+
+
+@requires_deployed
+@pytest.mark.parametrize("window", [(None, None), (2007.0, 2010.0)])
+def test_model_terms_line_is_those_groups_whatever_the_data(window):
+    """All four groups = the full model; one group = that group alone, in
+    the window's datum — regardless of what the view removed from the data."""
+    from geo_dataread.gps_views import window_datum_shift
+    from gps_analysis import evaluate_record
+
+    from gps_plot.sources import gps as source
+
+    pos_dir, pid, record = DEPLOYED
+    req = source.SeriesRequest(
+        fstart=window[0], fend=window[1], ref="detrend", Dir=pos_dir,
+        tType="POS", uncert=15, view="raw", detrend_terms=("periodic",),
+        pos_id=pid,
+    )  # fmt: skip
+    t = np.linspace(2006.0, 2011.0, 400)
+    shift = window_datum_shift(
+        "SELF", fstart=window[0], fend=window[1], Dir=pos_dir, tType="POS",
+        pos_id=pid,
+    )  # fmt: skip
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        every = source.model_values(
+            "SELF", req, t, record, ("linear", "periodic", "steps", "transient")
+        )
+        periodic = source.model_values("SELF", req, t, record, ("periodic",))
+    np.testing.assert_allclose(
+        every, np.asarray(evaluate_record(record, t)) - shift[:, None], atol=1e-9
+    )
+    np.testing.assert_allclose(
+        periodic,
+        np.asarray(evaluate_record(record, t, groups=("periodic",))) - shift[:, None],
+        atol=1e-9,
+    )

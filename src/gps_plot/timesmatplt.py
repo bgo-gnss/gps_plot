@@ -713,6 +713,48 @@ def station_series(
     )
 
 
+def resolve_period(
+    start: datetime.datetime | None,
+    end: datetime.datetime | None,
+    special: str | None,
+    fix: bool,
+) -> tuple[Any, Any, float | None, float | None]:
+    """``(start, end, fstart, fend)``: the axis span and the read window.
+
+    ``special`` (90d, year, full, fixedstart) sets the routine sub-periods,
+    ending yesterday unless ``end`` is given. ``start``/``end`` (datetimes)
+    bound the x axis only with ``fix`` or ``special``; otherwise the axis
+    spans the data. ``fstart``/``fend`` (fractional years) are what is read.
+    """
+    fstart = fend = None
+    if start:
+        fstart = currYearfDate(refday=start)
+    if end:
+        fend = currYearfDate(refday=end)
+
+    # standard sub-periods for routine plots
+    if special:
+        if not end:
+            end = currDatetime(-1)
+            fend = currYearfDate(refday=end)
+
+        if special == "90d":
+            start = currDatetime(days=-91, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "year":
+            start = currDatetime(days=-366, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "fixedstart":
+            pass
+        if special == "full":
+            start = None
+            fstart = None
+
+    if not (fix or special):  # only plot the extent of the data
+        start = end = None
+    return start, end, fstart, fend
+
+
 def plotTime(
     sta: str,
     start: datetime.datetime | None = None,
@@ -751,6 +793,7 @@ def plotTime(
     baseline_noise: str | None = None,
     overlay_pos_id: str | None = None,
     model: str | None = None,
+    model_terms: Sequence[str] | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -795,7 +838,9 @@ def plotTime(
     over the detrended one (``ref="detrend"``), where the line is the part
     of the model still in the data (the steps, unless removed). Solid in
     the record's fit window, dashed where it is extrapolated. Files get
-    ``-model`` / ``-resid``. Stations only, for now.
+    ``-model`` / ``-resid``. Stations only, for now. ``model_terms``
+    (``--model-terms``) draws exactly those model groups instead, whatever
+    was removed from the data; files then add ``-line-<terms>``.
 
     ``name`` fixes the output basename: with ``save`` set the figure is
     written to ``<figDir>/<name>.<fmt>``, BYPASSING the
@@ -829,32 +874,7 @@ def plotTime(
     if not save:
         mpl.use("WebAgg")
 
-    fstart = fend = None
-    if start:
-        fstart = currYearfDate(refday=start)
-    if end:
-        fend = currYearfDate(refday=end)
-
-    # standard sub-periods for routine plots
-    if special:
-        if not end:
-            end = currDatetime(-1)
-            fend = currYearfDate(refday=end)
-
-        if special == "90d":
-            start = currDatetime(days=-91, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "year":
-            start = currDatetime(days=-366, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "fixedstart":
-            pass
-        if special == "full":
-            start = None
-            fstart = None
-
-    if not (fix or special):  # only plot the extent of the data
-        start = end = None
+    start, end, fstart, fend = resolve_period(start, end, special, fix)
 
     # graph title reference-frame string
     if ref is None:  # baselines and the detrended view default to plate
@@ -1130,7 +1150,7 @@ def plotTime(
         # layer keeps the axis limits the data set
         from gps_plot.layers.model import add_model_curve, model_note
 
-        model_series = gps_source.fetch_model(sta, request, yearf)
+        model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
         fig = add_model_curve(fig, model_series)
         fig.axes[0].text(
             0.01,
@@ -1219,6 +1239,8 @@ def plotTime(
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if model is not None:
             filend += "-model" if model == "curve" else "-resid"
+            if model_terms:
+                filend += "-line-" + "-".join(model_terms)
         if tType == "POS":
             # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
             from geo_dataread.pos import frame_name, pos_product
