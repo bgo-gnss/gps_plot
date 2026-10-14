@@ -289,35 +289,71 @@ def fetch_model(
     )
 
 
-def centre_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
-    """A detrended station as its residual from the stored model, about zero.
+#: samples averaged for the zero level: vshift's ``Period`` (getData's own)
+ZERO_SAMPLES = 5
 
-    ``getData`` zeroes a series at the window start, the stored record at
-    the full span's, so a windowed detrended station keeps a constant
-    (HOFN, one year: ~65/−150/−375 mm). Adding the exact window shift back
-    (``window_datum_shift``) makes it ``data − model`` whatever the window.
-    Baselines (re-zeroed at their first common epoch) and series without
-    an applied detrend are returned unchanged.
+
+def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
+    """What re-zeroes a detrended station at its start, or None.
+
+    ``getData`` zeroes a series at its start (``vshift``: the 1/σ-weighted
+    mean of the first 5 kept samples, ``gps_analysis.prep_plot_series``),
+    and the stored model is subtracted AFTER that, so a detrended station
+    starts wherever the model sat at the window start (HOFN, one year:
+    ~65/−150/−375 mm). The same zeroing applied again after the detrend
+    (``gps_analysis.baseline.estimate_offset`` over the first 5 finite
+    samples per component) puts it back on zero, like every other plot.
+
+    Returns ``−ŷ₀`` (3,), to add. None where it does not apply: baselines
+    (already zeroed at their first common epoch), no applied detrend, and a
+    chosen reference position (``--session both`` pins the 8 h overlay to
+    the main series' zero).
     """
     from geo_dataread.baseline import split_baseline
-    from geo_dataread.gps_views import window_datum_shift
+    from gps_analysis.baseline import estimate_offset
 
-    from gps_plot import timesmatplt as tplt
+    if (
+        split_baseline(spec) is not None
+        or not series.detrend_applied
+        or req.ref_position is not None
+    ):
+        return None
+    t = np.asarray(series.t, dtype=float)
+    y = np.asarray(series.y, dtype=float)
+    sigma = np.asarray(series.sigma, dtype=float)
+    level = np.zeros(y.shape[0])
+    for c in range(y.shape[0]):
+        idx = np.flatnonzero(np.isfinite(y[c]) & np.isfinite(sigma[c]))[:ZERO_SAMPLES]
+        if idx.size:
+            level[c] = float(
+                np.asarray(estimate_offset(t[idx], y[c, idx], sigma[c, idx]))
+            )
+    return -level
 
-    if split_baseline(spec) is not None or not series.detrend_applied:
+
+def rezero_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
+    """A detrended station re-zeroed at its start (see :func:`detrended_shift`).
+
+    The outlier and provisional overlays (same datum as the values) move
+    with it, and ``meta["zero_shift"]`` records the shift so a model line
+    can follow. Anything the shift does not apply to is returned unchanged.
+    """
+    shift = detrended_shift(spec, req, series)
+    if shift is None:
         return series
-    shift = window_datum_shift(
-        spec,
-        fstart=req.fstart,
-        fend=req.fend,
-        ref="plate",
-        Dir=req.Dir,
-        tType=req.tType,
-        uncert=req.uncert,
-        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
-    )
+    col = np.asarray(shift, dtype=float)[:, None]
+
+    def moved(pair: Any) -> Any:
+        if pair is None:
+            return None
+        return (np.asarray(pair[0], dtype=float) + col, pair[1])
+
     return dataclasses.replace(
-        series, y=np.asarray(series.y, dtype=float) + shift[:, None]
+        series,
+        y=np.asarray(series.y, dtype=float) + col,
+        outliers=moved(series.outliers),
+        provisional=moved(series.provisional),
+        meta={**series.meta, "zero_shift": shift},
     )
 
 

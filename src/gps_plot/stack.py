@@ -234,7 +234,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                 warnings.simplefilter("always")
                 s = source.fetch(spec, request, bl_opts)
                 if ref == "detrend":
-                    s = source.centre_detrended(spec, request, s)
+                    s = source.rezero_detrended(spec, request, s)
         except Exception as exc:  # one bad series must not sink the stack
             dropped.append(f"{spec}: {exc}")
             continue

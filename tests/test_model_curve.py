@@ -293,3 +293,92 @@ def test_model_terms_line_is_those_groups_whatever_the_data(window):
         np.asarray(evaluate_record(record, t, groups=("periodic",))) - shift[:, None],
         atol=1e-9,
     )
+
+
+# ---------------------------------------------------------------------------
+# detrended stations re-zeroed at their start (ts --ref detrend, stack)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spec, changes, applied",
+    [
+        ("SENG-SKSH", {}, True),
+        ("SELF", {"ref_position": "first"}, True),
+        ("SELF", {}, False),
+    ],
+)
+def test_rezero_does_not_apply(spec, changes, applied):
+    from gps_plot.sources import gps as source
+
+    req = source.SeriesRequest(
+        fstart=2024.0, fend=None, ref="detrend", Dir=None, tType="POS",
+        uncert=10, view="raw", **changes,
+    )  # fmt: skip
+    s = Series(spec, np.zeros(1), np.ones((3, 1)), np.ones((3, 1)),
+               detrend_applied=applied)  # fmt: skip
+    assert source.detrended_shift(spec, req, s) is None
+    assert source.rezero_detrended(spec, req, s) is s
+
+
+def test_rezero_uses_the_first_five_finite_samples_per_component():
+    from gps_analysis.baseline import estimate_offset
+
+    from gps_plot.sources import gps as source
+
+    t = np.linspace(2024.0, 2024.1, 12)
+    y = np.vstack([np.arange(12.0) + 7, np.arange(12.0) * 2 - 3, np.full(12, 4.0)])
+    y[0, :2] = np.nan  # a masked (cleaned) start
+    sig = np.ones((3, 12)) + np.arange(12) / 10
+    req = source.SeriesRequest(
+        fstart=2024.0, fend=None, ref="detrend", Dir=None, tType="POS",
+        uncert=10, view="cleaned",
+    )  # fmt: skip
+    s = Series("SELF", t, y, sig, outliers=(y.copy(), sig), detrend_applied=True)
+    z = source.rezero_detrended("SELF", req, s)
+    want0 = float(estimate_offset(t[2:7], y[0, 2:7], sig[0, 2:7]))
+    np.testing.assert_allclose(z.y[0], y[0] - want0)
+    np.testing.assert_allclose(z.y[2], 0.0)
+    np.testing.assert_allclose(z.outliers[0], z.y)  # moved with the data
+    np.testing.assert_allclose(z.meta["zero_shift"][0], -want0)
+
+
+@requires_deployed
+@pytest.mark.parametrize("window", [(None, None), (2007.0, 2010.0), (2024.0, None)])
+@pytest.mark.parametrize("view", ["raw", "cleaned"])
+def test_rezeroed_detrended_is_the_residual_from_zero(window, view):
+    """Re-zeroed, a --ref detrend station is D_full(plate) − model[linear +
+    periodic] up to one constant per component, and starts at zero; its
+    outliers sit on the same residual."""
+    import geo_dataread.gps_read as gpsr
+    from gps_analysis import evaluate_record
+
+    from gps_plot.sources import gps as source
+
+    pos_dir, pid, record = DEPLOYED
+    req = source.SeriesRequest(
+        fstart=window[0], fend=window[1], ref="detrend", Dir=pos_dir,
+        tType="POS", uncert=15, view=view, pos_id=pid,
+    )  # fmt: skip
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        s = source.rezero_detrended("SELF", req, source.fetch_station("SELF", req))
+    t_full, d_full, _, _ = gpsr.getData(
+        "SELF", ref="plate", Dir=pos_dir, tType="POS", uncert=15, pos_id=pid
+    )
+    _, i, j = np.intersect1d(t_full, s.t, return_indices=True)
+    want = d_full[:, i] - np.asarray(
+        evaluate_record(record, t_full[i], groups=("secular", "periodic"))
+    )
+    got = np.asarray(s.y)[:, j]
+    for c in range(3):
+        ok = np.isfinite(got[c])
+        diff = got[c][ok] - want[c][ok]
+        np.testing.assert_allclose(diff, diff[0], atol=1e-6)
+        first = np.flatnonzero(np.isfinite(np.asarray(s.y)[c]))[:5]
+        assert abs(np.average(np.asarray(s.y)[c][first],
+                              weights=1 / np.asarray(s.sigma)[c][first])) < 1e-9  # fmt: skip
+        if s.outliers is not None:
+            o = np.asarray(s.outliers[0])[c, j]
+            f = np.isfinite(o)
+            np.testing.assert_allclose(o[f] - want[c][f], diff[0], atol=1e-6)

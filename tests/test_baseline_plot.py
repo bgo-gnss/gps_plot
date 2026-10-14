@@ -30,6 +30,8 @@ def _stub(monkeypatch, series: dict[str, np.ndarray], n: int = 30):
     gps_read.toDateTime = lambda yf: x[: len(yf)]
     gps_views = types.ModuleType("geo_dataread.gps_views")
     gps_views.baseline_arrays = baseline_arrays
+    # the --model line's window alignment, absent from the stub world
+    gps_views.window_datum_shift = lambda sta, **kw: np.zeros(3)
     package = types.ModuleType("geo_dataread")
     package.gps_read, package.gps_views = gps_read, gps_views
     monkeypatch.setitem(sys.modules, "geo_dataread", package)
