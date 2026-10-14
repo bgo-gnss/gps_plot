@@ -66,19 +66,18 @@ VARIANTS: dict[str, list[str]] = {
         "SENG", "--view", "cleaned", "--stages", "S0,S4", "--outlier-param",
         "window_n_sigma=4.0", "--show-outliers", "--special", "year",
     ],
+    # --model (step 3): the stored-model line over plate / detrended series
+    "hofnmodel": ["HOFN", "--model", "both", "--special", "full"],
+    "sengmodel": ["SENG", "--model", "curve", "--special", "year"],
+    "selfmodel": [
+        "SELF", "--model", "both", "--remove-steps", "earthquake", "--special", "full",
+    ],
+    "selfresid": ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"],
 }  # fmt: skip
 
 #: candidate-only variants (no reference on main): each must render exactly
 #: the given number of PNGs, so a caught per-station error cannot pass
 NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
-    "hofnmodel": (["HOFN", "--model", "both", "--special", "full"], 2),
-    "sengmodel": (["SENG", "--model", "curve", "--special", "year"], 1),
-    "selfmodel": (
-        ["SELF", "--model", "both", "--remove-steps", "earthquake", "--special", "full"], 2,
-    ),
-    "selfresid": (
-        ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"], 1,
-    ),
     "selfterms": (
         ["SELF", "--model", "residual", "--detrend-terms", "periodic",
          "--model-terms", "linear,periodic,steps", "--special", "full"], 1,
