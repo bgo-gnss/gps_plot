@@ -89,6 +89,34 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
     `--detrend-terms`/`--remove-steps` took out of the data — e.g. the
     seasonal line over data with the seasonal removed. Not given: the
     default above. Files add `-line-<terms>`.
+- **Step 4** (2026-10-14, branch `feat/stack`): `gpsplot stack`.
+  - `gpsplot stack "SEY?-SEYD" [STA …] --ref plate|detrend|ref_frame
+    [--offset MM]`: stations and baselines in one N/E/U figure, each through
+    `sources.gps.fetch` (the same read/clean/detrend as `ts`), overlaid with a
+    legend; `--offset` moves series k by k·MM (named in the legend).
+  - Patterns (`? * [..]`) match `stations.cfg`, on either side of a baseline
+    (split at a `-` outside `[..]`, so `SEY[1-4]-SEYD` works); self-pairs
+    dropped; a pattern matching nothing is an error. Quote them in zsh.
+  - Colours are keyed on the label (crc32 into a 12-colour palette, next
+    free slot on a clash within the figure): a station keeps its colour
+    between plots unless it clashes with another in the same figure.
+  - Failures: a series that fails is dropped and listed on stderr; nothing
+    plotted = exit 1. A `--ref detrend` station without a stored record is
+    plotted raw and labelled "(not detrended)" — never passes as detrended.
+  - Detrended stations are centred: `sources.gps.centre_detrended` adds the
+    exact window shift back, so the series is `data − model` about zero for
+    any window (without it HOFN's year view sat ~65/−150/−375 mm off).
+    `ts --ref detrend` still has that constant (pixel gate); fixing it
+    there is a visible change, for BGÓ to decide.
+  - Files `stack_<first>_<n>-<ref>[-terms][-cleaned][-offsetMM]-<frame>-<period>`
+    (no `-` before the ref: publish globs split there).
+  - Shared options moved to `cli/common.py` (period, output, series groups,
+    `resolve_dates`, `resolve_source`); `ts` builds from them too, pinned by
+    `tests/test_ts_kwargs_snapshot.py` (the exact plotTime kwargs for 18
+    command lines + error messages). `timesmatplt.resolve_period` split out
+    of `plotTime`. Composition: `compose.stack_figure` (stdFrame + layers).
+  - Not yet: `--model` in a stack, rows per series, `--session both`,
+    baselines re-zeroed on one (possibly noisy) first common epoch (as `ts`).
 
 ## Request (BGÓ)
 

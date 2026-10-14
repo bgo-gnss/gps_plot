@@ -79,9 +79,19 @@ VARIANTS: dict[str, list[str]] = {
 #: the given number of PNGs, so a caught per-station error cannot pass
 NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
     "selfterms": (
-        ["SELF", "--model", "residual", "--detrend-terms", "periodic",
+        ["ts", "SELF", "--model", "residual", "--detrend-terms", "periodic",
          "--model-terms", "linear,periodic,steps", "--special", "full"], 1,
     ),
+    # gpsplot stack (step 4): a baseline pattern, a station + baseline mix,
+    # --offset, and a detrend stack with a station that has no record
+    # (BLEI: labelled "not detrended")
+    "stacksey": (["stack", "SEY?-SEYD", "--special", "year"], 1),
+    "stackmix": (["stack", "SEY[1-3]-SEYD", "SEYD", "--ref", "plate",
+                  "--special", "90d"], 1),
+    "stackoff": (["stack", "HOFN", "SELF", "RHOF", "--ref", "plate",
+                  "--offset", "20", "--special", "full"], 1),
+    "stackdet": (["stack", "BLEI", "SEYD", "HOFN", "--ref", "detrend",
+                  "--special", "year"], 1),
 }  # fmt: skip
 
 OLD = (
@@ -180,7 +190,7 @@ def main() -> int:
         status |= bool(bad)
     new = args.out / "new"
     _render(
-        args.src_b, CANDIDATES["gpsplot-ts"], new, shim, frozen, args.end,
+        args.src_b, CANDIDATES["gpsplot"], new, shim, frozen, args.end,
         {k: v[0] for k, v in NEW_VARIANTS.items()},
     )  # fmt: skip
     for name, (_argv, want) in NEW_VARIANTS.items():

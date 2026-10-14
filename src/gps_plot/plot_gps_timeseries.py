@@ -3,7 +3,6 @@
 
 import argparse
 import concurrent.futures
-import datetime as dt
 import functools
 import os
 import sys
@@ -21,6 +20,7 @@ from typing import Any
 from gtimes.timefunc import currDatetime
 
 import gps_plot.timesmatplt as tplt
+from gps_plot.cli import common
 
 # gps_parser is imported lazily inside main() (it needs a deployed
 # gpsconfig dir), so the module stays importable without it.
@@ -420,47 +420,15 @@ is the old name of the same command):
   gpsplot REYK --name REYK-test --save png     one fixed file to keep open
 Always pass --save (without it the plot opens interactively)."""
 
-#: the reference frame plotted when neither --tType nor --frame is given
-DEFAULT_PLOT_FRAME = "itrf2014"
-
-#: ``--ref`` value for "nothing removed": the positions in the frame that
-#: ``--frame`` picks.  Internally (plotTime, geo_dataread) this is still the
-#: historical token ``"itrf2008"``, which the CLI also accepts as an alias.
-REF_FRAME = "ref_frame"
-_REF_FRAME_INTERNAL = "itrf2008"
-_ITRF_REF_NAMES = ("itrf2014", "itrf2020", "itrf08", "itrf14", "itrf20")
+# shared with gpsplot stack: cli/common.py (names kept for importers)
+DEFAULT_PLOT_FRAME = common.DEFAULT_PLOT_FRAME
+REF_FRAME = common.REF_FRAME
+_REF_FRAME_INTERNAL = common.REF_FRAME_INTERNAL
+_ITRF_REF_NAMES = common.ITRF_REF_NAMES
+_ref_choice = common.ref_choice
 
 
-def _ref_choice(value: str) -> str:
-    """argparse type for ``--ref``: map the legacy alias, explain frame names."""
-    v = value.strip().lower()
-    if v == _REF_FRAME_INTERNAL:
-        return REF_FRAME
-    if v in _ITRF_REF_NAMES:
-        raise argparse.ArgumentTypeError(
-            f"{value!r} is a reference frame, not a --ref choice: use "
-            f"--ref ref_frame --frame {value} (--frame picks the frame)"
-        )
-    return v
-
-
-def _config_dir(config, option, default=None):
-    """Resolve a directory from postprocess.cfg, or `default` if unavailable.
-
-    Directories (figDir, totPath) live in [PATHS], with a legacy [Configs]
-    fallback — that is `getPostProcessDir`. `getPostProcessConfig` is a
-    different method for config *files* in [FILES]; calling it here is what
-    broke the console script.
-
-    This must not raise: it runs while argparse is being built, so a missing key
-    (totPath is commented out in the deployed config) or no deployed config at
-    all — a container image before gpsconfig lands — would otherwise kill even
-    `--help`. Callers that genuinely need the value fail at use time instead.
-    """
-    try:
-        return config.getPostProcessDir(option)
-    except Exception:
-        return default
+_config_dir = common.config_dir
 
 
 #: ``--remove-steps`` aliases for the operator's own vocabulary.  ``kind``
@@ -619,70 +587,27 @@ def build_parser(
         const=sys.stdin,
         help="read in a list of events from a file: defaults to stdin",
     )
-    parser.add_argument(
-        "-s", "--start", type=str, default=None, help="start of the plot, YYYYMMDD"
-    )
-    parser.add_argument(
-        "-e", "--end", type=str, default=None, help="end of the plot, YYYYMMDD"
-    )
-    parser.add_argument(
-        "-D",
-        type=int,
-        default=0,
-        help="Number of days to shift the given day positive subracts negativ adds",
-    )
-    parser.add_argument(
-        "--save",
-        type=str,
-        nargs="?",
-        default=None,
-        const="eps",
-        help="save figure to file(s): a format suffix or comma-separated "
-        "formats, each written natively by matplotlib "
-        "(e.g. 'png', 'pdf' or 'eps,pdf,png'); defaults to eps",
-    )
-    parser.add_argument(
-        "--name",
-        type=str,
-        default=None,
-        help="fixed output basename (no directory, no suffix): the figure is "
-        "written as <figDir>/<name>.<fmt>, bypassing the usual "
-        "ref/view/period filename. Handy for re-rendering to one stable path "
-        "you keep open in a viewer (e.g. --name RHOF-test). Every station and "
-        "--ref/--special variant writes the SAME file, so only the last "
-        "render survives a multi-variant run",
-    )
-    parser.add_argument(
-        "--fix",
-        action="store_true",
-        help="plot strictly the period specified, regardless of the data",
-    )
-    parser.add_argument(
-        "--ref",
-        type=_ref_choice,
-        default=None,
-        choices=ref_allow,
-        help="what is removed from the positions: ref_frame = nothing (the "
+    common.add_period_options(parser, specials=special_allow)
+    common.add_output_options(parser, config)
+    common.add_series_options(
+        parser,
+        refs=ref_allow,
+        ref_help="what is removed from the positions: ref_frame = nothing (the "
         "positions in the reference frame picked by --frame; the old name "
         "itrf2008 still works), "
         "plate = the station's plate velocity in that frame's plate-motion "
         "model, detrend = plate + the stored rate and seasonals (--detrend-terms; step offsets "
         "stay visible); all = one plot of each. Default: plate for a baseline "
         "(AAAA-BBBB), ref_frame otherwise",
-    )
-    parser.add_argument(
-        "--view",
-        type=str,
-        default="raw",
-        # "detrended" is still accepted (old scripts) but no longer offered:
-        # detrending is --ref detrend; --ref detrend --remove-steps all is
-        # the same full-trajectory removal
-        choices=view_allow + ["detrended"],
-        metavar="{" + ",".join(view_allow) + "}",
-        help="data view: raw (default) or cleaned (outlier epochs masked "
-        "from the main series; the grey overlay is OFF by default -- add "
-        "--show-outliers to see what was set aside). Detrending is --ref "
-        "detrend (add --remove-steps all to remove the steps as well)",
+        views=view_allow,
+        types=Type_allow,
+        sessions=["24h", "8h", "both"],
+        session_help="24h daily solutions (default), 8h sessions "
+        "(<SITE>.imo.08hr_itrf20.pos: itrf2020 only, gamit-p01 2023 on, ~13 IMO "
+        "stations; the frame defaults to itrf2020), or both: the 8h sessions "
+        "(blue) behind the daily series (red), same frame, view and reference. "
+        "8 h sigmas are larger: -u 10 drops the noisier sessions, -u 20 keeps "
+        "more",
     )
     parser.add_argument(
         "--model",
@@ -739,18 +664,6 @@ def build_parser(
         "$GPS_API_STORE/noise/baseline_noise.json)",
     )
     parser.add_argument(
-        "--tType",
-        type=str,
-        default=None,
-        choices=Type_allow,
-        help='the series to read. Default (since 2026-10-13): "POS" in the '
-        f"{DEFAULT_PLOT_FRAME} frame — the PBO .pos files of the daily SINEX "
-        "archive (N/E/U from X/Y/Z; okada's junction offsets applied to the "
-        "itrf2008/itrf2014 sets); --frame picks "
-        'another frame. "TOT": the GLOBK mb_STA_TOT.dat[123] files (the '
-        'previous default), "08h" their 8-hour series, "JOIN" both',
-    )
-    parser.add_argument(
         "--ref-position",
         dest="ref_position",
         default=None,
@@ -770,79 +683,11 @@ def build_parser(
         "product id has no room for itrf2014)",
     )
     parser.add_argument(
-        "--frame",
-        default=None,
-        help="reference frame of the .pos series: itrf2008 (okada, 1995 on), "
-        "itrf2014 (IGb14: okada re-aligned, 1995 on; the DEFAULT) or itrf2020 "
-        "(IGb20: gamit-p01, 2017 on; the only frame with 8 h sessions). Short "
-        "names itrf08/itrf14/itrf20 and igb14/igb20 also work. "
-        "Implies --tType POS; plate removal and the detrend parameters follow "
-        "the frame (detrend_params[.<frame>].json)",
-    )
-    parser.add_argument(
-        "--session",
-        default="24h",
-        choices=["24h", "8h", "both"],
-        help="24h daily solutions (default), 8h sessions "
-        "(<SITE>.imo.08hr_itrf20.pos: itrf2020 only, gamit-p01 2023 on, ~13 IMO "
-        "stations; the frame defaults to itrf2020), or both: the 8h sessions "
-        "(blue) behind the daily series (red), same frame, view and reference. "
-        "8 h sigmas are larger: -u 10 drops the noisier sessions, -u 20 keeps "
-        "more",
-    )
-    parser.add_argument(
         "--convention",
         default="geodetic",
         choices=["geodetic", "globk"],
         help="--tType POS: local frame of the N/E/U — geodetic (true local "
         "level, default) or globk (glorg Loc., the convention of the TOT files)",
-    )
-    parser.add_argument(
-        "--ylim",
-        type=int,
-        default=[],
-        nargs="+",
-        help="set limit for y-axis: list of one or two numbers in mm. "
-        + "One number x will expand the y axis by x mm in each direciton. "
-        + "Two numbers will give absolute lower and upper boundary of the y-axis",
-    )
-    parser.add_argument(
-        "-u",
-        "--uncert",
-        type=int,
-        default=10,
-        help="formal-uncertainty screen at read time [mm] — epochs with σ above "
-        "this threshold are excluded from the series. Default 10 (the "
-        "same screen as the detrend workbench; the batch estimator and "
-        "geo_dataread.gps_read.getData default is 15)",
-    )
-    parser.add_argument(
-        "--special",
-        type=str,
-        default=None,
-        choices=special_allow,
-        help="for routine plots: whole time series (all), One year long (year), ninety days (90d)",
-    )
-    parser.add_argument(
-        "-d",
-        "--figDir",
-        type=str,
-        nargs="?",
-        default=None,
-        const=None,
-        help="figure save directory (default: fig_dir in postprocess.cfg "
-        "[PATHS], deployed from gps-config-data; currently "
-        f"{_config_dir(config, 'fig_dir', None) or 'unset -> current directory'}). "
-        "Use -d . for the current directory.",
-    )
-    parser.add_argument(
-        "-i",
-        "--Dir",
-        type=str,
-        nargs="?",
-        default=None,
-        help="time series input directory (default: postprocess pos_dir for "
-        "the .pos series, totPath for --tType TOT/08h/JOIN)",
     )
     parser.add_argument(
         "--outlier-param",
@@ -972,24 +817,12 @@ def run(
     """Plot what the parsed ``args`` ask for; ``parser`` reports errors."""
     if config is None:
         config = _load_config()
-    dstr = "%Y%m%d"  # Default input string
-    start = end = None
     eventDict = {}
     ref_allow = REF_ALLOW
     special_allow = SPECIAL_ALLOW
 
     # processing command line arguments --------------
-    if args.fix or args.D:  # set the end date as yesterday
-        end = currDatetime(-1)
-
-    # defining sub-periods to plot, 'full'
-    if args.start:  # start the plot at
-        start = dt.datetime.strptime(args.start, dstr)
-    if args.end:  # end the plot at
-        end = dt.datetime.strptime(args.end, dstr)
-
-    if args.D:
-        start = currDatetime(days=-args.D, refday=end)
+    start, end = common.resolve_dates(args, currDatetime)
 
     if args.eventf:  # reading a list of events from a file or stdin
         eventDict.update(
@@ -1068,36 +901,9 @@ def run(
     # --frame/--session pick the .pos product; --pos-id stays as an alias.
     # With neither --tType nor a product, the default is the .pos series in
     # DEFAULT_PLOT_FRAME.
-    frame, session = kwargs.pop("frame"), kwargs.pop("session")
-    if model is not None and session != "24h":
+    if model is not None and kwargs["session"] != "24h":
         parser.error("--model: daily series only (no --session 8h/both) for now")
-    if args.tType is None:
-        kwargs["tType"] = args.tType = "POS"
-    if args.tType == "POS" and frame is None and kwargs.get("pos_id") is None:
-        # the 8 h sessions exist only in itrf2020 (gamit-p01) so far
-        frame = DEFAULT_PLOT_FRAME if session == "24h" else "itrf2020"
-    if frame is not None or session != "24h":
-        from geo_dataread.pos import pos_product
-
-        if kwargs.get("pos_id") is not None:
-            parser.error("give --frame/--session or --pos-id, not both")
-        try:
-            kwargs["pos_id"] = pos_product(
-                frame, "24h" if session == "both" else session
-            )
-            if session == "both":
-                kwargs["overlay_pos_id"] = pos_product(frame, "8h")
-        except ValueError as exc:
-            parser.error(str(exc))
-        kwargs["tType"] = args.tType = "POS"
-
-    if kwargs["figDir"] is None:
-        kwargs["figDir"] = _config_dir(config, "fig_dir", "")
-
-    if kwargs["Dir"] is None:
-        kwargs["Dir"] = _config_dir(
-            config, "pos_dir" if args.tType == "POS" else "totPath"
-        )
+    common.resolve_source(kwargs, args, parser, config)
 
     stations = args.Stations  # station list
     del kwargs["Stations"]

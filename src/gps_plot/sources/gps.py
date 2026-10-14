@@ -289,6 +289,38 @@ def fetch_model(
     )
 
 
+def centre_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
+    """A detrended station as its residual from the stored model, about zero.
+
+    ``getData`` zeroes a series at the window start, the stored record at
+    the full span's, so a windowed detrended station keeps a constant
+    (HOFN, one year: ~65/−150/−375 mm). Adding the exact window shift back
+    (``window_datum_shift``) makes it ``data − model`` whatever the window.
+    Baselines (re-zeroed at their first common epoch) and series without
+    an applied detrend are returned unchanged.
+    """
+    from geo_dataread.baseline import split_baseline
+    from geo_dataread.gps_views import window_datum_shift
+
+    from gps_plot import timesmatplt as tplt
+
+    if split_baseline(spec) is not None or not series.detrend_applied:
+        return series
+    shift = window_datum_shift(
+        spec,
+        fstart=req.fstart,
+        fend=req.fend,
+        ref="plate",
+        Dir=req.Dir,
+        tType=req.tType,
+        uncert=req.uncert,
+        **tplt.pos_read_kwargs(req.ref_position, req.convention, req.pos_id),
+    )
+    return dataclasses.replace(
+        series, y=np.asarray(series.y, dtype=float) + shift[:, None]
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class _StationTuple:
     """The (yearf, data, Ddata) view the empirical-σ helper reads."""

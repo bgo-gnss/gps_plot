@@ -713,6 +713,48 @@ def station_series(
     )
 
 
+def resolve_period(
+    start: datetime.datetime | None,
+    end: datetime.datetime | None,
+    special: str | None,
+    fix: bool,
+) -> tuple[Any, Any, float | None, float | None]:
+    """``(start, end, fstart, fend)``: the axis span and the read window.
+
+    ``special`` (90d, year, full, fixedstart) sets the routine sub-periods,
+    ending yesterday unless ``end`` is given. ``start``/``end`` (datetimes)
+    bound the x axis only with ``fix`` or ``special``; otherwise the axis
+    spans the data. ``fstart``/``fend`` (fractional years) are what is read.
+    """
+    fstart = fend = None
+    if start:
+        fstart = currYearfDate(refday=start)
+    if end:
+        fend = currYearfDate(refday=end)
+
+    # standard sub-periods for routine plots
+    if special:
+        if not end:
+            end = currDatetime(-1)
+            fend = currYearfDate(refday=end)
+
+        if special == "90d":
+            start = currDatetime(days=-91, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "year":
+            start = currDatetime(days=-366, refday=end)
+            fstart = currYearfDate(refday=start)
+        if special == "fixedstart":
+            pass
+        if special == "full":
+            start = None
+            fstart = None
+
+    if not (fix or special):  # only plot the extent of the data
+        start = end = None
+    return start, end, fstart, fend
+
+
 def plotTime(
     sta: str,
     start: datetime.datetime | None = None,
@@ -832,32 +874,7 @@ def plotTime(
     if not save:
         mpl.use("WebAgg")
 
-    fstart = fend = None
-    if start:
-        fstart = currYearfDate(refday=start)
-    if end:
-        fend = currYearfDate(refday=end)
-
-    # standard sub-periods for routine plots
-    if special:
-        if not end:
-            end = currDatetime(-1)
-            fend = currYearfDate(refday=end)
-
-        if special == "90d":
-            start = currDatetime(days=-91, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "year":
-            start = currDatetime(days=-366, refday=end)
-            fstart = currYearfDate(refday=start)
-        if special == "fixedstart":
-            pass
-        if special == "full":
-            start = None
-            fstart = None
-
-    if not (fix or special):  # only plot the extent of the data
-        start = end = None
+    start, end, fstart, fend = resolve_period(start, end, special, fix)
 
     # graph title reference-frame string
     if ref is None:  # baselines and the detrended view default to plate
