@@ -42,6 +42,17 @@ VARIANTS: dict[str, list[str]] = {
     "vfln": ["VFLN-VFLS", "--show-ends", "--special", "year"],
     "rhof08": ["RHOF", "--ref", "ref_frame", "--frame", "itrf2008", "--special", "full"],
     "prod": ["RHOF", "SENG", "HOFN", "--ref", "all", "--special", "all", "-j", "6"],
+    # stepped detrend records (SELF itrf14 + itrf08, HOFN itrf08): the step
+    # offsets must stay in --ref detrend and go with --remove-steps
+    "selfdet": ["SELF", "--ref", "detrend", "--special", "full"],
+    "selfeq": ["SELF", "--ref", "detrend", "--remove-steps", "earthquake", "--special", "full"],
+    "selflin": ["SELF", "--ref", "detrend", "--detrend-terms", "linear", "--special", "full"],
+    "self08": ["SELF", "--ref", "detrend", "--frame", "itrf2008", "--special", "full"],
+    "hofn08": ["HOFN", "--ref", "detrend", "--frame", "itrf2008", "--special", "full"],
+    "hofn08eq": [
+        "HOFN", "--ref", "detrend", "--frame", "itrf2008", "--remove-steps", "equipment",
+        "--special", "full",
+    ],
 }  # fmt: skip
 
 OLD = (

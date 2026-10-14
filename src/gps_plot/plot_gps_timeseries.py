@@ -495,16 +495,16 @@ def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
     """Parse ``--detrend-terms``: comma list → canonical-order tuple."""
     if raw is None:
         return None
-    from gps_plot.timesmatplt import DETREND_TERM_SELECTORS
+    from gps_plot.timesmatplt import DETREND_TERM_GROUPS
 
     want = {p.strip().lower() for p in raw.split(",") if p.strip()}
-    bad = want - set(DETREND_TERM_SELECTORS)
+    bad = want - set(DETREND_TERM_GROUPS)
     if bad or not want:
         raise ValueError(
             f"--detrend-terms: {', '.join(sorted(bad)) or 'nothing given'}; "
-            f"use any of {', '.join(DETREND_TERM_SELECTORS)}"
+            f"use any of {', '.join(DETREND_TERM_GROUPS)}"
         )
-    return tuple(t for t in DETREND_TERM_SELECTORS if t in want)
+    return tuple(t for t in DETREND_TERM_GROUPS if t in want)
 
 
 # Main

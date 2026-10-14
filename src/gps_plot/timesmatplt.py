@@ -625,45 +625,24 @@ def station_series(
                         f"series frame {series_frame!r} - refusing to apply"
                     )
                 # --view detrended (legacy): the whole trajectory. --ref
-                # detrend: the chosen terms (default linear + periodic);
-                # "linear" is the library's "secular" (offset + rate + step
-                # amplitudes), so the steps are added back below
+                # detrend: the chosen terms (default linear + periodic) as
+                # staged groups, whose "secular" excludes the steps, so the
+                # step offsets stay visible (they are --remove-steps' job)
                 if view == "detrended":
-                    _sel: Any = "all"
-                else:
-                    _sel = tuple(
-                        DETREND_TERM_SELECTORS[t]
-                        for t in (detrend_terms or DEFAULT_DETREND_TERMS)
+                    data = _gv.apply_stored_detrend(
+                        record, yearf, data, frame=series_frame
                     )
-                data = _gv.apply_stored_detrend(
-                    record, yearf, data, terms=_sel, frame=series_frame
-                )
-                # --ref detrend: subtract rate + seasonal but KEEP step
-                # offsets visible (trends removed, discrete events stay).
-                # apply_stored_detrend subtracted the FULL trajectory
-                # including steps; add the step contributions back so
-                # earthquake/equipment offsets remain in the data.
-                # --view detrended keeps the full subtraction.
-                if (
-                    ref == "detrend"
-                    and view != "detrended"
-                    and "linear" in (detrend_terms or DEFAULT_DETREND_TERMS)
-                ):
-                    _step_epochs = record.get("step_epochs", [])
-                    if _step_epochs:
-                        _yr = np.asarray(yearf, dtype=np.float64)
-                        _pn = record.get("param_names", [])
-                        for _ci in range(data.shape[0]):
-                            _cp = record["components"][_ci]["params"]
-                            for _k, _ep in enumerate(_step_epochs):
-                                try:
-                                    _idx = _pn.index(f"step_amp_{_k + 1}")
-                                except ValueError:
-                                    continue
-                                _amp = float(_cp[_idx])
-                                data[_ci] = data[_ci] + np.where(
-                                    _yr >= float(_ep), _amp, 0.0
-                                )
+                else:
+                    data = _gv.apply_stored_detrend(
+                        record,
+                        yearf,
+                        data,
+                        groups=tuple(
+                            DETREND_TERM_GROUPS[t]
+                            for t in (detrend_terms or DEFAULT_DETREND_TERMS)
+                        ),
+                        frame=series_frame,
+                    )
                 detrend_applied = True
             except ValueError as exc:
                 warnings.warn(
@@ -1213,10 +1192,10 @@ def _ref_label(
     return f"{name}, {tType}"
 
 
-#: --detrend-terms vocabulary → gps_analysis select_terms selector. "linear"
-#: is offset + rate; the library's "secular" also holds the step amplitudes,
-#: which --ref detrend adds back (steps are --remove-steps' business)
-DETREND_TERM_SELECTORS: dict[str, str] = {
+#: --detrend-terms vocabulary → gps_analysis staged term group
+#: (select_record_groups). "linear" is offset + rate, the staged "secular",
+#: which leaves the step amplitudes out (steps are --remove-steps' business)
+DETREND_TERM_GROUPS: dict[str, str] = {
     "linear": "secular",
     "periodic": "periodic",
     "transient": "transient",
