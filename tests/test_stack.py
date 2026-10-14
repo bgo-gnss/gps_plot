@@ -116,7 +116,7 @@ def _run(argv, monkeypatch, fetch, tmp_path):
     from gps_plot.sources import gps as source
 
     monkeypatch.setattr(source, "fetch", fetch)
-    monkeypatch.setattr(source, "centre_detrended", lambda spec, req, s: s)
+    monkeypatch.setattr(source, "rezero_detrended", lambda spec, req, s: s)
     parser = stk.build_parser(config=_Config())
     args = parser.parse_args(argv + ["--save", "png", "-d", str(tmp_path)])
     return stk.run(args, parser, _Config())

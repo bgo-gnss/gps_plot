@@ -694,10 +694,7 @@ def station_series(
             provisional_days=provisional_days,
         )
 
-    data, detrend_applied = trajectory_views(
-        sta,
-        yearf,
-        data,
+    views = dict(
         ref=ref,
         view=view,
         tType=tType,
@@ -707,6 +704,20 @@ def station_series(
         steps_catalog=steps_catalog,
         params=params,
     )
+    data, detrend_applied = trajectory_views(sta, yearf, data, **views)
+    if detrend_applied or remove_kinds:
+        # the outlier / provisional overlays are values of the SAME series
+        # (NaN off their flags): they get the same steps and trajectory
+        # removed, or they sit at their plate values beside detrended data
+        def _moved(pair: Any) -> Any:
+            if pair is None:
+                return None
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # already said for the data
+                vals, _ = trajectory_views(sta, yearf, pair[0], **views)
+            return (vals, pair[1])
+
+        outliers, provisional = _moved(outliers), _moved(provisional)
 
     return StationSeries(
         yearf, data, Ddata, outliers, provisional, aborted, detrend_applied
@@ -1033,6 +1044,10 @@ def plotTime(
             noise_path=baseline_noise,
         ),
     )
+    if ref == "detrend" or view == "detrended":
+        # re-zero a detrended station at its start (vshift again, after the
+        # detrend): the model was subtracted after getData's zeroing
+        main_series = gps_source.rezero_detrended(sta, request, main_series)
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
@@ -1151,6 +1166,13 @@ def plotTime(
         from gps_plot.layers.model import add_model_curve, model_note
 
         model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
+        _shift = main_series.meta.get("zero_shift")
+        if _shift is not None:
+            # the data were re-zeroed: the line moves with them
+            model_series = dataclasses.replace(
+                model_series,
+                y=np.asarray(model_series.y) + np.asarray(_shift)[:, None],
+            )
         fig = add_model_curve(fig, model_series)
         fig.axes[0].text(
             0.01,

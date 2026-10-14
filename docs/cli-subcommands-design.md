@@ -103,11 +103,7 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
   - Failures: a series that fails is dropped and listed on stderr; nothing
     plotted = exit 1. A `--ref detrend` station without a stored record is
     plotted raw and labelled "(not detrended)" — never passes as detrended.
-  - Detrended stations are centred: `sources.gps.centre_detrended` adds the
-    exact window shift back, so the series is `data − model` about zero for
-    any window (without it HOFN's year view sat ~65/−150/−375 mm off).
-    `ts --ref detrend` still has that constant (pixel gate); fixing it
-    there is a visible change, for BGÓ to decide.
+  - Detrended stations are re-zeroed at their start: see the next entry.
   - Files `stack_<first>_<n>-<ref>[-terms][-cleaned][-offsetMM]-<frame>-<period>`
     (no `-` before the ref: publish globs split there).
   - Shared options moved to `cli/common.py` (period, output, series groups,
@@ -117,6 +113,25 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
     of `plotTime`. Composition: `compose.stack_figure` (stdFrame + layers).
   - Not yet: `--model` in a stack, rows per series, `--session both`,
     baselines re-zeroed on one (possibly noisy) first common epoch (as `ts`).
+
+- **Fix** (2026-10-14, branch `fix/ts-detrend-centred`, BGÓ chose option B):
+  `getData` zeroes a series at its start (`vshift`, now
+  `gps_analysis.prep_plot_series`: 1/σ-weighted mean of the first 5 kept
+  samples) and the stored model is subtracted AFTER that, so a detrended
+  station started wherever the model sat at the window start (HOFN year
+  view ~65/−150/−375 mm). `sources.gps.rezero_detrended` applies the same
+  zeroing again after the detrend (`estimate_offset` over the first 5 finite
+  samples per component), in `ts` and `stack`: every plot starts at zero.
+  The `--model` line and the outlier/provisional overlays move with it.
+  Option A (centre on the model via `window_datum_shift`, the absolute
+  residual) was rejected: SENG's year view would sit at +1.3 m / −2.6 m.
+  Not re-zeroed: baselines (zeroed at their first common epoch already) and
+  `--session both` (the 8 h overlay is pinned to the main zero).
+  Also fixed: with `--ref detrend --view cleaned` (or `--remove-steps`) the
+  grey outlier / gold provisional points were drawn at their PLATE values;
+  they now go through the same `trajectory_views` as the data.
+  Gate: the 23 station `--ref detrend` plots change (intended), the other
+  37 are byte-identical.
 
 ## Request (BGÓ)
 
