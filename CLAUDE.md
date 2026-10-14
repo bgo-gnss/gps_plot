@@ -71,7 +71,8 @@ One command, `gpsplot`, one subcommand per plot kind (`cli/__init__.py`
 `COMMANDS`; only the chosen one is imported). `ts` options live once in
 `plot_gps_timeseries.build_parser`, shared with the old name. `--model
 curve|residual|both` draws the stored model over the plate / detrended
-series (line = what the model still has in the data, in the window's datum).
+series (line = what the model still has in the data, in the window's datum;
+`--model-terms` picks the line's terms independently of the data's).
 Planned: `stack`, `map`, `rtk`, seismic panels — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).

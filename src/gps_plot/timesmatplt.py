@@ -751,6 +751,7 @@ def plotTime(
     baseline_noise: str | None = None,
     overlay_pos_id: str | None = None,
     model: str | None = None,
+    model_terms: Sequence[str] | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -795,7 +796,9 @@ def plotTime(
     over the detrended one (``ref="detrend"``), where the line is the part
     of the model still in the data (the steps, unless removed). Solid in
     the record's fit window, dashed where it is extrapolated. Files get
-    ``-model`` / ``-resid``. Stations only, for now.
+    ``-model`` / ``-resid``. Stations only, for now. ``model_terms``
+    (``--model-terms``) draws exactly those model groups instead, whatever
+    was removed from the data; files then add ``-line-<terms>``.
 
     ``name`` fixes the output basename: with ``save`` set the figure is
     written to ``<figDir>/<name>.<fmt>``, BYPASSING the
@@ -1130,7 +1133,7 @@ def plotTime(
         # layer keeps the axis limits the data set
         from gps_plot.layers.model import add_model_curve, model_note
 
-        model_series = gps_source.fetch_model(sta, request, yearf)
+        model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
         fig = add_model_curve(fig, model_series)
         fig.axes[0].text(
             0.01,
@@ -1219,6 +1222,8 @@ def plotTime(
             filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
         if model is not None:
             filend += "-model" if model == "curve" else "-resid"
+            if model_terms:
+                filend += "-line-" + "-".join(model_terms)
         if tType == "POS":
             # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
             from geo_dataread.pos import frame_name, pos_product

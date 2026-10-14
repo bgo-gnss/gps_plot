@@ -79,6 +79,10 @@ NEW_VARIANTS: dict[str, tuple[list[str], int]] = {
     "selfresid": (
         ["SELF", "--model", "residual", "--view", "cleaned", "--special", "year"], 1,
     ),
+    "selfterms": (
+        ["SELF", "--model", "residual", "--detrend-terms", "periodic",
+         "--model-terms", "linear,periodic,steps", "--special", "full"], 1,
+    ),
 }  # fmt: skip
 
 OLD = (

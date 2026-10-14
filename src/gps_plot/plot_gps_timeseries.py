@@ -406,6 +406,9 @@ is the old name of the same command):
                                                residuals (steps removed too)
   gpsplot HOFN --model both --save pdf         stored model over the plate
                                                series, and over the detrended
+  gpsplot HOFN --model residual --detrend-terms periodic --model-terms linear,periodic --save pdf
+                                               seasonal removed from the data,
+                                               not from the line
   gpsplot SENG --view cleaned --show-outliers 5 --save pdf
                                                outliers in the last 5 days only
   gpsplot SENG --session both -s 20250101 --save pdf
@@ -514,6 +517,22 @@ def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
             f"use any of {', '.join(DETREND_TERM_GROUPS)}"
         )
     return tuple(t for t in DETREND_TERM_GROUPS if t in want)
+
+
+def _model_terms(raw: str | None) -> tuple[str, ...] | None:
+    """Parse ``--model-terms``: comma list → canonical-order tuple."""
+    if raw is None:
+        return None
+    from gps_plot.sources.gps import MODEL_TERM_GROUPS
+
+    want = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    bad = want - set(MODEL_TERM_GROUPS)
+    if bad or not want:
+        raise ValueError(
+            f"--model-terms: {', '.join(sorted(bad)) or 'nothing given'}; "
+            f"use any of {', '.join(MODEL_TERM_GROUPS)}"
+        )
+    return tuple(t for t in MODEL_TERM_GROUPS if t in want)
 
 
 # Main
@@ -675,6 +694,16 @@ def build_parser(
         "e.g. the steps), both = one file of each. Solid in the record's fit "
         "window, dashed where extrapolated. Files end in -model / -resid. "
         "Stations only; leave --ref out (or give the matching one)",
+    )
+    parser.add_argument(
+        "--model-terms",
+        default=None,
+        metavar="TERM[,TERM...]",
+        help="with --model: draw exactly these model terms as the line, any "
+        "of linear (offset + rate), periodic, steps, transient, independent "
+        "of what --detrend-terms/--remove-steps take out of the data (e.g. "
+        "the seasonal line over data with the seasonal removed). Default: "
+        "what the model still has in the plotted data. Files add -line-<terms>",
     )
     parser.add_argument(
         "--detrend-terms",
@@ -1018,6 +1047,12 @@ def run(
 
         if any(split_baseline(s) for s in args.Stations):
             parser.error("--model: baselines (AAAA-BBBB) are not supported yet")
+    try:
+        kwargs["model_terms"] = _model_terms(kwargs["model_terms"])
+    except ValueError as exc:
+        parser.error(str(exc))
+    if kwargs["model_terms"] is not None and model is None:
+        parser.error("--model-terms needs --model")
     if kwargs["detrend_terms"] is not None and not (
         kwargs.get("ref") in ("detrend", "all") or model in ("residual", "both")
     ):

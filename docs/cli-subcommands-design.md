@@ -82,6 +82,13 @@ merge (main `ff4e1f4`). Steps 0–3 done 2026-10-14.*
     `--remove-steps` (15 cases). Gate: the step-2 variants still identical,
     plus 4 candidate-only `--model` variants that must render their PNG
     count.
+  - `--model-terms TERM[,TERM]` (BGÓ, same day; branch `feat/model-terms`):
+    how the model is DRAWN is independent of how the data are shown. Given,
+    the line is exactly those groups (linear, periodic, steps, transient →
+    staged secular/periodic/step/transient) in the window's datum, whatever
+    `--detrend-terms`/`--remove-steps` took out of the data — e.g. the
+    seasonal line over data with the seasonal removed. Not given: the
+    default above. Files add `-line-<terms>`.
 
 ## Request (BGÓ)
 
