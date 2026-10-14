@@ -60,9 +60,9 @@ from gtimes.timefunc import currDate, currDatetime, currTime, currYearfDate, toD
 
 # The baseline layer (parsing, matching, differencing, the referenced ends,
 # the mixed-view check) is numpy-only and lives in geo_dataread so every
-# consumer forms a baseline the same way; this module only draws it.
-from geo_dataread.baseline import baseline as compute_baseline
-from geo_dataread.baseline import check_same_view, split_baseline
+# consumer forms a baseline the same way; gps_plot.sources.gps calls it and
+# this module only draws the result.
+from geo_dataread.baseline import split_baseline
 from matplotlib import transforms
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -848,7 +848,6 @@ def plotTime(
         raise ValueError(
             f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"
         )
-    sigma_note: str | None = None
     # 8 h sessions: epochs are matched within 2 h (a missing session must not
     # pair with its neighbour 8 h away); the daily default is half a day
     from geo_dataread.baseline import BASELINE_EPOCH_TOLERANCE_YEARS
@@ -911,41 +910,33 @@ def plotTime(
         convention=convention,
         pos_id=pos_id,
     )
-    if pair is None:
-        one = station_series(sta, **series_kw)
-        yearf, data, Ddata = one.yearf, one.data, one.Ddata
-        outliers, provisional, aborted = one.outliers, one.provisional, one.aborted
-    else:
-        if tType == "JOIN":
-            raise ValueError(f"baseline {sta}: tType JOIN is not supported")
-        ends = [station_series(s, **series_kw) for s in pair]
-        if view == "detrended" or ref == "detrend":
-            check_same_view(pair, [e.detrend_applied for e in ends], spec=sta)
-        if baseline_sigma == "empirical" and baseline_rho is None:
-            baseline_rho, baseline_sigma_scale, sigma_note = _empirical_pair_inputs(
-                pair, ends, baseline_noise
-            )
-        bl = compute_baseline(
-            (ends[0].yearf, ends[0].data, ends[0].Ddata),
-            (ends[1].yearf, ends[1].data, ends[1].Ddata),
-            stations=pair,
+    from gps_plot.sources import gps as gps_source
+
+    request = gps_source.SeriesRequest(**series_kw)
+    main_series = gps_source.fetch(
+        sta,
+        request,
+        gps_source.BaselineOptions(
+            tol=epoch_tol,
+            empirical=baseline_sigma == "empirical",
             rho=baseline_rho,
             sigma_scale=baseline_sigma_scale,
-            tol=epoch_tol,
-        )
-        yearf, data, Ddata = bl.yearf, bl.data, bl.sigma
-        # Per-station overlays do not survive differencing (their epochs and
-        # masks belong to one end); the masked epochs are NaN in the baseline.
-        outliers = provisional = None
-        aborts = [e.aborted for e in ends if e.aborted is not None]
-        aborted = [any(c) for c in zip(*aborts)] if aborts else None
-        if show_ends:
-            # the data layer already referenced both ends to the baseline's
-            # zero epoch; only the time axis is converted here
-            ends_zeroed = [
-                (list(gpsr.toDateTime(t)), d, e.Ddata)
-                for (t, d), e in zip(bl.ends, ends, strict=True)
-            ]
+            noise_path=baseline_noise,
+        ),
+    )
+    yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
+    outliers, provisional = main_series.outliers, main_series.provisional
+    aborted = main_series.aborted
+    sigma_note = main_series.meta.get("sigma_note")
+    # the rho the baseline σ used (from the noise record when empirical);
+    # None means formal quadrature, which names the file without -empsig
+    baseline_rho = main_series.meta.get("rho", baseline_rho)
+    if show_ends and main_series.ends is not None:
+        # the data layer already referenced both ends to the baseline's
+        # zero epoch; only the time axis is converted here
+        ends_zeroed = [
+            (list(gpsr.toDateTime(e.t)), e.y, e.sigma) for e in main_series.ends
+        ]
 
     # single yearf -> datetime conversion (was done twice before)
     x = list(gpsr.toDateTime(yearf))
@@ -1225,22 +1216,16 @@ def _add_session_overlay(
     epoch, so the overlay is shifted by the median difference on common days
     (stated in the legend). The main series is re-drawn on top.
     """
-    from geo_dataread.baseline import baseline as compute_baseline
+    from gps_plot.sources import gps as gps_source
 
-    kw = dict(series_kw, pos_id=overlay_pos_id)
-    if pair is None:
-        one = station_series(sta, **kw)
-        t8, d8, s8 = one.yearf, np.asarray(one.data), np.asarray(one.Ddata)
-        note = None
-    else:
-        ends = [station_series(s, **kw) for s in pair]
-        bl = compute_baseline(
-            (ends[0].yearf, ends[0].data, ends[0].Ddata),
-            (ends[1].yearf, ends[1].data, ends[1].Ddata),
-            stations=pair,
-            tol=2.0 / 24.0 / 365.25,
-        )
-        t8, d8, s8 = bl.yearf, np.asarray(bl.data), np.asarray(bl.sigma)
+    overlay = gps_source.fetch(
+        sta,
+        gps_source.SeriesRequest(**series_kw).replace(pos_id=overlay_pos_id),
+        gps_source.BaselineOptions(tol=2.0 / 24.0 / 365.25, check_view=False),
+    )
+    t8, d8, s8 = overlay.t, np.asarray(overlay.y), np.asarray(overlay.sigma)
+    note = None
+    if pair is not None:
         # align on the days both have: the median of 8 h minus the daily value
         yearf, data = main[0], np.asarray(main[1])
         day = np.floor(np.asarray(yearf) * 365.25)

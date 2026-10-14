@@ -53,6 +53,10 @@ VARIANTS: dict[str, list[str]] = {
         "HOFN", "--ref", "detrend", "--frame", "itrf2008", "--remove-steps", "equipment",
         "--special", "full",
     ],
+    # baselines through gps_plot.sources.gps: empirical σ, 8 h overlay, detrended
+    "vflnemp": ["VFLN-VFLS", "--baseline-sigma", "empirical", "--special", "year"],
+    "sengboth-bl": ["SENG-SKSH", "--session", "both", "-s", "20250101"],
+    "sengdet-bl": ["SENG-SKSH", "--ref", "detrend", "--special", "year"],
 }  # fmt: skip
 
 OLD = (
@@ -123,8 +127,11 @@ def main() -> int:
 
     _render(args.src_a, OLD, args.out / "reference", shim, frozen, args.end)
     ref = _hashes(args.out / "reference")
-    if not ref:
-        print("FAIL: the reference produced no PNGs")
+    # a driver error is caught per station (exit 0, no file), so an empty
+    # variant would otherwise pass as "nothing differs"
+    empty = [v for v in VARIANTS if not any((args.out / "reference" / v).glob("*.png"))]
+    if not ref or empty:
+        print(f"FAIL: the reference rendered nothing for {empty or 'any variant'}")
         return 2
     (args.out / "reference_hashes.txt").write_text(
         "".join(f"{h}  {n}\n" for n, h in ref.items())
