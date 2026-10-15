@@ -129,11 +129,20 @@ How it is drawn (`maps._dem_colours`):
   grid (the last digits of the coordinates differ), so the flat-sea
   shading uses numpy.
 
+### Smoother relief: `--dem-smooth KM`
+
+`--dem-smooth KM` runs a Gaussian filter KM wide (`grdfilter -Fg<KM> -D2`)
+over the grid before the hillshade is computed. Only the shading is
+smoothed: the colours, the coast and the glacier edges come from the
+unfiltered grid and stay sharp. 2–4 km suits an Iceland overview, and the
+filter costs about a second there. The filter is the `smooth` step, so
+`--gmt smooth:filter=m3` gives a median filter instead.
+
 ### GMT arguments: `--gmt STEP:KEY=VALUE`, `--gmt-config KEY=VALUE`
 
 Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT
 argument to every PyGMT call of that step, or replaces gpsplot's own value.
-The flag can be repeated. The steps are coast, gradient, glacier-gradient,
+The flag can be repeated. The steps are coast, smooth, gradient, glacier-gradient,
 dem, contours, glaciers, lakes, coastline, overlay, stations, labels,
 vectors, legend and logo (`gmt_overrides.LAYERS`).
 

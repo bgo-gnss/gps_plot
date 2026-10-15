@@ -584,6 +584,7 @@ def _draw_basemap(
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    dem_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -597,7 +598,9 @@ def _draw_basemap(
     in-memory grid) a hillshaded ``grdimage`` goes over that base: the
     grid is cut to the region, shaded with ``grdgradient``
     (``dem_shading_azimuth`` illumination, ``dem_shading_normalize``
-    amplitude normalization) and coloured by :func:`_dem_colours`: land
+    amplitude normalization; from the grid smoothed ``dem_smooth`` km
+    wide when set, so the relief softens while coasts and colours stay
+    sharp) and coloured by :func:`_dem_colours`: land
     ``dem_cmap``, sea floor ``bathymetry_cmap``, ice ``glacier_cmap``.
     Its NaN cells are transparent, so a land-only grid keeps the flat
     water fill while a topo-bathymetry grid shows its sea floor — water
@@ -623,10 +626,18 @@ def _draw_basemap(
     )
     if dem_grid is not None:
         subgrid = pygmt_mod.grdcut(dem_grid, region=region)
+        relief = subgrid
+        if dem_smooth > 0:
+            # km on a lon/lat grid, the x spacing scaled by cos(lat)
+            relief = pygmt_mod.grdfilter(
+                **layer_kw(
+                    "smooth", grid=subgrid, filter=f"g{dem_smooth:g}", distance=2
+                )
+            )
         gradient = pygmt_mod.grdgradient(
             **layer_kw(
                 "gradient",
-                grid=subgrid,
+                grid=relief,
                 azimuth=dem_shading_azimuth,
                 normalize=dem_shading_normalize,
             )
@@ -992,6 +1003,7 @@ def station_map(
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    dem_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -1046,6 +1058,8 @@ def station_map(
         glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        dem_smooth: Smooth the hillshade (not the colours) with a
+            Gaussian filter this wide [km]; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -1097,6 +1111,7 @@ def station_map(
         glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        dem_smooth=dem_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -1342,6 +1357,7 @@ def velocity_map(
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    dem_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -1409,6 +1425,8 @@ def velocity_map(
         glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        dem_smooth: Smooth the hillshade (not the colours) with a
+            Gaussian filter this wide [km]; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -1457,6 +1475,7 @@ def velocity_map(
         glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        dem_smooth=dem_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -1725,6 +1744,7 @@ def deformation_vectors(
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    dem_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -1795,6 +1815,8 @@ def deformation_vectors(
         glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        dem_smooth: Smooth the hillshade (not the colours) with a
+            Gaussian filter this wide [km]; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -1862,6 +1884,7 @@ def deformation_vectors(
         glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        dem_smooth=dem_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2134,6 +2157,7 @@ def slip_map(
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    dem_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2211,6 +2235,8 @@ def slip_map(
         glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        dem_smooth: Smooth the hillshade (not the colours) with a
+            Gaussian filter this wide [km]; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2288,6 +2314,7 @@ def slip_map(
             glacier_cmap=glacier_cmap,
             dem_shading_azimuth=dem_shading_azimuth,
             dem_shading_normalize=dem_shading_normalize,
+            dem_smooth=dem_smooth,
             overlays=overlays,
             coastline=coastline,
             glaciers=glaciers,
