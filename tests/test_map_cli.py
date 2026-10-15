@@ -556,30 +556,31 @@ def test_station_labels_off_above_the_limit(fake_maps, monkeypatch, tmp_path):
 def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_path):
     from gps_plot import maps
 
-    dem = tmp_path / "dem"
-    (dem / "layers").mkdir(parents=True)
+    gis = tmp_path / "gis"
+    (gis / maps.GIS_DEM).mkdir(parents=True)
+    (gis / maps.GIS_VECTOR).mkdir()
     for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
-        (dem / name).write_text("")
-    (dem / maps.ICELAND_COAST).write_text("")
-    (dem / maps.ICELAND_COAST_OVERVIEW).write_text("")
-    monkeypatch.setattr(gmap, "DEFAULT_DEM_DIR", str(dem))
+        (gis / maps.GIS_DEM / name).write_text("")
+    (gis / maps.ICELAND_COAST).write_text("")
+    (gis / maps.ICELAND_COAST_OVERVIEW).write_text("")
+    monkeypatch.setattr(gmap, "DEFAULT_GIS_DIR", str(gis))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     argv = ["station", "SEY?", "--logo", "none", "--dem", "iceland"]
     assert _run([*argv, "--region", "-24.8/-13.2/63.2/66.7"], tmp_path) == 0
     kw = fake_maps["station_map"][1]
-    assert kw["dem_grid"] == str(dem / "iceland_topobathy_15s.nc")
-    assert kw["coastline"] == str(dem / maps.ICELAND_COAST_OVERVIEW)
+    assert kw["dem_grid"] == str(gis / "dem" / "iceland_topobathy_15s.nc")
+    assert kw["coastline"] == str(gis / maps.ICELAND_COAST_OVERVIEW)
     assert kw["dem_cmap"] == "lightgrey"
     assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--dem-cmap", "geo"],
                 tmp_path) == 0  # fmt: skip
     kw = fake_maps["station_map"][1]
-    assert kw["dem_grid"] == str(dem / "iceland_topobathy_1s.nc")
-    assert kw["coastline"] == str(dem / maps.ICELAND_COAST)
+    assert kw["dem_grid"] == str(gis / "dem" / "iceland_topobathy_1s.nc")
+    assert kw["coastline"] == str(gis / maps.ICELAND_COAST)
     assert kw["dem_cmap"] == "geo"
     assert "glaciers" not in kw  # not built in this DEM directory
-    (dem / maps.ICELAND_GLACIERS).write_text("")
+    (gis / maps.ICELAND_GLACIERS).write_text("")
     assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3"], tmp_path) == 0
-    assert fake_maps["station_map"][1]["glaciers"] == str(dem / maps.ICELAND_GLACIERS)
+    assert fake_maps["station_map"][1]["glaciers"] == str(gis / maps.ICELAND_GLACIERS)
     assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--glaciers", "none",
                  "--lakes", "my_lakes.gmt"], tmp_path) == 0  # fmt: skip
     kw = fake_maps["station_map"][1]
@@ -595,11 +596,14 @@ def test_colour_map_options_reach_the_map(fake_maps, tmp_path):
     assert (kw["bathymetry_cmap"], kw["glacier_cmap"]) == ("none", "batlow")
 
 
-def test_check_palettes_suggests_the_name_meant():
+def test_resolve_palettes_finds_yours_and_suggests_the_name_meant(tmp_path):
     pygmt = pytest.importorskip("pygmt")
-    ok = argparse.Namespace(dem_cmap="slate", bathymetry_cmap="none",
+    (tmp_path / "mine.cpt").write_text("0 red 3000 white\n")
+    ok = argparse.Namespace(dem_cmap="mine", bathymetry_cmap="none",
                             glacier_cmap="white")  # fmt: skip
-    gmap.check_palettes(ok, pygmt)
+    gmap.resolve_palettes(ok, pygmt, str(tmp_path))
+    assert ok.dem_cmap == str(tmp_path / "mine.cpt")  # a path for the map
+    assert (ok.bathymetry_cmap, ok.glacier_cmap) == ("none", "white")
     bad = argparse.Namespace(dem_cmap="slade", bathymetry_cmap=None, glacier_cmap=None)
     with pytest.raises(ValueError, match="did you mean slate"):
-        gmap.check_palettes(bad, pygmt)
+        gmap.resolve_palettes(bad, pygmt, str(tmp_path))

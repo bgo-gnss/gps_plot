@@ -10,7 +10,6 @@ from gps_plot.palettes import Slice
 
 @pytest.fixture
 def dirs(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     gmt = tmp_path / "gmt"
     (gmt / "SCM").mkdir(parents=True)
     (gmt / "gmt").mkdir()
@@ -19,40 +18,50 @@ def dirs(tmp_path, monkeypatch):
     )
     (gmt / "gmt" / "gray.cpt").write_text("0 black 1 white\n")
     (gmt / "SCM" / "batlow.cpt").write_text("0 1/25/89 1 250/204/250\n")
-    user = palettes.user_dir()
+    user = tmp_path / "gis" / "cpt"
     user.mkdir(parents=True)
     return gmt, user
 
 
 def test_resolve_order(dirs, tmp_path):
     gmt, user = dirs
-    assert palettes.resolve("slate", gmt_dir=gmt).source == str(
+    assert palettes.resolve("slate", user_dir=user, gmt_dir=gmt).source == str(
         palettes.GPSPLOT_DIR / "slate.cpt"
     )
     (user / "slate.cpt").write_text("0 red 1 red\n")  # yours win over gpsplot's
-    assert palettes.resolve("Slate", gmt_dir=gmt).source == str(user / "slate.cpt")
-    assert palettes.resolve("batlow", gmt_dir=gmt).kind == palettes.GMT
-    assert palettes.resolve("geo+h0", gmt_dir=gmt).kind == palettes.GMT
+    assert palettes.resolve("Slate", user_dir=user, gmt_dir=gmt).source == str(
+        user / "slate.cpt"
+    )
+    assert palettes.resolve("batlow", user_dir=user, gmt_dir=gmt).kind == palettes.GMT
+    assert palettes.resolve("geo+h0", user_dir=user, gmt_dir=gmt).kind == palettes.GMT
     own = tmp_path / "own.cpt"
     own.write_text("0 red 1 red\n")
-    assert palettes.resolve(str(own), gmt_dir=gmt).kind == palettes.FILE
-    assert palettes.resolve("white", gmt_dir=gmt).kind == palettes.COLOUR
+    assert palettes.resolve(str(own), user_dir=user, gmt_dir=gmt).kind == palettes.FILE
+    assert palettes.resolve("white", user_dir=user, gmt_dir=gmt).kind == palettes.COLOUR
 
 
 def test_hinged_and_listing(dirs):
     gmt, user = dirs
-    assert palettes.is_hinged(palettes.resolve("geo", gmt_dir=gmt), gmt_dir=gmt)
-    assert not palettes.is_hinged(palettes.resolve("gray", gmt_dir=gmt), gmt_dir=gmt)
-    assert palettes.is_hinged(palettes.resolve("sea", gmt_dir=gmt), gmt_dir=gmt)
-    assert not palettes.is_hinged(palettes.resolve("slate", gmt_dir=gmt), gmt_dir=gmt)
+    assert palettes.is_hinged(
+        palettes.resolve("geo", user_dir=user, gmt_dir=gmt), gmt_dir=gmt
+    )
+    assert not palettes.is_hinged(
+        palettes.resolve("gray", user_dir=user, gmt_dir=gmt), gmt_dir=gmt
+    )
+    assert palettes.is_hinged(
+        palettes.resolve("sea", user_dir=user, gmt_dir=gmt), gmt_dir=gmt
+    )
+    assert not palettes.is_hinged(
+        palettes.resolve("slate", user_dir=user, gmt_dir=gmt), gmt_dir=gmt
+    )
     (user / "mine.cpt").write_text("0 red 1 red\n")
-    listing = palettes.available(gmt_dir=gmt)
+    listing = palettes.available(user_dir=user, gmt_dir=gmt)
     assert listing[f"gpsplot ({palettes.GPSPLOT_DIR})"] == [
         "lightgrey", "relief", "sea", "slate",
     ]  # fmt: skip
     assert listing[f"yours ({user})"] == ["mine"]
     assert listing["GMT SCM"] == ["batlow"] and listing["GMT gmt"] == ["geo", "gray"]
-    assert palettes.suggest("slade", gmt_dir=gmt)[0] == "slate"
+    assert palettes.suggest("slade", user_dir=user, gmt_dir=gmt)[0] == "slate"
 
 
 def test_parse_both_layouts():

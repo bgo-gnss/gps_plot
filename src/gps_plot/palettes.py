@@ -6,8 +6,9 @@ land (z >= 0), the sea floor (z < 0) and the glaciers. A name resolves,
 first match wins, to
 
 1. an existing CPT file path;
-2. ``<name>.cpt`` in the user's directory, :func:`user_dir`
-   (``$XDG_CONFIG_HOME/gps_plot/cpt``);
+2. ``<name>.cpt`` in the user's CPT directory, ``cpt/`` of the local GIS
+   directory (:data:`DEFAULT_USER_DIR`; ``gpsplot map`` takes it from
+   ``gis_dir`` in postprocess.cfg);
 3. ``<name>.cpt`` shipped with gpsplot (:data:`GPSPLOT_DIR`: lightgrey,
    slate, relief, sea);
 4. a GMT built-in CPT (``<GMT share>/cpt/**``: geo, sealand, batlow, …);
@@ -40,6 +41,8 @@ from typing import Any
 
 #: CPTs shipped with gpsplot
 GPSPLOT_DIR = Path(__file__).with_name("cpt")
+#: the user's CPTs: ``cpt/`` of the default local GIS directory
+DEFAULT_USER_DIR = "~/gps-data/gis/cpt"
 #: sea-floor colours when the land colour map has no sea half
 DEFAULT_SEA = "sea"
 #: ``--bathymetry-cmap none``: no sea-floor colours or relief
@@ -75,10 +78,8 @@ class Slice:
     hi_colour: str
 
 
-def user_dir() -> Path:
-    """The user's CPT directory, ``$XDG_CONFIG_HOME/gps_plot/cpt``."""
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / "gps_plot" / "cpt"
+def _user(user_dir: str | os.PathLike[str] | None) -> Path:
+    return Path(user_dir if user_dir is not None else DEFAULT_USER_DIR).expanduser()
 
 
 @cache
@@ -97,17 +98,22 @@ def _cpts(directory: Path | None) -> dict[str, Path]:
     return {p.stem.lower(): p for p in sorted(directory.rglob("*.cpt"))}
 
 
-def resolve(name: str, *, gmt_dir: Path | None = None) -> Palette:
+def resolve(
+    name: str,
+    *,
+    user_dir: str | os.PathLike[str] | None = None,
+    gmt_dir: Path | None = None,
+) -> Palette:
     """Resolve a colour-map name (see the module doc for the order).
 
-    ``gmt_dir`` defaults to :func:`gmt_cpt_dir`. A GMT name keeps its
-    modifiers (``geo+h0``).
+    ``user_dir`` defaults to :data:`DEFAULT_USER_DIR`, ``gmt_dir`` to
+    :func:`gmt_cpt_dir`. A GMT name keeps its modifiers (``geo+h0``).
     """
     path = Path(os.path.expanduser(name))
     if path.is_file():
         return Palette(name, FILE, str(path.resolve()))  # makecpt runs elsewhere
     key = name.lower()
-    for directory in (user_dir(), GPSPLOT_DIR):
+    for directory in (_user(user_dir), GPSPLOT_DIR):
         found = _cpts(directory).get(key)
         if found is not None:
             return Palette(name, FILE, str(found))
@@ -130,12 +136,14 @@ def is_hinged(palette: Palette, *, gmt_dir: Path | None = None) -> bool:
     return False
 
 
-def available(*, gmt_dir: Path | None = None) -> dict[str, list[str]]:
+def available(
+    *, user_dir: str | os.PathLike[str] | None = None, gmt_dir: Path | None = None
+) -> dict[str, list[str]]:
     """Colour-map names by source: gpsplot's, the user's, GMT's by group."""
     gmt_dir = gmt_dir if gmt_dir is not None else gmt_cpt_dir()
     out = {
         f"gpsplot ({GPSPLOT_DIR})": sorted(_cpts(GPSPLOT_DIR)),
-        f"yours ({user_dir()})": sorted(_cpts(user_dir())),
+        f"yours ({_user(user_dir)})": sorted(_cpts(_user(user_dir))),
     }
     groups: dict[str, list[str]] = {}
     for key, path in _cpts(gmt_dir).items():
@@ -145,9 +153,15 @@ def available(*, gmt_dir: Path | None = None) -> dict[str, list[str]]:
     return out
 
 
-def suggest(name: str, *, gmt_dir: Path | None = None) -> list[str]:
+def suggest(
+    name: str,
+    *,
+    user_dir: str | os.PathLike[str] | None = None,
+    gmt_dir: Path | None = None,
+) -> list[str]:
     """Known colour-map names close to ``name``."""
-    known = [n for names in available(gmt_dir=gmt_dir).values() for n in names]
+    listing = available(user_dir=user_dir, gmt_dir=gmt_dir)
+    known = [n for names in listing.values() for n in names]
     return difflib.get_close_matches(name.lower(), known, n=4)
 
 

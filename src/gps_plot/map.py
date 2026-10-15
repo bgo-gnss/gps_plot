@@ -60,7 +60,8 @@ CMAP_OPTIONS = ("dem_cmap", "bathymetry_cmap", "glacier_cmap")
 LIST = "list"
 #: --dem iceland: the spliced Iceland DEM, at the level the map needs
 ICELAND_DEM = "iceland"
-DEFAULT_DEM_DIR = "~/gps-data/dem"
+#: the local GIS directory (dem/, vector/, cpt/): gis_dir in postprocess.cfg
+DEFAULT_GIS_DIR = "~/gps-data/gis"
 #: station maps label their stations by default only up to this many
 LABEL_LIMIT = 60
 TITLE_FONT = "12p,Helvetica-Bold"
@@ -83,8 +84,9 @@ examples:
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
                         blue-grey land, flat sea; --dem-cmap list: every CPT
-  --dem iceland picks the level of the Iceland DEM (dem_dir in postprocess.cfg
-  [PATHS], default ~/gps-data/dem) the map needs; --dem @earth_relief_15s
+  --dem iceland picks the level of the Iceland DEM the map needs, from the
+  local GIS directory (gis_dir in postprocess.cfg [PATHS], default
+  ~/gps-data/gis: dem/, vector/, cpt/); --dem @earth_relief_15s
   draws a hillshade from the GMT remote relief;
   --overlay lavas.geojson draws outlines (e.g. the LMÍ/NÍ lava flows)."""
 
@@ -161,7 +163,8 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--dem-cmap", default=None, metavar="CPT",
         help="land colours of the --dem background: lightgrey (default), "
         "slate (the Bárðarbunga maps' blue-grey), relief, a GMT CPT (geo, "
-        "batlow, …), a CPT file, or a NAME.cpt in ~/.config/gps_plot/cpt; "
+        "batlow, …), a CPT file, or a NAME.cpt in the GIS cpt/ directory "
+        "(gis_dir in postprocess.cfg, default ~/gps-data/gis); "
         "a CPT with a sea half (geo, sealand) colours the sea floor too. "
         "'list' prints every name",
     )  # fmt: skip
@@ -524,7 +527,7 @@ def _style(
         if extent is None and points:
             extent = _region_of(points, args.margin, maps)
         choice = maps.iceland_dem(
-            dem_dir(config),
+            gis_dir(config),
             extent or maps.ICELAND_DEM_LEVELS[-1][2],
             kw.get("projection", maps.DEFAULT_PROJECTION),
         )
@@ -555,9 +558,13 @@ def _style(
     return kw
 
 
-def check_palettes(args: argparse.Namespace, pygmt_mod: Any) -> None:
-    """Reject a colour-map option GMT would not know, before the map is
-    drawn (GMT fails late, mid-map, with a traceback).
+def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) -> None:
+    """Resolve the colour-map options in place, before the map is drawn.
+
+    A name found as a CPT file (``user_dir``, gpsplot's own) becomes its
+    path, so the map functions need not know ``user_dir``. A name that is
+    no CPT anywhere must be a colour GMT knows: GMT would otherwise fail
+    late, mid-map, with a traceback.
 
     Raises:
         ValueError: naming the closest known colour maps.
@@ -568,36 +575,43 @@ def check_palettes(args: argparse.Namespace, pygmt_mod: Any) -> None:
         name = getattr(args, opt, None)
         if name is None or (opt == "bathymetry_cmap" and name.lower() == palettes.NONE):
             continue
-        palette = palettes.resolve(name)
+        palette = palettes.resolve(name, user_dir=user_dir)
+        if palette.kind == palettes.FILE:
+            setattr(args, opt, palette.source)
         if palette.kind != palettes.COLOUR:
             continue
         try:  # not a CPT anywhere: GMT must know it as a colour
             palettes.segment(pygmt_mod, palette, 0.0, 1.0)
         except Exception as exc:  # noqa: BLE001 - GMTCLibError, kept lazy
-            close = palettes.suggest(name)
+            close = palettes.suggest(name, user_dir=user_dir)
             hint = f"; did you mean {', '.join(close)}?" if close else ""
             flag = "--" + opt.replace("_", "-")
             raise ValueError(
                 f"{flag} {name!r} is not a CPT (gpsplot's, yours in "
-                f"{palettes.user_dir()}, GMT's or a file) nor a GMT colour{hint} "
+                f"{user_dir}, GMT's or a file) nor a GMT colour{hint} "
                 f"({flag} list prints the names)"
             ) from exc
 
 
-def print_palettes() -> None:
+def print_palettes(user_dir: str) -> None:
     """Every colour-map name, by source (``--dem-cmap list``)."""
     from gps_plot import palettes
 
-    for source, names in palettes.available().items():
+    for source, names in palettes.available(user_dir=user_dir).items():
         print(f"{source}:")
         print(textwrap.indent(textwrap.fill(" ".join(names) or "(none)", 76), "  "))
 
 
-def dem_dir(config: Any) -> str:
-    """The Iceland DEM directory: dem_dir in postprocess.cfg [PATHS], else
-    :data:`DEFAULT_DEM_DIR`."""
-    found = common.config_dir(config, "dem_dir", None) if config is not None else None
-    return os.path.expanduser(found or DEFAULT_DEM_DIR)
+def cpt_dir(config: Any) -> str:
+    """The user's CPT directory: ``cpt/`` of :func:`gis_dir`."""
+    return os.path.join(gis_dir(config), "cpt")
+
+
+def gis_dir(config: Any) -> str:
+    """The local GIS directory (DEM grids, vector layers, CPTs): gis_dir in
+    postprocess.cfg [PATHS], else :data:`DEFAULT_GIS_DIR`."""
+    found = common.config_dir(config, "gis_dir", None) if config is not None else None
+    return os.path.expanduser(found or DEFAULT_GIS_DIR)
 
 
 def scale_bar_km(region: Sequence[float]) -> float:
@@ -661,12 +675,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
 def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     if any(str(getattr(args, o, None)).lower() == LIST for o in CMAP_OPTIONS):
-        print_palettes()
+        print_palettes(cpt_dir(config))
         return 0
     try:
         import pygmt
 
-        check_palettes(args, pygmt)
+        resolve_palettes(args, pygmt, cpt_dir(config))
     except ValueError as exc:
         parser.error(str(exc))
 

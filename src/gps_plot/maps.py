@@ -173,21 +173,25 @@ STATUS_STYLES: dict[str, tuple[str, str, str, str]] = {
 }
 DEFAULT_STATUS_LEGEND = "jTR+o0.2c"
 
-#: The spliced Iceland topo-bathymetry DEM (~/gps-data/dem, its README):
-#: one file per level, (file, cell [deg], W/E/S/N coverage), finest first.
+#: The local GIS directory (``gis_dir``; ~/gps-data/gis, its README) holds
+#: the DEM grids, the vector layers drawn over them and the user's CPTs.
+GIS_DEM, GIS_VECTOR, GIS_CPT = "dem", "vector", "cpt"
+#: The spliced Iceland topo-bathymetry DEM (gis_dir/dem, its README): one
+#: file per level, (file, cell [deg], W/E/S/N coverage), finest first.
 ICELAND_DEM_LEVELS: tuple[tuple[str, float, tuple[float, float, float, float]], ...] = (
     ("iceland_topobathy_1s.nc", 1 / 3600, (-25.0, -13.0, 63.0, 66.8)),
     ("iceland_topobathy_3s.nc", 3 / 3600, (-28.0, -10.0, 62.0, 68.0)),
     ("iceland_topobathy_15s.nc", 15 / 3600, (-34.0, -6.0, 60.0, 70.0)),
 )
 #: the IS 50V coast (WGS84), in full and without the smallest islets
-ICELAND_COAST = "layers/is50v_coast_wgs84.gmt"
-ICELAND_COAST_OVERVIEW = "layers/is50v_coast_wgs84_overview.gmt"
+#: (gis_dir/vector, build_05_coast.sh)
+ICELAND_COAST = "vector/is50v_coast_wgs84.gmt"
+ICELAND_COAST_OVERVIEW = "vector/is50v_coast_wgs84_overview.gmt"
 #: IMO glacier polygons (Sentinel-2) and IS 50V lakes + wide rivers, in
 #: full and without those under 0.5 km² (build_06_ice_water.sh)
-ICELAND_GLACIERS = "layers/imo_glaciers_wgs84.gmt"
-ICELAND_LAKES = "layers/is50v_lakes_wgs84.gmt"
-ICELAND_LAKES_OVERVIEW = "layers/is50v_lakes_wgs84_overview.gmt"
+ICELAND_GLACIERS = "vector/imo_glaciers_wgs84.gmt"
+ICELAND_LAKES = "vector/is50v_lakes_wgs84.gmt"
+ICELAND_LAKES_OVERVIEW = "vector/is50v_lakes_wgs84_overview.gmt"
 #: contour interval [m] on the glaciers of local (non-overview) maps
 ICELAND_GLACIER_CONTOUR_M = 100.0
 #: output pixels coarser than this [deg] take the overview coast
@@ -511,13 +515,14 @@ class DemChoice:
 
 
 def iceland_dem(
-    dem_dir: str | os.PathLike[str],
+    gis_dir: str | os.PathLike[str],
     region: Sequence[float],
     projection: str = DEFAULT_PROJECTION,
     *,
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> DemChoice:
-    """The Iceland DEM level for a map: no finer than the output pixels.
+    """The Iceland DEM level for a map, from the GIS directory ``gis_dir``:
+    no finer than the output pixels.
 
     Picks the coarsest level of :data:`ICELAND_DEM_LEVELS` that covers
     ``region`` and whose cell is no larger than one output pixel (an
@@ -530,7 +535,7 @@ def iceland_dem(
     Raises:
         FileNotFoundError: the chosen level is not built.
     """
-    base = Path(dem_dir).expanduser()
+    base = Path(gis_dir).expanduser()
     w, e, s, n = region
     pixel = output_pixel_deg(region, projection, dpi)
     covering = [
@@ -539,10 +544,10 @@ def iceland_dem(
     ] or [ICELAND_DEM_LEVELS[-1]]  # fmt: skip
     fitting = [lv for lv in covering if lv[1] <= pixel]
     name = (fitting[-1] if fitting else covering[0])[0]
-    grid = base / name
+    grid = base / GIS_DEM / name
     if not grid.is_file():
         raise FileNotFoundError(
-            f"{grid} is not built (see build_04_levels.sh in {base})"
+            f"{grid} is not built (see build_04_levels.sh in {grid.parent})"
         )
     overview = pixel > COAST_OVERVIEW_PIXEL_DEG
 
