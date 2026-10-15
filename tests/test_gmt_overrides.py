@@ -78,14 +78,17 @@ def test_alias_table_pairs_conflict_in_pygmt(layer, call, long, letter, tmp_path
         extra = {"shorelines": True}
     if call == "grdgradient" and long == "normalize":
         extra = {"azimuth": 315}
+    if call == "grdfilter":  # both required, checked before the conflict
+        extra = {"filter": "g3", "distance": 2}
+        extra.pop(long)
     if call == "Figure.image":
         extra = {"imagefile": str(tmp_path / "x.png")}
     fig = pygmt.Figure()
     fig.basemap(region=[0, 1, 0, 1], projection="X2c", frame=True)
-    target = pygmt.grdgradient if call == "grdgradient" else getattr(
-        fig, call.split(".")[1]
-    )  # fmt: skip
-    if call == "grdgradient":
+    target = (
+        getattr(pygmt, call) if "." not in call else getattr(fig, call.split(".")[1])
+    )
+    if "." not in call:  # grdgradient, grdfilter
         import numpy as np
         import xarray as xr
 
@@ -94,6 +97,7 @@ def test_alias_table_pairs_conflict_in_pygmt(layer, call, long, letter, tmp_path
             coords={"y": [0.0, 1, 2], "x": [0.0, 1, 2]},
             dims=("y", "x"),
         )
-    value = "low" if long == "resolution" else "x"  # validated by PyGMT
+    # values PyGMT validates itself
+    value = {"resolution": "low", "filter": "g3", "distance": 2}.get(long, "x")
     with pytest.raises(GMTParameterError, match="(?i)conflict|exclusive"):
         target(**extra, **{long: value, letter: "y"})

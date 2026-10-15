@@ -656,3 +656,51 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     high.gmt.registration, high.gmt.gtype = 0, 1
     _c, _s, cpt, _i = maps._dem_colours(pygmt, high, shade, land="lightgrey")
     assert palettes.parse(open(cpt).read())[0].lo >= 0
+
+
+def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
+    import pygmt
+    import xarray as xr
+
+    from gps_plot import maps
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    lon = np.round(np.arange(-20.0, -19.0 + 1e-9, 0.01), 6)
+    lat = np.round(np.arange(64.0, 64.5 + 1e-9, 0.01), 6)
+    rough = np.random.default_rng(0).normal(500.0, 50.0, (lat.size, lon.size))
+    grid = xr.DataArray(rough, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+    grid.gmt.registration, grid.gmt.gtype = 0, 1
+
+    seen: dict[str, list] = {"gradient": [], "image": []}
+
+    class Spy:
+        def __getattr__(self, name):
+            return getattr(pygmt, name)
+
+        def grdgradient(self, **kw):
+            seen["gradient"].append(kw["grid"])
+            return pygmt.grdgradient(**kw)
+
+    def bumpiness(g):
+        return float(np.nanstd(np.diff(np.asarray(g), axis=1)))
+
+    for smooth in (0.0, 5.0):
+        fig = pygmt.Figure()
+        image = fig.grdimage
+        monkeypatch.setattr(
+            fig,
+            "grdimage",
+            lambda **kw: (seen["image"].append(kw["grid"]), image(**kw)),
+        )
+        maps._draw_basemap(
+            Spy(), fig, region=(-20.0, -19.0, 64.0, 64.5), projection="M6c",
+            resolution="crude", land="gray", water="white", shorelines="thin",
+            frame_args=("a",), dem_grid=grid, dem_cmap="lightgrey",
+            dem_smooth=smooth,
+        )  # fmt: skip
+    raw, smoothed = seen["gradient"]
+    assert bumpiness(smoothed) < bumpiness(raw) / 3
+    # the colours still come from the unfiltered grid
+    np.testing.assert_array_equal(
+        np.asarray(seen["image"][0]), np.asarray(seen["image"][1])
+    )

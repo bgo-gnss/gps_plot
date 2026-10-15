@@ -73,22 +73,31 @@ ELLIPSE_PEN = "0.5p,gray30"
 EXAMPLES = """\
 examples:
   gpsplot map station "*" --region -22.8/-21.9/63.75/64.1 --save pdf
+                        every station of stations.cfg on Reykjanes, as markers
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 \\
       --window 20231027:20231109 --window 20231123:20231205 --save pdf
                         two windows, plate removed, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
+                        vertical rate over the last 7 days (north arrow = uplift)
   gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
                         stored secular rates, Iceland
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
       --mogi -22.46,63.87,4.5,1.2e7 --save pdf
+                        displacement 1-15 Nov 2023 next to a Mogi source
+                        (lon, lat, 4.5 km deep, 1.2e7 m3)
   gpsplot map slip models/reykjanes_slip.json --view plane --save pdf
+                        an Okada slip model, seen on the fault plane
   gpsplot map station --tos --dem iceland --projection M18c --save pdf
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
                         blue-grey land, flat sea; --dem-cmap list: every CPT
-  gpsplot map station --tos --dem iceland --gmt glaciers:pen=1p,blue \
+  gpsplot map station --tos --dem iceland --dem-smooth 3 --save pdf
+                        softer relief: the hillshade smoothed 3 km wide
+  gpsplot map station --tos --dem iceland --gmt glaciers:pen=1p,blue \\
       --gmt coast:A=500/0/1 --gmt-config MAP_FRAME_TYPE=plain
-                        any GMT argument for one drawing step (--gmt STEP:KEY=VALUE)
+                        blue glacier outlines, no islands under 500 km2 or lakes,
+                        a plain map frame: any GMT argument for one drawing
+                        step (--gmt STEP:KEY=VALUE) or GMT setting
   --dem iceland picks the level of the Iceland DEM the map needs, from the
   local GIS directory (gis_dir in postprocess.cfg [PATHS], default
   ~/gps-data/gis: dem/, vector/, cpt/); --dem @earth_relief_15s
@@ -183,6 +192,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--glacier-cmap", default=None, metavar="CPT|COLOUR",
         help="glacier colours: a colour (default white) or a CPT, named as "
         "--dem-cmap, stretched over the ice heights",
+    )  # fmt: skip
+    g.add_argument(
+        "--dem-smooth", type=float, default=None, metavar="KM",
+        help="smooth the --dem hillshade with a Gaussian filter KM wide "
+        "(e.g. 3 for an Iceland overview); colours and coasts stay sharp",
     )  # fmt: skip
     g.add_argument(
         "--glaciers", default=None, metavar="FILE",
@@ -534,7 +548,8 @@ def _style(
                      ("resolution", "resolution"), ("dem", "dem_grid"),
                      ("dem_cmap", "dem_cmap"),
                      ("bathymetry_cmap", "bathymetry_cmap"),
-                     ("glacier_cmap", "glacier_cmap")):  # fmt: skip
+                     ("glacier_cmap", "glacier_cmap"),
+                     ("dem_smooth", "dem_smooth")):  # fmt: skip
         if getattr(args, opt) is not None:
             kw[key] = getattr(args, opt)
     if str(kw.get("dem_grid", "")).lower() == ICELAND_DEM:
