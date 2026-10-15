@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 
-#: options whose value starts with a minus in Iceland (west longitudes)
-NEGATIVE_VALUE_OPTIONS = ("--region", "--mogi")
+#: options whose value may start with a minus: west longitudes in Iceland,
+#: and a tos search's own flags (--tos-search "--epos")
+NEGATIVE_VALUE_OPTIONS = ("--region", "--mogi", "--tos-search")
 
 
 def join_negative_values(argv: list[str]) -> list[str]:

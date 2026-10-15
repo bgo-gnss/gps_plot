@@ -174,6 +174,21 @@ STATUS_STYLES: dict[str, tuple[str, str, str, str]] = {
     "active": ("t0.22c", "red", "0.4p,black", "Continuous"),
 }
 DEFAULT_STATUS_LEGEND = "jTR+o0.2c"
+#: groups drawn like a status: a GPS station of a mixed TOS map (grouped
+#: by subtype) keeps the continuous GPS triangle
+GROUP_AS_STATUS = {"GPS stöð": "active"}
+#: symbols of the other groups (a TOS subtype, an attribute value, a
+#: station file), given in order of first appearance: (style, fill, pen)
+GROUP_STYLES: tuple[tuple[str, str, str], ...] = (
+    ("s0.2c", "orange", "0.4p,black"),
+    ("d0.24c", "purple", "0.4p,black"),
+    ("c0.2c", "darkgreen", "0.4p,black"),
+    ("i0.22c", "gold", "0.4p,black"),
+    ("a0.26c", "deepskyblue", "0.4p,black"),
+    ("h0.22c", "brown", "0.4p,black"),
+    ("n0.22c", "magenta", "0.4p,black"),
+    ("t0.22c", "cyan", "0.4p,black"),
+)
 
 #: The local GIS directory (``gis_dir``; ~/gps-data/gis, its README) holds
 #: the DEM grids, the vector layers drawn over them and the user's CPTs.
@@ -278,9 +293,11 @@ class StationCoordinate:
         lon: Geodetic longitude [decimal degrees, east positive].
         lat: Geodetic latitude [decimal degrees, north positive].
         name: Human-readable station name (``station_name``), or None.
-        status: Map status (a key of :data:`STATUS_STYLES`, e.g. from TOS
-            via :mod:`gps_plot.sources.tos`), or None. A map whose stations
-            carry a status draws one symbol per status, with a legend.
+        status: Map group: a status of :data:`STATUS_STYLES` (from TOS
+            via :mod:`gps_plot.sources.tos`), any other label (a TOS
+            subtype, a station file's label; drawn in the next of
+            :data:`GROUP_STYLES`), or None. A map whose stations carry a
+            group draws one symbol per group, with a legend.
     """
 
     marker: str
@@ -949,18 +966,27 @@ def _draw_status_markers(
     *,
     legend_position: str | None = DEFAULT_STATUS_LEGEND,
 ) -> None:
-    """One symbol per status (:data:`STATUS_STYLES`), counted in a legend.
+    """One symbol per group, counted in a legend: the statuses of
+    :data:`STATUS_STYLES` first (bottom), then the other groups in order
+    of appearance, each in the next of :data:`GROUP_STYLES`.
 
-    A station whose status is None or unknown is drawn as ``active``.
+    A station without a group is drawn as ``active``.
     """
     groups: dict[str, list[StationCoordinate]] = {k: [] for k in STATUS_STYLES}
     for c in coordinates:
-        key = c.status if c.status in STATUS_STYLES else "active"
-        groups[key].append(c)
+        groups.setdefault(c.status or "active", []).append(c)
+    others = [k for k in groups if k not in STATUS_STYLES and k not in GROUP_AS_STATUS]
     for key, members in groups.items():
         if not members:
             continue
-        style, fill, pen, label = STATUS_STYLES[key]
+        if key in STATUS_STYLES:
+            style, fill, pen, label = STATUS_STYLES[key]
+        elif key in GROUP_AS_STATUS:
+            style, fill, pen, _ = STATUS_STYLES[GROUP_AS_STATUS[key]]
+            label = key
+        else:
+            style, fill, pen = GROUP_STYLES[others.index(key) % len(GROUP_STYLES)]
+            label = key
         fig.plot(
             **layer_kw(
                 "stations",
@@ -994,6 +1020,7 @@ def station_map(
     marker_pen: str = DEFAULT_MARKER_PEN,
     marker_fill: str = DEFAULT_MARKER_FILL,
     labels: bool = True,
+    markers: bool = True,
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
     status_legend: str | None = DEFAULT_STATUS_LEGEND,
@@ -1042,6 +1069,7 @@ def station_map(
         marker_pen: Marker outline pen.
         marker_fill: Marker fill color.
         labels: Draw the station marker next to each symbol.
+        markers: Draw the station symbols (False: none, nor labels).
         label_font: Label font spec.
         label_offset: Label offset spec (GMT ``-D`` justify form).
         status_legend: Legend position (GMT ``-D``) when the stations
@@ -1083,13 +1111,13 @@ def station_map(
     Raises:
         ImportError: When PyGMT / the GMT C library is unavailable (see
             module docstring for installation).
-        ValueError: When ``stations`` is empty.
+        ValueError: When ``stations`` is empty and no ``region`` is given.
     """
     pygmt_mod = _import_pygmt()
 
-    if not stations:
-        raise ValueError("station_map needs at least one station")
-    coordinates = _resolve_stations(stations, parser)
+    if not stations and region is None:
+        raise ValueError("station_map needs a station or a region")
+    coordinates = _resolve_stations(stations, parser) if stations else []
 
     if region is None:
         region = region_around(coordinates, margin=margin)
@@ -1121,7 +1149,9 @@ def station_map(
 
     lons = [c.lon for c in coordinates]
     lats = [c.lat for c in coordinates]
-    if any(getattr(c, "status", None) for c in coordinates):
+    if not (markers and coordinates):
+        labels = False
+    elif any(getattr(c, "status", None) for c in coordinates):
         _draw_status_markers(fig, coordinates, legend_position=status_legend)
     else:
         fig.plot(
@@ -1344,6 +1374,7 @@ def velocity_map(
     station_fill: str = DEFAULT_VECTOR_STATION_FILL,
     station_pen: str = DEFAULT_VECTOR_STATION_PEN,
     labels: bool = True,
+    markers: bool = True,
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
     legend: bool = True,
@@ -1406,6 +1437,7 @@ def velocity_map(
         station_fill: Station dot fill.
         station_pen: Station dot outline pen.
         labels: Draw the station marker next to each dot.
+        markers: Draw the station symbols (False: none, nor labels).
         label_font: Label font spec.
         label_offset: Label offset spec.
         legend: Draw the legend block (method entries + scale arrow).
@@ -1519,13 +1551,15 @@ def velocity_map(
         )
         legend_entries.append((method if method else "velocity", layer_color))
 
-    fig.plot(
-        **layer_kw(
-            "stations",
-            x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen,
-        )
-    )  # fmt: skip
-    if labels:
+    if markers:
+        fig.plot(
+            **layer_kw(
+                "stations",
+                x=lons, y=lats, style=station_style, fill=station_fill,
+                pen=station_pen,
+            )
+        )  # fmt: skip
+    if labels and markers:
         fig.text(
             **layer_kw(
                 "labels",
@@ -1728,6 +1762,7 @@ def deformation_vectors(
     station_fill: str = DEFAULT_VECTOR_STATION_FILL,
     station_pen: str = DEFAULT_VECTOR_STATION_PEN,
     labels: bool = False,
+    markers: bool = True,
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
     source_style: str = DEFAULT_SOURCE_STYLE,
@@ -1794,6 +1829,7 @@ def deformation_vectors(
         station_fill: Station dot fill.
         station_pen: Station dot outline pen.
         labels: Draw station markers next to the dots.
+        markers: Draw the station symbols (False: none, nor labels).
         label_font: Label font spec.
         label_offset: Label offset spec.
         source_style: Symbol spec of the model source markers.
@@ -1918,13 +1954,15 @@ def deformation_vectors(
         pen_width=pen_width,
     )
 
-    fig.plot(
-        **layer_kw(
-            "stations",
-            x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen,
-        )
-    )  # fmt: skip
-    if labels:
+    if markers:
+        fig.plot(
+            **layer_kw(
+                "stations",
+                x=lons, y=lats, style=station_style, fill=station_fill,
+                pen=station_pen,
+            )
+        )  # fmt: skip
+    if labels and markers:
         fig.text(
             **layer_kw(
                 "labels",

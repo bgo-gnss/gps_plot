@@ -1,4 +1,5 @@
-"""GPS stations from TOS, for maps (``gpsplot map station --tos``).
+"""Stations from TOS, for maps (``gpsplot map station --tos``,
+``--tos-search``).
 
 TOS is the authoritative station register: it has stations stations.cfg
 does not (campaign marks, external stations, retired ones), with a
@@ -17,6 +18,12 @@ The fleet is cached as JSON under ``$XDG_CACHE_HOME/gps_plot`` for
 :data:`CACHE_MAX_AGE` (the station list changes slowly); ``refresh=True``
 refetches. A failed fetch raises — it must never read as an empty fleet.
 tostools is imported only when a fetch is needed.
+
+**Any station.** ``--tos-search`` hands a ``tos search`` command line to
+tostools (:func:`search_stations`): every expression and flag of ``tos
+search`` selects, ``subtype = GPS stöð`` unless the search names a
+subtype (``'subtype = all'`` lifts it). Its results keep their subtype
+and open attributes, for grouping (:func:`group_key`).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ import dataclasses
 import datetime as dt
 import json
 import os
+import shlex
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -51,7 +59,7 @@ STATUS_LABELS = {
 
 @dataclasses.dataclass(frozen=True)
 class TosStation:
-    """One GPS station from TOS, with its current attributes.
+    """One station from TOS, with its current attributes.
 
     Attributes:
         marker: 4-character marker, upper case.
@@ -62,6 +70,8 @@ class TosStation:
             (not continuous) or ``ended`` (a current ``date_end`` on or
             before ``today``).
         date_end: The current ``date_end`` (ISO text), or None.
+        subtype: The TOS subtype (``GPS stöð``, ``SIL stöð``, …), or None.
+        attributes: Every open attribute value, by code.
     """
 
     marker: str
@@ -70,6 +80,10 @@ class TosStation:
     name: str | None
     status: str
     date_end: str | None = None
+    subtype: str | None = None
+    attributes: Mapping[str, str] = dataclasses.field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
 
 
 def open_value(entity: Mapping[str, Any], code: str) -> str | None:
@@ -118,20 +132,35 @@ def _status(entity: Mapping[str, Any], today: dt.date) -> tuple[str, str | None]
     return "active", end
 
 
-def gps_stations(
-    entities: Iterable[Mapping[str, Any]], *, today: dt.date | None = None
-) -> tuple[TosStation, ...]:
-    """The GPS stations among TOS station entities, one per marker, sorted.
+def open_values(entity: Mapping[str, Any]) -> dict[str, str]:
+    """Every open (``date_to is None``) attribute value of ``entity``."""
+    out: dict[str, str] = {}
+    for attr in entity.get("attributes") or ():
+        code, value = attr.get("code"), attr.get("value")
+        if attr.get("date_to") is None and isinstance(value, str) and value.strip():
+            out.setdefault(str(code), value.strip())
+    return out
 
-    An entity is a GPS station when its open ``subtype`` is
-    :data:`GPS_SUBTYPE`. Entities without an open marker or position are
-    skipped (they cannot be placed on a map). A marker held by several
-    entities keeps the one not ended, else the latest ``date_start``.
+
+def stations(
+    entities: Iterable[Mapping[str, Any]],
+    *,
+    subtype: str | None = GPS_SUBTYPE,
+    today: dt.date | None = None,
+) -> tuple[TosStation, ...]:
+    """The stations among TOS station entities, one per marker, sorted.
+
+    Only those of ``subtype`` (None: every subtype). Entities without an
+    open marker or position are skipped (they cannot be placed on a map).
+    A marker held by several entities of one subtype keeps the one not
+    ended, else the latest ``date_start``; a GPS and a SIL station may
+    share a marker.
     """
     today = today or dt.date.today()
-    out: dict[str, tuple[tuple[bool, str], TosStation]] = {}
+    out: dict[tuple[str, str], tuple[tuple[bool, str], TosStation]] = {}
     for ent in entities:
-        if open_value(ent, "subtype") != GPS_SUBTYPE:
+        kind = open_value(ent, "subtype")
+        if subtype is not None and kind != subtype:
             continue
         marker, lat, lon = (open_value(ent, c) for c in ("marker", "lat", "lon"))
         if not (marker and lat and lon):
@@ -142,14 +171,24 @@ def gps_stations(
             continue
         status, end = _status(ent, today)
         station = TosStation(
-            marker.upper(), lo, la, open_value(ent, "name"), status, end
-        )
+            marker.upper(), lo, la, open_value(ent, "name"), status, end,
+            kind, open_values(ent),
+        )  # fmt: skip
         # one marker, several entities (SOHO: the retired station and its
         # successor): the running one wins, then the latest start
         rank = (status != "ended", open_value(ent, "date_start") or "")
-        if station.marker not in out or rank > out[station.marker][0]:
-            out[station.marker] = (rank, station)
-    return tuple(out[m][1] for m in sorted(out))
+        key = (station.marker, kind or "")
+        if key not in out or rank > out[key][0]:
+            out[key] = (rank, station)
+    return tuple(out[k][1] for k in sorted(out))
+
+
+def gps_stations(
+    entities: Iterable[Mapping[str, Any]], *, today: dt.date | None = None
+) -> tuple[TosStation, ...]:
+    """The GPS stations (open ``subtype`` :data:`GPS_SUBTYPE`) among TOS
+    station entities, one per marker, sorted (see :func:`stations`)."""
+    return stations(entities, subtype=GPS_SUBTYPE, today=today)
 
 
 def cache_path() -> Path:
@@ -197,3 +236,64 @@ def load_entities(
 def tos_gps_stations(*, refresh: bool = False) -> tuple[TosStation, ...]:
     """Every GPS station in TOS (cached; ``refresh`` refetches)."""
     return gps_stations(load_entities(refresh=refresh))
+
+
+def search_stations(
+    search: str | Sequence[str],
+    *,
+    refresh: bool = False,
+    run: Callable[..., Any] | None = None,
+) -> tuple[TosStation, ...]:
+    """The stations a ``tos search`` command line selects.
+
+    ``search`` is what follows ``tos search`` (a string is split like a
+    shell does: ``"--epos 'name ~ *vík*'"``); ``subtype = GPS stöð``
+    unless it names a subtype. ``refresh`` refetches (tostools' cache).
+    ``run`` stands in for ``tostools.tos.search_from_argv`` (tests).
+
+    Raises:
+        ValueError: a bad search (tostools' message).
+    """
+    argv = shlex.split(search) if isinstance(search, str) else list(search)
+    if run is None:
+        try:
+            from tostools.tos import SearchUsage, search_from_argv
+        except ImportError as exc:  # pragma: no cover - depends on the env
+            raise ImportError(
+                "--tos-search needs tostools with search_from_argv "
+                "(the editable sibling in the gpslibrary env)"
+            ) from exc
+        run = search_from_argv
+    else:
+        SearchUsage = ValueError  # noqa: N806 - the stand-in's error
+    try:
+        result = run(
+            [*argv, *(["--refresh"] if refresh else [])], default_subtype=GPS_SUBTYPE
+        )
+    except SearchUsage as exc:
+        raise ValueError(str(exc)) from None
+    except SystemExit:  # --help: tostools printed it
+        raise ValueError("tos search --help is printed above") from None
+    return stations(result.stations, subtype=None)
+
+
+#: ``--group-by`` keys that are not a TOS attribute code
+GROUP_STATUS, GROUP_SUBTYPE = "status", "subtype"
+
+
+def group_key(station: TosStation, group_by: str | None) -> str | None:
+    """The legend group of ``station``: its status (:data:`STATUSES`) for
+    ``status``, its subtype for ``subtype``, else the open value of the
+    attribute ``group_by`` (``"<code>: none"`` when it has none)."""
+    if group_by in (None, GROUP_STATUS):
+        return station.status
+    if group_by == GROUP_SUBTYPE:
+        return station.subtype or "no subtype"
+    return station.attributes.get(str(group_by)) or f"{group_by}: none"
+
+
+def default_group(fleet: Sequence[TosStation]) -> str:
+    """``status`` when every station is a GPS station (or has no subtype),
+    else ``subtype``."""
+    kinds = {s.subtype for s in fleet} - {None}
+    return GROUP_STATUS if kinds <= {GPS_SUBTYPE} else GROUP_SUBTYPE

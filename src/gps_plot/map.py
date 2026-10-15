@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime as dt
 import fnmatch
 import math
@@ -66,6 +67,12 @@ ICELAND_DEM = "iceland"
 DEFAULT_GIS_DIR = "~/gps-data/gis"
 #: station maps label their stations by default only up to this many
 LABEL_LIMIT = 60
+#: a map with no stations and no --region (``gpsplot map base``): Iceland
+DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
+#: ``map base``: a station map without stations
+BASE = "base"
+#: the legend group of stations.cfg stations drawn beside --stations-file ones
+STATIONS_CFG_GROUP = "GPS stations"
 TITLE_FONT = "12p,Helvetica-Bold"
 #: thin ellipses under coloured arrows (the Reykjanes maps)
 ELLIPSE_PEN = "0.5p,gray30"
@@ -93,6 +100,15 @@ examples:
                         blue-grey land, flat sea; --dem-cmap list: every CPT
   gpsplot map station --tos --dem iceland --dem-smooth 3 --save pdf
                         softer relief: the hillshade smoothed 3 km wide
+  gpsplot map station --tos-search "--epos" --dem iceland --save pdf
+                        the EPOS stations; any 'tos search' line selects
+                        (GPS stations unless it names a subtype)
+  gpsplot map station --tos-search "'subtype = [GPS stöð, SIL stöð]'" --save pdf
+                        GPS and SIL stations, one symbol per subtype
+  gpsplot map station --tos --stations-file planned.txt:Planned --save pdf
+                        TOS GPS stations plus the sites in a file
+  gpsplot map base --dem iceland --save pdf
+                        the background alone (or --no-stations on a map)
   gpsplot map station --tos --dem iceland --gmt glaciers:pen=1p,blue \\
       --gmt coast:A=500/0/1 --gmt-config MAP_FRAME_TYPE=plain
                         blue glacier outlines, no islands under 500 km2 or lakes,
@@ -276,6 +292,11 @@ def _add_station_args(p: argparse.ArgumentParser) -> None:
         "--exclude", default=None, metavar="STA[,STA...]",
         help="stations (or patterns) left out",
     )  # fmt: skip
+    p.add_argument(
+        "--no-stations", dest="markers", action="store_false",
+        help="no station symbols or names (the stations still set the "
+        "map's extent when --region is not given)",
+    )  # fmt: skip
 
 
 def _add_series_args(p: argparse.ArgumentParser) -> None:
@@ -307,7 +328,10 @@ def build_parser(
     parser.epilog = EXAMPLES
     sub = parser.add_subparsers(dest="kind", metavar="KIND", required=True)
 
-    p = sub.add_parser("station", help="station markers")
+    p = sub.add_parser(
+        "station", aliases=[BASE],
+        help="station markers ('base': the background alone, as --no-stations)",
+    )  # fmt: skip
     _add_station_args(p)
     p.add_argument(
         "--tos", action="store_true",
@@ -316,8 +340,29 @@ def build_parser(
         "stations.cfg; patterns and --region select among them",
     )  # fmt: skip
     p.add_argument(
+        "--tos-search", default=None, metavar="SEARCH",
+        help="the TOS stations a 'tos search' selects (implies --tos): its "
+        "expressions and flags in one quoted string, e.g. \"--epos\", "
+        "\"--active-gps --receiver polarx5\", \"'subtype = SIL stöð'\"; "
+        "'subtype = GPS stöð' unless the search names a subtype "
+        "('subtype = all' lifts it). See 'tos search --help'",
+    )  # fmt: skip
+    p.add_argument(
+        "--group-by", default=None, metavar="CODE",
+        help="legend groups of TOS stations: status (default for GPS "
+        "stations), subtype (default for a mix) or any TOS attribute code",
+    )  # fmt: skip
+    p.add_argument(
         "--refresh-tos", action="store_true",
         help="refetch the TOS station list (cached for a day)",
+    )  # fmt: skip
+    p.add_argument(
+        "--stations-file", action="append", default=[], metavar="FILE[:LABEL]",
+        help="stations from a file, one legend group each (repeatable): "
+        "'MARKER LON LAT [NAME]' lines, a CSV with marker/lon/lat columns or "
+        "GeoJSON points; LABEL names the group (default: the file name). "
+        "Alone they are the whole map; with stations, --tos or --tos-search "
+        "they are drawn beside them",
     )  # fmt: skip
     _add_map_options(p, config)
 
@@ -755,7 +800,7 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
 
-    if args.kind == "station":
+    if args.kind in ("station", BASE):
         return _run_station(args, parser, config, maps, coords)
     if args.labels is None:
         args.labels = True
@@ -776,49 +821,114 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     return _run_deformation(args, parser, config, maps, stations)
 
 
-def tos_coords(stations: Sequence[Any], maps: Any) -> Any:
+def tos_coords(stations: Sequence[Any], maps: Any, group_by: str | None = None) -> Any:
     """A ``coords(markers)`` resolver over TOS stations (for
-    :func:`select_stations`): markers to status-carrying coordinates."""
-    by_marker = {
-        s.marker: maps.StationCoordinate(s.marker, s.lon, s.lat, s.name, s.status)
-        for s in stations
-    }
+    :func:`select_stations`): markers to coordinates carrying their legend
+    group (:func:`gps_plot.sources.tos.group_key`; default the status).
+    A marker held by stations of several subtypes resolves to the first."""
+    from gps_plot.sources import tos
+
+    by_marker: dict[str, Any] = {}
+    for s in stations:
+        by_marker.setdefault(
+            s.marker,
+            maps.StationCoordinate(
+                s.marker, s.lon, s.lat, s.name, tos.group_key(s, group_by)
+            ),
+        )
 
     def coords(markers: Sequence[str]) -> Any:
         try:
             return tuple(by_marker[m.upper()] for m in markers)
         except KeyError as exc:
-            raise KeyError(f"not a GPS station in TOS: {exc.args[0]}") from None
+            raise KeyError(f"not a TOS station: {exc.args[0]}") from None
 
     return coords
 
 
-def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
-    names: Sequence[str]
-    if args.tos:
-        from gps_plot.sources import tos
+def _inside(c: Any, region: tuple[float, float, float, float] | None) -> bool:
+    if region is None:
+        return True
+    w, e, s, n = region
+    return bool(w <= c.lon <= e and s <= c.lat <= n)
 
-        fleet = tos.tos_gps_stations(refresh=args.refresh_tos)
-        names, coords = [s.marker for s in fleet], tos_coords(fleet, maps)
-        specs = args.Stations or (["*"] if args.region is None else [])
-    else:
-        names, specs = config.getStationInfo(), args.Stations
+
+def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
+    from gps_plot.sources import station_files
+
+    out = []
+    for spec in args.stations_file:
+        try:
+            out += station_files.read_stations(*station_files.split_spec(spec), maps)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--stations-file: {exc}")
+    return [c for c in out if _inside(c, args.region)]
+
+
+def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
+    """The TOS stations of --tos / --tos-search and their legend grouping."""
+    from gps_plot.sources import tos
+
     try:
-        stations, dropped = select_stations(
-            specs, names, coords, region=args.region, exclude=args.exclude
-        )
+        if args.tos_search is not None:
+            fleet = tos.search_stations(args.tos_search, refresh=args.refresh_tos)
+        else:  # GPS stations only: by status unless --group-by says otherwise
+            fleet = tos.tos_gps_stations(refresh=args.refresh_tos)
+            return fleet, args.group_by or tos.GROUP_STATUS
     except ValueError as exc:
-        parser.error(str(exc))
-    _report(dropped)
-    labels = args.labels if args.labels is not None else len(stations) <= LABEL_LIMIT
+        parser.error(f"--tos-search: {exc}")
+    if not fleet:
+        parser.error("the TOS search found no station with a position")
+    return fleet, args.group_by or tos.default_group(fleet)
+
+
+def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
+    if args.kind == BASE:
+        args.markers = False
+    use_tos = args.tos or args.tos_search is not None
+    files = _file_stations(args, parser, maps)
+    stations: list[Any] = []
+    if use_tos or args.Stations or not (files or not args.markers):
+        names: Sequence[str]
+        if use_tos:
+            fleet, group = _tos_fleet(args, parser)
+            names, coords = [s.marker for s in fleet], tos_coords(fleet, maps, group)
+            specs = args.Stations or (["*"] if args.region is None else [])
+        else:
+            names, specs = config.getStationInfo(), args.Stations
+        try:
+            stations, dropped = select_stations(
+                specs, names, coords, region=args.region, exclude=args.exclude
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        _report(dropped)
+        if files and not any(c.status for c in stations):
+            stations = [
+                dataclasses.replace(c, status=STATIONS_CFG_GROUP) for c in stations
+            ]
+    stations += files
+    region = args.region
+    if region is None and not stations:
+        region = DEFAULT_BASE_REGION
+    if args.markers:
+        n = len(stations)
+        labels = args.labels if args.labels is not None else n <= LABEL_LIMIT
+    else:
+        labels = False
     fig = maps.station_map(
-        stations, labels=labels,
-        **_style(args, args.region, config=config, points=stations),
+        stations, labels=labels, markers=args.markers,
+        **_style(args, region, config=config, points=stations),
     )  # fmt: skip
     _finish(fig, args)
-    stem = _stem(
-        "station", stations[0].marker, len(stations), "tos" if args.tos else ""
-    )
+    if stations:
+        stem = _stem(
+            "station", stations[0].marker, len(stations), "tos" if use_tos else ""
+        )
+    else:
+        stem = _stem(BASE, "region", 0)
+    if stations and not args.markers:
+        stem = stem.replace("map_station_", f"map_{BASE}_", 1)
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
@@ -884,6 +994,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         method_colors=dict(g for g in groups if g[0] is not None),
         ellipse_pen=ELLIPSE_PEN,
         labels=args.labels,
+        markers=args.markers,
         **style,
     )
     _finish(fig, args)
@@ -976,7 +1087,7 @@ def _run_deformation(
         coords, east, north, models,
         observed_label=window_label(args.start, end),
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
-        labels=args.labels, **style,
+        labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
     _finish(fig, args)
     stem = _stem("deformation", coords[0].marker, len(coords),
@@ -1003,7 +1114,8 @@ def _run_geojson(args: Any, config: Any, maps: Any) -> int:
     scale, ref = auto_scale([math.hypot(v.east, v.north) for v in vectors])
     fig = maps.velocity_map(
         vectors, scale=args.scale or scale, scale_ref=args.scale_ref or ref,
-        labels=args.labels, **_style(args, args.region, config=config, points=vectors),
+        labels=args.labels, markers=args.markers,
+        **_style(args, args.region, config=config, points=vectors),
     )  # fmt: skip
     _finish(fig, args)
     stem = _stem("velocity", Path(args.geojson).stem, len(vectors), "geojson")
