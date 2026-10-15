@@ -576,6 +576,14 @@ def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_pat
     assert kw["dem_grid"] == str(dem / "iceland_topobathy_1s.nc")
     assert kw["coastline"] == str(dem / maps.ICELAND_COAST)
     assert kw["dem_cmap"] == "geo"
+    assert "glaciers" not in kw  # not built in this DEM directory
+    (dem / maps.ICELAND_GLACIERS).write_text("")
+    assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3"], tmp_path) == 0
+    assert fake_maps["station_map"][1]["glaciers"] == str(dem / maps.ICELAND_GLACIERS)
+    assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--glaciers", "none",
+                 "--lakes", "my_lakes.gmt"], tmp_path) == 0  # fmt: skip
+    kw = fake_maps["station_map"][1]
+    assert "glaciers" not in kw and kw["lakes"] == "my_lakes.gmt"
 
 
 def test_dem_cpt_names_and_passthrough(monkeypatch, tmp_path):

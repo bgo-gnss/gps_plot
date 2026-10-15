@@ -68,10 +68,37 @@ the region and is no coarser than one 300-dpi output pixel
 3″ grid took 20 s and looked the same. It draws the IS 50V coast, not GSHHG:
 the full one on local maps, and for overviews one without the islets under
 0.2 km², which otherwise blot Breiðafjörður (`build_05_coast.sh`).
+Glaciers and lakes follow BGÓ's GMT maps (`gogn/gmt_maps/*/volc-systems.gmt`):
+- **Glaciers:** clipped to their outlines, coloured with an all-white CPT
+  (`pol.cpt`) and their own gentle two-azimuth hillshade (`-A110/310 -Nt0.4`),
+  with a thin outline. On local maps (pixels finer than 5″) they also get
+  100 m contours annotated every 300 m.
+- **Lakes and wide rivers:** filled as water.
+
+The outlines are IMO's 2025 Sentinel-2 glacier polygons
+(`glaciology:glacierpolygon_sent2_2025` on geo.vedur.is, "Útlínur jökla" in
+the VÍ GIS registry). The lakes come from IS 50V `vatnafar_flakar`
+(`fitjuflokkur` 701 with `yfirbordsvatn` 3 for lakes and 1 for rivers; 4 is
+glaciers). IMO's GeoServer has no lake layer. Both are built by
+`build_06_ice_water.sh`; `--glaciers` / `--lakes FILE|none` override them.
+
+How the ice is drawn (`maps._glacier_composite`):
+- Glacier cells move up by 100 000 m into a white slice appended to the
+  CPT, so land, sea and ice draw in **one** `grdimage`.
+- A second, NaN-transparent ice image came out red everywhere outside the
+  ice: GMT `-Q` fails on such a grid here.
+- GMT also rejects a CPT with a gap, so the white slice starts where the
+  land colours end.
+- `xarray.where` drops PyGMT's registration and geographic flags, so they
+  are restored.
+
+`--dem-cmap slate` is the blue-grey land of the Bárðarbunga paper maps. The
+`lightgrey` land is now 200 instead of 225, so white ice stands out.
+
 Any `--dem` grid is drawn with its NaN cells transparent and **no water
 painted over it**, so a topo-bathymetry grid shows its sea floor. A
 land-only grid still gets the flat water fill. `--dem-cmap` is `lightgrey`
-(default: grey land, blue sea floor), `relief`, or any GMT CPT. The hillshade
+(default: grey land, blue sea floor), `slate`, `relief`, or any GMT CPT. The hillshade
 is `-Ne0.6`; the old `-Nt1.5` went near black on steep slopes.
 
 `gpsplot map station --tos` plots the GPS stations of **TOS**, the station

@@ -50,9 +50,11 @@ DEFAULT_LOGO = (
 )
 DATE_FORMAT = "%Y%m%d"
 #: --dem colour maps by name (written to the cache; any GMT CPT works too).
-#: lightgrey (default): land one light grey, so the hillshade alone shows
-#: the relief (the Reykjanes maps' lightgrey.cpt); the sea floor in blues,
-#: now that water is no longer painted over a topo-bathymetry grid.
+#: lightgrey (default): land one grey, so the hillshade alone shows the
+#: relief (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200
+#: so the white glaciers stand out); the sea floor in blues, now that water
+#: is no longer painted over a topo-bathymetry grid.
+#: slate: the lightslategrey land of BGÓ's Bárðarbunga maps (bb_grein).
 #: relief: pale tan lowlands, white ice caps, the same sea.
 _SEA_CPT = (
     "-11000 50/95/145 -2000 120/165/205\n"
@@ -60,7 +62,8 @@ _SEA_CPT = (
     "-200 175/208/232 0 205/228/242\n"
 )
 DEM_CPTS = {
-    "lightgrey": _SEA_CPT + "0 225/225/225 9000 235/235/235\n",
+    "lightgrey": _SEA_CPT + "0 200/200/200 9000 205/205/205\n",
+    "slate": _SEA_CPT + "0 119/136/153 9000 119/136/153\n",
     "relief": _SEA_CPT + "0 235/235/225 500 215/212/195\n"
     "500 215/212/195 1200 200/195/180\n"
     "1200 200/195/180 2200 250/250/250\n"
@@ -167,7 +170,18 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     g.add_argument(
         "--dem-cmap", default=None, metavar="CPT",
         help="colour map of the --dem background: lightgrey (default; grey "
-        "land, blue sea floor), relief, or any GMT CPT (e.g. geo)",
+        "land, blue sea floor), slate (the Bárðarbunga maps' blue-grey land), "
+        "relief, or any GMT CPT (e.g. geo)",
+    )  # fmt: skip
+    g.add_argument(
+        "--glaciers", default=None, metavar="FILE",
+        help="glacier polygons, drawn white with their own gentle hillshade "
+        "(default with --dem iceland: IMO's 2025 outlines; 'none' = off)",
+    )  # fmt: skip
+    g.add_argument(
+        "--lakes", default=None, metavar="FILE",
+        help="lake polygons, filled as water (default with --dem iceland: "
+        "IS 50V lakes and wide rivers; 'none' = off)",
     )  # fmt: skip
     g.add_argument(
         "--overlay", action="append", default=[], metavar="GEOJSON",
@@ -510,8 +524,18 @@ def _style(
             kw.get("projection", maps.DEFAULT_PROJECTION),
         )
         kw["dem_grid"] = choice.grid
-        if choice.coastline is not None:
-            kw["coastline"] = choice.coastline
+        for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
+            if getattr(choice, key) is not None:
+                kw[key] = getattr(choice, key)
+    for key in ("glaciers", "lakes"):
+        value = getattr(args, key, None)
+        if value is not None:
+            if value.lower() == "none":
+                kw.pop(key, None)
+                if key == "glaciers":
+                    kw.pop("glacier_contours", None)
+            else:
+                kw[key] = value
     if "dem_grid" in kw:
         kw["dem_cmap"] = dem_cpt(kw.get("dem_cmap", DEFAULT_DEM_CPT))
     if args.overlay:

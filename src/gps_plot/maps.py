@@ -141,6 +141,24 @@ DEFAULT_DEM_SHADING_AZIMUTH = 315.0  # NW illumination
 #: Laplace-normalized hillshade: softer than the velomap heritage -Nt1.5,
 #: which went near black on steep slopes (Fagradalsfjall, the fjords)
 DEFAULT_DEM_SHADING_NORMALIZE = "e0.6"
+#: Glaciers and lakes over the DEM, the way BGÓ's GMT maps drew them
+#: (gmt_maps/*/volc-systems.gmt): the ice clipped to its outlines, an
+#: all-white CPT and its own gentle two-azimuth hillshade (-A110/310
+#: -Nt0.4), a thin outline; lakes as flat water.
+DEFAULT_GLACIER_SHADING_AZIMUTH = "110/310"
+DEFAULT_GLACIER_SHADING_NORMALIZE = "t0.4"
+DEFAULT_GLACIER_FILL = "white"
+DEFAULT_GLACIER_PEN = "0.15p,gray55"
+#: glacier contours (volc-systems.gmt: grdcontour -C100 -A300 -Wthin,grey)
+DEFAULT_GLACIER_CONTOUR_PEN = "thin,grey"
+GLACIER_CONTOUR_ANNOTATION_EVERY = 3
+DEFAULT_LAKE_FILL = "205/228/242"
+DEFAULT_LAKE_PEN = "0.1p,steelblue"
+#: glacier heights move by this much into a white CPT segment, so land,
+#: sea and ice draw in ONE grdimage (a second, NaN-transparent ice image
+#: came out red outside the ice: GMT -Q fails on such a grid here)
+GLACIER_Z_OFFSET = 100_000.0
+
 #: pen of a ``coastline`` file (thin and grey: the IS 50V coast has
 #: thousands of islets, e.g. in Breiðafjörður)
 DEFAULT_COASTLINE_FILE_PEN = "0.15p,gray30"
@@ -165,6 +183,13 @@ ICELAND_DEM_LEVELS: tuple[tuple[str, float, tuple[float, float, float, float]], 
 #: the IS 50V coast (WGS84), in full and without the smallest islets
 ICELAND_COAST = "layers/is50v_coast_wgs84.gmt"
 ICELAND_COAST_OVERVIEW = "layers/is50v_coast_wgs84_overview.gmt"
+#: IMO glacier polygons (Sentinel-2) and IS 50V lakes + wide rivers, in
+#: full and without those under 0.5 km² (build_06_ice_water.sh)
+ICELAND_GLACIERS = "layers/imo_glaciers_wgs84.gmt"
+ICELAND_LAKES = "layers/is50v_lakes_wgs84.gmt"
+ICELAND_LAKES_OVERVIEW = "layers/is50v_lakes_wgs84_overview.gmt"
+#: contour interval [m] on the glaciers of local (non-overview) maps
+ICELAND_GLACIER_CONTOUR_M = 100.0
 #: output pixels coarser than this [deg] take the overview coast
 COAST_OVERVIEW_PIXEL_DEG = 5 / 3600
 #: the raster resolution a map is planned for [dpi] (PyGMT's PNG default)
@@ -476,10 +501,13 @@ def output_pixel_deg(
 
 @dataclasses.dataclass(frozen=True)
 class DemChoice:
-    """A DEM level and the coastline to draw with it."""
+    """A DEM level and the vector layers to draw with it (None: absent)."""
 
     grid: str
     coastline: str | None
+    glaciers: str | None = None
+    lakes: str | None = None
+    glacier_contours: float | None = None
 
 
 def iceland_dem(
@@ -494,8 +522,10 @@ def iceland_dem(
     Picks the coarsest level of :data:`ICELAND_DEM_LEVELS` that covers
     ``region`` and whose cell is no larger than one output pixel (an
     Iceland overview at 18 cm takes the 15″ grid in ~2 s; the 3″ grid took
-    20 s and looked the same). With the IS 50V coast when present: the
-    overview coast for pixels coarser than :data:`COAST_OVERVIEW_PIXEL_DEG`.
+    20 s and looked the same). With the IS 50V coast, the IMO glaciers and
+    the IS 50V lakes when present: the overview coast and lakes for pixels
+    coarser than :data:`COAST_OVERVIEW_PIXEL_DEG`, glacier contours
+    (:data:`ICELAND_GLACIER_CONTOUR_M`) only on finer ones.
 
     Raises:
         FileNotFoundError: the chosen level is not built.
@@ -514,10 +544,20 @@ def iceland_dem(
         raise FileNotFoundError(
             f"{grid} is not built (see build_04_levels.sh in {base})"
         )
-    coast = base / (
-        ICELAND_COAST_OVERVIEW if pixel > COAST_OVERVIEW_PIXEL_DEG else ICELAND_COAST
+    overview = pixel > COAST_OVERVIEW_PIXEL_DEG
+
+    def layer(full: str, small: str | None = None) -> str | None:
+        path = base / (small if overview and small else full)
+        return str(path) if path.is_file() else None
+
+    glaciers = layer(ICELAND_GLACIERS)
+    return DemChoice(
+        str(grid),
+        layer(ICELAND_COAST, ICELAND_COAST_OVERVIEW),
+        glaciers,
+        layer(ICELAND_LAKES, ICELAND_LAKES_OVERVIEW),
+        None if overview or glaciers is None else ICELAND_GLACIER_CONTOUR_M,
     )
-    return DemChoice(str(grid), str(coast) if coast.is_file() else None)
 
 
 def _draw_basemap(
@@ -537,6 +577,9 @@ def _draw_basemap(
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
+    glaciers: str | None = None,
+    lakes: str | None = None,
+    glacier_contours: float | None = None,
 ) -> None:
     """Draw the shared coast/DEM base layer (slice-3 seam, now live).
 
@@ -548,8 +591,11 @@ def _draw_basemap(
     amplitude normalization) and colored with ``dem_cmap``. Its NaN cells
     are transparent, so a land-only grid keeps the flat water fill while
     a topo-bathymetry grid shows its sea floor — water is NOT painted over
-    the grid. The shoreline goes on top: ``coastline`` (a line/polygon
-    file, e.g. the IS 50V coast) or GSHHG.
+    the grid. With ``glaciers`` (polygons) the ice cells are drawn white
+    with their own gentle hillshade (:func:`_glacier_composite`); without a
+    DEM the glacier polygons are filled white. ``lakes`` are filled as
+    water. The shoreline goes on top: ``coastline`` (a line/polygon file,
+    e.g. the IS 50V coast) or GSHHG.
     """
     # one coast call when GSHHG draws the shoreline straight over the fill
     plain = dem_grid is None and coastline is None
@@ -569,14 +615,123 @@ def _draw_basemap(
             azimuth=dem_shading_azimuth,
             normalize=dem_shading_normalize,
         )
+        if glaciers is not None:
+            subgrid, gradient, dem_cmap, ice = _glacier_composite(
+                pygmt_mod, subgrid, gradient, dem_cmap, glaciers
+            )
         fig.grdimage(
             grid=subgrid, shading=gradient, cmap=dem_cmap, nan_transparent=True
         )
+        if glaciers is not None and glacier_contours and ice is not None:
+            fig.grdcontour(
+                grid=ice,
+                levels=glacier_contours,
+                annotation=glacier_contours * GLACIER_CONTOUR_ANNOTATION_EVERY,
+                pen=DEFAULT_GLACIER_CONTOUR_PEN,
+            )
+    if glaciers is not None:
+        fill = DEFAULT_GLACIER_FILL if dem_grid is None else None
+        fig.plot(data=glaciers, pen=DEFAULT_GLACIER_PEN, fill=fill)
+    if lakes is not None:
+        fig.plot(data=lakes, fill=DEFAULT_LAKE_FILL, pen=DEFAULT_LAKE_PEN)
     if coastline is not None:
         fig.plot(data=coastline, pen=DEFAULT_COASTLINE_FILE_PEN)
     elif not plain:
         fig.coast(shorelines=shorelines, resolution=resolution)
     _draw_overlays(fig, overlays)
+
+
+def _glacier_composite(
+    pygmt_mod: Any, grid: Any, gradient: Any, cmap: str, glaciers: str
+) -> tuple[Any, Any, str, Any | None]:
+    """``(grid, shading, cmap, ice)`` with the glaciers drawn white in one pass.
+
+    ``ice`` is the grid's heights on the glaciers (NaN elsewhere), for
+    contours; None when no glacier is in the grid.
+
+    Cells inside ``glaciers`` move up by :data:`GLACIER_Z_OFFSET` into a
+    white segment appended to ``cmap``, and take a gentle two-azimuth
+    hillshade (:data:`DEFAULT_GLACIER_SHADING_AZIMUTH`) instead of the land
+    one — the clip + all-white CPT + -Nt0.4 recipe of BGÓ's GMT maps.
+    """
+    xs = grid.coords[grid.dims[1]].values
+    ys = grid.coords[grid.dims[0]].values
+    # a gridline mask on the grid's cell centres has its shape for either
+    # registration (grdmask has no registration option in PyGMT)
+    mask = pygmt_mod.grdmask(
+        data=glaciers,
+        region=[float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())],
+        spacing=[abs(float(xs[1] - xs[0])), abs(float(ys[1] - ys[0]))],
+        outside=0,
+        edge=1,
+        inside=1,
+    )
+    ice = mask.values.astype(bool)
+    if (mask.coords[mask.dims[0]].values[0] < mask.coords[mask.dims[0]].values[-1]) != (
+        ys[0] < ys[-1]
+    ):
+        ice = ice[::-1]
+    if not ice.any():
+        return grid, gradient, cmap, None
+    ice_gradient = pygmt_mod.grdgradient(
+        grid=grid,
+        azimuth=DEFAULT_GLACIER_SHADING_AZIMUTH,
+        normalize=DEFAULT_GLACIER_SHADING_NORMALIZE,
+    )
+
+    def like_grid(arr: Any) -> Any:
+        # xarray.where drops the GMT accessor's registration/geographic flags
+        arr.gmt.registration, arr.gmt.gtype = grid.gmt.registration, grid.gmt.gtype
+        return arr
+
+    composite = like_grid(grid.where(~ice, grid + GLACIER_Z_OFFSET))
+    shading = like_grid(gradient.where(~ice, ice_gradient))
+    if Path(cmap).is_file():
+        text = Path(cmap).read_text()
+    else:  # a GMT CPT name: sample it over the land/sea range
+        land = grid.where(~ice)
+        text = _makecpt_text(pygmt_mod, cmap, float(land.min()), float(land.max()))
+    body = "".join(
+        line + "\n"
+        for line in text.splitlines()
+        if line.strip() and line.split()[0] not in ("B", "F", "N")
+    )
+    # GMT rejects a CPT with a gap: the white slice starts where the
+    # colours end and runs past the shifted ice heights
+    top = max(_cpt_slice_top(line) for line in body.splitlines() if line[0] != "#")
+    hi = GLACIER_Z_OFFSET + 20000
+    body += f"{top:g} {DEFAULT_GLACIER_FILL} {hi:g} {DEFAULT_GLACIER_FILL}\n"
+    return composite, shading, _cached_cpt(body), like_grid(grid.where(ice))
+
+
+def _cpt_slice_top(line: str) -> float:
+    """Upper z of one CPT slice: ``z0 c0 z1 c1`` or ``z0 r g b z1 r g b``."""
+    t = line.split()
+    rgb8 = len(t) >= 8 and all(re.fullmatch(r"[-+.\deE]+", v) for v in t[:8])
+    return float(t[4] if rgb8 else t[2])
+
+
+def _makecpt_text(pygmt_mod: Any, cmap: str, lo: float, hi: float) -> str:
+    """A GMT CPT sampled over ``lo``..``hi``, as text."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "s.cpt")
+        pygmt_mod.makecpt(cmap=cmap, series=[lo, hi], output=path)
+        return Path(path).read_text()
+
+
+def _cached_cpt(text: str) -> str:
+    """``text`` as a CPT file in the cache, named by its content."""
+    import hashlib
+
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    digest = hashlib.sha1(text.encode()).hexdigest()[:12]
+    path = Path(base) / "gps_plot" / f"glacier_{digest}.cpt"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return str(path)
 
 
 def _velo_style(
@@ -751,6 +906,9 @@ def station_map(
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
+    glaciers: str | None = None,
+    lakes: str | None = None,
+    glacier_contours: float | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
     parser: Any | None = None,
@@ -798,6 +956,11 @@ def station_map(
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
+        glaciers: A glacier polygon file: with a DEM the ice is drawn
+            white with its own gentle hillshade (see :func:`_draw_basemap`).
+        lakes: A lake polygon file, filled as water.
+        glacier_contours: Contour interval [m] drawn on the glaciers
+            (annotated every 3rd), or None.
         outfile: Save the figure here when given (format from the suffix:
             .png/.pdf/.eps/... — PyGMT-native). No default output path;
             None (default) skips saving.
@@ -840,6 +1003,9 @@ def station_map(
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
         coastline=coastline,
+        glaciers=glaciers,
+        lakes=lakes,
+        glacier_contours=glacier_contours,
     )
 
     lons = [c.lon for c in coordinates]
@@ -1072,6 +1238,9 @@ def velocity_map(
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
+    glaciers: str | None = None,
+    lakes: str | None = None,
+    glacier_contours: float | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
 ) -> pygmt.Figure:
@@ -1132,6 +1301,11 @@ def velocity_map(
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
+        glaciers: A glacier polygon file: with a DEM the ice is drawn
+            white with its own gentle hillshade (see :func:`_draw_basemap`).
+        lakes: A lake polygon file, filled as water.
+        glacier_contours: Contour interval [m] drawn on the glaciers
+            (annotated every 3rd), or None.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
 
@@ -1171,6 +1345,9 @@ def velocity_map(
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
         coastline=coastline,
+        glaciers=glaciers,
+        lakes=lakes,
+        glacier_contours=glacier_contours,
     )
 
     # One velo layer per estimator tag, first-appearance order preserved.
@@ -1426,6 +1603,9 @@ def deformation_vectors(
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
+    glaciers: str | None = None,
+    lakes: str | None = None,
+    glacier_contours: float | None = None,
     parser: Any | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
@@ -1489,6 +1669,11 @@ def deformation_vectors(
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
+        glaciers: A glacier polygon file: with a DEM the ice is drawn
+            white with its own gentle hillshade (see :func:`_draw_basemap`).
+        lakes: A lake polygon file, filled as water.
+        glacier_contours: Contour interval [m] drawn on the glaciers
+            (annotated every 3rd), or None.
         parser: Optional ``gps_parser.ConfigParser`` to reuse.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
@@ -1547,6 +1732,9 @@ def deformation_vectors(
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
         coastline=coastline,
+        glaciers=glaciers,
+        lakes=lakes,
+        glacier_contours=glacier_contours,
     )
 
     for field, fe, fn in fields:
@@ -1806,6 +1994,9 @@ def slip_map(
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
+    glaciers: str | None = None,
+    lakes: str | None = None,
+    glacier_contours: float | None = None,
     parser: Any | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
@@ -1876,6 +2067,11 @@ def slip_map(
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
+        glaciers: A glacier polygon file: with a DEM the ice is drawn
+            white with its own gentle hillshade (see :func:`_draw_basemap`).
+        lakes: A lake polygon file, filled as water.
+        glacier_contours: Contour interval [m] drawn on the glaciers
+            (annotated every 3rd), or None.
         parser: Optional ``gps_parser.ConfigParser`` for station markers.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
@@ -1944,6 +2140,9 @@ def slip_map(
             dem_shading_normalize=dem_shading_normalize,
             overlays=overlays,
             coastline=coastline,
+            glaciers=glaciers,
+            lakes=lakes,
+            glacier_contours=glacier_contours,
         )
     else:
         if region is None:
