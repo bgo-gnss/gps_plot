@@ -71,6 +71,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import os
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -137,6 +138,10 @@ DEFAULT_PLANE_YLABEL = "down-dip distance (km)"
 DEFAULT_DEM_CMAP = "geo"  # GMT builtin topo colour map
 DEFAULT_DEM_SHADING_AZIMUTH = 315.0  # NW illumination
 DEFAULT_DEM_SHADING_NORMALIZE = "t1.5"  # gmtplot.velomap heritage (-Nt1.5)
+
+#: Outline overlays (lava flows, fissures, …) drawn on the base layer.
+DEFAULT_OVERLAY_PEN = "0.6p,darkred"
+DEFAULT_OVERLAY_FILL = "orange@60"  # 60 % transparent
 
 
 def _import_pygmt() -> Any:
@@ -337,6 +342,77 @@ def _frame_args(frame: Sequence[str], title: str | None) -> list[str]:
     return args
 
 
+@dataclasses.dataclass(frozen=True)
+class MapOverlay:
+    """A GeoJSON outline layer (WGS84 lon/lat) drawn on the base layer.
+
+    Polygons are filled with ``fill`` (None: outline only) and outlined
+    with ``pen``; lines get the pen; points are ignored.
+    """
+
+    path: str
+    pen: str = DEFAULT_OVERLAY_PEN
+    fill: str | None = DEFAULT_OVERLAY_FILL
+
+
+def overlay_segments(geojson: Mapping[str, Any]) -> tuple[str, str]:
+    """``(polygons, lines)`` of a GeoJSON as GMT multisegment text.
+
+    Polygon holes get a ``-Ph`` segment header, so GMT leaves them
+    unfilled. Raises ValueError for a declared non-WGS84 CRS.
+    """
+    crs = str(((geojson.get("crs") or {}).get("properties") or {}).get("name", ""))
+    if crs and not re.search(r"CRS84|EPSG:?:?4326", crs):
+        raise ValueError(f"overlay must be WGS84 lon/lat, not {crs}")
+    if geojson.get("type") == "FeatureCollection":
+        geoms = [f.get("geometry") for f in geojson.get("features") or ()]
+    elif geojson.get("type") == "Feature":
+        geoms = [geojson.get("geometry")]
+    else:
+        geoms = [geojson]
+    polys: list[str] = []
+    lines: list[str] = []
+
+    def ring(out: list[str], header: str, coords: Sequence[Sequence[float]]) -> None:
+        out.append(header)
+        out.extend(f"{c[0]:.7f} {c[1]:.7f}" for c in coords)
+
+    stack = [g for g in geoms if g]
+    while stack:
+        g = stack.pop(0)
+        kind, coords = g.get("type"), g.get("coordinates")
+        if kind == "GeometryCollection":
+            stack.extend(g.get("geometries") or ())
+        elif kind in ("Polygon", "MultiPolygon"):
+            for rings in [coords] if kind == "Polygon" else coords:
+                for k, r in enumerate(rings):
+                    ring(polys, ">" if k == 0 else "> -Ph", r)
+        elif kind in ("LineString", "MultiLineString"):
+            for r in [coords] if kind == "LineString" else coords:
+                ring(lines, ">", r)
+    return "\n".join(polys), "\n".join(lines)
+
+
+def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
+    import json
+    import tempfile
+
+    for ov in overlays:
+        with open(ov.path, encoding="utf-8") as fh:
+            polys, lines = overlay_segments(json.load(fh))
+        with tempfile.TemporaryDirectory() as tmp:
+            for text, closed in ((polys, True), (lines, False)):
+                if not text:
+                    continue
+                seg = os.path.join(tmp, "segments.txt")
+                with open(seg, "w", encoding="utf-8") as fh:
+                    fh.write(text + "\n")
+                kw: dict[str, Any] = {"pen": ov.pen}
+                if closed and ov.fill:
+                    kw["fill"] = ov.fill
+                fig.plot(data=seg, **kw)
+
+
 def _draw_basemap(
     pygmt_mod: Any,
     fig: Any,
@@ -352,6 +428,7 @@ def _draw_basemap(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    overlays: Sequence[MapOverlay] = (),
 ) -> None:
     """Draw the shared coast/DEM base layer (slice-3 seam, now live).
 
@@ -373,6 +450,7 @@ def _draw_basemap(
             shorelines=shorelines,
             frame=list(frame_args),
         )
+        _draw_overlays(fig, overlays)
         return
     fig.basemap(region=region, projection=projection, frame=list(frame_args))
     subgrid = pygmt_mod.grdcut(dem_grid, region=region)
@@ -383,6 +461,7 @@ def _draw_basemap(
     )
     fig.grdimage(grid=subgrid, shading=gradient, cmap=dem_cmap)
     fig.coast(water=water, shorelines=shorelines, resolution=resolution)
+    _draw_overlays(fig, overlays)
 
 
 def _velo_style(
@@ -524,6 +603,7 @@ def station_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    overlays: Sequence[MapOverlay] = (),
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
     parser: Any | None = None,
@@ -565,6 +645,8 @@ def station_map(
         dem_cmap: Colour map for the DEM background.
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
+            over the coast/DEM and under the symbols.
         outfile: Save the figure here when given (format from the suffix:
             .png/.pdf/.eps/... — PyGMT-native). No default output path;
             None (default) skips saving.
@@ -605,6 +687,7 @@ def station_map(
         dem_cmap=dem_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        overlays=overlays,
     )
 
     lons = [c.lon for c in coordinates]
@@ -832,6 +915,7 @@ def velocity_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    overlays: Sequence[MapOverlay] = (),
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
 ) -> pygmt.Figure:
@@ -888,6 +972,8 @@ def velocity_map(
         dem_cmap: DEM colour map.
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
+            over the coast/DEM and under the symbols.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
 
@@ -925,6 +1011,7 @@ def velocity_map(
         dem_cmap=dem_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        overlays=overlays,
     )
 
     # One velo layer per estimator tag, first-appearance order preserved.
@@ -1178,6 +1265,7 @@ def deformation_vectors(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    overlays: Sequence[MapOverlay] = (),
     parser: Any | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
@@ -1237,6 +1325,8 @@ def deformation_vectors(
         dem_cmap: DEM colour map.
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
+            over the coast/DEM and under the symbols.
         parser: Optional ``gps_parser.ConfigParser`` to reuse.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
@@ -1293,6 +1383,7 @@ def deformation_vectors(
         dem_cmap=dem_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
+        overlays=overlays,
     )
 
     for field, fe, fn in fields:
@@ -1550,6 +1641,7 @@ def slip_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
+    overlays: Sequence[MapOverlay] = (),
     parser: Any | None = None,
     outfile: str | os.PathLike[str] | None = None,
     show: bool = False,
@@ -1616,6 +1708,8 @@ def slip_map(
         dem_cmap: DEM colour map.
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
+        overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
+            over the coast/DEM and under the symbols.
         parser: Optional ``gps_parser.ConfigParser`` for station markers.
         outfile: Save the figure here when given; None skips saving.
         show: Open the figure in an external viewer.
@@ -1682,6 +1776,7 @@ def slip_map(
             dem_cmap=dem_cmap,
             dem_shading_azimuth=dem_shading_azimuth,
             dem_shading_normalize=dem_shading_normalize,
+            overlays=overlays,
         )
     else:
         if region is None:

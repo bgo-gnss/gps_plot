@@ -55,6 +55,11 @@ fits (`--window`, `--last`, `--vertical`; plate removed by default), the stored 
 gps_api GeoJSON, displacements with Mogi fields, slip products. Design and
 measured behaviour: `cli-subcommands-design.md`, step 7.
 
+`--overlay FILE.geojson` (repeatable; `--overlay-pen`, `--overlay-fill`)
+draws WGS84 outline layers over the background and under the symbols, e.g.
+the LMÍ/NÍ Reykjanes lava flows (WFS `LMI_vektor:goslok_reykjaneselda` on
+`gis.natt.is`, listed in the VÍ GIS registry `api.vedur.is/gis/layers`).
+
 ```bash
 gpsplot map velocity --region -22.8/-21.9/63.75/64.1 \
     --window 20231027:20231109 --window 20231123:20231205 \
