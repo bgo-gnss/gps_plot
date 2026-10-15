@@ -603,6 +603,14 @@ def test_cpt_slice_top_reads_both_layouts():
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_check_cpt_gaps_flags_a_rounded_join():
+    from gps_plot.maps import _check_cpt_gaps
+
+    _check_cpt_gaps("# c\n0 a 2109.0035 b\n2109.0035 white 3000 white\nB black\n")
+    with pytest.raises(ValueError, match="do not join"):
+        _check_cpt_gaps("0 a 2109.0035 b\n2109 white 3000 white\n")
+
+
 def test_glacier_composite_whitens_only_the_ice(tmp_path, monkeypatch):
     import pygmt
 
@@ -650,3 +658,8 @@ def test_glacier_composite_whitens_only_the_ice(tmp_path, monkeypatch):
         .splitlines()[-1]
         .endswith(f"white {maps.GLACIER_Z_OFFSET + 20000:g} white")
     )
+    # a non-round land top (makecpt writes it with more digits than :g)
+    odd = grid + 0.00351562
+    odd.gmt.registration, odd.gmt.gtype = 0, 1
+    _c, _s, cpt, _i = maps._glacier_composite(pygmt, odd, shade, "sealand", str(poly))
+    maps._check_cpt_gaps(open(cpt).read())

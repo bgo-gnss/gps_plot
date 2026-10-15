@@ -698,17 +698,40 @@ def _glacier_composite(
     )
     # GMT rejects a CPT with a gap: the white slice starts where the
     # colours end and runs past the shifted ice heights
-    top = max(_cpt_slice_top(line) for line in body.splitlines() if line[0] != "#")
+    # (the top token is copied as written: re-formatting it, e.g. 2109.0035
+    # as 2109, opens a gap)
+    slices = [line for line in body.splitlines() if line[0] != "#"]
+    top = max((_cpt_slice_bounds(line)[1] for line in slices), key=float)
     hi = GLACIER_Z_OFFSET + 20000
-    body += f"{top:g} {DEFAULT_GLACIER_FILL} {hi:g} {DEFAULT_GLACIER_FILL}\n"
+    body += f"{top} {DEFAULT_GLACIER_FILL} {hi:g} {DEFAULT_GLACIER_FILL}\n"
+    _check_cpt_gaps(body)
     return composite, shading, _cached_cpt(body), like_grid(grid.where(ice))
+
+
+def _cpt_slice_bounds(line: str) -> tuple[str, str]:
+    """Lower and upper z of one CPT slice, as written: ``z0 c0 z1 c1`` or
+    ``z0 r g b z1 r g b``."""
+    t = line.split()
+    rgb8 = len(t) >= 8 and all(re.fullmatch(r"[-+.\deE]+", v) for v in t[:8])
+    return t[0], t[4 if rgb8 else 2]
 
 
 def _cpt_slice_top(line: str) -> float:
     """Upper z of one CPT slice: ``z0 c0 z1 c1`` or ``z0 r g b z1 r g b``."""
-    t = line.split()
-    rgb8 = len(t) >= 8 and all(re.fullmatch(r"[-+.\deE]+", v) for v in t[:8])
-    return float(t[4] if rgb8 else t[2])
+    return float(_cpt_slice_bounds(line)[1])
+
+
+def _check_cpt_gaps(text: str) -> None:
+    """Raise when a CPT's slices do not join exactly: GMT then aborts
+    grdimage but the figure is still saved, without its background."""
+    bounds = [
+        tuple(map(float, _cpt_slice_bounds(line)))
+        for line in text.splitlines()
+        if line.strip() and line[0] != "#" and line.split()[0] not in "BFN"
+    ]
+    for (_lo, prev_hi), (lo, _hi) in zip(bounds, bounds[1:], strict=False):
+        if lo != prev_hi:
+            raise ValueError(f"CPT slices do not join: {prev_hi!r} then {lo!r}")
 
 
 def _makecpt_text(pygmt_mod: Any, cmap: str, lo: float, hi: float) -> str:
