@@ -49,9 +49,20 @@ DEFAULT_LOGO = (
     / "VI_bottom_gradient_office_web_pos_rgb.png"
 )
 DATE_FORMAT = "%Y%m%d"
-#: the --dem background: one light grey, so the hillshade alone shows the
-#: relief (the Reykjanes maps' lightgrey.cpt)
-LIGHTGREY_CPT = "-11000 225/225/225 9000 235/235/235\n"
+#: --dem land colours: one grey, so the hillshade alone shows the relief
+#: (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200 so the
+#: white glaciers stand out). The CPTs live in gps_plot/cpt (lightgrey,
+#: slate, relief, sea); see :mod:`gps_plot.palettes` for the name lookup.
+DEFAULT_DEM_CPT = "lightgrey"
+#: the colour-map options, checked before a map is drawn
+CMAP_OPTIONS = ("dem_cmap", "bathymetry_cmap", "glacier_cmap")
+#: ``--dem-cmap list`` (any colour-map option) prints the names and exits
+LIST = "list"
+#: --dem iceland: the spliced Iceland DEM, at the level the map needs
+ICELAND_DEM = "iceland"
+DEFAULT_DEM_DIR = "~/gps-data/dem"
+#: station maps label their stations by default only up to this many
+LABEL_LIMIT = 60
 TITLE_FONT = "12p,Helvetica-Bold"
 #: thin ellipses under coloured arrows (the Reykjanes maps)
 ELLIPSE_PEN = "0.5p,gray30"
@@ -68,7 +79,13 @@ examples:
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
       --mogi -22.46,63.87,4.5,1.2e7 --save pdf
   gpsplot map slip models/reykjanes_slip.json --view plane --save pdf
-  --dem @earth_relief_15s draws a hillshade from the GMT remote relief;
+  gpsplot map station --tos --dem iceland --projection M18c --save pdf
+                        every GPS station in TOS, by status, Iceland DEM
+  gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
+                        blue-grey land, flat sea; --dem-cmap list: every CPT
+  --dem iceland picks the level of the Iceland DEM (dem_dir in postprocess.cfg
+  [PATHS], default ~/gps-data/dem) the map needs; --dem @earth_relief_15s
+  draws a hillshade from the GMT remote relief;
   --overlay lavas.geojson draws outlines (e.g. the LMÍ/NÍ lava flows)."""
 
 
@@ -136,12 +153,38 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
     g.add_argument(
         "--dem", default=None, metavar="GRID",
-        help="hillshade background from this grid (a file, or a GMT remote "
-        "grid such as @earth_relief_15s)",
+        help="hillshade background: 'iceland' (the Iceland topo-bathymetry "
+        "DEM, the level the map needs, with the IS 50V coast), a grid file, "
+        "or a GMT remote grid such as @earth_relief_15s",
     )  # fmt: skip
     g.add_argument(
         "--dem-cmap", default=None, metavar="CPT",
-        help="colour map of the --dem background (default geo)",
+        help="land colours of the --dem background: lightgrey (default), "
+        "slate (the Bárðarbunga maps' blue-grey), relief, a GMT CPT (geo, "
+        "batlow, …), a CPT file, or a NAME.cpt in ~/.config/gps_plot/cpt; "
+        "a CPT with a sea half (geo, sealand) colours the sea floor too. "
+        "'list' prints every name",
+    )  # fmt: skip
+    g.add_argument(
+        "--bathymetry-cmap", default=None, metavar="CPT",
+        help="sea-floor colours (z < 0), named as --dem-cmap (default: the "
+        "--dem-cmap's sea half, else gpsplot's blues 'sea'); 'none' = flat "
+        "water without sea-floor relief",
+    )  # fmt: skip
+    g.add_argument(
+        "--glacier-cmap", default=None, metavar="CPT|COLOUR",
+        help="glacier colours: a colour (default white) or a CPT, named as "
+        "--dem-cmap, stretched over the ice heights",
+    )  # fmt: skip
+    g.add_argument(
+        "--glaciers", default=None, metavar="FILE",
+        help="glacier polygons, drawn white with their own gentle hillshade "
+        "(default with --dem iceland: IMO's 2025 outlines; 'none' = off)",
+    )  # fmt: skip
+    g.add_argument(
+        "--lakes", default=None, metavar="FILE",
+        help="lake polygons, filled as water (default with --dem iceland: "
+        "IS 50V lakes and wide rivers; 'none' = off)",
     )  # fmt: skip
     g.add_argument(
         "--overlay", action="append", default=[], metavar="GEOJSON",
@@ -159,7 +202,12 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
     g.add_argument("--title", default=None, help="map title")
     g.add_argument(
-        "--no-labels", dest="labels", action="store_false",
+        "--labels", dest="labels", action="store_const", const=True, default=None,
+        help=f"station names (default: on; station maps with more than "
+        f"{LABEL_LIMIT} stations: off)",
+    )  # fmt: skip
+    g.add_argument(
+        "--no-labels", dest="labels", action="store_const", const=False,
         help="no station names",
     )  # fmt: skip
     g.add_argument(
@@ -227,6 +275,16 @@ def build_parser(
 
     p = sub.add_parser("station", help="station markers")
     _add_station_args(p)
+    p.add_argument(
+        "--tos", action="store_true",
+        help="the GPS stations of TOS (the station register; with campaign, "
+        "external and discontinued ones, one symbol each) instead of "
+        "stations.cfg; patterns and --region select among them",
+    )  # fmt: skip
+    p.add_argument(
+        "--refresh-tos", action="store_true",
+        help="refetch the TOS station list (cached for a day)",
+    )  # fmt: skip
     _add_map_options(p, config)
 
     p = sub.add_parser(
@@ -438,15 +496,53 @@ def _request(args: argparse.Namespace, parser: Any, config: Any,
 # ---------------------------------------------------------------------------
 
 
-def _style(args: argparse.Namespace, region: Any) -> dict[str, Any]:
+def _style(
+    args: argparse.Namespace,
+    region: Any,
+    *,
+    config: Any = None,
+    points: Sequence[Any] = (),
+) -> dict[str, Any]:
+    """Map-function keywords from the map options.
+
+    ``--dem iceland`` needs the map's extent to pick a level: ``region``,
+    else the box around ``points`` (what the map function derives too),
+    else all Iceland.
+    """
     kw: dict[str, Any] = {"region": region, "title": args.title}
     for opt, key in (("margin", "margin"), ("projection", "projection"),
                      ("resolution", "resolution"), ("dem", "dem_grid"),
-                     ("dem_cmap", "dem_cmap")):  # fmt: skip
+                     ("dem_cmap", "dem_cmap"),
+                     ("bathymetry_cmap", "bathymetry_cmap"),
+                     ("glacier_cmap", "glacier_cmap")):  # fmt: skip
         if getattr(args, opt) is not None:
             kw[key] = getattr(args, opt)
-    if "dem_grid" in kw and "dem_cmap" not in kw:
-        kw["dem_cmap"] = lightgrey_cpt()
+    if str(kw.get("dem_grid", "")).lower() == ICELAND_DEM:
+        from gps_plot import maps
+
+        extent = region
+        if extent is None and points:
+            extent = _region_of(points, args.margin, maps)
+        choice = maps.iceland_dem(
+            dem_dir(config),
+            extent or maps.ICELAND_DEM_LEVELS[-1][2],
+            kw.get("projection", maps.DEFAULT_PROJECTION),
+        )
+        kw["dem_grid"] = choice.grid
+        for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
+            if getattr(choice, key) is not None:
+                kw[key] = getattr(choice, key)
+    for key in ("glaciers", "lakes"):
+        value = getattr(args, key, None)
+        if value is not None:
+            if value.lower() == "none":
+                kw.pop(key, None)
+                if key == "glaciers":
+                    kw.pop("glacier_contours", None)
+            else:
+                kw[key] = value
+    if "dem_grid" in kw:
+        kw.setdefault("dem_cmap", DEFAULT_DEM_CPT)
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -459,14 +555,49 @@ def _style(args: argparse.Namespace, region: Any) -> dict[str, Any]:
     return kw
 
 
-def lightgrey_cpt() -> str:
-    """Path of the light-grey DEM colour map (written once to the cache)."""
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    path = Path(base) / "gps_plot" / "lightgrey.cpt"
-    if not path.is_file() or path.read_text() != LIGHTGREY_CPT:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(LIGHTGREY_CPT)
-    return str(path)
+def check_palettes(args: argparse.Namespace, pygmt_mod: Any) -> None:
+    """Reject a colour-map option GMT would not know, before the map is
+    drawn (GMT fails late, mid-map, with a traceback).
+
+    Raises:
+        ValueError: naming the closest known colour maps.
+    """
+    from gps_plot import palettes
+
+    for opt in CMAP_OPTIONS:
+        name = getattr(args, opt, None)
+        if name is None or (opt == "bathymetry_cmap" and name.lower() == palettes.NONE):
+            continue
+        palette = palettes.resolve(name)
+        if palette.kind != palettes.COLOUR:
+            continue
+        try:  # not a CPT anywhere: GMT must know it as a colour
+            palettes.segment(pygmt_mod, palette, 0.0, 1.0)
+        except Exception as exc:  # noqa: BLE001 - GMTCLibError, kept lazy
+            close = palettes.suggest(name)
+            hint = f"; did you mean {', '.join(close)}?" if close else ""
+            flag = "--" + opt.replace("_", "-")
+            raise ValueError(
+                f"{flag} {name!r} is not a CPT (gpsplot's, yours in "
+                f"{palettes.user_dir()}, GMT's or a file) nor a GMT colour{hint} "
+                f"({flag} list prints the names)"
+            ) from exc
+
+
+def print_palettes() -> None:
+    """Every colour-map name, by source (``--dem-cmap list``)."""
+    from gps_plot import palettes
+
+    for source, names in palettes.available().items():
+        print(f"{source}:")
+        print(textwrap.indent(textwrap.fill(" ".join(names) or "(none)", 76), "  "))
+
+
+def dem_dir(config: Any) -> str:
+    """The Iceland DEM directory: dem_dir in postprocess.cfg [PATHS], else
+    :data:`DEFAULT_DEM_DIR`."""
+    found = common.config_dir(config, "dem_dir", None) if config is not None else None
+    return os.path.expanduser(found or DEFAULT_DEM_DIR)
 
 
 def scale_bar_km(region: Sequence[float]) -> float:
@@ -481,7 +612,14 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
     """Scale bar and logo on top of a finished map view."""
     if args.scale_bar:
         km = scale_bar_km(fig.region)
-        fig.scalebar(length=f"{km:g}k", position="TC", label=True, unit=True)
+        # bottom right: top centre sat on the map, the SW corner holds the
+        # vector legend, the logo is top left, the status legend top right
+        from pygmt.params import Position
+
+        fig.scalebar(
+            length=f"{km:g}k", label=True, unit=True, box="+gwhite@20",
+            position=Position("BR", cstype="inside", offset=("0.4c", "0.6c")),
+        )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
         fig.image(imagefile=logo, position="jTL+o0.15c+w2.2c", box="+gwhite@20")
@@ -522,9 +660,23 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
 
 def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
+    if any(str(getattr(args, o, None)).lower() == LIST for o in CMAP_OPTIONS):
+        print_palettes()
+        return 0
+    try:
+        import pygmt
+
+        check_palettes(args, pygmt)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
 
+    if args.kind == "station":
+        return _run_station(args, parser, config, maps, coords)
+    if args.labels is None:
+        args.labels = True
     if args.kind == "slip":
         return _run_slip(args, parser, config, maps, coords)
     if args.kind == "velocity" and args.geojson:
@@ -537,19 +689,57 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     _report(dropped)
-    if args.kind == "station":
-        fig = maps.station_map(
-            stations, labels=args.labels, **_style(args, args.region)
-        )
-        _finish(fig, args)
-        for p in _save(
-            fig, args, config, _stem("station", stations[0].marker, len(stations))
-        ):
-            print(p)
-        return 0
     if args.kind == "velocity":
         return _run_velocity(args, parser, config, maps, stations)
     return _run_deformation(args, parser, config, maps, stations)
+
+
+def tos_coords(stations: Sequence[Any], maps: Any) -> Any:
+    """A ``coords(markers)`` resolver over TOS stations (for
+    :func:`select_stations`): markers to status-carrying coordinates."""
+    by_marker = {
+        s.marker: maps.StationCoordinate(s.marker, s.lon, s.lat, s.name, s.status)
+        for s in stations
+    }
+
+    def coords(markers: Sequence[str]) -> Any:
+        try:
+            return tuple(by_marker[m.upper()] for m in markers)
+        except KeyError as exc:
+            raise KeyError(f"not a GPS station in TOS: {exc.args[0]}") from None
+
+    return coords
+
+
+def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
+    names: Sequence[str]
+    if args.tos:
+        from gps_plot.sources import tos
+
+        fleet = tos.tos_gps_stations(refresh=args.refresh_tos)
+        names, coords = [s.marker for s in fleet], tos_coords(fleet, maps)
+        specs = args.Stations or (["*"] if args.region is None else [])
+    else:
+        names, specs = config.getStationInfo(), args.Stations
+    try:
+        stations, dropped = select_stations(
+            specs, names, coords, region=args.region, exclude=args.exclude
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    _report(dropped)
+    labels = args.labels if args.labels is not None else len(stations) <= LABEL_LIMIT
+    fig = maps.station_map(
+        stations, labels=labels,
+        **_style(args, args.region, config=config, points=stations),
+    )  # fmt: skip
+    _finish(fig, args)
+    stem = _stem(
+        "station", stations[0].marker, len(stations), "tos" if args.tos else ""
+    )
+    for p in _save(fig, args, config, stem):
+        print(p)
+    return 0
 
 
 def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any) -> int:
@@ -600,7 +790,9 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         print(f"{no_record} without a stored detrend record: --ref plate draws "
               "them (plate velocity removed only)", file=sys.stderr)  # fmt: skip
     scale, ref = auto_scale([math.hypot(v.east, v.north) for v in kept])
-    style = _style(args, args.region or _region_of(stations, args.margin, maps))
+    style = _style(
+        args, args.region or _region_of(stations, args.margin, maps), config=config
+    )
     if args.title is None:
         style["title"] = _velocity_title(args, bool(windows))
     fig = maps.velocity_map(
@@ -695,7 +887,7 @@ def _run_deformation(
         for k, m in enumerate(args.mogi or ())
     ]
     scale, ref = auto_scale(np.hypot(east, north))
-    style = _style(args, args.region)
+    style = _style(args, args.region, config=config, points=coords)
     if args.title is None:
         style["title"] = f"Displacement {window_label(args.start, end)}"
     fig = maps.deformation_vectors(
@@ -729,7 +921,7 @@ def _run_geojson(args: Any, config: Any, maps: Any) -> int:
     scale, ref = auto_scale([math.hypot(v.east, v.north) for v in vectors])
     fig = maps.velocity_map(
         vectors, scale=args.scale or scale, scale_ref=args.scale_ref or ref,
-        labels=args.labels, **_style(args, args.region),
+        labels=args.labels, **_style(args, args.region, config=config, points=vectors),
     )  # fmt: skip
     _finish(fig, args)
     stem = _stem("velocity", Path(args.geojson).stem, len(vectors), "geojson")
@@ -753,7 +945,7 @@ def _run_slip(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> in
         except ValueError as exc:
             parser.error(str(exc))
         _report(dropped)
-    style = _style(args, args.region)
+    style = _style(args, args.region, config=config, points=stations or ())
     fig = maps.slip_map(
         product, component=args.component, view=args.view,
         stations=stations, labels=args.labels, **style,

@@ -291,6 +291,8 @@ def fake_maps(monkeypatch):
     monkeypatch.setattr(maps, "station_coordinates", lambda m, parser=None: coords(m))
     monkeypatch.setitem(sys.modules, "pygmt", types.SimpleNamespace(
         config=lambda **kw: __import__("contextlib").nullcontext()))  # fmt: skip
+    monkeypatch.setitem(sys.modules, "pygmt.params", types.SimpleNamespace(
+        Position=lambda *a, **kw: (a, kw)))  # fmt: skip
     return seen
 
 
@@ -495,3 +497,109 @@ def test_overlay_options_reach_the_map(fake_maps, tmp_path):
     )
     assert _run(["station", "SEY?", "--logo", "none"], tmp_path) == 0
     assert "overlays" not in fake_maps["station_map"][1]
+
+
+def _tos_fleet():
+    from gps_plot.sources.tos import TosStation
+
+    return (
+        TosStation("SENG", -22.43, 63.87, "Svartsengi", "active"),
+        TosStation("S001", -22.70, 63.83, "Reykjanes", "campaign"),
+        TosStation("FAFC", -22.30, 63.90, "Fagradalsfjall", "ended", "2023-07-12"),
+        TosStation("HOFN", -15.20, 64.27, "Höfn", "active"),
+    )
+
+
+def test_station_tos_carries_status_and_reaches_stations_cfg_gaps(
+    fake_maps, monkeypatch, tmp_path
+):
+    from gps_plot.sources import tos
+
+    seen = {}
+
+    def fleet(*, refresh=False):
+        seen["refresh"] = refresh
+        return _tos_fleet()
+
+    monkeypatch.setattr(tos, "tos_gps_stations", fleet)
+    argv = ["station", "--tos", "--region", "-23/-22/63.5/64", "--logo", "none"]
+    assert _run([*argv, "--refresh-tos"], tmp_path) == 0
+    (stations,), kw = fake_maps["station_map"]
+    # S001 is not in stations.cfg; the TOS status rides on the coordinate
+    assert [(c.marker, c.status) for c in stations] == [
+        ("FAFC", "ended"),
+        ("S001", "campaign"),
+        ("SENG", "active"),
+    ]
+    assert seen["refresh"] is True and kw["labels"] is True
+    assert fake_maps["fig"].saved == [str(tmp_path / "map_station_FAFC_3-tos.png")]
+    # no region and no pattern: the whole fleet
+    assert _run(["station", "--tos", "--logo", "none"], tmp_path) == 0
+    assert len(fake_maps["station_map"][0][0]) == 4
+
+
+def test_station_labels_off_above_the_limit(fake_maps, monkeypatch, tmp_path):
+    from gps_plot.sources import tos
+    from gps_plot.sources.tos import TosStation
+
+    many = tuple(
+        TosStation(f"S{i:03d}", -20 + i * 0.01, 64.0, None, "active")
+        for i in range(gmap.LABEL_LIMIT + 1)
+    )
+    monkeypatch.setattr(tos, "tos_gps_stations", lambda *, refresh=False: many)
+    assert _run(["station", "--tos", "--logo", "none"], tmp_path) == 0
+    assert fake_maps["station_map"][1]["labels"] is False
+    assert _run(["station", "--tos", "--labels", "--logo", "none"], tmp_path) == 0
+    assert fake_maps["station_map"][1]["labels"] is True
+
+
+def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_path):
+    from gps_plot import maps
+
+    dem = tmp_path / "dem"
+    (dem / "layers").mkdir(parents=True)
+    for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
+        (dem / name).write_text("")
+    (dem / maps.ICELAND_COAST).write_text("")
+    (dem / maps.ICELAND_COAST_OVERVIEW).write_text("")
+    monkeypatch.setattr(gmap, "DEFAULT_DEM_DIR", str(dem))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    argv = ["station", "SEY?", "--logo", "none", "--dem", "iceland"]
+    assert _run([*argv, "--region", "-24.8/-13.2/63.2/66.7"], tmp_path) == 0
+    kw = fake_maps["station_map"][1]
+    assert kw["dem_grid"] == str(dem / "iceland_topobathy_15s.nc")
+    assert kw["coastline"] == str(dem / maps.ICELAND_COAST_OVERVIEW)
+    assert kw["dem_cmap"] == "lightgrey"
+    assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--dem-cmap", "geo"],
+                tmp_path) == 0  # fmt: skip
+    kw = fake_maps["station_map"][1]
+    assert kw["dem_grid"] == str(dem / "iceland_topobathy_1s.nc")
+    assert kw["coastline"] == str(dem / maps.ICELAND_COAST)
+    assert kw["dem_cmap"] == "geo"
+    assert "glaciers" not in kw  # not built in this DEM directory
+    (dem / maps.ICELAND_GLACIERS).write_text("")
+    assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3"], tmp_path) == 0
+    assert fake_maps["station_map"][1]["glaciers"] == str(dem / maps.ICELAND_GLACIERS)
+    assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--glaciers", "none",
+                 "--lakes", "my_lakes.gmt"], tmp_path) == 0  # fmt: skip
+    kw = fake_maps["station_map"][1]
+    assert "glaciers" not in kw and kw["lakes"] == "my_lakes.gmt"
+
+
+def test_colour_map_options_reach_the_map(fake_maps, tmp_path):
+    argv = ["station", "SEY?", "--logo", "none", "--dem", "grid.nc"]
+    assert _run([*argv, "--bathymetry-cmap", "none", "--glacier-cmap", "batlow"],
+                tmp_path) == 0  # fmt: skip
+    kw = fake_maps["station_map"][1]
+    assert kw["dem_cmap"] == "lightgrey"
+    assert (kw["bathymetry_cmap"], kw["glacier_cmap"]) == ("none", "batlow")
+
+
+def test_check_palettes_suggests_the_name_meant():
+    pygmt = pytest.importorskip("pygmt")
+    ok = argparse.Namespace(dem_cmap="slate", bathymetry_cmap="none",
+                            glacier_cmap="white")  # fmt: skip
+    gmap.check_palettes(ok, pygmt)
+    bad = argparse.Namespace(dem_cmap="slade", bathymetry_cmap=None, glacier_cmap=None)
+    with pytest.raises(ValueError, match="did you mean slate"):
+        gmap.check_palettes(bad, pygmt)
