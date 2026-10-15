@@ -592,3 +592,15 @@ def test_dem_cpt_names_and_passthrough(monkeypatch, tmp_path):
     assert path == str(tmp_path / "gps_plot" / "relief.cpt")
     assert open(path).read() == gmap.DEM_CPTS["relief"]
     assert gmap.dem_cpt("geo") == "geo"
+
+
+def test_check_cpt_suggests_the_name_meant(tmp_path):
+    builtin = {"geo", "gray", "batlow"}
+    for ok in ("slate", "Lightgrey", "geo", "geo+h0", "@custom.cpt"):
+        gmap.check_cpt(ok, builtin)
+    cpt = tmp_path / "mine.cpt"
+    cpt.write_text("0 white 1 black\n")
+    gmap.check_cpt(str(cpt), builtin)
+    gmap.check_cpt("anything", set())  # GMT share dir unknown: let GMT judge
+    with pytest.raises(ValueError, match="did you mean slate"):
+        gmap.check_cpt("slade", builtin)

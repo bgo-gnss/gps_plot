@@ -564,6 +564,40 @@ def dem_cpt(name: str) -> str:
     return str(path)
 
 
+def gmt_cpt_names() -> set[str]:
+    """The names of GMT's built-in CPTs (``<share>/cpt/**/*.cpt``), lower
+    case; empty when GMT cannot say where its share directory is."""
+    from pygmt.clib import Session
+
+    with Session() as lib:
+        share = lib.info.get("share dir")
+    if not share:
+        return set()
+    return {p.stem.lower() for p in Path(share, "cpt").rglob("*.cpt")}
+
+
+def check_cpt(name: str, builtin: set[str]) -> None:
+    """Reject a ``--dem-cmap`` that is neither a :data:`DEM_CPTS` name, a
+    file nor a GMT CPT (modifiers such as ``geo+h0`` allowed), before GMT
+    fails on it mid-map.
+
+    Raises:
+        ValueError: naming the closest known CPTs.
+    """
+    import difflib
+
+    base = name.split("+", 1)[0]
+    if (not builtin or base.lower() in DEM_CPTS or base.lower() in builtin
+            or base.startswith("@") or os.path.isfile(os.path.expanduser(base))):  # fmt: skip
+        return
+    close = difflib.get_close_matches(base.lower(), [*DEM_CPTS, *sorted(builtin)], n=4)
+    hint = f"; did you mean {', '.join(close)}?" if close else ""
+    raise ValueError(
+        f"--dem-cmap {name!r} is not a gpsplot CPT ({', '.join(DEM_CPTS)}), "
+        f"a GMT CPT or a file{hint}"
+    )
+
+
 def dem_dir(config: Any) -> str:
     """The Iceland DEM directory: dem_dir in postprocess.cfg [PATHS], else
     :data:`DEFAULT_DEM_DIR`."""
@@ -631,6 +665,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
 
 def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
+    if args.dem_cmap is not None:
+        try:
+            check_cpt(args.dem_cmap, gmt_cpt_names())
+        except ValueError as exc:
+            parser.error(str(exc))
+
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
 
