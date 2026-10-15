@@ -637,3 +637,87 @@ def test_gmt_overrides_hold_while_the_map_is_drawn(fake_maps, monkeypatch, tmp_p
     assert gmap.gmt_config(["map_frame_type=plain"]) == {"MAP_FRAME_TYPE": "plain"}
     with pytest.raises(ValueError, match="KEY=VALUE"):
         gmap.gmt_config(["MAP_FRAME_TYPE"])
+
+
+def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
+    # no stations, no region: Iceland
+    assert _run(["base", "--logo", "none"], tmp_path) == 0
+    (stations,), kw = fake_maps["station_map"]
+    assert stations == [] and kw["markers"] is False and kw["labels"] is False
+    assert kw["region"] == gmap.DEFAULT_BASE_REGION
+    assert fake_maps["fig"].saved == [str(tmp_path / "map_base_region_0.png")]
+    # stations still set the extent, but are not drawn
+    assert _run(["station", "SEY?", "--no-stations", "--logo", "none"], tmp_path) == 0
+    (stations,), kw = fake_maps["station_map"]
+    assert len(stations) == 2 and kw["markers"] is False and kw["region"] is None
+    assert fake_maps["fig"].saved == [str(tmp_path / "map_base_SEY1_2.png")]
+
+
+def test_stations_files_alone_or_beside_tos(fake_maps, monkeypatch, tmp_path):
+    from gps_plot.sources import tos
+
+    monkeypatch.setattr(tos, "tos_gps_stations", lambda *, refresh=False: _tos_fleet())
+    planned = tmp_path / "planned.txt"
+    planned.write_text("PLA1 -22.5 63.8\nFAR1 -15.0 66.0\n")
+    spec = f"{planned}:Planned"
+    assert _run(["station", "--stations-file", spec, "--logo", "none"], tmp_path) == 0
+    (stations,), _ = fake_maps["station_map"]
+    assert [(c.marker, c.status) for c in stations] == [
+        ("PLA1", "Planned"), ("FAR1", "Planned"),
+    ]  # fmt: skip
+    argv = ["station", "--tos", "--region", "-23/-22/63.5/64", "--stations-file", spec]
+    assert _run([*argv, "--logo", "none"], tmp_path) == 0
+    (stations,), _ = fake_maps["station_map"]
+    # TOS by status, the file's stations inside the region beside them
+    assert [(c.marker, c.status) for c in stations] == [
+        ("FAFC", "ended"), ("S001", "campaign"), ("SENG", "active"),
+        ("PLA1", "Planned"),
+    ]  # fmt: skip
+    # stations.cfg stations beside a file get a group of their own
+    assert _run(["station", "SEY?", "--stations-file", spec, "--logo", "none"],
+                tmp_path) == 0  # fmt: skip
+    (stations,), _ = fake_maps["station_map"]
+    assert {c.status for c in stations} == {gmap.STATIONS_CFG_GROUP, "Planned"}
+
+
+def test_tos_search_selects_and_groups(fake_maps, monkeypatch, tmp_path):
+    from gps_plot.sources import tos
+    from gps_plot.sources.tos import TosStation
+
+    seen = {}
+    fleet = (
+        TosStation("SENG", -22.43, 63.87, "Svartsengi", "active", None, "GPS stöð",
+                   {"continuity": "continuous"}),
+        TosStation("SIL1", -22.40, 63.90, "Sil", "active", None, "SIL stöð", {}),
+    )  # fmt: skip
+
+    def search(text, *, refresh=False):
+        seen.update(text=text, refresh=refresh)
+        if text == "bad":
+            raise ValueError("tos search: bad")
+        return fleet
+
+    monkeypatch.setattr(tos, "search_stations", search)
+    assert _run(["station", "--tos-search", "--epos 'name ~ x'", "--logo", "none"],
+                tmp_path) == 0  # fmt: skip
+    assert seen == {"text": "--epos 'name ~ x'", "refresh": False}
+    (stations,), _ = fake_maps["station_map"]
+    assert [(c.marker, c.status) for c in stations] == [
+        ("SENG", "GPS stöð"), ("SIL1", "SIL stöð"),
+    ]  # a mix: by subtype  # fmt: skip
+    argv = ["station", "--tos-search", "--epos", "--group-by", "continuity"]
+    assert _run([*argv, "--logo", "none"], tmp_path) == 0
+    (stations,), _ = fake_maps["station_map"]
+    assert [c.status for c in stations] == ["continuous", "continuity: none"]
+    with pytest.raises(SystemExit):
+        _run(["station", "--tos-search", "bad"], tmp_path)
+
+
+def test_no_stations_reaches_the_vector_maps(fake_maps, monkeypatch, tmp_path):
+    def window_velocity(sta, req, min_epochs=3):
+        return vsource.StationRate(sta, np.array([1.0, 1.0, 0.0]), np.ones(3), 10)
+
+    monkeypatch.setattr(vsource, "window_velocity", window_velocity)
+    argv = ["velocity", "SEY?", "--window", "20231027:20231109", "--no-stations"]
+    assert _run([*argv, "--logo", "none"], tmp_path) == 0
+    assert fake_maps["velocity_map"][1]["markers"] is False

@@ -96,3 +96,42 @@ def test_cache_is_used_refreshed_and_never_empty(tmp_path):
     assert json.loads(path.read_text()) == [entity("AAAA")]
     with pytest.raises(RuntimeError, match="no stations"):
         tos.load_entities(path=path, fetch=lambda: [], refresh=True)
+
+
+def test_every_subtype_keeps_its_subtype_and_open_attributes():
+    got = tos.stations(
+        [entity("AAAA", attr("continuity", "campaign")),
+         entity("AAAA", subtype="SIL stöð"),
+         entity("BBBB", attr("continuity", "x", stop="2020-01-01T00:00:00"),
+                subtype="SIL stöð")],
+        subtype=None, today=TODAY,
+    )  # fmt: skip
+    assert [(s.marker, s.subtype) for s in got] == [
+        ("AAAA", "GPS stöð"), ("AAAA", "SIL stöð"), ("BBBB", "SIL stöð"),
+    ]  # fmt: skip
+    assert tos.group_key(got[0], None) == "campaign"  # status
+    assert tos.group_key(got[1], "subtype") == "SIL stöð"
+    assert tos.group_key(got[0], "continuity") == "campaign"
+    assert tos.group_key(got[2], "continuity") == "continuity: none"  # closed
+    assert tos.default_group(got[:1]) == "status"
+    assert tos.default_group(got) == "subtype"
+
+
+def test_search_stations_passes_the_search_to_tostools():
+    seen = {}
+
+    class Result:
+        stations = [entity("AAAA"), entity("SILX", subtype="SIL stöð")]
+
+    def run(argv, *, default_subtype):
+        seen.update(argv=argv, default=default_subtype)
+        if "bad" in argv:
+            raise ValueError("tos search: bad")
+        return Result()
+
+    got = tos.search_stations("--epos 'name ~ *vík*'", refresh=True, run=run)
+    assert seen == {"argv": ["--epos", "name ~ *vík*", "--refresh"],
+                    "default": "GPS stöð"}  # fmt: skip
+    assert [s.marker for s in got] == ["AAAA", "SILX"]  # the search's choice
+    with pytest.raises(ValueError, match="tos search: bad"):
+        tos.search_stations(["bad"], run=run)

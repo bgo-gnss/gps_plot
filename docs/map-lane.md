@@ -198,6 +198,39 @@ it. TOS attributes are dated, and the current value is the open period
 Station maps label their stations only up to 60 stations; `--labels` and
 `--no-labels` override this.
 
+### Which stations: `--tos-search`, `--stations-file`, `--no-stations`
+
+- **`--tos-search "SEARCH"`** selects TOS stations with a `tos search`
+  command line, in one quoted string: every expression and flag of
+  `tos search` works (`--epos`, `--active-gps`, `--receiver polarx5`,
+  `'name ~ *vík*'`, `contact.owner ~ …`, `--domain`, `--at`). gpsplot hands
+  it to `tostools.tos.search_from_argv`, which parses it with the command's
+  own parser, so the two never drift apart. The search is limited to
+  `subtype = GPS stöð` unless it names a subtype; `'subtype = all'` lifts
+  that. A search value may start with `--` (`cli/map.py` joins it to the
+  option, as it does for west longitudes).
+- **Legend groups** are the status for GPS stations and the subtype for a
+  mix (a GPS station keeps the red triangle). `--group-by CODE` groups by
+  any open TOS attribute. Groups other than the statuses take the symbols
+  of `maps.GROUP_STYLES` in order.
+- **`--stations-file FILE[:LABEL]`** (repeatable) reads stations from
+  `MARKER LON LAT [NAME]` text, a CSV with marker/lon/lat columns, or
+  GeoJSON points (`sources/station_files.py`). Each file is one legend
+  group. Alone, the files are the whole map; beside stations, `--tos` or
+  `--tos-search`, they are drawn with them, inside `--region`.
+- **`--no-stations`** draws no station symbols or names, on station,
+  velocity and deformation maps; the stations still set the extent.
+  `gpsplot map base` is a station map without stations, Iceland when no
+  `--region` is given.
+
+```bash
+gpsplot map station --tos-search "--epos" --dem iceland --save pdf
+gpsplot map station --tos-search "'subtype = [GPS stöð, SIL stöð]'" --save pdf
+gpsplot map station --tos-search "--active-gps" --group-by continuity --save pdf
+gpsplot map station --tos --stations-file planned.txt:Planned --save pdf
+gpsplot map base --dem iceland --dem-smooth 2 --save pdf
+```
+
 ```bash
 gpsplot map station --tos --dem iceland --region -24.8/-13.2/63.2/66.7 \
     --projection M18c --title "GPS stations in TOS" --save pdf

@@ -181,7 +181,9 @@ uv run gps-analysis-devviz --neu STA.NEU --component north --breaks 2 --out sta.
 guard, `dem_grid=` hillshade on all of them): `station_map`, `velocity_map`,
 `deformation_vectors`, `slip_map`. They consume `gps_api` products directly,
 and the dormant `gmtplot.py::velomap` recipe is fully absorbed into them.
-`gpsplot map station --tos` plots every TOS GPS station by status, and
+`gpsplot map station --tos` plots every TOS GPS station by status
+(`--tos-search "…"` takes any `tos search` line, `--stations-file` adds
+sites from files, `map base`/`--no-stations` draws none), and
 `--dem iceland` draws the spliced Iceland DEM at the level the map needs
 (the TOS current-value rules are in the lane doc). Signatures, inputs and
 the install story are in **[`docs/map-lane.md`](docs/map-lane.md)**.
@@ -210,7 +212,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-15 — map --tos, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
