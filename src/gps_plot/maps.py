@@ -78,6 +78,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from gps_plot.gmt_overrides import layer_kw
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, pygmt stays optional
     import pygmt
     from numpy.typing import ArrayLike, NDArray
@@ -173,21 +175,25 @@ STATUS_STYLES: dict[str, tuple[str, str, str, str]] = {
 }
 DEFAULT_STATUS_LEGEND = "jTR+o0.2c"
 
-#: The spliced Iceland topo-bathymetry DEM (~/gps-data/dem, its README):
-#: one file per level, (file, cell [deg], W/E/S/N coverage), finest first.
+#: The local GIS directory (``gis_dir``; ~/gps-data/gis, its README) holds
+#: the DEM grids, the vector layers drawn over them and the user's CPTs.
+GIS_DEM, GIS_VECTOR, GIS_CPT = "dem", "vector", "cpt"
+#: The spliced Iceland topo-bathymetry DEM (gis_dir/dem, its README): one
+#: file per level, (file, cell [deg], W/E/S/N coverage), finest first.
 ICELAND_DEM_LEVELS: tuple[tuple[str, float, tuple[float, float, float, float]], ...] = (
     ("iceland_topobathy_1s.nc", 1 / 3600, (-25.0, -13.0, 63.0, 66.8)),
     ("iceland_topobathy_3s.nc", 3 / 3600, (-28.0, -10.0, 62.0, 68.0)),
     ("iceland_topobathy_15s.nc", 15 / 3600, (-34.0, -6.0, 60.0, 70.0)),
 )
 #: the IS 50V coast (WGS84), in full and without the smallest islets
-ICELAND_COAST = "layers/is50v_coast_wgs84.gmt"
-ICELAND_COAST_OVERVIEW = "layers/is50v_coast_wgs84_overview.gmt"
+#: (gis_dir/vector, build_05_coast.sh)
+ICELAND_COAST = "vector/is50v_coast_wgs84.gmt"
+ICELAND_COAST_OVERVIEW = "vector/is50v_coast_wgs84_overview.gmt"
 #: IMO glacier polygons (Sentinel-2) and IS 50V lakes + wide rivers, in
 #: full and without those under 0.5 km² (build_06_ice_water.sh)
-ICELAND_GLACIERS = "layers/imo_glaciers_wgs84.gmt"
-ICELAND_LAKES = "layers/is50v_lakes_wgs84.gmt"
-ICELAND_LAKES_OVERVIEW = "layers/is50v_lakes_wgs84_overview.gmt"
+ICELAND_GLACIERS = "vector/imo_glaciers_wgs84.gmt"
+ICELAND_LAKES = "vector/is50v_lakes_wgs84.gmt"
+ICELAND_LAKES_OVERVIEW = "vector/is50v_lakes_wgs84_overview.gmt"
 #: contour interval [m] on the glaciers of local (non-overview) maps
 ICELAND_GLACIER_CONTOUR_M = 100.0
 #: output pixels coarser than this [deg] take the overview coast
@@ -471,7 +477,7 @@ def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
                 kw: dict[str, Any] = {"pen": ov.pen}
                 if closed and ov.fill:
                     kw["fill"] = ov.fill
-                fig.plot(data=seg, **kw)
+                fig.plot(**layer_kw("overlay", data=seg, **kw))
 
 
 def map_width_cm(projection: str) -> float | None:
@@ -511,13 +517,14 @@ class DemChoice:
 
 
 def iceland_dem(
-    dem_dir: str | os.PathLike[str],
+    gis_dir: str | os.PathLike[str],
     region: Sequence[float],
     projection: str = DEFAULT_PROJECTION,
     *,
     dpi: int = DEFAULT_RASTER_DPI,
 ) -> DemChoice:
-    """The Iceland DEM level for a map: no finer than the output pixels.
+    """The Iceland DEM level for a map, from the GIS directory ``gis_dir``:
+    no finer than the output pixels.
 
     Picks the coarsest level of :data:`ICELAND_DEM_LEVELS` that covers
     ``region`` and whose cell is no larger than one output pixel (an
@@ -530,7 +537,7 @@ def iceland_dem(
     Raises:
         FileNotFoundError: the chosen level is not built.
     """
-    base = Path(dem_dir).expanduser()
+    base = Path(gis_dir).expanduser()
     w, e, s, n = region
     pixel = output_pixel_deg(region, projection, dpi)
     covering = [
@@ -539,10 +546,10 @@ def iceland_dem(
     ] or [ICELAND_DEM_LEVELS[-1]]  # fmt: skip
     fitting = [lv for lv in covering if lv[1] <= pixel]
     name = (fitting[-1] if fitting else covering[0])[0]
-    grid = base / name
+    grid = base / GIS_DEM / name
     if not grid.is_file():
         raise FileNotFoundError(
-            f"{grid} is not built (see build_04_levels.sh in {base})"
+            f"{grid} is not built (see build_04_levels.sh in {grid.parent})"
         )
     overview = pixel > COAST_OVERVIEW_PIXEL_DEG
 
@@ -603,20 +610,26 @@ def _draw_basemap(
     # one coast call when GSHHG draws the shoreline straight over the fill
     plain = dem_grid is None and coastline is None
     fig.coast(
-        region=region,
-        projection=projection,
-        resolution=resolution,
-        land=land,
-        water=water,
-        frame=list(frame_args),
-        **({"shorelines": shorelines} if plain else {}),
+        **layer_kw(
+            "coast",
+            region=region,
+            projection=projection,
+            resolution=resolution,
+            land=land,
+            water=water,
+            frame=list(frame_args),
+            **({"shorelines": shorelines} if plain else {}),
+        )
     )
     if dem_grid is not None:
         subgrid = pygmt_mod.grdcut(dem_grid, region=region)
         gradient = pygmt_mod.grdgradient(
-            grid=subgrid,
-            azimuth=dem_shading_azimuth,
-            normalize=dem_shading_normalize,
+            **layer_kw(
+                "gradient",
+                grid=subgrid,
+                azimuth=dem_shading_azimuth,
+                normalize=dem_shading_normalize,
+            )
         )
         subgrid, gradient, cpt, ice = _dem_colours(
             pygmt_mod,
@@ -628,13 +641,20 @@ def _draw_basemap(
             glaciers=glaciers,
             water=water,
         )
-        fig.grdimage(grid=subgrid, shading=gradient, cmap=cpt, nan_transparent=True)
+        fig.grdimage(
+            **layer_kw(
+                "dem", grid=subgrid, shading=gradient, cmap=cpt, nan_transparent=True
+            )
+        )
         if glacier_contours and ice is not None:
             fig.grdcontour(
-                grid=ice,
-                levels=glacier_contours,
-                annotation=glacier_contours * GLACIER_CONTOUR_ANNOTATION_EVERY,
-                pen=DEFAULT_GLACIER_CONTOUR_PEN,
+                **layer_kw(
+                    "contours",
+                    grid=ice,
+                    levels=glacier_contours,
+                    annotation=glacier_contours * GLACIER_CONTOUR_ANNOTATION_EVERY,
+                    pen=DEFAULT_GLACIER_CONTOUR_PEN,
+                )
             )
     if glaciers is not None:
         fill = None
@@ -643,13 +663,29 @@ def _draw_basemap(
 
             is_colour = palettes.resolve(glacier_cmap).kind == palettes.COLOUR
             fill = glacier_cmap if is_colour else DEFAULT_GLACIER_FILL
-        fig.plot(data=glaciers, pen=DEFAULT_GLACIER_PEN, fill=fill)
+        fig.plot(
+            **layer_kw("glaciers", data=glaciers, pen=DEFAULT_GLACIER_PEN, fill=fill)
+        )
     if lakes is not None:
-        fig.plot(data=lakes, fill=DEFAULT_LAKE_FILL, pen=DEFAULT_LAKE_PEN)
+        fig.plot(
+            **layer_kw(
+                "lakes", data=lakes, fill=DEFAULT_LAKE_FILL, pen=DEFAULT_LAKE_PEN
+            )
+        )
     if coastline is not None:
-        fig.plot(data=coastline, pen=DEFAULT_COASTLINE_FILE_PEN)
+        fig.plot(
+            **layer_kw("coastline", data=coastline, pen=DEFAULT_COASTLINE_FILE_PEN)
+        )
     elif not plain:
-        fig.coast(shorelines=shorelines, resolution=resolution)
+        # the shoreline over the DEM: no land/water fill, no second frame
+        fig.coast(
+            **layer_kw(
+                "coast",
+                exclude=("land", "G", "water", "S", "frame", "B"),
+                shorelines=shorelines,
+                resolution=resolution,
+            )
+        )
     _draw_overlays(fig, overlays)
 
 
@@ -712,9 +748,12 @@ def _dem_colours(
     ice_heights = None
     if ice is not None:
         ice_gradient = pygmt_mod.grdgradient(
-            grid=grid,
-            azimuth=DEFAULT_GLACIER_SHADING_AZIMUTH,
-            normalize=DEFAULT_GLACIER_SHADING_NORMALIZE,
+            **layer_kw(
+                "glacier-gradient",
+                grid=grid,
+                azimuth=DEFAULT_GLACIER_SHADING_AZIMUTH,
+                normalize=DEFAULT_GLACIER_SHADING_NORMALIZE,
+            )
         )
         ice_heights = _like_grid(grid.where(ice), grid)
         ice_lo, ice_hi = float(ice_heights.min()), float(ice_heights.max())
@@ -833,7 +872,7 @@ def _draw_vector_layer(
         kwargs["line"] = True if ellipse_pen is None else ellipse_pen
         if ellipse_fill is not None:
             kwargs["uncertainty_fill"] = ellipse_fill
-    fig.velo(data=data, **kwargs)
+    fig.velo(**layer_kw("vectors", data=data, **kwargs))
 
 
 def _draw_vector_legend(
@@ -912,15 +951,20 @@ def _draw_status_markers(
             continue
         style, fill, pen, label = STATUS_STYLES[key]
         fig.plot(
-            x=[c.lon for c in members],
-            y=[c.lat for c in members],
-            style=style,
-            fill=fill,
-            pen=pen,
-            label=f"{label} ({len(members)})",
+            **layer_kw(
+                "stations",
+                x=[c.lon for c in members],
+                y=[c.lat for c in members],
+                style=style,
+                fill=fill,
+                pen=pen,
+                label=f"{label} ({len(members)})",
+            )
         )
     if legend_position:
-        fig.legend(position=legend_position, box="+gwhite@20+p0.4p")
+        fig.legend(
+            **layer_kw("legend", position=legend_position, box="+gwhite@20+p0.4p")
+        )
 
 
 def station_map(
@@ -1065,18 +1109,26 @@ def station_map(
     if any(getattr(c, "status", None) for c in coordinates):
         _draw_status_markers(fig, coordinates, legend_position=status_legend)
     else:
-        fig.plot(x=lons, y=lats, style=marker_style, pen=marker_pen, fill=marker_fill)
+        fig.plot(
+            **layer_kw(
+                "stations",
+                x=lons, y=lats, style=marker_style, pen=marker_pen, fill=marker_fill,
+            )
+        )  # fmt: skip
     if labels:
         # x=longitude, y=latitude — the dormant gmtplot.velomap had these
         # swapped in its fig.text call; fixed on absorption.
         fig.text(
-            x=lons,
-            y=lats,
-            text=[c.marker for c in coordinates],
-            font=label_font,
-            justify="BL",
-            fill="white",
-            offset=label_offset,
+            **layer_kw(
+                "labels",
+                x=lons,
+                y=lats,
+                text=[c.marker for c in coordinates],
+                font=label_font,
+                justify="BL",
+                fill="white",
+                offset=label_offset,
+            )
         )
 
     if outfile is not None:
@@ -1448,16 +1500,24 @@ def velocity_map(
         )
         legend_entries.append((method if method else "velocity", layer_color))
 
-    fig.plot(x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen)
+    fig.plot(
+        **layer_kw(
+            "stations",
+            x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen,
+        )
+    )  # fmt: skip
     if labels:
         fig.text(
-            x=lons,
-            y=lats,
-            text=[v.marker for v in vectors],
-            font=label_font,
-            justify="BL",
-            fill="white",
-            offset=label_offset,
+            **layer_kw(
+                "labels",
+                x=lons,
+                y=lats,
+                text=[v.marker for v in vectors],
+                font=label_font,
+                justify="BL",
+                fill="white",
+                offset=label_offset,
+            )
         )
 
     if legend:
@@ -1835,16 +1895,24 @@ def deformation_vectors(
         pen_width=pen_width,
     )
 
-    fig.plot(x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen)
+    fig.plot(
+        **layer_kw(
+            "stations",
+            x=lons, y=lats, style=station_style, fill=station_fill, pen=station_pen,
+        )
+    )  # fmt: skip
     if labels:
         fig.text(
-            x=lons,
-            y=lats,
-            text=[c.marker for c in coordinates],
-            font=label_font,
-            justify="BL",
-            fill="white",
-            offset=label_offset,
+            **layer_kw(
+                "labels",
+                x=lons,
+                y=lats,
+                text=[c.marker for c in coordinates],
+                font=label_font,
+                justify="BL",
+                fill="white",
+                offset=label_offset,
+            )
         )
     for field, _, _ in fields:
         if field.source_lon is not None and field.source_lat is not None:

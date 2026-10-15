@@ -561,14 +561,15 @@ def test_map_width_cm_reads_width_forms():
 def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
     from gps_plot import maps
 
+    (tmp_path / maps.GIS_DEM).mkdir()
     for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
-        (tmp_path / name).write_text("")
+        (tmp_path / maps.GIS_DEM / name).write_text("")
     pick = lambda region, proj="M12c": maps.iceland_dem(tmp_path, region, proj)  # noqa: E731
     # Iceland at 18 cm: ~20" pixels -> 15"; no vector files -> none drawn
     assert pick((-24.8, -13.2, 63.2, 66.7), "M18c") == maps.DemChoice(
-        str(tmp_path / "iceland_topobathy_15s.nc"), None, None, None, None
+        str(tmp_path / "dem" / "iceland_topobathy_15s.nc"), None, None, None, None
     )
-    (tmp_path / "layers").mkdir()
+    (tmp_path / maps.GIS_VECTOR).mkdir()
     for name in (
         maps.ICELAND_GLACIERS,
         maps.ICELAND_LAKES,
@@ -589,7 +590,7 @@ def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
     assert pick((-22.5, -22.4, 63.8, 63.9)).grid.endswith("_1s.nc")
     # outside the 1" box (Jan Mayen side): the level that covers it
     assert pick((-12.0, -11.5, 66.0, 66.3)).grid.endswith("_3s.nc")
-    (tmp_path / "iceland_topobathy_3s.nc").unlink()
+    (tmp_path / "dem" / "iceland_topobathy_3s.nc").unlink()
     with pytest.raises(FileNotFoundError, match="build_04_levels"):
         pick((-23.0, -18.0, 63.3, 65.0))
 
@@ -602,7 +603,6 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     from gps_plot import maps, palettes
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     lon = np.round(np.arange(-20.0, -19.0 + 1e-9, 0.05), 6)
     lat = np.round(np.arange(64.0, 64.5 + 1e-9, 0.05), 6)
     # sea floor in the first rows, land above, a non-round top (makecpt

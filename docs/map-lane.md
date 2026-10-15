@@ -61,8 +61,9 @@ the LMÍ/NÍ Reykjanes lava flows (WFS `LMI_vektor:goslok_reykjaneselda` on
 `gis.natt.is`, listed in the VÍ GIS registry `api.vedur.is/gis/layers`).
 
 `--dem iceland` draws the spliced Iceland topo-bathymetry DEM
-(`~/gps-data/dem`, its README; `dem_dir` in postprocess.cfg `[PATHS]`
-overrides) at the level the map needs: the coarsest of 1″/3″/15″ that covers
+from the local GIS directory (`gis_dir` in postprocess.cfg `[PATHS]`,
+default `~/gps-data/gis`, its README: `dem/` grids, `vector/` coast,
+glaciers and lakes, `cpt/` your colour maps) at the level the map needs: the coarsest of 1″/3″/15″ that covers
 the region and is no coarser than one 300-dpi output pixel
 (`maps.iceland_dem`). An Iceland overview at 18 cm takes 15″ in ~2 s; the
 3″ grid took 20 s and looked the same. It draws the IS 50V coast, not GSHHG:
@@ -94,7 +95,8 @@ Three options colour a `--dem` background, each with its own layer:
 
 A name is looked up in this order, first match wins (`palettes.py`):
 1. an existing CPT file;
-2. `~/.config/gps_plot/cpt/NAME.cpt` (yours; it also overrides gpsplot's);
+2. `NAME.cpt` in `cpt/` of the GIS directory (yours; it also overrides
+   gpsplot's);
 3. gpsplot's own `src/gps_plot/cpt/`: `lightgrey`, `slate` (the
    Bárðarbunga maps' blue-grey), `relief`, `sea`;
 4. a GMT built-in CPT (`geo`, `sealand`, SCM `batlow`, cmocean `deep`, …);
@@ -105,7 +107,7 @@ drawn and suggests close names.
 
 A CPT **file** keeps its own z in metres, GMT's rule for files, and is cut
 to the layer's range. To make one for the user directory, run
-`gmt makecpt -Cbatlow -T0/2200 > ~/.config/gps_plot/cpt/mine.cpt`. A GMT
+`gmt makecpt -Cbatlow -T0/2200 > ~/gps-data/gis/cpt/mine.cpt`. A GMT
 built-in or a colour is stretched over the layer's range of the map. A
 hinged GMT CPT splits at 0: `-T0/max` gives its land half and `-Tmin/0` its
 sea half.
@@ -126,6 +128,45 @@ How it is drawn (`maps._dem_colours`):
   are restored. It also refuses to align `grdgradient` output with its
   grid (the last digits of the coordinates differ), so the flat-sea
   shading uses numpy.
+
+### GMT arguments: `--gmt STEP:KEY=VALUE`, `--gmt-config KEY=VALUE`
+
+Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT
+argument to every PyGMT call of that step, or replaces gpsplot's own value.
+The flag can be repeated. The steps are coast, gradient, glacier-gradient,
+dem, contours, glaciers, lakes, coastline, overlay, stations, labels,
+vectors, legend and logo (`gmt_overrides.LAYERS`).
+
+```bash
+gpsplot map station --tos --dem iceland --region -17.9/-16.9/64.45/64.85 \
+    --gmt glaciers:pen=1p,blue --gmt contours:W=0.5p,red \
+    --gmt labels:F=+f9p,Helvetica-Bold,darkred+jTL --gmt stations:S=c0.3c \
+    --gmt-config MAP_FRAME_TYPE=plain --gmt-config FONT_ANNOT_PRIMARY=8p
+```
+
+- **KEY** is a PyGMT long name of that call, such as `pen` or `area_thresh`,
+  or one GMT letter, such as `W` or `A`; PyGMT's warning about letters is
+  silenced. A bare `STEP:KEY` passes a flag. A KEY replaces gpsplot's value
+  under either name: the table maps the long names gpsplot passes to their
+  letters, and `test_alias_table_pairs_conflict_in_pygmt` proves each pair
+  against PyGMT. `text` folds `font` and `justify` into one `-F` without
+  complaint, so `labels:F=…` drops both.
+- **Checked before drawing:** an unknown step or key stops with suggestions.
+  So do the keys gpsplot sets itself: data, `region`/`projection`, and
+  `dem:cmap`/`C`, because the glacier slices sit 100 000 m up in the
+  stitched CPT. Use `--dem-cmap` and friends for colours.
+- **Where a step applies:** `coast` applies to both coast calls, but the
+  shoreline-only call over a DEM takes no fill (`land`/`water`) and no
+  frame. `stations` applies to every station marker, including all four
+  status symbols of a `--tos` map. `vectors` applies to the reference arrow
+  of the vector legend too, so it keeps the scale.
+- **`--gmt-config`** sets GMT defaults (`pygmt.config`) for the whole map,
+  over gpsplot's title font. GMT rejects an unknown key or value when the
+  config is entered, before anything is drawn.
+- **Cost:** transparency (`dem:t=20`) is slow in GMT, about 40 s instead of
+  9 s for a 1″ close-up.
+- **Named options:** an option that keeps coming back becomes a named one,
+  like `--glacier-cmap`.
 
 Any `--dem` grid is drawn with its NaN cells transparent and **no water
 painted over it**, so a topo-bathymetry grid shows its sea floor. A
