@@ -594,46 +594,29 @@ def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
         pick((-23.0, -18.0, 63.3, 65.0))
 
 
-def test_cpt_slice_top_reads_both_layouts():
-    from gps_plot.maps import _cpt_slice_top
-
-    assert _cpt_slice_top("0 119/136/153 9000 119/136/153") == 9000.0
-    assert _cpt_slice_top("-200 175 208 232 0 205 228 242") == 0.0
-    assert _cpt_slice_top("1530.9\t255/254/253\t1875.4\t255/254/253\tB") == 1875.4
-
-
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_check_cpt_gaps_flags_a_rounded_join():
-    from gps_plot.maps import _check_cpt_gaps
-
-    _check_cpt_gaps("# c\n0 a 2109.0035 b\n2109.0035 white 3000 white\nB black\n")
-    with pytest.raises(ValueError, match="do not join"):
-        _check_cpt_gaps("0 a 2109.0035 b\n2109 white 3000 white\n")
-
-
-def test_glacier_composite_whitens_only_the_ice(tmp_path, monkeypatch):
+def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     import pygmt
-
-    from gps_plot import maps
-
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     import xarray as xr
 
+    from gps_plot import maps, palettes
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     lon = np.round(np.arange(-20.0, -19.0 + 1e-9, 0.05), 6)
     lat = np.round(np.arange(64.0, 64.5 + 1e-9, 0.05), 6)
-    grid = xr.DataArray(
-        500.0 + 10.0 * np.add.outer(np.arange(lat.size), np.arange(lon.size)),
-        coords={"lat": lat, "lon": lon},
-        dims=("lat", "lon"),
-    )
+    # sea floor in the first rows, land above, a non-round top (makecpt
+    # writes 2109.0035-like tops with more digits than :g kept)
+    z = -300.0 + 60.0 * np.add.outer(np.arange(lat.size), np.arange(lon.size))
+    grid = xr.DataArray(z + 0.00351562, coords={"lat": lat, "lon": lon},
+                        dims=("lat", "lon"))  # fmt: skip
     grid.gmt.registration, grid.gmt.gtype = 0, 1
     shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
     poly = tmp_path / "ice.gmt"
     poly.write_text("-19.8 64.1\n-19.5 64.1\n-19.5 64.3\n-19.8 64.3\n-19.8 64.1\n")
-    land_cpt = tmp_path / "land.cpt"
-    land_cpt.write_text("-1000 0/0/255 0 0/0/255\n0 119/136/153 9000 119/136/153\n")
-    comp, shading, cpt, ice = maps._glacier_composite(
-        pygmt, grid, shade, str(land_cpt), str(poly)
+
+    comp, _shading, cpt, ice = maps._dem_colours(
+        pygmt, grid, shade, land="slate", glaciers=str(poly)
     )
     # nodes on the outline count as ice (grdmask edge=1)
     eps = 1e-6
@@ -646,20 +629,30 @@ def test_glacier_composite_whitens_only_the_ice(tmp_path, monkeypatch):
     assert (shifted[inside] == maps.GLACIER_Z_OFFSET).all()
     assert (shifted[~inside] == 0).all()
     assert comp.gmt.registration == grid.gmt.registration
-    assert open(cpt).read().splitlines()[-1] == (
-        f"9000 white {maps.GLACIER_Z_OFFSET + 20000:g} white"
-    )
-    # a GMT CPT name is sampled and closed the same way, without a gap
     assert np.isfinite(ice.values).sum() == inside.sum()
-    _c, _s, cpt, _i = maps._glacier_composite(pygmt, grid, shade, "geo", str(poly))
-    assert (
-        open(cpt)
-        .read()
-        .splitlines()[-1]
-        .endswith(f"white {maps.GLACIER_Z_OFFSET + 20000:g} white")
-    )
-    # a non-round land top (makecpt writes it with more digits than :g)
-    odd = grid + 0.00351562
-    odd.gmt.registration, odd.gmt.gtype = 0, 1
-    _c, _s, cpt, _i = maps._glacier_composite(pygmt, odd, shade, "sealand", str(poly))
-    maps._check_cpt_gaps(open(cpt).read())
+    slices = palettes.parse(open(cpt).read())
+    assert slices[0].lo == float(grid.where(~inside).min())  # gpsplot's sea
+    assert slices[0].lo_colour != "119/136/153"
+    assert "119/136/153" in {s.lo_colour for s in slices if s.lo >= 0}
+    assert slices[-1].hi_colour == "255/255/255"  # white ice on top
+
+    # every pairing joins without a gap; a hinged land map keeps its sea
+    for land, sea, glacier in [
+        ("sealand", None, "white"),
+        ("solar", None, "batlow"),
+        ("geo", "none", "gray90"),
+        ("relief", "sea", "white"),
+    ]:
+        _c, s, cpt, _i = maps._dem_colours(
+            pygmt, grid, shade, land=land, sea=sea, glacier=glacier,
+            glaciers=str(poly),
+        )  # fmt: skip
+        palettes.check_gaps(open(cpt).read())
+        if sea == "none":  # flat water: no sea-floor relief
+            assert (s.values[grid.values < 0] == 0).all()
+
+    # a land-only box: no sea slices
+    high = grid + 1000.0
+    high.gmt.registration, high.gmt.gtype = 0, 1
+    _c, _s, cpt, _i = maps._dem_colours(pygmt, high, shade, land="lightgrey")
+    assert palettes.parse(open(cpt).read())[0].lo >= 0

@@ -573,6 +573,8 @@ def _draw_basemap(
     frame_args: Sequence[str],
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
+    bathymetry_cmap: str | None = None,
+    glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
@@ -588,12 +590,13 @@ def _draw_basemap(
     in-memory grid) a hillshaded ``grdimage`` goes over that base: the
     grid is cut to the region, shaded with ``grdgradient``
     (``dem_shading_azimuth`` illumination, ``dem_shading_normalize``
-    amplitude normalization) and colored with ``dem_cmap``. Its NaN cells
-    are transparent, so a land-only grid keeps the flat water fill while
-    a topo-bathymetry grid shows its sea floor — water is NOT painted over
-    the grid. With ``glaciers`` (polygons) the ice cells are drawn white
-    with their own gentle hillshade (:func:`_glacier_composite`); without a
-    DEM the glacier polygons are filled white. ``lakes`` are filled as
+    amplitude normalization) and coloured by :func:`_dem_colours`: land
+    ``dem_cmap``, sea floor ``bathymetry_cmap``, ice ``glacier_cmap``.
+    Its NaN cells are transparent, so a land-only grid keeps the flat
+    water fill while a topo-bathymetry grid shows its sea floor — water
+    is NOT painted over the grid. The cells inside ``glaciers``
+    (polygons) take ``glacier_cmap`` and their own gentle hillshade;
+    without a DEM the glacier polygons are filled with that colour. ``lakes`` are filled as
     water. The shoreline goes on top: ``coastline`` (a line/polygon file,
     e.g. the IS 50V coast) or GSHHG.
     """
@@ -615,14 +618,18 @@ def _draw_basemap(
             azimuth=dem_shading_azimuth,
             normalize=dem_shading_normalize,
         )
-        if glaciers is not None:
-            subgrid, gradient, dem_cmap, ice = _glacier_composite(
-                pygmt_mod, subgrid, gradient, dem_cmap, glaciers
-            )
-        fig.grdimage(
-            grid=subgrid, shading=gradient, cmap=dem_cmap, nan_transparent=True
+        subgrid, gradient, cpt, ice = _dem_colours(
+            pygmt_mod,
+            subgrid,
+            gradient,
+            land=dem_cmap,
+            sea=bathymetry_cmap,
+            glacier=glacier_cmap,
+            glaciers=glaciers,
+            water=water,
         )
-        if glaciers is not None and glacier_contours and ice is not None:
+        fig.grdimage(grid=subgrid, shading=gradient, cmap=cpt, nan_transparent=True)
+        if glacier_contours and ice is not None:
             fig.grdcontour(
                 grid=ice,
                 levels=glacier_contours,
@@ -630,7 +637,12 @@ def _draw_basemap(
                 pen=DEFAULT_GLACIER_CONTOUR_PEN,
             )
     if glaciers is not None:
-        fill = DEFAULT_GLACIER_FILL if dem_grid is None else None
+        fill = None
+        if dem_grid is None:  # a flat fill: a colour, not a CPT
+            from gps_plot import palettes
+
+            is_colour = palettes.resolve(glacier_cmap).kind == palettes.COLOUR
+            fill = glacier_cmap if is_colour else DEFAULT_GLACIER_FILL
         fig.plot(data=glaciers, pen=DEFAULT_GLACIER_PEN, fill=fill)
     if lakes is not None:
         fig.plot(data=lakes, fill=DEFAULT_LAKE_FILL, pen=DEFAULT_LAKE_PEN)
@@ -641,19 +653,97 @@ def _draw_basemap(
     _draw_overlays(fig, overlays)
 
 
-def _glacier_composite(
-    pygmt_mod: Any, grid: Any, gradient: Any, cmap: str, glaciers: str
+def _dem_colours(
+    pygmt_mod: Any,
+    grid: Any,
+    gradient: Any,
+    *,
+    land: str,
+    sea: str | None = None,
+    glacier: str = DEFAULT_GLACIER_FILL,
+    glaciers: str | None = None,
+    water: str = DEFAULT_WATER,
 ) -> tuple[Any, Any, str, Any | None]:
-    """``(grid, shading, cmap, ice)`` with the glaciers drawn white in one pass.
+    """``(grid, shading, cpt, ice)``: the DEM coloured in one grdimage pass.
+
+    One CPT carries three layers (:mod:`gps_plot.palettes`): ``sea`` below
+    0, ``land`` above, and ``glacier`` on the cells inside ``glaciers``,
+    which move up by :data:`GLACIER_Z_OFFSET` into their own slices and
+    take a gentle two-azimuth hillshade
+    (:data:`DEFAULT_GLACIER_SHADING_AZIMUTH`) instead of the land one —
+    the clip + white CPT + -Nt0.4 recipe of BGÓ's GMT maps.
+
+    ``sea`` None: the land map's own sea half when it has one (geo,
+    sealand, a file reaching below 0), else :data:`palettes.DEFAULT_SEA`.
+    ``sea`` "none": the sea floor flat in ``water``, without relief.
 
     ``ice`` is the grid's heights on the glaciers (NaN elsewhere), for
     contours; None when no glacier is in the grid.
 
-    Cells inside ``glaciers`` move up by :data:`GLACIER_Z_OFFSET` into a
-    white segment appended to ``cmap``, and take a gentle two-azimuth
-    hillshade (:data:`DEFAULT_GLACIER_SHADING_AZIMUTH`) instead of the land
-    one — the clip + all-white CPT + -Nt0.4 recipe of BGÓ's GMT maps.
+    Raises:
+        ValueError: the stitched CPT has a gap (never expected).
     """
+    from gps_plot import palettes
+
+    land_pal = palettes.resolve(land)
+    if sea is not None and sea.lower() == palettes.NONE:
+        sea_pal = palettes.Palette(sea, palettes.COLOUR, water)
+        # (numpy: grdgradient's coordinates differ from the grid's in
+        # the last digits, so an xarray where() refuses to align them)
+        gradient = gradient.copy(data=np.where(grid.values >= 0, gradient.values, 0.0))
+    elif sea is not None:
+        sea_pal = palettes.resolve(sea)
+    elif palettes.is_hinged(land_pal):
+        sea_pal = land_pal
+    else:
+        sea_pal = palettes.resolve(palettes.DEFAULT_SEA)
+
+    ice = _ice_mask(pygmt_mod, grid, glaciers) if glaciers is not None else None
+    ground = grid if ice is None else grid.where(~ice)
+    lo, hi = float(ground.min()), float(ground.max())
+    parts = []
+    if lo < 0:
+        parts.append(palettes.segment(pygmt_mod, sea_pal, lo, min(hi, 0.0)))
+    if hi > 0 or not parts:
+        bottom = max(lo, 0.0)
+        parts.append(
+            palettes.segment(pygmt_mod, land_pal, bottom, max(hi, bottom + 1.0))
+        )
+    ice_heights = None
+    if ice is not None:
+        ice_gradient = pygmt_mod.grdgradient(
+            grid=grid,
+            azimuth=DEFAULT_GLACIER_SHADING_AZIMUTH,
+            normalize=DEFAULT_GLACIER_SHADING_NORMALIZE,
+        )
+        ice_heights = _like_grid(grid.where(ice), grid)
+        ice_lo, ice_hi = float(ice_heights.min()), float(ice_heights.max())
+        glacier_pal = palettes.resolve(glacier)
+        parts.append(
+            palettes.shift(
+                palettes.segment(
+                    pygmt_mod, glacier_pal, ice_lo, max(ice_hi, ice_lo + 1.0)
+                ),
+                GLACIER_Z_OFFSET,
+            )
+        )
+        grid = _like_grid(grid.where(~ice, grid + GLACIER_Z_OFFSET), grid)
+        gradient = _like_grid(gradient.where(~ice, ice_gradient), grid)
+    text = palettes.stitch(parts)
+    palettes.check_gaps(text)
+    return grid, gradient, _cached_cpt(text), ice_heights
+
+
+def _like_grid(arr: Any, grid: Any) -> Any:
+    """``arr`` with ``grid``'s GMT registration/geographic flags (xarray
+    ``where`` drops them)."""
+    arr.gmt.registration, arr.gmt.gtype = grid.gmt.registration, grid.gmt.gtype
+    return arr
+
+
+def _ice_mask(pygmt_mod: Any, grid: Any, glaciers: str) -> Any | None:
+    """Boolean array of ``grid``'s cells inside the ``glaciers`` polygons
+    (outline cells count), or None when no cell is."""
     xs = grid.coords[grid.dims[1]].values
     ys = grid.coords[grid.dims[0]].values
     # a gridline mask on the grid's cell centres has its shape for either
@@ -667,81 +757,10 @@ def _glacier_composite(
         inside=1,
     )
     ice = mask.values.astype(bool)
-    if (mask.coords[mask.dims[0]].values[0] < mask.coords[mask.dims[0]].values[-1]) != (
-        ys[0] < ys[-1]
-    ):
+    mys = mask.coords[mask.dims[0]].values
+    if (mys[0] < mys[-1]) != (ys[0] < ys[-1]):
         ice = ice[::-1]
-    if not ice.any():
-        return grid, gradient, cmap, None
-    ice_gradient = pygmt_mod.grdgradient(
-        grid=grid,
-        azimuth=DEFAULT_GLACIER_SHADING_AZIMUTH,
-        normalize=DEFAULT_GLACIER_SHADING_NORMALIZE,
-    )
-
-    def like_grid(arr: Any) -> Any:
-        # xarray.where drops the GMT accessor's registration/geographic flags
-        arr.gmt.registration, arr.gmt.gtype = grid.gmt.registration, grid.gmt.gtype
-        return arr
-
-    composite = like_grid(grid.where(~ice, grid + GLACIER_Z_OFFSET))
-    shading = like_grid(gradient.where(~ice, ice_gradient))
-    if Path(cmap).is_file():
-        text = Path(cmap).read_text()
-    else:  # a GMT CPT name: sample it over the land/sea range
-        land = grid.where(~ice)
-        text = _makecpt_text(pygmt_mod, cmap, float(land.min()), float(land.max()))
-    body = "".join(
-        line + "\n"
-        for line in text.splitlines()
-        if line.strip() and line.split()[0] not in ("B", "F", "N")
-    )
-    # GMT rejects a CPT with a gap: the white slice starts where the
-    # colours end and runs past the shifted ice heights
-    # (the top token is copied as written: re-formatting it, e.g. 2109.0035
-    # as 2109, opens a gap)
-    slices = [line for line in body.splitlines() if line[0] != "#"]
-    top = max((_cpt_slice_bounds(line)[1] for line in slices), key=float)
-    hi = GLACIER_Z_OFFSET + 20000
-    body += f"{top} {DEFAULT_GLACIER_FILL} {hi:g} {DEFAULT_GLACIER_FILL}\n"
-    _check_cpt_gaps(body)
-    return composite, shading, _cached_cpt(body), like_grid(grid.where(ice))
-
-
-def _cpt_slice_bounds(line: str) -> tuple[str, str]:
-    """Lower and upper z of one CPT slice, as written: ``z0 c0 z1 c1`` or
-    ``z0 r g b z1 r g b``."""
-    t = line.split()
-    rgb8 = len(t) >= 8 and all(re.fullmatch(r"[-+.\deE]+", v) for v in t[:8])
-    return t[0], t[4 if rgb8 else 2]
-
-
-def _cpt_slice_top(line: str) -> float:
-    """Upper z of one CPT slice: ``z0 c0 z1 c1`` or ``z0 r g b z1 r g b``."""
-    return float(_cpt_slice_bounds(line)[1])
-
-
-def _check_cpt_gaps(text: str) -> None:
-    """Raise when a CPT's slices do not join exactly: GMT then aborts
-    grdimage but the figure is still saved, without its background."""
-    bounds = [
-        tuple(map(float, _cpt_slice_bounds(line)))
-        for line in text.splitlines()
-        if line.strip() and line[0] != "#" and line.split()[0] not in "BFN"
-    ]
-    for (_lo, prev_hi), (lo, _hi) in zip(bounds, bounds[1:], strict=False):
-        if lo != prev_hi:
-            raise ValueError(f"CPT slices do not join: {prev_hi!r} then {lo!r}")
-
-
-def _makecpt_text(pygmt_mod: Any, cmap: str, lo: float, hi: float) -> str:
-    """A GMT CPT sampled over ``lo``..``hi``, as text."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "s.cpt")
-        pygmt_mod.makecpt(cmap=cmap, series=[lo, hi], output=path)
-        return Path(path).read_text()
+    return ice if ice.any() else None
 
 
 def _cached_cpt(text: str) -> str:
@@ -925,6 +944,8 @@ def station_map(
     status_legend: str | None = DEFAULT_STATUS_LEGEND,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
+    bathymetry_cmap: str | None = None,
+    glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
@@ -972,7 +993,13 @@ def station_map(
         dem_grid: Optional GMT-readable elevation grid (file path or
             in-memory grid) for a hillshade background (see
             :func:`_draw_basemap`).
-        dem_cmap: Colour map for the DEM background.
+        dem_cmap: Land colours of the DEM (z >= 0): a CPT file, a
+            name in the user's or gpsplot's CPT directory, a GMT CPT or a
+            colour (:mod:`gps_plot.palettes`).
+        bathymetry_cmap: Sea-floor colours (z < 0), named the same way;
+            None = ``dem_cmap``'s sea half when it has one, else gpsplot's
+            blues; ``none`` = flat ``water``, no relief.
+        glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
@@ -1022,6 +1049,8 @@ def station_map(
         frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
+        bathymetry_cmap=bathymetry_cmap,
+        glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
@@ -1257,6 +1286,8 @@ def velocity_map(
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
+    bathymetry_cmap: str | None = None,
+    glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
@@ -1317,7 +1348,13 @@ def velocity_map(
         legend_line_spacing: Legend line spacing as a fraction of the N-S
             extent.
         dem_grid: Optional DEM grid for a hillshade background.
-        dem_cmap: DEM colour map.
+        dem_cmap: Land colours of the DEM (z >= 0): a CPT file, a
+            name in the user's or gpsplot's CPT directory, a GMT CPT or a
+            colour (:mod:`gps_plot.palettes`).
+        bathymetry_cmap: Sea-floor colours (z < 0), named the same way;
+            None = ``dem_cmap``'s sea half when it has one, else gpsplot's
+            blues; ``none`` = flat ``water``, no relief.
+        glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
@@ -1364,6 +1401,8 @@ def velocity_map(
         frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
+        bathymetry_cmap=bathymetry_cmap,
+        glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
@@ -1622,6 +1661,8 @@ def deformation_vectors(
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
+    bathymetry_cmap: str | None = None,
+    glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
@@ -1685,7 +1726,13 @@ def deformation_vectors(
         legend_anchor: Legend anchor (region fractions from SW corner).
         legend_line_spacing: Legend line spacing (fraction of N-S extent).
         dem_grid: Optional DEM grid for a hillshade background.
-        dem_cmap: DEM colour map.
+        dem_cmap: Land colours of the DEM (z >= 0): a CPT file, a
+            name in the user's or gpsplot's CPT directory, a GMT CPT or a
+            colour (:mod:`gps_plot.palettes`).
+        bathymetry_cmap: Sea-floor colours (z < 0), named the same way;
+            None = ``dem_cmap``'s sea half when it has one, else gpsplot's
+            blues; ``none`` = flat ``water``, no relief.
+        glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
@@ -1751,6 +1798,8 @@ def deformation_vectors(
         frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
+        bathymetry_cmap=bathymetry_cmap,
+        glacier_cmap=glacier_cmap,
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         overlays=overlays,
@@ -2013,6 +2062,8 @@ def slip_map(
     plane_ylabel: str = DEFAULT_PLANE_YLABEL,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
+    bathymetry_cmap: str | None = None,
+    glacier_cmap: str = DEFAULT_GLACIER_FILL,
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     overlays: Sequence[MapOverlay] = (),
@@ -2083,7 +2134,13 @@ def slip_map(
         plane_xlabel: Plane-view x-axis label.
         plane_ylabel: Plane-view y-axis label.
         dem_grid: Optional DEM grid for a hillshade background (map view).
-        dem_cmap: DEM colour map.
+        dem_cmap: Land colours of the DEM (z >= 0): a CPT file, a
+            name in the user's or gpsplot's CPT directory, a GMT CPT or a
+            colour (:mod:`gps_plot.palettes`).
+        bathymetry_cmap: Sea-floor colours (z < 0), named the same way;
+            None = ``dem_cmap``'s sea half when it has one, else gpsplot's
+            blues; ``none`` = flat ``water``, no relief.
+        glacier_cmap: Glacier colours, named the same way (default white).
         dem_shading_azimuth: Hillshade illumination azimuth [deg].
         dem_shading_normalize: ``grdgradient`` normalization spec.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
@@ -2159,6 +2216,8 @@ def slip_map(
             frame_args=_frame_args(frame, title),
             dem_grid=dem_grid,
             dem_cmap=dem_cmap,
+            bathymetry_cmap=bathymetry_cmap,
+            glacier_cmap=glacier_cmap,
             dem_shading_azimuth=dem_shading_azimuth,
             dem_shading_normalize=dem_shading_normalize,
             overlays=overlays,

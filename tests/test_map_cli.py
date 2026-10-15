@@ -569,7 +569,7 @@ def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_pat
     kw = fake_maps["station_map"][1]
     assert kw["dem_grid"] == str(dem / "iceland_topobathy_15s.nc")
     assert kw["coastline"] == str(dem / maps.ICELAND_COAST_OVERVIEW)
-    assert kw["dem_cmap"].endswith("lightgrey.cpt")
+    assert kw["dem_cmap"] == "lightgrey"
     assert _run([*argv, "--region", "-14.2/-13.9/65.2/65.3", "--dem-cmap", "geo"],
                 tmp_path) == 0  # fmt: skip
     kw = fake_maps["station_map"][1]
@@ -586,21 +586,20 @@ def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_pat
     assert "glaciers" not in kw and kw["lakes"] == "my_lakes.gmt"
 
 
-def test_dem_cpt_names_and_passthrough(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    path = gmap.dem_cpt("relief")
-    assert path == str(tmp_path / "gps_plot" / "relief.cpt")
-    assert open(path).read() == gmap.DEM_CPTS["relief"]
-    assert gmap.dem_cpt("geo") == "geo"
+def test_colour_map_options_reach_the_map(fake_maps, tmp_path):
+    argv = ["station", "SEY?", "--logo", "none", "--dem", "grid.nc"]
+    assert _run([*argv, "--bathymetry-cmap", "none", "--glacier-cmap", "batlow"],
+                tmp_path) == 0  # fmt: skip
+    kw = fake_maps["station_map"][1]
+    assert kw["dem_cmap"] == "lightgrey"
+    assert (kw["bathymetry_cmap"], kw["glacier_cmap"]) == ("none", "batlow")
 
 
-def test_check_cpt_suggests_the_name_meant(tmp_path):
-    builtin = {"geo", "gray", "batlow"}
-    for ok in ("slate", "Lightgrey", "geo", "geo+h0", "@custom.cpt"):
-        gmap.check_cpt(ok, builtin)
-    cpt = tmp_path / "mine.cpt"
-    cpt.write_text("0 white 1 black\n")
-    gmap.check_cpt(str(cpt), builtin)
-    gmap.check_cpt("anything", set())  # GMT share dir unknown: let GMT judge
+def test_check_palettes_suggests_the_name_meant():
+    pygmt = pytest.importorskip("pygmt")
+    ok = argparse.Namespace(dem_cmap="slate", bathymetry_cmap="none",
+                            glacier_cmap="white")  # fmt: skip
+    gmap.check_palettes(ok, pygmt)
+    bad = argparse.Namespace(dem_cmap="slade", bathymetry_cmap=None, glacier_cmap=None)
     with pytest.raises(ValueError, match="did you mean slate"):
-        gmap.check_cpt("slade", builtin)
+        gmap.check_palettes(bad, pygmt)
