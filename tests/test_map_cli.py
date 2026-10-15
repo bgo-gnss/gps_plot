@@ -607,3 +607,33 @@ def test_resolve_palettes_finds_yours_and_suggests_the_name_meant(tmp_path):
     bad = argparse.Namespace(dem_cmap="slade", bathymetry_cmap=None, glacier_cmap=None)
     with pytest.raises(ValueError, match="did you mean slate"):
         gmap.resolve_palettes(bad, pygmt, str(tmp_path))
+
+
+def test_gmt_overrides_hold_while_the_map_is_drawn(fake_maps, monkeypatch, tmp_path):
+    from gps_plot import gmt_overrides, maps
+
+    seen = {}
+
+    def station_map(*args, **kw):
+        seen["glaciers"] = gmt_overrides.layer_kw("glaciers", pen="a", fill="b")
+        return types.SimpleNamespace(savefig=lambda path: None, region=(0, 1, 0, 1))
+
+    monkeypatch.setattr(maps, "station_map", station_map)
+    monkeypatch.setattr(gmt_overrides, "check", lambda layers, pygmt: None)
+    argv = [
+        "station",
+        "SEY?",
+        "--logo",
+        "none",
+        "--no-scale-bar",
+        "--gmt",
+        "glaciers:W=0.3p,blue",
+        "--gmt-config",
+        "map_frame_type=plain",
+    ]
+    assert _run(argv, tmp_path) == 0  # fmt: skip
+    assert seen["glaciers"] == {"fill": "b", "W": "0.3p,blue"}
+    assert gmt_overrides.layer_kw("glaciers", pen="a") == {"pen": "a"}  # reset
+    assert gmap.gmt_config(["map_frame_type=plain"]) == {"MAP_FRAME_TYPE": "plain"}
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        gmap.gmt_config(["MAP_FRAME_TYPE"])

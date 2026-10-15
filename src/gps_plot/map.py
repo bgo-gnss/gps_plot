@@ -21,6 +21,7 @@ readers are imported only when a map is drawn (``gpsplot --help`` and
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import fnmatch
 import math
@@ -33,6 +34,7 @@ from typing import Any
 
 import numpy as np
 
+from gps_plot import gmt_overrides
 from gps_plot.cli import common
 
 KINDS = ("station", "velocity", "deformation", "slip")
@@ -84,6 +86,9 @@ examples:
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
                         blue-grey land, flat sea; --dem-cmap list: every CPT
+  gpsplot map station --tos --dem iceland --gmt glaciers:pen=1p,blue \
+      --gmt coast:A=500/0/1 --gmt-config MAP_FRAME_TYPE=plain
+                        any GMT argument for one drawing step (--gmt STEP:KEY=VALUE)
   --dem iceland picks the level of the Iceland DEM the map needs, from the
   local GIS directory (gis_dir in postprocess.cfg [PATHS], default
   ~/gps-data/gis: dem/, vector/, cpt/); --dem @earth_relief_15s
@@ -202,6 +207,18 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--overlay-fill", default=None, metavar="FILL",
         help="polygon fill of the --overlay layers (default orange@60, "
         "60%% transparent; 'none' = outline only)",
+    )  # fmt: skip
+    g.add_argument(
+        "--gmt", action="append", default=[], metavar="STEP:KEY=VALUE",
+        help="a GMT argument for one drawing step, replacing gpsplot's own: "
+        "KEY is a PyGMT long name or one GMT letter, e.g. coast:A=500/0/1, "
+        "glaciers:pen=0.3p,blue, dem:t=20 (repeatable; steps: "
+        + ", ".join(gmt_overrides.LAYERS) + ")",
+    )  # fmt: skip
+    g.add_argument(
+        "--gmt-config", action="append", default=[], metavar="KEY=VALUE",
+        help="a GMT default for the whole map, e.g. MAP_FRAME_TYPE=plain, "
+        "FONT_ANNOT_PRIMARY=8p (repeatable)",
     )  # fmt: skip
     g.add_argument("--title", default=None, help="map title")
     g.add_argument(
@@ -636,7 +653,11 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
-        fig.image(imagefile=logo, position="jTL+o0.15c+w2.2c", box="+gwhite@20")
+        fig.image(
+            **gmt_overrides.layer_kw(
+                "logo", imagefile=logo, position="jTL+o0.15c+w2.2c", box="+gwhite@20"
+            )
+        )
 
 
 def _save(fig: Any, args: argparse.Namespace, config: Any, stem: str) -> list[str]:
@@ -665,12 +686,44 @@ def _report(dropped: Sequence[str]) -> None:
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
+    import warnings
+
     import pygmt
 
     from gps_plot import maps
 
-    with pygmt.config(FONT_TITLE=TITLE_FONT, MAP_TITLE_OFFSET="6p"):
+    try:
+        layers = gmt_overrides.parse(args.gmt)
+        gmt_overrides.check(layers, pygmt)
+        defaults = gmt_config(args.gmt_config)
+    except ValueError as exc:
+        parser.error(str(exc))
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(pygmt.config(FONT_TITLE=TITLE_FONT, MAP_TITLE_OFFSET="6p"))
+        try:  # the user's defaults win; GMT checks them on entry
+            stack.enter_context(pygmt.config(**defaults))
+        except pygmt.exceptions.GMTCLibError as exc:
+            parser.error(f"--gmt-config: {str(exc).splitlines()[-1]}")
+        stack.enter_context(gmt_overrides.overrides(layers))
+        # a GMT letter in --gmt is the user's choice: no PyGMT nagging
+        stack.enter_context(warnings.catch_warnings())
+        warnings.filterwarnings("ignore", "Short-form parameter", SyntaxWarning)
         return _run(args, parser, config, maps)
+
+
+def gmt_config(specs: Sequence[str]) -> dict[str, str]:
+    """``KEY=VALUE`` specs (``--gmt-config``) as GMT defaults.
+
+    Raises:
+        ValueError: a spec without ``=``.
+    """
+    out = {}
+    for spec in specs:
+        key, eq, value = spec.partition("=")
+        if not (eq and key.strip()):
+            raise ValueError(f"--gmt-config {spec!r}: use KEY=VALUE")
+        out[key.strip().upper()] = value.strip()
+    return out
 
 
 def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:

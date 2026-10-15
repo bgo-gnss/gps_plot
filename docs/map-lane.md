@@ -129,6 +129,45 @@ How it is drawn (`maps._dem_colours`):
   grid (the last digits of the coordinates differ), so the flat-sea
   shading uses numpy.
 
+### GMT arguments: `--gmt STEP:KEY=VALUE`, `--gmt-config KEY=VALUE`
+
+Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT
+argument to every PyGMT call of that step, or replaces gpsplot's own value.
+The flag can be repeated. The steps are coast, gradient, glacier-gradient,
+dem, contours, glaciers, lakes, coastline, overlay, stations, labels,
+vectors, legend and logo (`gmt_overrides.LAYERS`).
+
+```bash
+gpsplot map station --tos --dem iceland --region -17.9/-16.9/64.45/64.85 \
+    --gmt glaciers:pen=1p,blue --gmt contours:W=0.5p,red \
+    --gmt labels:F=+f9p,Helvetica-Bold,darkred+jTL --gmt stations:S=c0.3c \
+    --gmt-config MAP_FRAME_TYPE=plain --gmt-config FONT_ANNOT_PRIMARY=8p
+```
+
+- **KEY** is a PyGMT long name of that call, such as `pen` or `area_thresh`,
+  or one GMT letter, such as `W` or `A`; PyGMT's warning about letters is
+  silenced. A bare `STEP:KEY` passes a flag. A KEY replaces gpsplot's value
+  under either name: the table maps the long names gpsplot passes to their
+  letters, and `test_alias_table_pairs_conflict_in_pygmt` proves each pair
+  against PyGMT. `text` folds `font` and `justify` into one `-F` without
+  complaint, so `labels:F=…` drops both.
+- **Checked before drawing:** an unknown step or key stops with suggestions.
+  So do the keys gpsplot sets itself: data, `region`/`projection`, and
+  `dem:cmap`/`C`, because the glacier slices sit 100 000 m up in the
+  stitched CPT. Use `--dem-cmap` and friends for colours.
+- **Where a step applies:** `coast` applies to both coast calls, but the
+  shoreline-only call over a DEM takes no fill (`land`/`water`) and no
+  frame. `stations` applies to every station marker, including all four
+  status symbols of a `--tos` map. `vectors` applies to the reference arrow
+  of the vector legend too, so it keeps the scale.
+- **`--gmt-config`** sets GMT defaults (`pygmt.config`) for the whole map,
+  over gpsplot's title font. GMT rejects an unknown key or value when the
+  config is entered, before anything is drawn.
+- **Cost:** transparency (`dem:t=20`) is slow in GMT, about 40 s instead of
+  9 s for a 1″ close-up.
+- **Named options:** an option that keeps coming back becomes a named one,
+  like `--glacier-cmap`.
+
 Any `--dem` grid is drawn with its NaN cells transparent and **no water
 painted over it**, so a topo-bathymetry grid shows its sea floor. A
 land-only grid still gets the flat water fill. `lightgrey` is 200, not
