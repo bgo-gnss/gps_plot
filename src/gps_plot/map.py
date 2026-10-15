@@ -68,7 +68,8 @@ examples:
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
       --mogi -22.46,63.87,4.5,1.2e7 --save pdf
   gpsplot map slip models/reykjanes_slip.json --view plane --save pdf
-  --dem @earth_relief_15s draws a hillshade from the GMT remote relief."""
+  --dem @earth_relief_15s draws a hillshade from the GMT remote relief;
+  --overlay lavas.geojson draws outlines (e.g. the LMÍ/NÍ lava flows)."""
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,20 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     g.add_argument(
         "--dem-cmap", default=None, metavar="CPT",
         help="colour map of the --dem background (default geo)",
+    )  # fmt: skip
+    g.add_argument(
+        "--overlay", action="append", default=[], metavar="GEOJSON",
+        help="outline layer (WGS84 GeoJSON, repeatable), e.g. lava flows; "
+        "drawn over the background and under the symbols",
+    )  # fmt: skip
+    g.add_argument(
+        "--overlay-pen", default=None, metavar="PEN",
+        help="outline pen of the --overlay layers (default 0.6p,darkred)",
+    )  # fmt: skip
+    g.add_argument(
+        "--overlay-fill", default=None, metavar="FILL",
+        help="polygon fill of the --overlay layers (default orange@60, "
+        "60%% transparent; 'none' = outline only)",
     )  # fmt: skip
     g.add_argument("--title", default=None, help="map title")
     g.add_argument(
@@ -432,6 +447,15 @@ def _style(args: argparse.Namespace, region: Any) -> dict[str, Any]:
             kw[key] = getattr(args, opt)
     if "dem_grid" in kw and "dem_cmap" not in kw:
         kw["dem_cmap"] = lightgrey_cpt()
+    if args.overlay:
+        from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
+
+        fill = args.overlay_fill or DEFAULT_OVERLAY_FILL
+        kw["overlays"] = tuple(
+            MapOverlay(path, pen=args.overlay_pen or DEFAULT_OVERLAY_PEN,
+                       fill=None if fill.lower() == "none" else fill)
+            for path in args.overlay
+        )  # fmt: skip
     return kw
 
 

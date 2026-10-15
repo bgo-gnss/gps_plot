@@ -455,3 +455,43 @@ def test_slip_dispatch(fake_maps, tmp_path):
     fig = fake_maps["fig"]
     assert fig.calls == []  # no scale bar / logo on the plane section
     assert fig.saved[0].endswith(f"map_slip_{product['region']}-plane.png")
+
+
+def test_overlay_segments_polygons_holes_lines_and_crs():
+    from gps_plot.maps import overlay_segments
+
+    square = [[0, 0], [1, 0], [1, 1], [0, 0]]
+    hole = [[0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.2]]
+    fc = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [square, hole]}},
+        {"type": "Feature", "geometry": {"type": "MultiPolygon", "coordinates": [[square]]}},
+        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": square}},
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        {"type": "Feature", "geometry": None},
+    ]}  # fmt: skip
+    polys, lines = overlay_segments(fc)
+    headers = [ln for ln in polys.splitlines() if ln.startswith(">")]
+    assert headers == [">", "> -Ph", ">"]
+    assert lines.splitlines()[0] == ">" and len(lines.splitlines()) == 5
+    assert polys.splitlines()[1] == "0.0000000 0.0000000"
+    ok = {**fc, "crs": {"type": "name",
+                        "properties": {"name": "urn:ogc:def:crs:EPSG::4326"}}}  # fmt: skip
+    assert overlay_segments(ok)[0] == polys
+    isn93 = {**fc, "crs": {"type": "name", "properties": {"name": "EPSG:3057"}}}
+    with pytest.raises(ValueError, match="WGS84"):
+        overlay_segments(isn93)
+
+
+def test_overlay_options_reach_the_map(fake_maps, tmp_path):
+    from gps_plot.maps import MapOverlay
+
+    argv = ["station", "SEY?", "--logo", "none", "--overlay", "a.geojson",
+            "--overlay", "b.geojson", "--overlay-fill", "none"]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    _args, kw = fake_maps["station_map"]
+    assert kw["overlays"] == (
+        MapOverlay("a.geojson", fill=None),
+        MapOverlay("b.geojson", fill=None),
+    )
+    assert _run(["station", "SEY?", "--logo", "none"], tmp_path) == 0
+    assert "overlays" not in fake_maps["station_map"][1]
