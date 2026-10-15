@@ -41,6 +41,8 @@ dependencies = [
 # via GMT_LIBRARY_PATH). The matplotlib time-series lane never needs this.
 [project.optional-dependencies]
 maps = ["pygmt>=0.19"]
+# gpsplot map station --tos: the TOS station register
+tos = ["tostools@git+https://github.com/bgo-gnss/tostools.git"]
 
 [project.scripts]
 gpsplot = "gps_plot.cli:main"

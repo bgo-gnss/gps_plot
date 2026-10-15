@@ -546,3 +546,35 @@ def test_slip_map_renders_png_plane_view(tmp_path: Path) -> None:
     assert fig is not None
     assert out.is_file()
     assert os.path.getsize(out) > 1024
+
+
+def test_map_width_cm_reads_width_forms():
+    from gps_plot.maps import map_width_cm
+
+    assert map_width_cm("M12c") == 12.0
+    assert map_width_cm("M-19/65/18c") == 18.0
+    assert map_width_cm("X12c/-6c") == 12.0
+    assert map_width_cm("M5i") == pytest.approx(12.7)
+    assert map_width_cm("m1:1000000") is None
+
+
+def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
+    from gps_plot import maps
+
+    for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
+        (tmp_path / name).write_text("")
+    pick = lambda region, proj="M12c": maps.iceland_dem(tmp_path, region, proj)  # noqa: E731
+    # Iceland at 18 cm: ~20" pixels -> 15"; no coast files -> GSHHG
+    assert pick((-24.8, -13.2, 63.2, 66.7), "M18c") == maps.DemChoice(
+        str(tmp_path / "iceland_topobathy_15s.nc"), None
+    )
+    # south-west Iceland: ~5" pixels -> 3"
+    assert pick((-23.0, -18.0, 63.3, 65.0)).grid.endswith("_3s.nc")
+    # Reykjanes: ~2" pixels -> 1"; finer pixels still get the finest level
+    assert pick((-22.8, -21.9, 63.75, 64.1)).grid.endswith("_1s.nc")
+    assert pick((-22.5, -22.4, 63.8, 63.9)).grid.endswith("_1s.nc")
+    # outside the 1" box (Jan Mayen side): the level that covers it
+    assert pick((-12.0, -11.5, 66.0, 66.3)).grid.endswith("_3s.nc")
+    (tmp_path / "iceland_topobathy_3s.nc").unlink()
+    with pytest.raises(FileNotFoundError, match="build_04_levels"):
+        pick((-23.0, -18.0, 63.3, 65.0))

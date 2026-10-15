@@ -60,10 +60,41 @@ draws WGS84 outline layers over the background and under the symbols, e.g.
 the LMÍ/NÍ Reykjanes lava flows (WFS `LMI_vektor:goslok_reykjaneselda` on
 `gis.natt.is`, listed in the VÍ GIS registry `api.vedur.is/gis/layers`).
 
+`--dem iceland` draws the spliced Iceland topo-bathymetry DEM
+(`~/gps-data/dem`, its README; `dem_dir` in postprocess.cfg `[PATHS]`
+overrides) at the level the map needs: the coarsest of 1″/3″/15″ that covers
+the region and is no coarser than one 300-dpi output pixel
+(`maps.iceland_dem`). An Iceland overview at 18 cm takes 15″ in ~2 s; the
+3″ grid took 20 s and looked the same. It draws the IS 50V coast, not GSHHG:
+the full one on local maps, and for overviews one without the islets under
+0.2 km², which otherwise blot Breiðafjörður (`build_05_coast.sh`).
+Any `--dem` grid is drawn with its NaN cells transparent and **no water
+painted over it**, so a topo-bathymetry grid shows its sea floor. A
+land-only grid still gets the flat water fill. `--dem-cmap` is `lightgrey`
+(default: grey land, blue sea floor), `relief`, or any GMT CPT. The hillshade
+is `-Ne0.6`; the old `-Nt1.5` went near black on steep slopes.
+
+`gpsplot map station --tos` plots the GPS stations of **TOS**, the station
+register, instead of stations.cfg. That includes 13 stations stations.cfg
+lacks, such as S001, SKA2 and DRA2. Each status gets its own symbol and a
+legend with counts: continuous, external, campaign, discontinued
+(`sources/tos.py`). The list is cached for a day; `--refresh-tos` refetches
+it. TOS attributes are dated, and the current value is the open period
+(`date_to` null):
+- A `date_end` stored as an open period or as a zero-length one
+  (HLFJ, GLER, KALT, STOR) means the station ended.
+- A `date_end` period closed later revokes the end (GRVV, GRVM, GJAC).
+- When two entities share a marker (SOHO), the running one wins.
+
+Station maps label their stations only up to 60 stations; `--labels` and
+`--no-labels` override this.
+
 ```bash
+gpsplot map station --tos --dem iceland --region -24.8/-13.2/63.2/66.7 \
+    --projection M18c --title "GPS stations in TOS" --save pdf
 gpsplot map velocity --region -22.8/-21.9/63.75/64.1 \
     --window 20231027:20231109 --window 20231123:20231205 \
-    --dem @earth_relief_15s --save pdf
+    --dem iceland --save pdf
 ```
 
 ## Installing the lane
@@ -72,7 +103,9 @@ The `maps` extra is `pygmt>=0.19` (PyPI) on top of a **system GMT ≥ 6** C
 library (OS package, conda-forge `gmt`, or from-source via
 `GMT_LIBRARY_PATH`) — `uv sync --extra maps`. Import of `gps_plot` or the
 matplotlib lane never needs it: `maps.py` guards the pygmt import lazily, so
-a production install without GMT is unaffected.
+a production install without GMT is unaffected. `--tos` needs tostools
+(the `tos` extra, or the editable sibling in the gpslibrary env), imported
+only when the station list is fetched.
 
 ## Cross-References
 
