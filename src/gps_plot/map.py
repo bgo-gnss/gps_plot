@@ -44,13 +44,16 @@ REFS = ("detrend", "plate")
 WINDOW_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 #: the 90th-percentile arrow is drawn this long [cm] by the automatic scale
 TARGET_ARROW_CM = 2.0
-#: the Veðurstofa name logo, top left (source checkout only: not packaged)
+#: the Veðurstofa name logo, top left (source checkout only: not packaged):
+#: the two-line logo of the RTK plots, drawn 30 % transparent as they do
 DEFAULT_LOGO = (
-    Path(__file__).resolve().parents[2]
-    / "logos"
-    / "vi_logos"
-    / "VI_bottom_gradient_office_web_pos_rgb.png"
+    Path(__file__).resolve().parents[2] / "logos" / "vi_logos" / "VI_Two_Line_Blue.png"
 )
+LOGO_WIDTH = "2.5c"
+#: the scale bar's height above the bottom edge, clear of the annotations
+SCALE_BAR_FOOT = "1.0c"
+SCALE_BAR_FOOT_OBLIQUE = "1.7c"
+LOGO_TRANSPARENCY = 30
 DATE_FORMAT = "%Y%m%d"
 #: --dem land colours: one grey, so the hillshade alone shows the relief
 #: (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200 so the
@@ -94,6 +97,10 @@ examples:
                         (lon, lat, 4.5 km deep, 1.2e7 m3)
   gpsplot map slip models/reykjanes_slip.json --view plane --save pdf
                         an Okada slip model, seen on the fault plane
+  gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \\
+      --projection S-19/65/12c --region -25/63/-12.8/66.7+r --save pdf
+                        the iceland3 overview: oblique stereographic, tilted
+                        graticule, its relief colours and flat blue sea
   gpsplot map station --tos --dem iceland --projection M18c --save pdf
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
@@ -126,14 +133,29 @@ examples:
 # ---------------------------------------------------------------------------
 
 
+class Corners(tuple[float, float, float, float]):
+    """``--region LON/LAT/LON/LAT+r``: the map's lower-left and
+    upper-right corners, made a ``maps.CornerRegion`` once the projection
+    is known."""
+
+
 def _region(value: str) -> tuple[float, float, float, float]:
+    corner = value.endswith(("+r", "r"))
+    body = value.removesuffix("+r").removesuffix("r") if corner else value
     try:
-        w, e, s, n = (float(v) for v in value.split("/"))
+        a, b, c, d = (float(v) for v in body.split("/"))
     except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r}: use W/E/S/N in degrees") from None
-    if not (w < e and s < n):
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: use W/E/S/N, or LON/LAT/LON/LAT+r corners, in degrees"
+        ) from None
+    if corner:
+        if not (b < d):
+            raise argparse.ArgumentTypeError(f"{value!r}: the upper-right corner "
+                                             "must be north of the lower-left")  # fmt: skip
+        return Corners((a, b, c, d))
+    if not (a < b and c < d):
         raise argparse.ArgumentTypeError(f"{value!r}: need W < E and S < N")
-    return (w, e, s, n)
+    return (a, b, c, d)
 
 
 def _date(value: str) -> dt.datetime:
@@ -171,8 +193,10 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     g = p.add_argument_group("map")
     g.add_argument(
         "--region", type=_region, default=None, metavar="W/E/S/N",
-        help="map bounds in degrees; with no station given, every station "
-        "inside it is plotted (default: the stations' box + --margin)",
+        help="map bounds in degrees, or LON/LAT/LON/LAT+r: the lower-left and "
+        "upper-right corners of a rectangle in --projection (an oblique map); "
+        "with no station given, every station inside it is plotted "
+        "(default: the stations' box + --margin)",
     )  # fmt: skip
     g.add_argument(
         "--margin", type=float, default=None, metavar="DEG",
@@ -496,11 +520,11 @@ def select_stations(
             if name in named:
                 dropped.append(f"{name}: {exc}")
             continue
-        if region is not None:
-            w, e, s, n = region
-            if not (w <= c.lon <= e and s <= c.lat <= n):
-                continue
         kept.append(c)
+    if region is not None:
+        from gps_plot import maps
+
+        kept = maps.within(region, kept)
     if not kept:
         raise ValueError("no station to plot")
     return kept, dropped
@@ -703,19 +727,27 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
     """Scale bar and logo on top of a finished map view."""
     if args.scale_bar:
         km = scale_bar_km(fig.region)
+        from gps_plot.maps import CornerRegion
+
+        # above the longitude annotations, upright on an oblique map
+        oblique = isinstance(args.region, CornerRegion)
+        foot = SCALE_BAR_FOOT_OBLIQUE if oblique else SCALE_BAR_FOOT
         # bottom right: top centre sat on the map, the SW corner holds the
         # vector legend, the logo is top left, the status legend top right
         from pygmt.params import Position
 
         fig.scalebar(
             length=f"{km:g}k", label=True, unit=True, box="+gwhite@20",
-            position=Position("BR", cstype="inside", offset=("0.4c", "0.6c")),
+            position=Position("BR", cstype="inside", offset=("0.4c", foot)),
         )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
         fig.image(
             **gmt_overrides.layer_kw(
-                "logo", imagefile=logo, position="jTL+o0.15c+w2.2c", box="+gwhite@20"
+                "logo",
+                imagefile=logo,
+                position=f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}",
+                transparency=LOGO_TRANSPARENCY,
             )
         )
 
@@ -759,7 +791,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     except ValueError as exc:
         parser.error(str(exc))
     with contextlib.ExitStack() as stack:
-        stack.enter_context(pygmt.config(FONT_TITLE=TITLE_FONT, MAP_TITLE_OFFSET="6p"))
+        stack.enter_context(
+            pygmt.config(
+                FONT_TITLE=TITLE_FONT,
+                MAP_TITLE_OFFSET="6p",
+                **maps.DEFAULT_GMT_DEFAULTS,
+            )
+        )
         try:  # the user's defaults win; GMT checks them on entry
             stack.enter_context(pygmt.config(**defaults))
         except pygmt.exceptions.GMTCLibError as exc:
@@ -796,6 +834,14 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
         resolve_palettes(args, pygmt, cpt_dir(config))
     except ValueError as exc:
         parser.error(str(exc))
+
+    if isinstance(args.region, Corners):
+        try:
+            args.region = maps.corner_region(
+                args.region, args.projection or maps.DEFAULT_PROJECTION
+            )
+        except pygmt.exceptions.GMTCLibError as exc:
+            parser.error(f"--region {'/'.join(map(str, args.region))}+r: {exc}")
 
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
@@ -846,13 +892,6 @@ def tos_coords(stations: Sequence[Any], maps: Any, group_by: str | None = None) 
     return coords
 
 
-def _inside(c: Any, region: tuple[float, float, float, float] | None) -> bool:
-    if region is None:
-        return True
-    w, e, s, n = region
-    return bool(w <= c.lon <= e and s <= c.lat <= n)
-
-
 def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
     from gps_plot.sources import station_files
 
@@ -862,7 +901,8 @@ def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
             out += station_files.read_stations(*station_files.split_spec(spec), maps)
         except (OSError, ValueError) as exc:
             parser.error(f"--stations-file: {exc}")
-    return [c for c in out if _inside(c, args.region)]
+    kept: list[Any] = maps.within(args.region, out)
+    return kept
 
 
 def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
@@ -1105,9 +1145,7 @@ def _run_geojson(args: Any, config: Any, maps: Any) -> int:
     if args.Stations:
         keep = set(_patterns(args.Stations, [v.marker for v in vectors]))
         vectors = tuple(v for v in vectors if v.marker in keep)
-    if args.region is not None:
-        w, e, s, n = args.region
-        vectors = tuple(v for v in vectors if w <= v.lon <= e and s <= v.lat <= n)
+    vectors = tuple(maps.within(args.region, vectors))
     if not vectors:
         print("nothing plotted", file=sys.stderr)
         return 1

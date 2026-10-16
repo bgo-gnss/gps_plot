@@ -91,7 +91,30 @@ DEFAULT_RESOLUTION = "auto"  # GSHHG shoreline resolution (auto per region)
 DEFAULT_LAND = "lightgrey"
 DEFAULT_WATER = "lightblue"
 DEFAULT_SHORELINES = "0.2p,black"
-DEFAULT_FRAME: tuple[str, ...] = ("af",)
+#: the frame: annotated W and S, ticked all round (iceland3/iceland.gmt's
+#: ``-Ba…WSne``; ``+e``: none at the corners, where W and S would
+#: collide); drawn last, so the annotations inside the map stay on top
+DEFAULT_FRAME: tuple[str, ...] = ("WSne", "af+e")
+#: dashed graticule at the annotations (``+n``: their text comes with the
+#: frame), over the base layers and under stations and legends
+DEFAULT_GRID: tuple[str, ...] = ("ag", "+n")
+#: GMT defaults of the iceland3 overview frame (icel-overv.pdf), scaled
+#: from its 30 cm to the 12 cm default map: a plain heavy frame, ticks and
+#: annotations inside it, degrees and minutes. ``gpsplot map`` sets them
+#: under the user's ``--gmt-config``.
+DEFAULT_GMT_DEFAULTS: dict[str, str] = {
+    "MAP_FRAME_TYPE": "plain",
+    "MAP_FRAME_PEN": "1.25p,black",
+    "MAP_TICK_LENGTH_PRIMARY": "-0.15c",
+    "MAP_TICK_PEN_PRIMARY": "0.5p,black",
+    "MAP_ANNOT_OFFSET_PRIMARY": "-0.1c",
+    "MAP_GRID_PEN_PRIMARY": "0.25p,gray40,dashed",
+    "FORMAT_GEO_MAP": "ddd:mmF",
+    "FONT_ANNOT_PRIMARY": "8p,Helvetica,black",
+    # an oblique map (CornerRegion): longitudes written along their
+    # meridians, as the overview's OBLIQUE_ANNOTATION = 0 did
+    "MAP_ANNOT_OBLIQUE": "anywhere",
+}
 DEFAULT_MARKER_STYLE = "d7p"  # diamond, 7 points — gmtplot.velomap heritage
 DEFAULT_MARKER_PEN = "1p,red"
 DEFAULT_MARKER_FILL = "yellow"
@@ -124,7 +147,9 @@ DEFAULT_SOURCE_PEN = "0.6p,black"
 DEFAULT_LEGEND_FONT = "9p,Helvetica-Bold"
 #: Legend anchor as (east-fraction, north-fraction) of the region extent,
 #: measured from the south-west corner.
-DEFAULT_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.05)
+DEFAULT_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.09)
+#: ... on an oblique map, above its upright longitude annotations
+OBLIQUE_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.16)
 #: Vertical spacing between legend lines as a fraction of the N-S extent.
 DEFAULT_LEGEND_LINE_SPACING = 0.045
 
@@ -136,6 +161,8 @@ DEFAULT_PATCH_PEN = "0.25p,gray30"  # fault-patch outline
 DEFAULT_PLANE_PROJECTION = "X12c/-6c"  # plane view: x right, depth-axis down
 DEFAULT_PLANE_XLABEL = "along-strike distance (km)"
 DEFAULT_PLANE_YLABEL = "down-dip distance (km)"
+#: the plane view's axes keep GMT's outside ticks and annotations
+PLANE_GMT_DEFAULTS = {"MAP_TICK_LENGTH_PRIMARY": "4p", "MAP_ANNOT_OFFSET_PRIMARY": "4p"}
 
 #: DEM/hillshade background (slice 3).
 DEFAULT_DEM_CMAP = "geo"  # GMT builtin topo colour map
@@ -404,6 +431,119 @@ def region_around(
     )
 
 
+class CornerRegion(tuple[float, float, float, float]):
+    """A map rectangle given by its lower-left and upper-right corners
+    (GMT ``-Rlon/lat/lon/lat+r``), the frame of an oblique map such as
+    the iceland3 overview (``-JS-19/65 -R-25/63/-12.8/66.7+r``): its
+    edges are not meridians and parallels, so its graticule tilts.
+
+    As a tuple it is the (W, E, S, N) lon/lat box around the rectangle in
+    ``projection``, so what needs a box (the DEM level, ``grdcut``)
+    takes it unchanged. GMT draws from :attr:`gmt`; :meth:`contains`
+    tests the rectangle itself and :meth:`at` places by map fraction.
+    Build it with :func:`corner_region`.
+    """
+
+    corners: tuple[float, float, float, float]
+    projection: str
+    size: tuple[float, float]
+
+    def __new__(
+        cls,
+        corners: Sequence[float],
+        projection: str,
+        box: Sequence[float],
+        size: Sequence[float],
+    ) -> CornerRegion:
+        self = super().__new__(cls, tuple(float(v) for v in box))
+        self.corners = tuple(float(v) for v in corners)  # type: ignore[assignment]
+        self.projection = projection
+        self.size = (float(size[0]), float(size[1]))
+        return self
+
+    @property
+    def gmt(self) -> str:
+        """The GMT region, ``lon_ll/lat_ll/lon_ur/lat_ur+r``."""
+        return "/".join(format(v, ".10g") for v in self.corners) + "+r"
+
+    def _rj(self) -> str:
+        return f"-R{self.gmt} -J{self.projection}"
+
+    def contains(self, lons: Sequence[float], lats: Sequence[float]) -> list[bool]:
+        """Whether each point is inside the map rectangle."""
+        if len(lons) == 0:
+            return []
+        xy = _mapproject(self._rj(), lons, lats)
+        width, height = self.size
+        eps = 1e-9
+        return [
+            bool(-eps <= x <= width + eps and -eps <= y <= height + eps)
+            for x, y in xy[:, :2]
+        ]
+
+    def at(self, fx: float, fy: float) -> tuple[float, float]:
+        """(lon, lat) of the point ``fx`` of the map width from the left
+        edge, ``fy`` of its height from the bottom."""
+        width, height = self.size
+        ((lon, lat, *_),) = _mapproject(self._rj() + " -I", [fx * width], [fy * height])
+        return float(lon), float(lat)
+
+
+def _mapproject(args: str, x: Any = None, y: Any = None) -> NDArray[np.float64]:
+    """GMT ``mapproject`` (PyGMT has no wrapper) on points, or alone for
+    ``-W`` queries; rows of numbers."""
+    _import_pygmt()
+    from pygmt.clib import Session
+
+    with Session() as lib, lib.virtualfile_out(kind="dataset") as vout:
+        if x is None:
+            lib.call_module("mapproject", f"{args} ->{vout}")
+        else:
+            xs = np.asarray(x, dtype=float)
+            ys = np.asarray(y, dtype=float)
+            with lib.virtualfile_in(x=xs, y=ys) as vin:
+                lib.call_module("mapproject", f"{vin} {args} ->{vout}")
+        out = lib.virtualfile_to_dataset(vfname=vout, output_type="numpy")
+    return np.atleast_2d(np.asarray(out, dtype=float))
+
+
+def corner_region(corners: Sequence[float], projection: str) -> CornerRegion:
+    """The :class:`CornerRegion` of ``corners`` (lon_ll, lat_ll, lon_ur,
+    lat_ur) in ``projection``: GMT gives its lon/lat box and map size."""
+    rj = f"-R{'/'.join(format(float(v), '.10g') for v in corners)}+r -J{projection}"
+    (box,) = _mapproject(f"{rj} -Wr")
+    (size,) = _mapproject(f"{rj} -W")
+    return CornerRegion(corners, projection, box[:4], size[:2])
+
+
+def gmt_region(region: Any) -> Any:
+    """``region`` as GMT draws it: the corner form of a :class:`CornerRegion`."""
+    return region.gmt if isinstance(region, CornerRegion) else region
+
+
+def within(region: Any, items: Sequence[Any]) -> list[Any]:
+    """The items (with ``.lon``/``.lat``) inside ``region``: its lon/lat
+    box, and for a :class:`CornerRegion` the map rectangle itself."""
+    if region is None:
+        return list(items)
+    w, e, s, n = region
+    out = [c for c in items if w <= c.lon <= e and s <= c.lat <= n]
+    if isinstance(region, CornerRegion):
+        keep = region.contains([c.lon for c in out], [c.lat for c in out])
+        out = [c for c, k in zip(out, keep, strict=True) if k]
+    return out
+
+
+def region_point(region: Sequence[float], fx: float, fy: float) -> tuple[float, float]:
+    """(lon, lat) at fraction ``fx`` east, ``fy`` north of the map's
+    south-west corner: across the map rectangle for a
+    :class:`CornerRegion`, else across the lon/lat box."""
+    if isinstance(region, CornerRegion):
+        return region.at(fx, fy)
+    west, east, south, north = region
+    return west + fx * (east - west), south + fy * (north - south)
+
+
 def _region_of_points(
     lons: Sequence[float], lats: Sequence[float], margin: float
 ) -> tuple[float, float, float, float]:
@@ -418,12 +558,28 @@ def _region_of_points(
     )
 
 
+#: a -B axes spec: which sides to draw (``WSne``), with its modifiers
+_SIDES = re.compile(r"^[WESNZwesnzlrbtu]+(\+|$)")
+
+
 def _frame_args(frame: Sequence[str], title: str | None) -> list[str]:
-    """Base-map frame spec list, with the title appended as ``+t``."""
+    """Base-map frame spec list, with the title appended as ``+t`` — to
+    the axes spec (``WSne+t…``) when there is one: GMT refuses a separate
+    ``+t`` element beside it."""
     args = list(frame)
     if title is not None:
-        args.append(f"+t{title}")
+        sides = next((k for k, a in enumerate(args) if _SIDES.match(a)), None)
+        if sides is None:
+            args.append(f"+t{title}")
+        else:
+            args[sides] += f"+t{title}"
     return args
+
+
+def _draw_frame(fig: Any, frame_args: Sequence[str]) -> None:
+    """The map frame, drawn last: its annotations sit inside the map
+    (:data:`DEFAULT_GMT_DEFAULTS`), so anything drawn after would hide them."""
+    fig.basemap(**layer_kw("frame", frame=list(frame_args)))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -594,7 +750,6 @@ def _draw_basemap(
     land: str,
     water: str,
     shorelines: str,
-    frame_args: Sequence[str],
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
@@ -632,12 +787,11 @@ def _draw_basemap(
     fig.coast(
         **layer_kw(
             "coast",
-            region=region,
+            region=gmt_region(region),
             projection=projection,
             resolution=resolution,
             land=land,
             water=water,
-            frame=list(frame_args),
             **({"shorelines": shorelines} if plain else {}),
         )
     )
@@ -715,6 +869,7 @@ def _draw_basemap(
             )
         )
     _draw_overlays(fig, overlays)
+    fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
 
 
 def _dem_colours(
@@ -903,6 +1058,13 @@ def _draw_vector_layer(
     fig.velo(**layer_kw("vectors", data=data, **kwargs))
 
 
+def _legend_anchor(anchor: tuple[float, float], region: Any) -> tuple[float, float]:
+    """The default anchor moves up on an oblique map (upright longitudes)."""
+    if isinstance(region, CornerRegion) and anchor == DEFAULT_LEGEND_ANCHOR:
+        return OBLIQUE_LEGEND_ANCHOR
+    return anchor
+
+
 def _draw_vector_legend(
     fig: Any,
     *,
@@ -925,23 +1087,18 @@ def _draw_vector_legend(
     length ``scale_ref`` (data units) sits above them with its magnitude
     labelled. Positions are region fractions — no hardcoded degrees.
     """
-    west, east, south, north = region
-    x0 = west + anchor[0] * (east - west)
-    y0 = south + anchor[1] * (north - south)
-    dy = line_spacing * (north - south)
+
+    def at(line: float) -> tuple[float, float]:
+        return region_point(region, anchor[0], anchor[1] + line * line_spacing)
+
     for i, (label, color) in enumerate(entries):
-        fig.text(
-            x=x0,
-            y=y0 + i * dy,
-            text=label,
-            font=f"{font},{color}",
-            justify="LM",
-        )
+        x, y = at(i)
+        fig.text(x=x, y=y, text=label, font=f"{font},{color}", justify="LM")
     if scale_ref is not None:
-        y_arrow = y0 + len(entries) * dy
+        x_arrow, y_arrow = at(len(entries))
         _draw_vector_layer(
             fig,
-            np.array([x0]),
+            np.array([x_arrow]),
             np.array([y_arrow]),
             np.array([float(scale_ref)]),
             np.array([0.0]),
@@ -951,9 +1108,10 @@ def _draw_vector_legend(
             head=head,
             pen_width=pen_width,
         )
+        x_label, y_label = at(len(entries) + 0.8)
         fig.text(
-            x=x0,
-            y=y_arrow + 0.8 * dy,
+            x=x_label,
+            y=y_label,
             text=f"{scale_ref:g} {scale_unit}",
             font=f"{font},black",
             justify="LM",
@@ -1132,7 +1290,6 @@ def station_map(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -1175,6 +1332,8 @@ def station_map(
                 offset=label_offset,
             )
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -1500,7 +1659,6 @@ def velocity_map(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -1585,9 +1743,11 @@ def velocity_map(
             head=vector_head,
             pen_width=pen_width,
             font=legend_font,
-            anchor=legend_anchor,
+            anchor=_legend_anchor(legend_anchor, region),
             line_spacing=legend_line_spacing,
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -1913,7 +2073,6 @@ def deformation_vectors(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -1999,9 +2158,11 @@ def deformation_vectors(
             head=vector_head,
             pen_width=pen_width,
             font=legend_font,
-            anchor=legend_anchor,
+            anchor=_legend_anchor(legend_anchor, region),
             line_spacing=legend_line_spacing,
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -2345,7 +2506,6 @@ def slip_map(
             land=land,
             water=water,
             shorelines=shorelines,
-            frame_args=_frame_args(frame, title),
             dem_grid=dem_grid,
             dem_cmap=dem_cmap,
             bathymetry_cmap=bathymetry_cmap,
@@ -2363,11 +2523,14 @@ def slip_map(
         if region is None:
             region = plane_region or _region_of_points(all_x, all_y, 0.0)
         plane_frame = list(frame) + [f"x+l{plane_xlabel}", f"y+l{plane_ylabel}"]
-        fig.basemap(
-            region=region,
-            projection=plane_projection,
-            frame=_frame_args(plane_frame, title),
-        )
+        # a section, not a map: ticks and annotations outside the axes,
+        # where the patches drawn next cannot cover them
+        with pygmt_mod.config(**PLANE_GMT_DEFAULTS):
+            fig.basemap(
+                region=region,
+                projection=plane_projection,
+                frame=_frame_args(plane_frame, title),
+            )
 
     pygmt_mod.makecpt(cmap=cmap, series=list(series), reverse=cmap_reverse)
     for patch in patches:
@@ -2402,6 +2565,9 @@ def slip_map(
     if colorbar:
         label = colorbar_label if colorbar_label is not None else f"{comp} slip (m)"
         fig.colorbar(frame=["af", f"x+l{label}"])
+
+    if view == "map":
+        _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)

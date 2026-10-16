@@ -143,8 +143,8 @@ filter costs about a second there. The filter is the `smooth` step, so
 Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT
 argument to every PyGMT call of that step, or replaces gpsplot's own value.
 The flag can be repeated. The steps are coast, smooth, gradient, glacier-gradient,
-dem, contours, glaciers, lakes, coastline, overlay, stations, labels,
-vectors, legend and logo (`gmt_overrides.LAYERS`).
+dem, contours, glaciers, lakes, coastline, overlay, grid, stations, labels,
+vectors, legend, frame and logo (`gmt_overrides.LAYERS`).
 
 ```bash
 gpsplot map station --tos --dem iceland --region -17.9/-16.9/64.45/64.85 \
@@ -165,17 +165,77 @@ gpsplot map station --tos --dem iceland --region -17.9/-16.9/64.45/64.85 \
   `dem:cmap`/`C`, because the glacier slices sit 100 000 m up in the
   stitched CPT. Use `--dem-cmap` and friends for colours.
 - **Where a step applies:** `coast` applies to both coast calls, but the
-  shoreline-only call over a DEM takes no fill (`land`/`water`) and no
-  frame. `stations` applies to every station marker, including all four
+  shoreline-only call over a DEM takes no fill (`land`/`water`). Neither
+  coast call draws the frame: `--gmt frame:…` sets the frame and
+  `--gmt grid:…` the graticule. `stations` applies to every station marker, including all four
   status symbols of a `--tos` map. `vectors` applies to the reference arrow
   of the vector legend too, so it keeps the scale.
 - **`--gmt-config`** sets GMT defaults (`pygmt.config`) for the whole map,
-  over gpsplot's title font. GMT rejects an unknown key or value when the
+  over gpsplot's title font and frame style. GMT rejects an unknown key or value when the
   config is entered, before anything is drawn.
 - **Cost:** transparency (`dem:t=20`) is slow in GMT, about 40 s instead of
   9 s for a 1″ close-up.
 - **Named options:** an option that keeps coming back becomes a named one,
   like `--glacier-cmap`.
+
+### Frame, graticule and logo
+
+The frame copies the iceland3 overview map (`gogn/gmt_maps/iceland3/iceland.gmt`
+→ `icel-overv.pdf`), scaled from its 30 cm to the 12 cm default
+(`maps.DEFAULT_GMT_DEFAULTS`):
+- a plain 1.25p black frame;
+- ticks and degree-minute annotations inside it, annotated on W and S only
+  (`DEFAULT_FRAME = ("WSne", "af")`);
+- a dashed grey graticule at the annotations.
+
+The graticule (`grid` step) goes over the base layers, under the stations
+and legends. The frame (`frame` step) is drawn last, since anything drawn
+after it would hide the annotations inside the map. Both are `basemap` calls.
+`+e` skips the annotations at the axis ends, which would pile up in the
+corners. The slip plane view, a section rather than a map, keeps its ticks
+and annotations outside (`PLANE_GMT_DEFAULTS`). A title rides on the axes
+spec (`WSne+t…`): GMT refuses a separate `+t`
+beside `WSne` when the title has spaces.
+
+**Oblique maps: `--region LON/LAT/LON/LAT+r`.** The old map's tilted
+graticule and upright longitude labels come from its oblique stereographic
+projection with a corner region (`-JS-19/65 -R-25/63/-12.8/66.7r`):
+
+```bash
+gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
+    --projection S-19/65/12c --region -25/63/-12.8/66.7+r --save pdf
+```
+
+- A `+r` region (or GMT4's trailing `r`) is parsed into the map's
+  lower-left and upper-right corners (`map.Corners`). Once the projection
+  is known it becomes a `maps.CornerRegion`.
+- That object is a tuple: GMT's lon/lat box around the rectangle
+  (`mapproject -Wr`). So whatever needs a box takes it unchanged: the DEM
+  level, `grdcut`, the scale-bar length.
+- The coast call draws from its corner form (`gmt_region`).
+- Station and vector filters use `maps.within`. It applies the box, then
+  the rectangle itself (`contains`).
+- The vector legend is placed by map fraction (`region_point`, `at`).
+- `MAP_ANNOT_OBLIQUE=anywhere` writes the longitudes along their meridians,
+  as the overview's `OBLIQUE_ANNOTATION = 0` did. East of the central
+  meridian they read downwards, as in `icel-overv.pdf`. It has no effect on
+  Mercator.
+- On an oblique map, the scale bar and the vector legend sit higher, clear
+  of the taller upright labels.
+- A plain W/E/S/N region with `-JS` keeps GMT's meaning: a meridian and
+  parallel boundary, which comes out fan-shaped.
+
+The logo is the two-line Veðurstofa logo of the RTK plots
+(`logos/vi_logos/VI_Two_Line_Blue.png`), 2.5 cm wide at the top left and
+30 % transparent, as `rtk_gps` draws it with `alpha=0.7`. Its white ground
+gives the faint box.
+
+The old map's land colours are `icel.cpt` in the GIS `cpt/` directory:
+- `--dem-cmap icel` gives the relief colours on land and its pale sea half;
+- add `--bathymetry-cmap lightblue` for the old flat blue sea;
+- `pol.cpt` is its all-white glacier palette (`--glacier-cmap pol`);
+- `lightslategrey.cpt` is its blue-grey fill of the fissure swarms and
+  central volcanoes, which also works as a land colour.
 
 Any `--dem` grid is drawn with its NaN cells transparent and **no water
 painted over it**, so a topo-bathymetry grid shows its sea floor. A

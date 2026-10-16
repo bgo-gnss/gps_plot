@@ -695,7 +695,7 @@ def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
         maps._draw_basemap(
             Spy(), fig, region=(-20.0, -19.0, 64.0, 64.5), projection="M6c",
             resolution="crude", land="gray", water="white", shorelines="thin",
-            frame_args=("a",), dem_grid=grid, dem_cmap="lightgrey",
+            dem_grid=grid, dem_cmap="lightgrey",
             dem_smooth=smooth,
         )  # fmt: skip
     raw, smoothed = seen["gradient"]
@@ -704,3 +704,76 @@ def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
     np.testing.assert_array_equal(
         np.asarray(seen["image"][0]), np.asarray(seen["image"][1])
     )
+
+
+def test_frame_title_joins_the_axes_spec() -> None:
+    """GMT refuses ``-BWSne -B+tTitle`` with a spaced title: the title
+    rides on the axes spec; without one it stays a separate element."""
+    from gps_plot import maps
+
+    assert maps._frame_args(("WSne", "af"), "North Iceland") == [
+        "WSne+tNorth Iceland",
+        "af",
+    ]
+    assert maps._frame_args(("af",), "T") == ["af", "+tT"]
+    assert maps._frame_args(maps.DEFAULT_FRAME, None) == list(maps.DEFAULT_FRAME)
+
+
+def test_frame_is_drawn_last_and_the_grid_under_the_stations(monkeypatch) -> None:
+    """The frame's annotations sit inside the map: the frame comes after
+    every layer, the dashed graticule before the station markers."""
+    from gps_plot import maps
+
+    calls: list[tuple[str, dict]] = []
+
+    class _Fig:
+        def __getattr__(self, name):
+            return lambda **kw: calls.append((name, kw))
+
+    class _Pygmt:
+        Figure = _Fig
+
+    monkeypatch.setattr(maps, "_import_pygmt", lambda: _Pygmt)
+    maps.station_map(
+        [StationCoordinate("AKUR", -18.1, 65.7, None, "active")],
+        region=(-19.0, -17.0, 65.0, 66.0),
+        title="T",
+    )
+    names = [name for name, _ in calls]
+    assert names[-1] == "basemap"
+    assert calls[-1][1]["frame"] == ["WSne+tT", "af+e"]
+    grid = names.index("basemap")
+    assert calls[grid][1]["frame"] == list(maps.DEFAULT_GRID)
+    assert grid < names.index("plot")
+    assert "frame" not in calls[0][1]  # the coast call
+
+
+def test_plain_region_within_and_point_fractions() -> None:
+    from gps_plot import maps
+
+    pts = [StationCoordinate("A", -20.0, 64.0), StationCoordinate("B", -10.0, 64.0)]
+    assert [c.marker for c in maps.within((-21, -19, 63, 65), pts)] == ["A"]
+    assert maps.within(None, pts) == pts
+    assert maps.region_point((-20, -10, 60, 70), 0.5, 0.1) == (-15.0, 61.0)
+    assert maps.gmt_region((1, 2, 3, 4)) == (1, 2, 3, 4)
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_corner_region_is_the_oblique_rectangle() -> None:
+    """The iceland3 overview: a tuple of the lon/lat box around the
+    rectangle, the GMT corner form, and the rectangle itself for
+    inside tests and fraction positions."""
+    from gps_plot import maps
+
+    r = maps.corner_region((-25, 63, -12.8, 66.7), "S-19/65/12c")
+    assert r.gmt == "-25/63/-12.8/66.7+r"
+    w, e, s, n = r
+    # the top edge bows north of the corners, the west edge west of them
+    assert w < -25 and e == pytest.approx(-12.8) and s == pytest.approx(63) and n > 66.7
+    assert r.size[0] == pytest.approx(12.0)
+    assert r.at(0, 0) == pytest.approx((-25, 63))
+    assert r.at(1, 1) == pytest.approx((-12.8, 66.7))
+    # inside the box, outside the rectangle: the box's SW corner
+    inside = [StationCoordinate("IN", -19.0, 65.0), StationCoordinate("OUT", w, s)]
+    assert [c.marker for c in maps.within(r, inside)] == ["IN"]
+    assert maps.gmt_region(r) == r.gmt

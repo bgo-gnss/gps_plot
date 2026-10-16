@@ -57,6 +57,7 @@ def test_negative_values_are_joined_to_their_option():
     [
         (gmap._region, "-21/-22/63/64"),
         (gmap._region, "1/2/3"),
+        (gmap._region, "-25/66.7/-12.8/63+r"),
         (gmap._window, "20231027"),
         (gmap._window, "20231109:20231027"),
         (gmap._mogi, "-22,63,0,1e7"),
@@ -66,6 +67,16 @@ def test_negative_values_are_joined_to_their_option():
 def test_bad_values_are_refused(func, value):
     with pytest.raises(argparse.ArgumentTypeError):
         func(value)
+
+
+def test_corner_region_is_parsed_as_corners():
+    """``LON/LAT/LON/LAT+r`` (or GMT4's trailing ``r``) gives corners,
+    lower-left first; W/E/S/N stays a plain box."""
+    for value in ("-25/63/-12.8/66.7+r", "-25/63/-12.8/66.7r"):
+        got = gmap._region(value)
+        assert isinstance(got, gmap.Corners) and got == (-25, 63, -12.8, 66.7)
+    plain = gmap._region("-24.6/-13.2/63.2/66.7")
+    assert not isinstance(plain, gmap.Corners)
 
 
 def test_windows_and_last_days():
@@ -302,6 +313,14 @@ def _run(argv, tmp_path):
         join_negative_values([*argv, "--save", "png", "-d", str(tmp_path)])
     )
     return gmap.run(args, p, _Config())
+
+
+def test_default_logo_is_the_two_line_logo_30_percent_transparent(fake_maps, tmp_path):
+    assert _run(["station", "SEY?"], tmp_path) == 0
+    kw = dict(fake_maps["fig"].calls)["image"]
+    assert kw["imagefile"].endswith("VI_Two_Line_Blue.png")
+    assert kw["transparency"] == gmap.LOGO_TRANSPARENCY
+    assert "box" not in kw
 
 
 def test_station_map_dispatch(fake_maps, tmp_path):
