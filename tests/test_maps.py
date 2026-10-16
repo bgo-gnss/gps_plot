@@ -658,6 +658,59 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     assert palettes.parse(open(cpt).read())[0].lo >= 0
 
 
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_dem_zones_recolour_land_under_the_land_hillshade(tmp_path, monkeypatch):
+    """The iceland3 swarms: land inside a zone moves into its own slices,
+    keeps the land hillshade; sea stays sea; a later zone and the ice
+    take the cells they overlap."""
+    import pygmt
+    import xarray as xr
+
+    from gps_plot import maps, palettes
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    lon = np.round(np.arange(-20.0, -19.0 + 1e-9, 0.05), 6)
+    lat = np.round(np.arange(64.0, 64.5 + 1e-9, 0.05), 6)
+    z = -300.0 + 60.0 * np.add.outer(np.arange(lat.size), np.arange(lon.size))
+    grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+    grid.gmt.registration, grid.gmt.gtype = 0, 1
+    shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
+
+    def box(name, w, e, s, n):
+        path = tmp_path / name
+        path.write_text(f"{w} {s}\n{e} {s}\n{e} {n}\n{w} {n}\n{w} {s}\n")
+        return str(path)
+
+    def inside(w, e, s, n):
+        eps = 1e-6
+        return ((lon[None, :] >= w - eps) & (lon[None, :] <= e + eps)
+                & (lat[:, None] >= s - eps) & (lat[:, None] <= n + eps))  # fmt: skip
+
+    swarm = maps.DemZone(box("swarm.xy", -20.0, -19.4, 64.0, 64.5), "119/136/153")
+    volcano = maps.DemZone(box("volc.xy", -19.7, -19.5, 64.2, 64.4), "red")
+    ice = box("ice.gmt", -19.65, -19.55, 64.25, 64.35)
+    comp, shading, cpt, _ice = maps._dem_colours(
+        pygmt, grid, shade, land="lightgrey", glaciers=ice, zones=(swarm, volcano)
+    )
+    shifted = comp.values - grid.values
+    land = grid.values >= 0
+    in_ice = inside(-19.65, -19.55, 64.25, 64.35)
+    in_volc = inside(-19.7, -19.5, 64.2, 64.4) & ~in_ice & land
+    in_swarm = inside(-20.0, -19.4, 64.0, 64.5) & ~in_volc & ~in_ice & land
+    g = maps.GLACIER_Z_OFFSET
+    assert (shifted[in_ice] == g).all()
+    assert (shifted[in_swarm] == g + maps.ZONE_Z_OFFSET).all()
+    assert (shifted[in_volc] == g + 2 * maps.ZONE_Z_OFFSET).all()
+    assert (shifted[~(in_ice | in_volc | in_swarm)] == 0).all()  # sea stays sea
+    assert in_swarm.any() and (~land & inside(-20.0, -19.4, 64.0, 64.5)).any()
+    # zones keep the land hillshade (the ice has its own)
+    assert np.allclose(shading.values[in_swarm], shade.values[in_swarm])
+    text = open(cpt).read()
+    palettes.check_gaps(text)
+    colours = {s.lo_colour for s in palettes.parse(text)}
+    assert {"119/136/153", "255/0/0"} <= colours
+
+
 def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
     import pygmt
     import xarray as xr

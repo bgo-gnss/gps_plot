@@ -47,6 +47,7 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "dem": ("Figure.grdimage", {"shading": "I", "nan_transparent": "Q"}),
     "contours": ("Figure.grdcontour", {"levels": "C", "annotation": "A",
                                        "pen": "W"}),
+    "zones": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "glaciers": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "lakes": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "coastline": ("Figure.plot", {"pen": "W"}),
