@@ -72,7 +72,7 @@ import dataclasses
 import math
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -120,6 +120,8 @@ DEFAULT_MARKER_PEN = "1p,red"
 DEFAULT_MARKER_FILL = "yellow"
 DEFAULT_LABEL_FONT = "5p,Helvetica-Bold"
 DEFAULT_LABEL_OFFSET = "J0.2"
+#: the line from a symbol to its name moved away (gps_plot.declutter)
+DEFAULT_LEADER_PEN = "0.3p,gray30"
 #: Padding [degrees] added around the station bounding box when no explicit
 #: ``region`` is given.
 DEFAULT_MARGIN_DEG = 0.5
@@ -255,6 +257,8 @@ DEFAULT_MAP_WIDTH_CM = 12.0
 #: Outline overlays (lava flows, fissures, …) drawn on the base layer.
 DEFAULT_OVERLAY_PEN = "0.6p,darkred"
 DEFAULT_OVERLAY_FILL = "orange@60"  # 60 % transparent
+#: place names and overlay labels: small, with a white halo over the relief
+DEFAULT_PLACE_FONT = "6p,Helvetica-Oblique,black=~0.75p,white"
 
 
 def _import_pygmt() -> Any:
@@ -598,12 +602,25 @@ class MapOverlay:
     """A GeoJSON outline layer (WGS84 lon/lat) drawn on the base layer.
 
     Polygons are filled with ``fill`` (None: outline only) and outlined
-    with ``pen``; lines get the pen; points are ignored.
+    with ``pen`` (None: no outline); lines get the pen; points are ignored.
+    ``label`` names a feature property written at each feature in
+    ``font`` (a polygon's at its largest ring's centre, a line's at its
+    middle vertex). A ``.txt`` path is a place-name file instead,
+    ``LON LAT NAME`` lines (``#`` comments), written in ``font``.
+    ``step`` is the drawing step its ``--gmt`` overrides go to
+    (:data:`gps_plot.gmt_overrides.LAYERS`); the labels go to
+    ``place-labels``.
     """
 
     path: str
-    pen: str = DEFAULT_OVERLAY_PEN
+    pen: str | None = DEFAULT_OVERLAY_PEN
     fill: str | None = DEFAULT_OVERLAY_FILL
+    label: str | None = None
+    font: str = DEFAULT_PLACE_FONT
+    step: str = "overlay"
+    #: a lon/lat box (W, E, S, N) whose labels are left out: a zoom
+    #: inset's, which names them itself
+    unlabelled_box: tuple[float, float, float, float] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -662,13 +679,69 @@ def overlay_segments(geojson: Mapping[str, Any]) -> tuple[str, str]:
     return "\n".join(polys), "\n".join(lines)
 
 
+def place_names(path: str | os.PathLike[str]) -> list[tuple[float, float, str]]:
+    """``(lon, lat, name)`` of a place-name file: ``LON LAT NAME`` lines,
+    the name the rest of the line; blank and ``#`` lines skipped.
+
+    Raises:
+        ValueError: a line without a position, naming the file and line.
+    """
+    out = []
+    with open(path, encoding="utf-8") as fh:
+        for k, line in enumerate(fh, 1):
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            parts = text.split(None, 2)
+            try:
+                lon, lat = float(parts[0]), float(parts[1])
+                name = parts[2]
+            except (ValueError, IndexError):
+                raise ValueError(f"{path}:{k}: not 'LON LAT NAME': {text!r}") from None
+            out.append((lon, lat, name))
+    return out
+
+
+def overlay_labels(
+    geojson: Mapping[str, Any], prop: str
+) -> list[tuple[float, float, str]]:
+    """``(lon, lat, text)`` for each feature with a non-empty ``prop``: a
+    polygon's at the vertex mean of its largest outer ring, a line's at
+    its middle vertex."""
+    out = []
+    for feature in geojson.get("features") or ():
+        text = str((feature.get("properties") or {}).get(prop) or "").strip()
+        geom = feature.get("geometry") or {}
+        kind, coords = geom.get("type"), geom.get("coordinates")
+        if not text or not coords:
+            continue
+        if kind in ("Polygon", "MultiPolygon"):
+            rings = [p[0] for p in ([coords] if kind == "Polygon" else coords)]
+            ring = max(rings, key=len)
+            lon = float(np.mean([c[0] for c in ring]))
+            lat = float(np.mean([c[1] for c in ring]))
+        elif kind in ("LineString", "MultiLineString"):
+            line = coords if kind == "LineString" else max(coords, key=len)
+            lon, lat = (float(v) for v in line[len(line) // 2][:2])
+        else:
+            continue
+        out.append((lon, lat, text))
+    return out
+
+
 def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
     import json
     import tempfile
 
     for ov in overlays:
+        if str(ov.path).endswith(".txt"):
+            _draw_labels(
+                fig, _outside(place_names(ov.path), ov.unlabelled_box), ov.font
+            )
+            continue
         with open(ov.path, encoding="utf-8") as fh:
-            polys, lines = overlay_segments(json.load(fh))
+            geojson = json.load(fh)
+        polys, lines = overlay_segments(geojson)
         with tempfile.TemporaryDirectory() as tmp:
             for text, closed in ((polys, True), (lines, False)):
                 if not text:
@@ -676,10 +749,67 @@ def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
                 seg = os.path.join(tmp, "segments.txt")
                 with open(seg, "w", encoding="utf-8") as fh:
                     fh.write(text + "\n")
-                kw: dict[str, Any] = {"pen": ov.pen}
+                kw: dict[str, Any] = {}
+                if ov.pen is not None:
+                    kw["pen"] = ov.pen
                 if closed and ov.fill:
                     kw["fill"] = ov.fill
-                fig.plot(**layer_kw("overlay", data=seg, **kw))
+                if kw:
+                    fig.plot(**layer_kw(ov.step, data=seg, **kw))
+        if ov.label:
+            labels = overlay_labels(geojson, ov.label)
+            _draw_labels(fig, _outside(labels, ov.unlabelled_box), ov.font)
+
+
+def overlay_label_points(
+    overlays: Sequence[MapOverlay],
+) -> list[tuple[float, float, str, str]]:
+    """``(lon, lat, text, font)`` of every name the ``overlays`` write
+    (place names, labelled features), those they leave out excepted."""
+    import json
+
+    out = []
+    for ov in overlays:
+        if str(ov.path).endswith(".txt"):
+            labels = place_names(ov.path)
+        elif ov.label:
+            with open(ov.path, encoding="utf-8") as fh:
+                labels = overlay_labels(json.load(fh), ov.label)
+        else:
+            continue
+        out += [(*lb, ov.font) for lb in _outside(labels, ov.unlabelled_box)]
+    return out
+
+
+def font_size_pt(font: str, default: float = 6.0) -> float:
+    """The size of a GMT font spec (``6p,Helvetica,…``) [pt]."""
+    m = re.match(r"([\d.]+)", font)
+    return float(m.group(1)) if m else default
+
+
+def _outside(
+    labels: Sequence[tuple[float, float, str]],
+    box: tuple[float, float, float, float] | None,
+) -> list[tuple[float, float, str]]:
+    """The labels outside ``box`` (all when None)."""
+    if box is None:
+        return list(labels)
+    w, e, s, n = box
+    return [lb for lb in labels if not (w <= lb[0] <= e and s <= lb[1] <= n)]
+
+
+def _draw_labels(
+    fig: Any, labels: Sequence[tuple[float, float, str]], font: str
+) -> None:
+    """Text at points, centred (the ``place-labels`` step)."""
+    if labels:
+        lon, lat, text = zip(*labels, strict=True)
+        fig.text(
+            **layer_kw(
+                "place-labels", x=list(lon), y=list(lat), text=list(text),
+                font=font, justify="CM",
+            )
+        )  # fmt: skip
 
 
 def map_width_cm(projection: str) -> float | None:
@@ -792,6 +922,7 @@ def _draw_basemap(
     zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
+    graticule: bool = True,
 ) -> None:
     """Draw the shared coast/DEM base layer (slice-3 seam, now live).
 
@@ -918,7 +1049,8 @@ def _draw_basemap(
             )
         )
     _draw_overlays(fig, overlays)
-    fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
+    if graticule:
+        fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
     if isinstance(region, CornerRegion):
         # the overview: legend, logo and scale bar find the sea (layout)
         from gps_plot import layout
@@ -927,6 +1059,36 @@ def _draw_basemap(
             region, land=land_grid,
             resolution=resolution if resolution != "auto" else "intermediate",
         )  # fmt: skip
+
+
+#: the keywords of a map function that describe its background
+BASE_KEYS = (
+    "resolution", "land", "water", "shorelines", "dem_grid", "dem_cmap",
+    "bathymetry_cmap", "glacier_cmap", "dem_shading_azimuth",
+    "dem_shading_normalize", "dem_smooth", "overlays", "coastline", "glaciers",
+    "zones", "lakes", "glacier_contours",
+)  # fmt: skip
+
+
+def draw_base(
+    pygmt_mod: Any,
+    fig: Any,
+    *,
+    region: tuple[float, float, float, float],
+    projection: str,
+    **style: Any,
+) -> None:
+    """The background of a map again, e.g. in a zoom inset: ``style`` is a
+    map function's keywords (those not in :data:`BASE_KEYS` are ignored),
+    with the map functions' defaults; no graticule."""
+    kw: dict[str, Any] = {
+        "resolution": DEFAULT_RESOLUTION, "land": DEFAULT_LAND,
+        "water": DEFAULT_WATER, "shorelines": DEFAULT_SHORELINES,
+    }  # fmt: skip
+    kw.update({k: v for k, v in style.items() if k in BASE_KEYS})
+    _draw_basemap(
+        pygmt_mod, fig, region=region, projection=projection, graticule=False, **kw
+    )
 
 
 def _dem_colours(
@@ -1209,6 +1371,30 @@ def _draw_vector_legend(
         )
 
 
+def draw_scale_arrow(
+    fig: Any,
+    region: Sequence[float],
+    scale_ref: float,
+    scale: float,
+    unit: str,
+    *,
+    anchor: tuple[float, float] = (0.04, 0.06),
+    font: str = DEFAULT_LEGEND_FONT,
+) -> None:
+    """A lone reference arrow of ``scale_ref`` ``unit`` at ``anchor``
+    (region fractions), for a panel with its own scale (a zoom inset)."""
+    x, y = region_point(region, *anchor)
+    _draw_vector_layer(
+        fig, np.array([x]), np.array([y]), np.array([float(scale_ref)]),
+        np.array([0.0]), color="black", scale=scale,
+        confidence=DEFAULT_VELO_CONFIDENCE, head=DEFAULT_VECTOR_HEAD,
+        pen_width=DEFAULT_VECTOR_PEN_WIDTH,
+    )  # fmt: skip
+    xl, yl = region_point(region, anchor[0], anchor[1] + 0.07)
+    fig.text(x=xl, y=yl, text=f"{scale_ref:g} {unit}", font=f"{font},black",
+             justify="LM", fill="white")  # fmt: skip
+
+
 def _draw_status_markers(
     fig: Any,
     coordinates: Sequence[StationCoordinate],
@@ -1265,6 +1451,135 @@ def _draw_status_markers(
         )
 
 
+def draw_station_symbols(
+    fig: Any,
+    coordinates: Sequence[StationCoordinate],
+    *,
+    markers: bool = True,
+    labels: bool = True,
+    unlabelled: Collection[str] = (),
+    marker_style: str = DEFAULT_MARKER_STYLE,
+    marker_pen: str = DEFAULT_MARKER_PEN,
+    marker_fill: str = DEFAULT_MARKER_FILL,
+    label_font: str = DEFAULT_LABEL_FONT,
+    label_offset: str = DEFAULT_LABEL_OFFSET,
+    status_legend: str | None = DEFAULT_STATUS_LEGEND,
+    rj: str | None = None,
+    avoid: Sequence[tuple[float, float, str, str]] = (),
+) -> None:
+    """The station symbols of :func:`station_map` (by status when the
+    stations carry one, with its legend at ``status_legend``) and their
+    names, except those in ``unlabelled``. Also draws a zoom inset."""
+    if not (markers and coordinates):
+        return
+    if any(getattr(c, "status", None) for c in coordinates):
+        _draw_status_markers(fig, coordinates, legend_position=status_legend)
+    else:
+        fig.plot(
+            **layer_kw(
+                "stations",
+                x=[c.lon for c in coordinates], y=[c.lat for c in coordinates],
+                style=marker_style, pen=marker_pen, fill=marker_fill,
+            )
+        )  # fmt: skip
+    if labels:
+        _draw_station_labels(
+            fig, coordinates, unlabelled, label_font, label_offset, rj, avoid
+        )
+
+
+def _draw_station_labels(
+    fig: Any,
+    points: Sequence[Any],
+    unlabelled: Collection[str],
+    font: str,
+    offset: str,
+    rj: str | None = None,
+    avoid: Sequence[tuple[float, float, str, str]] = (),
+) -> None:
+    """Each point's ``marker`` beside it, except those in ``unlabelled``.
+
+    With ``rj`` (the map's GMT ``-R… -J…``) the names keep off each other
+    and off every symbol and the names in ``avoid`` (``(lon, lat, text,
+    font)``, :func:`overlay_label_points`) (:mod:`gps_plot.declutter`),
+    those moved away from their symbol with a leader line; without it each
+    sits at GMT's ``BL`` + ``offset``.
+    """
+    named = [c for c in points if c.marker not in unlabelled]
+    if not named:
+        return
+    if rj is None:
+        # x=longitude, y=latitude — the dormant gmtplot.velomap had these
+        # swapped in its fig.text call; fixed on absorption.
+        fig.text(
+            **layer_kw(
+                "labels",
+                x=[c.lon for c in named],
+                y=[c.lat for c in named],
+                text=[c.marker for c in named],
+                font=font,
+                justify="BL",
+                fill="white",
+                offset=offset,
+            )
+        )
+        return
+    from gps_plot import declutter
+
+    xy = _mapproject(rj, [c.lon for c in named], [c.lat for c in named])[:, :2]
+    others = [c for c in points if c.marker in unlabelled]
+    obstacles = (
+        _mapproject(rj, [c.lon for c in others], [c.lat for c in others])[:, :2]
+        if others
+        else None
+    )
+    ((width, height, *_),) = _mapproject(f"{rj} -W")
+    fixed = []
+    if avoid:
+        pxy = _mapproject(rj, [a[0] for a in avoid], [a[1] for a in avoid])
+        fixed = [
+            declutter.centred_box(float(x), float(y), a[2], font_size_pt(a[3]))
+            for (x, y), a in zip(pxy[:, :2], avoid, strict=True)
+        ]
+    labels = declutter.place(
+        xy, [c.marker for c in named], size_pt=font_size_pt(font),
+        width=float(width), height=float(height), obstacles=obstacles, fixed=fixed,
+    )  # fmt: skip
+    anchors = _mapproject(f"{rj} -I", [lb.x for lb in labels], [lb.y for lb in labels])
+    for lb in labels:
+        if lb.leader:
+            c = named[lb.index]
+            fig.plot(
+                **layer_kw(
+                    "leaders",
+                    x=[c.lon, anchors[lb.index, 0]],
+                    y=[c.lat, anchors[lb.index, 1]],
+                    pen=DEFAULT_LEADER_PEN,
+                )
+            )
+    for just in sorted({lb.justify for lb in labels}):
+        group = [lb for lb in labels if lb.justify == just]
+        fig.text(
+            **layer_kw(
+                "labels",
+                x=[anchors[lb.index, 0] for lb in group],
+                y=[anchors[lb.index, 1] for lb in group],
+                text=[named[lb.index].marker for lb in group],
+                font=font,
+                justify=just,
+                fill="white",
+            )
+        )
+
+
+def map_rj(region: Any, projection: str) -> str:
+    """GMT ``-R… -J…`` of a map, for ``mapproject``."""
+    if isinstance(region, CornerRegion):
+        return region._rj()
+    w, e, s, n = region
+    return f"-R{w}/{e}/{s}/{n} -J{projection}"
+
+
 def station_map(
     stations: Sequence[str] | Sequence[StationCoordinate],
     *,
@@ -1282,6 +1597,7 @@ def station_map(
     marker_fill: str = DEFAULT_MARKER_FILL,
     labels: bool = True,
     markers: bool = True,
+    unlabelled: Collection[str] = (),
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
     status_legend: str | None = DEFAULT_STATUS_LEGEND,
@@ -1332,6 +1648,7 @@ def station_map(
         marker_fill: Marker fill color.
         labels: Draw the station marker next to each symbol.
         markers: Draw the station symbols (False: none, nor labels).
+        unlabelled: Markers left unnamed (they are named in a zoom inset).
         label_font: Label font spec.
         label_offset: Label offset spec (GMT ``-D`` justify form).
         status_legend: Legend position (GMT ``-D``) when the stations
@@ -1412,34 +1729,13 @@ def station_map(
         glacier_contours=glacier_contours,
     )
 
-    lons = [c.lon for c in coordinates]
-    lats = [c.lat for c in coordinates]
-    if not (markers and coordinates):
-        labels = False
-    elif any(getattr(c, "status", None) for c in coordinates):
-        _draw_status_markers(fig, coordinates, legend_position=status_legend)
-    else:
-        fig.plot(
-            **layer_kw(
-                "stations",
-                x=lons, y=lats, style=marker_style, pen=marker_pen, fill=marker_fill,
-            )
-        )  # fmt: skip
-    if labels:
-        # x=longitude, y=latitude — the dormant gmtplot.velomap had these
-        # swapped in its fig.text call; fixed on absorption.
-        fig.text(
-            **layer_kw(
-                "labels",
-                x=lons,
-                y=lats,
-                text=[c.marker for c in coordinates],
-                font=label_font,
-                justify="BL",
-                fill="white",
-                offset=label_offset,
-            )
-        )
+    draw_station_symbols(
+        fig, coordinates, markers=markers, labels=labels, unlabelled=unlabelled,
+        marker_style=marker_style, marker_pen=marker_pen, marker_fill=marker_fill,
+        label_font=label_font, label_offset=label_offset,
+        status_legend=status_legend, rj=map_rj(region, projection),
+        avoid=overlay_label_points(overlays),
+    )  # fmt: skip
 
     _draw_frame(fig, _frame_args(frame, title))
 
@@ -1617,6 +1913,85 @@ def velocity_vectors_from_geojson(
     return tuple(vectors)
 
 
+def draw_velocity_vectors(
+    fig: Any,
+    vectors: Sequence[VelocityVector],
+    *,
+    colors: Mapping[str, str],
+    color: str = DEFAULT_VELOCITY_COLOR,
+    scale: float = DEFAULT_VELOCITY_SCALE,
+    confidence: float = DEFAULT_VELO_CONFIDENCE,
+    vector_head: str = DEFAULT_VECTOR_HEAD,
+    pen_width: str = DEFAULT_VECTOR_PEN_WIDTH,
+    ellipse_fill: str | None = None,
+    ellipse_pen: str | None = None,
+    station_style: str = DEFAULT_VECTOR_STATION_STYLE,
+    station_fill: str = DEFAULT_VECTOR_STATION_FILL,
+    station_pen: str = DEFAULT_VECTOR_STATION_PEN,
+    markers: bool = True,
+    labels: bool = True,
+    unlabelled: Collection[str] = (),
+    label_font: str = DEFAULT_LABEL_FONT,
+    label_offset: str = DEFAULT_LABEL_OFFSET,
+    rj: str | None = None,
+    avoid: Sequence[tuple[float, float, str, str]] = (),
+) -> list[tuple[str, str]]:
+    """The arrows, ellipses, station dots and names of
+    :func:`velocity_map` (also drawn in a zoom inset); its legend entries,
+    ``(label, colour)`` per method in first-appearance order."""
+    lons = np.array([v.lon for v in vectors], dtype=np.float64)
+    lats = np.array([v.lat for v in vectors], dtype=np.float64)
+    # One velo layer per estimator tag, first-appearance order preserved.
+    group_order: list[str | None] = []
+    groups: dict[str | None, list[int]] = {}
+    for i, v in enumerate(vectors):
+        if v.method not in groups:
+            groups[v.method] = []
+            group_order.append(v.method)
+        groups[v.method].append(i)
+
+    legend_entries: list[tuple[str, str]] = []
+    for method in group_order:
+        idx = np.array(groups[method], dtype=int)
+        layer_color = colors.get(method, color) if method else color
+        _draw_vector_layer(
+            fig,
+            lons[idx],
+            lats[idx],
+            np.array([vectors[i].east for i in idx], dtype=np.float64),
+            np.array([vectors[i].north for i in idx], dtype=np.float64),
+            sigma_east=np.array([vectors[i].sigma_east for i in idx], dtype=np.float64),
+            sigma_north=np.array(
+                [vectors[i].sigma_north for i in idx], dtype=np.float64
+            ),
+            correlation=np.array(
+                [vectors[i].correlation_en for i in idx], dtype=np.float64
+            ),
+            color=layer_color,
+            scale=scale,
+            confidence=confidence,
+            head=vector_head,
+            pen_width=pen_width,
+            ellipse_fill=ellipse_fill,
+            ellipse_pen=ellipse_pen,
+        )
+        legend_entries.append((method if method else "velocity", layer_color))
+
+    if markers:
+        fig.plot(
+            **layer_kw(
+                "stations",
+                x=lons, y=lats, style=station_style, fill=station_fill,
+                pen=station_pen,
+            )
+        )  # fmt: skip
+    if labels and markers:
+        _draw_station_labels(
+            fig, vectors, unlabelled, label_font, label_offset, rj, avoid
+        )
+    return legend_entries
+
+
 def velocity_map(
     vectors: Sequence[VelocityVector],
     *,
@@ -1642,6 +2017,7 @@ def velocity_map(
     station_pen: str = DEFAULT_VECTOR_STATION_PEN,
     labels: bool = True,
     markers: bool = True,
+    unlabelled: Collection[str] = (),
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
     legend: bool = True,
@@ -1706,6 +2082,7 @@ def velocity_map(
         station_pen: Station dot outline pen.
         labels: Draw the station marker next to each dot.
         markers: Draw the station symbols (False: none, nor labels).
+        unlabelled: Markers left unnamed (they are named in a zoom inset).
         label_font: Label font spec.
         label_offset: Label offset spec.
         legend: Draw the legend block (method entries + scale arrow).
@@ -1786,63 +2163,15 @@ def velocity_map(
         glacier_contours=glacier_contours,
     )
 
-    # One velo layer per estimator tag, first-appearance order preserved.
-    group_order: list[str | None] = []
-    groups: dict[str | None, list[int]] = {}
-    for i, v in enumerate(vectors):
-        if v.method not in groups:
-            groups[v.method] = []
-            group_order.append(v.method)
-        groups[v.method].append(i)
-
-    legend_entries: list[tuple[str, str]] = []
-    for method in group_order:
-        idx = np.array(groups[method], dtype=int)
-        layer_color = colors.get(method, color) if method else color
-        _draw_vector_layer(
-            fig,
-            lons[idx],
-            lats[idx],
-            np.array([vectors[i].east for i in idx], dtype=np.float64),
-            np.array([vectors[i].north for i in idx], dtype=np.float64),
-            sigma_east=np.array([vectors[i].sigma_east for i in idx], dtype=np.float64),
-            sigma_north=np.array(
-                [vectors[i].sigma_north for i in idx], dtype=np.float64
-            ),
-            correlation=np.array(
-                [vectors[i].correlation_en for i in idx], dtype=np.float64
-            ),
-            color=layer_color,
-            scale=scale,
-            confidence=confidence,
-            head=vector_head,
-            pen_width=pen_width,
-            ellipse_fill=ellipse_fill,
-            ellipse_pen=ellipse_pen,
-        )
-        legend_entries.append((method if method else "velocity", layer_color))
-
-    if markers:
-        fig.plot(
-            **layer_kw(
-                "stations",
-                x=lons, y=lats, style=station_style, fill=station_fill,
-                pen=station_pen,
-            )
-        )  # fmt: skip
-    if labels and markers:
-        fig.text(
-            **layer_kw(
-                "labels",
-                x=lons,
-                y=lats,
-                text=[v.marker for v in vectors],
-                font=label_font,
-                justify="BL",
-                fill="white",
-                offset=label_offset,
-            )
-        )
+    legend_entries = draw_velocity_vectors(
+        fig, vectors, colors=colors, color=color, scale=scale,
+        confidence=confidence, vector_head=vector_head, pen_width=pen_width,
+        ellipse_fill=ellipse_fill, ellipse_pen=ellipse_pen,
+        station_style=station_style, station_fill=station_fill,
+        station_pen=station_pen, markers=markers, labels=labels,
+        unlabelled=unlabelled, label_font=label_font, label_offset=label_offset,
+        rj=map_rj(region, projection), avoid=overlay_label_points(overlays),
+    )  # fmt: skip
 
     if legend:
         _draw_vector_legend(

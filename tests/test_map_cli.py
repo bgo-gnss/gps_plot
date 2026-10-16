@@ -314,6 +314,10 @@ def fake_maps(monkeypatch):
     for name in ("station_map", "velocity_map", "deformation_vectors", "slip_map"):
         monkeypatch.setattr(maps, name, record(name))
     monkeypatch.setattr(maps, "station_coordinates", lambda m, parser=None: coords(m))
+    # the insets project with real GMT: recorded here, drawn in test_maps
+    monkeypatch.setattr(
+        gmap, "_insets", lambda *a, **kw: seen.setdefault("insets", []).append(a)
+    )
     monkeypatch.setitem(sys.modules, "pygmt", types.SimpleNamespace(
         config=lambda **kw: __import__("contextlib").nullcontext()))  # fmt: skip
     monkeypatch.setitem(sys.modules, "pygmt.params", types.SimpleNamespace(

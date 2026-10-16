@@ -33,6 +33,9 @@ SEARCH = 0.45
 BOTTOM_LABELS_CM = 1.0
 #: a latitude annotation's box at the left edge [cm]: width, half height
 LEFT_LABEL_CM = (1.2, 0.25)
+#: a Mercator map's annotation bands inside the frame, bottom and left [cm]
+BOX_BOTTOM_LABELS_CM = 0.45
+BOX_LEFT_LABELS_CM = 1.25
 
 #: where the legend goes, in order of preference (the logo stays bottom
 #: left and the scale bar bottom right: the overview frame keeps them at sea)
@@ -58,21 +61,30 @@ class SeaLayout:
     )
     #: GMT ``-R… -J…`` of the map, to place points (None: no projection)
     rj: str | None = None
+    #: cells kept free of every box, sea or land: the map symbols
+    blocked: np.ndarray | None = None
 
     def __post_init__(self) -> None:
+        if self.blocked is None:
+            self.blocked = np.zeros_like(self.sea, dtype=bool)
         self._index()
 
     def _index(self) -> None:
-        land = (~self.sea).astype(np.int32)
+        assert self.blocked is not None
+        land = (~self.sea | self.blocked).astype(np.int32)
         self._sum = np.pad(land.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+        blocked = self.blocked.astype(np.int32)
+        self._blocked_sum = np.pad(blocked.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
 
     def block_points(
         self, lons: Sequence[float], lats: Sequence[float], radius: float = POINT_CM
     ) -> None:
         """Keep boxes off the map symbols at ``lons``/``lats``: the cells
-        within ``radius`` cm of each count as land from now on."""
+        within ``radius`` cm of each are blocked from now on, for boxes at
+        sea and on land alike."""
         if not len(lons) or self.rj is None:
             return
+        assert self.blocked is not None
         from gps_plot.maps import _mapproject
 
         xy = _mapproject(self.rj, list(lons), list(lats))[:, :2]
@@ -82,19 +94,30 @@ class SeaLayout:
         for x, y in xy:
             cols = np.abs(cx - x) <= radius
             rows = np.abs(cy - y) <= radius
-            self.sea[np.ix_(rows, cols)] = False
+            self.blocked[np.ix_(rows, cols)] = True
         self._index()
 
-    def _all_sea(self, x0: float, x1: float, y0: float, y1: float) -> bool:
+    def block(self, mask: np.ndarray) -> None:
+        """Block the cells of ``mask`` (shaped as :attr:`sea`) for every box."""
+        assert self.blocked is not None
+        self.blocked |= mask
+        self._index()
+
+    def _all_sea(
+        self, x0: float, x1: float, y0: float, y1: float, on_land: bool = False
+    ) -> bool:
+        """No land (``on_land``: no blocked cell) under the box."""
         ny, nx = self.sea.shape
         c0, c1 = max(int(x0 / CELL_CM), 0), min(int(np.ceil(x1 / CELL_CM)), nx)
         r0, r1 = max(int(y0 / CELL_CM), 0), min(int(np.ceil(y1 / CELL_CM)), ny)
         if c0 >= c1 or r0 >= r1:
             return False
-        s = self._sum
+        s = self._blocked_sum if on_land else self._sum
         return bool(s[r1, c1] - s[r0, c1] - s[r1, c0] + s[r0, c0] == 0)
 
-    def _clear(self, box: tuple[float, float, float, float]) -> bool:
+    def _clear(
+        self, box: tuple[float, float, float, float], on_land: bool = False
+    ) -> bool:
         x0, x1, y0, y1 = box
         if x0 < MARGIN_CM or y0 < MARGIN_CM:
             return False
@@ -108,7 +131,7 @@ class SeaLayout:
                 and u0 < y1 + MARGIN_CM
             ):
                 return False
-        return self._all_sea(x0, x1, y0, y1)
+        return self._all_sea(x0, x1, y0, y1, on_land)
 
     def reserve(self, box: tuple[float, float, float, float]) -> None:
         """Keep ``box`` (x0, x1, y0, y1) free of anything placed later."""
@@ -119,19 +142,25 @@ class SeaLayout:
         size: tuple[float, float],
         corners: str | Sequence[str],
         reach: float | None = None,
+        on_land: bool = False,
     ) -> tuple[float, float] | None:
         """The lower-left (x, y) [cm] of a ``size`` (w, h) box in the free
         sea position nearest the first of ``corners`` (TL/TR/BL/BR) that
         has one, at most ``reach`` cm from it (default :data:`SEARCH` of
-        the map); None when none has. The box is then taken."""
+        the map); None when none has. The box is then taken. ``on_land``
+        lets the box cover land, but still no symbol."""
         for corner in [corners] if isinstance(corners, str) else corners:
-            spot = self._place(size, corner, reach)
+            spot = self._place(size, corner, reach, on_land)
             if spot is not None:
                 return spot
         return None
 
     def _place(
-        self, size: tuple[float, float], corner: str, reach: float | None
+        self,
+        size: tuple[float, float],
+        corner: str,
+        reach: float | None,
+        on_land: bool = False,
     ) -> tuple[float, float] | None:
         w, h = size
         right, top = corner[1] == "R", corner[0] == "T"
@@ -149,7 +178,7 @@ class SeaLayout:
                     break
                 x0 = self.width - MARGIN_CM - w - dx if right else MARGIN_CM + dx
                 y0 = self.height - MARGIN_CM - h - dy if top else MARGIN_CM + dy
-                if self._clear((x0, x0 + w, y0, y0 + h)):
+                if self._clear((x0, x0 + w, y0, y0 + h), on_land):
                     best = (dx + dy, x0, y0)
                     break
         if best is None:
@@ -188,6 +217,32 @@ def build(
         y = float(np.interp(lat, lats, edge_y))
         lw, lh = LEFT_LABEL_CM
         layout.reserve((0.0, lw, y - lh, y + lh))
+    return layout
+
+
+def build_box(
+    region: Sequence[float],
+    projection: str,
+    *,
+    land: Any = None,
+    resolution: str = "high",
+) -> SeaLayout:
+    """The :class:`SeaLayout` of a plain W/E/S/N ``region`` (a Mercator
+    map): ``land`` the drawn DEM (z >= 0 land), None tests GSHHG. The
+    annotations inside the frame (W and S) are reserved as bands."""
+    from gps_plot.maps import _mapproject
+
+    w, e, s, n = region
+    rj = f"-R{w}/{e}/{s}/{n} -J{projection}"
+    ((width, height, *_),) = _mapproject(f"{rj} -W")
+    xs = np.arange(CELL_CM / 2, width, CELL_CM)
+    ys = np.arange(CELL_CM / 2, height, CELL_CM)
+    gx, gy = np.meshgrid(xs, ys)
+    lonlat = _mapproject(f"{rj} -I", gx.ravel(), gy.ravel())[:, :2]
+    on_land = _is_land(lonlat, land, region, resolution).reshape(gy.shape)
+    layout = SeaLayout(float(width), float(height), ~on_land, rj=rj)
+    layout.reserve((0.0, float(width), 0.0, BOX_BOTTOM_LABELS_CM))
+    layout.reserve((0.0, BOX_LEFT_LABELS_CM, 0.0, float(height)))
     return layout
 
 

@@ -185,7 +185,10 @@ and the dormant `gmtplot.py::velomap` recipe is fully absorbed into them.
 (`--tos-search "…"` takes any `tos search` line, `--stations-file` adds
 sites from files, `map base`/`--no-stations` draws none), and
 `--dem iceland` draws the spliced Iceland DEM at the level the map needs
-(the TOS current-value rules are in the lane doc). Signatures, inputs and
+(the TOS current-value rules are in the lane doc). Regional maps
+(2026-10-16): `--region reykjanes`, `--layers reykjanes` (roads, towns,
+lavas, graben, fissures, barriers, places), `--inset svartsengi` (zoom box),
+the Iceland locator and decluttered station names. Signatures, inputs and
 the install story are in **[`docs/map-lane.md`](docs/map-lane.md)**.
 
 ```python
@@ -212,7 +215,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-16 — regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

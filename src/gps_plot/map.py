@@ -44,6 +44,8 @@ REFS = ("detrend", "plate")
 WINDOW_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 #: the 90th-percentile arrow is drawn this long [cm] by the automatic scale
 TARGET_ARROW_CM = 2.0
+#: ... and in a zoom inset, whose arrows get their own scale
+ZOOM_ARROW_CM = 1.0
 #: the Veðurstofa name logo, top left (source checkout only: not packaged):
 #: the two-line logo of the RTK plots, drawn 30 % transparent as they do
 DEFAULT_LOGO = (
@@ -103,6 +105,18 @@ BASE = "base"
 #: the legend group of stations.cfg stations drawn beside --stations-file ones
 STATIONS_CFG_GROUP = "GPS stations"
 TITLE_FONT = "12p,Helvetica-Bold"
+#: --scale-style
+SCALE_STYLES = ("fancy", "plain")
+#: boxes kept free of insets [cm]: the logo (width, height, top left) and
+#: the scale bar (width, top, bottom right); the vector legend's width
+LOGO_BOX_CM = (3.0, 1.2)
+SCALE_BOX_CM = (3.6, 2.0)
+LEGEND_WIDTH_CM = 3.5
+#: the scale bar's fonts: its 'km' label at the annotation size
+SCALE_BAR_FONTS = {"FONT_LABEL": "8p", "FONT_ANNOT_PRIMARY": "7p",
+                   "MAP_LABEL_OFFSET": "3p"}  # fmt: skip
+#: room kept round each symbol for its name when placing the locator [cm]
+LOCATOR_NAME_CM = 0.7
 #: thin ellipses under coloured arrows (the Reykjanes maps)
 ELLIPSE_PEN = "0.5p,gray30"
 
@@ -176,13 +190,18 @@ class Corners(tuple[float, float, float, float]):
 
 
 def _region(value: str) -> tuple[float, float, float, float]:
+    from gps_plot import areas
+
+    if value.lower() in areas.AREAS:
+        return areas.AREAS[value.lower()]
     corner = value.endswith(("+r", "r"))
     body = value.removesuffix("+r").removesuffix("r") if corner else value
     try:
         a, b, c, d = (float(v) for v in body.split("/"))
     except ValueError:
         raise argparse.ArgumentTypeError(
-            f"{value!r}: use W/E/S/N, or LON/LAT/LON/LAT+r corners, in degrees"
+            f"{value!r}: use W/E/S/N or LON/LAT/LON/LAT+r corners in degrees, "
+            "or an area name (reykjanes, svartsengi, …: gps_plot.areas)"
         ) from None
     if corner:
         if not (b < d):
@@ -230,7 +249,8 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     g.add_argument(
         "--region", type=_region, default=None, metavar="W/E/S/N",
         help="map bounds in degrees, or LON/LAT/LON/LAT+r: the lower-left and "
-        "upper-right corners of a rectangle in --projection (an oblique map); "
+        "upper-right corners of a rectangle in --projection (an oblique map), "
+        "or an area name (reykjanes, svartsengi, hengill, …); "
         "with no station given, every station inside it is plotted "
         "(default: the stations' box + --margin)",
     )  # fmt: skip
@@ -302,6 +322,33 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         help="the FutureVolc fissure swarms and central volcanoes, slate-blue "
         "under the hillshade as on the iceland3 overview (--dem-zone of the "
         "GIS vector/futurevolc_*_closed.gmt, built by build_07_volcanic.sh)",
+    )  # fmt: skip
+    g.add_argument(
+        "--layers", action="append", default=[], metavar="NAME[,NAME…]",
+        help="named GIS layers, each with its own look and --gmt step: roads, "
+        "towns, lavas, graben, fissures, barriers, places, or a preset "
+        "(reykjanes = all of them; infrastructure; eruptions); 'list' prints "
+        "them. Built by the GIS directory's vector/build_08_reykjanes.sh",
+    )  # fmt: skip
+    g.add_argument(
+        "--inset", type=_region, default=None, metavar="W/E/S/N|AREA",
+        help="a zoom inset of this box (e.g. svartsengi), its stations named "
+        "there and not on the map; the box is outlined on the map",
+    )  # fmt: skip
+    g.add_argument(
+        "--locator", dest="locator", action="store_const", const=True,
+        default=None,
+        help="a small Iceland map with the map's box in red (default: on, "
+        "except on a full-Iceland map)",
+    )  # fmt: skip
+    g.add_argument(
+        "--no-locator", dest="locator", action="store_const", const=False,
+        help="no Iceland locator map",
+    )  # fmt: skip
+    g.add_argument(
+        "--scale-style", choices=SCALE_STYLES, default=None,
+        help="scale bar: fancy (checkered, 'km' above; default) or plain "
+        "(default on a full-Iceland overview)",
     )  # fmt: skip
     g.add_argument(
         "--overlay", action="append", default=[], metavar="GEOJSON",
@@ -723,6 +770,12 @@ def _style(
             )
             for path in FISSURE_SWARM_OUTLINES
         )
+    if getattr(args, "layers", None):
+        from gps_plot import gis_layers
+
+        kw["overlays"] = kw.get("overlays", ()) + gis_layers.overlays(
+            gis_layers.expand(args.layers), gis_dir(config)
+        )
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -868,6 +921,115 @@ def scale_bar_km(region: Sequence[float]) -> float:
     return _nice(max(width / 5.0, 0.1))
 
 
+def _unlabel_inset(style: dict[str, Any], args: Any) -> dict[str, Any]:
+    """``style`` for the map itself: with --inset, the overlay names inside
+    the inset's box are left to the inset."""
+    if args.inset is None or not style.get("overlays"):
+        return style
+    box = tuple(args.inset[:4])
+    return {
+        **style,
+        "overlays": tuple(
+            dataclasses.replace(ov, unlabelled_box=box) for ov in style["overlays"]
+        ),
+    }
+
+
+def _in_inset(args: Any, points: Sequence[Any], maps: Any) -> list[Any]:
+    """The points inside the --inset box (none without one)."""
+    if args.inset is None:
+        return []
+    return list(maps.within(args.inset, points))
+
+
+def legend_box_cm(fig: Any, style: dict[str, Any], lines: int) -> tuple[float, ...]:
+    """The vector legend's box (x0, x1, y0, y1) [cm], bottom left: ``lines``
+    rows at the map functions' anchor and spacing (region fractions)."""
+    from gps_plot import insets, maps
+
+    region = style.get("region") or tuple(fig.region)
+    width, height = insets.size_cm(
+        region, style.get("projection", maps.DEFAULT_PROJECTION)
+    )
+    fx, fy = maps._legend_anchor(maps.DEFAULT_LEGEND_ANCHOR, region)
+    top = (fy + lines * maps.DEFAULT_LEGEND_LINE_SPACING) * height + 0.3
+    return (0.0, fx * width + LEGEND_WIDTH_CM, 0.0, top)
+
+
+def _wants_locator(args: Any, region: Sequence[float]) -> bool:
+    """--locator, else on unless the map is all Iceland."""
+    if args.locator is not None:
+        return bool(args.locator)
+    w, e, s, n = region[:4]
+    return e - w < FULL_ICELAND_SPAN[0] or n - s < FULL_ICELAND_SPAN[1]
+
+
+def _insets(
+    fig: Any,
+    args: Any,
+    config: Any,
+    style: dict[str, Any],
+    points: Sequence[Any],
+    zoom_symbols: Any,
+    reserve: Sequence[tuple[float, ...]] = (),
+) -> None:
+    """The zoom inset (--inset) and the Iceland locator, where they fit
+    (:func:`gps_plot.insets.place`): clear of the logo, the scale bar,
+    ``reserve`` boxes [cm] and the station symbols."""
+    from gps_plot import insets, layout, maps
+
+    region = style.get("region") or tuple(fig.region)
+    zoom = args.inset is not None and zoom_symbols is not None
+    locator = _wants_locator(args, region)
+    if not (zoom or locator):
+        return
+    projection = style.get("projection", maps.DEFAULT_PROJECTION)
+    sea = getattr(fig, "gpsplot_layout", None)
+    if not isinstance(sea, layout.SeaLayout):
+        sea = layout.build_box(region, projection)
+    width, height = sea.width, sea.height
+    sea.reserve((0.0, LOGO_BOX_CM[0], height - LOGO_BOX_CM[1], height))
+    sea.reserve((width - SCALE_BOX_CM[0], width, 0.0, SCALE_BOX_CM[1]))
+    for box in reserve:
+        sea.reserve(tuple(box))  # type: ignore[arg-type]
+    if args.markers:
+        sea.block_points([p.lon for p in points], [p.lat for p in points])
+    zoom_spot = None
+    if zoom:
+        box = args.inset
+        size = insets.size_cm(box, insets.zoom_projection())
+        sea.block_points(*_box_edge(box))
+        spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
+                            map_size=(width, height))  # fmt: skip
+        assert spot is not None  # outside=True always finds a spot
+        zoom_spot = spot
+        insets.draw_zoom_box(fig, box)
+        insets.draw_zoom(fig, box, spot, style, zoom_symbols)
+    if locator:
+        if args.markers:  # and their names
+            sea.block_points([p.lon for p in points], [p.lat for p in points],
+                             radius=LOCATOR_NAME_CM)  # fmt: skip
+        names = maps.overlay_label_points(
+            _unlabel_inset(style, args).get("overlays", ())
+        )
+        sea.block_points([a[0] for a in names], [a[1] for a in names],
+                         radius=LOCATOR_NAME_CM)  # fmt: skip
+        size = insets.locator_size()
+        spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
+        if spot is None:  # beside the map: under a zoom inset there, else top
+            spot = insets.beside(size, (width, height), below=zoom_spot)
+        insets.draw_locator(fig, region, spot, gis_dir(config))
+
+
+def _box_edge(box: Sequence[float], n: int = 12) -> tuple[list[float], list[float]]:
+    """Points along a lon/lat box's edge, so no inset covers it."""
+    w, e, s, n_ = box
+    t = [k / n for k in range(n + 1)]
+    lons = [w + (e - w) * f for f in t] * 2 + [w] * (n + 1) + [e] * (n + 1)
+    lats = [s] * (n + 1) + [n_] * (n + 1) + [s + (n_ - s) * f for f in t] * 2
+    return lons, lats
+
+
 def _finish(fig: Any, args: argparse.Namespace) -> None:
     """Scale bar and logo on top of a finished map view."""
     if args.scale_bar:
@@ -882,10 +1044,17 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         from pygmt.params import Position
 
         position = Position("BR", cstype="inside", offset=("0.4c", foot))
-        fig.scalebar(
-            length=f"{km:g}k", label=True, unit=True, box="+gwhite@20",
-            position=position,
-        )  # fmt: skip
+        style = args.scale_style or ("plain" if oblique else "fancy")
+        fancy = style == "fancy"
+        import pygmt
+
+        with pygmt.config(**SCALE_BAR_FONTS):
+            fig.scalebar(
+                **gmt_overrides.layer_kw(
+                    "scalebar", length=f"{km:g}k", label=True, unit=not fancy,
+                    fancy=fancy, box="+gwhite@20", position=position,
+                )
+            )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
         position = f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}"
@@ -1009,6 +1178,16 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     if any(str(getattr(args, o, None)).lower() == LIST for o in CMAP_OPTIONS):
         print_palettes(cpt_dir(config))
         return 0
+    if args.layers:
+        from gps_plot import gis_layers
+
+        if any(spec.strip().lower() == gis_layers.LIST for spec in args.layers):
+            print(gis_layers.describe())
+            return 0
+        try:
+            gis_layers.overlays(gis_layers.expand(args.layers), gis_dir(config))
+        except (ValueError, FileNotFoundError) as exc:
+            parser.error(str(exc))
     if getattr(args, "fissure_swarms", False):
         missing = [z for z in (*FISSURE_SWARM_ZONES, *FISSURE_SWARM_OUTLINES)
                    if not os.path.isfile(os.path.join(gis_dir(config), z))]  # fmt: skip
@@ -1043,6 +1222,8 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
 
+    if args.inset is not None and args.kind not in ("station", "velocity"):
+        parser.error("--inset draws on station and velocity maps only")
     if args.kind in ("station", BASE):
         return _run_station(args, parser, config, maps, coords)
     if args.labels is None:
@@ -1153,11 +1334,22 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         labels = args.labels if args.labels is not None else n <= LABEL_LIMIT
     else:
         labels = False
+    style = _style(args, region, config=config, points=stations)
+    zoomed = _in_inset(args, stations, maps)
+    zoom_style = _unlabel_inset(style, args)
+    avoid = maps.overlay_label_points(style.get("overlays", ()))
     fig = maps.station_map(
         stations, labels=labels, markers=args.markers,
-        **_style(args, region, config=config, points=stations),
+        unlabelled={c.marker for c in zoomed}, **zoom_style,
     )  # fmt: skip
+
+    def zoom_symbols(f: Any, rj: str) -> None:
+        maps.draw_station_symbols(f, zoomed, markers=args.markers,
+                                  labels=args.markers, status_legend=None,
+                                  rj=rj, avoid=avoid)  # fmt: skip
+
     _finish(fig, args)
+    _insets(fig, args, config, style, stations, zoom_symbols)
     stem = _stem(args, "station" if stations and args.markers else BASE, stations)
     for p in _save(fig, args, config, stem):
         print(p)
@@ -1217,17 +1409,40 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     )
     if args.title is None:
         style["title"] = _velocity_title(args, bool(windows))
+    colors = dict(g for g in groups if g[0] is not None)
+    zoomed = _in_inset(args, kept, maps)
+    zoom_style = _unlabel_inset(style, args)
+    avoid = maps.overlay_label_points(style.get("overlays", ()))
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
         scale_ref=args.scale_ref or ref,
-        method_colors=dict(g for g in groups if g[0] is not None),
+        method_colors=colors,
         ellipse_pen=ELLIPSE_PEN,
         labels=args.labels,
         markers=args.markers,
-        **style,
+        unlabelled={v.marker for v in zoomed},
+        **zoom_style,
     )
+
+    # the inset's own scale: the map's arrows would leave its box
+    zoom_scale, zoom_ref = auto_scale(
+        [math.hypot(v.east, v.north) for v in zoomed], target_cm=ZOOM_ARROW_CM
+    )
+    zoom_scale = min(zoom_scale, args.scale or scale)
+
+    def zoom_symbols(f: Any, rj: str) -> None:
+        maps.draw_velocity_vectors(
+            f, zoomed, colors=colors, scale=zoom_scale,
+            ellipse_pen=ELLIPSE_PEN, markers=args.markers, labels=args.labels,
+            rj=rj, avoid=avoid,
+        )  # fmt: skip
+        if zoomed and zoom_scale < (args.scale or scale):
+            maps.draw_scale_arrow(f, args.inset, zoom_ref, zoom_scale, "mm/yr")
+
+    legend = legend_box_cm(fig, style, len(colors) + 2)
     _finish(fig, args)
+    _insets(fig, args, config, style, kept, zoom_symbols, reserve=[legend])
     span = "_".join(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows) or "secular"
     stem = _stem(args, "velocity", stations, span,
                  "vertical" if args.vertical else "horizontal")  # fmt: skip
@@ -1319,7 +1534,9 @@ def _run_deformation(
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
+    legend = legend_box_cm(fig, style, len(models) + 3)
     _finish(fig, args)
+    _insets(fig, args, config, style, coords, None, reserve=[legend])
     stem = _stem(args, "deformation", coords,
                  f"{args.start:%Y%m%d}-{end:%Y%m%d}", "mogi" if models else "")  # fmt: skip
     for p in _save(fig, args, config, stem):

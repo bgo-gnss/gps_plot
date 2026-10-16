@@ -18,7 +18,7 @@ from collections.abc import Sequence
 AREAS: dict[str, tuple[float, float, float, float]] = {
     "iceland": (-24.6, -13.2, 63.2, 66.7),
     "reykjanes": (-22.9, -21.7, 63.75, 64.1),
-    "svartsengi": (-22.6, -22.25, 63.8, 63.95),
+    "svartsengi": (-22.57, -22.35, 63.825, 63.91),
     "hengill": (-21.6, -21.0, 63.9, 64.2),
     "sisz": (-21.0, -19.8, 63.85, 64.1),
     "snaefellsnes": (-24.1, -22.5, 64.7, 65.05),

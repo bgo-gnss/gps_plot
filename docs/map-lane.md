@@ -408,6 +408,59 @@ gpsplot map velocity --region -22.8/-21.9/63.75/64.1 \
     --dem iceland --save pdf
 ```
 
+## Regional maps: layers, insets, names (2026-10-16)
+
+Prototyped on Reykjanes, after BGÓ's `gmt_maps/bb_grein/fig3b-overvlabel.pdf`:
+
+```bash
+gpsplot map station "*" --region reykjanes --fissure-swarms --dem iceland \
+    --layers reykjanes --inset svartsengi --save pdf
+gpsplot map velocity --region reykjanes --dem iceland --layers reykjanes \
+    --inset svartsengi --window 20250801:20251001 --save pdf
+```
+
+- **`--region NAME`** takes an `areas.AREAS` box (`reykjanes`,
+  `svartsengi`, …), as `--inset` does. `svartsengi` was narrowed to the
+  dense cluster (-22.57/-22.35/63.825/63.91) for the inset.
+- **`--layers NAME[,NAME…]`** (`gis_layers.py`): named GIS layers with
+  their own look and their own `--gmt` step, drawn in preset order
+  (roads under the lavas that cut them, barriers over the lavas). Layers:
+  `roads` (IS 50V, vegflokkun 1/2/4), `towns` (IS 50V urban areas,
+  named), `lavas` (LMÍ/NÍ 2021–2025), `graben` (Grindavík, Nov 2023 and
+  Jan 2024), `fissures` (LMÍ/NÍ eruptive fissures), `barriers` (IMO lava
+  barriers), `places` (authored `places.txt`: IS 50V names neither the
+  Svartsengi plant nor the Blue Lagoon). Presets: `reykjanes` (all),
+  `infrastructure`, `eruptions`; `--layers list`. Built by
+  `vector/build_08_reykjanes.sh`; a missing file stops with that hint.
+  `--overlay` stays for anything ad hoc.
+- **Station names keep off each other** (`declutter.py`): for each name,
+  crowded points first, the spots round its symbol and then rings further
+  out with a leader line (`leaders` step); the first whose box overlaps no
+  name, symbol, place name or the map edge. No free spot: the old default
+  (up right). Applies to every station and velocity map with a known
+  projection, so labels on uncluttered maps barely move.
+- **Zoom inset `--inset BOX`** (`insets.py`, station and velocity maps):
+  the box is outlined on the map and drawn again, 6 cm wide, with its
+  stations named there and not on the map (their place names too).
+  Vectors in it get their own scale (`ZOOM_ARROW_CM`) and reference arrow
+  when the map's would leave the box.
+- **Iceland locator**, default on unless the map is all Iceland
+  (`--no-locator`): fig3b's small oblique Iceland, white land, slate
+  swarms, the map's box in red.
+- **Placement** (`layout.build_box` for Mercator, `SeaLayout.place(...,
+  on_land=)`): logo, scale bar and vector legend reserved, symbols and
+  their names blocked; an inset takes the nearest free sea spot, then
+  land off the symbols; with no room inside it goes right of the map
+  (the locator under the zoom inset). On Reykjanes both go beside: the
+  peninsula fills the box.
+- **Scale bar** `--scale-style fancy|plain`: fancy (checkered, `km`
+  above, fig3b) by default, plain on the overview. The insets are drawn
+  after logo and scale bar: an inset leaves GMT on its own -R/-J.
+
+Known: place names may still overlap each other (Reykjanesvirkjun /
+Reykjanesviti, Svartsengi / Bláa lónið); the vector legend has no box and
+can sit on land labels. Lava colour per eruption is not done (one fill).
+
 ## Installing the lane
 
 The `maps` extra is `pygmt>=0.19` (PyPI) on top of a **system GMT ≥ 6** C
