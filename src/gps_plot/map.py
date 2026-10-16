@@ -54,6 +54,8 @@ LOGO_WIDTH = "2.5c"
 SCALE_BAR_FOOT = "1.0c"
 SCALE_BAR_FOOT_OBLIQUE = "1.7c"
 LOGO_TRANSPARENCY = 30
+#: on the overview the logo sits bottom left, above the upright longitudes
+LOGO_FOOT_OBLIQUE = "1.15c"
 DATE_FORMAT = "%Y%m%d"
 #: --dem land colours: one grey, so the hillshade alone shows the relief
 #: (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200 so the
@@ -76,7 +78,10 @@ DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
 #: iceland3 overview's oblique stereographic frame, longitudes along their
 #: meridians, and with a DEM a light-blue sea under the sea-floor hillshade
 OVERVIEW_PROJECTION = "S-19/65/12c"
-OVERVIEW_CORNERS = (-25.0, 63.0, -12.8, 66.7)
+#: (the iceland3 frame -25/63/-12.8/66.7, opened south-west to -25.4°/62.6°
+#: so the logo sits on the sea bottom left, east to -12.4° for the scale
+#: bar, north to 66.9° for the legend top left)
+OVERVIEW_CORNERS = (-25.4, 62.6, -12.4, 66.9)
 OVERVIEW_SEA = "lightblue"
 #: an extent at least this wide and tall [deg lon, deg lat] is all Iceland
 FULL_ICELAND_SPAN = (8.0, 2.5)
@@ -832,17 +837,23 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         # vector legend, the logo is top left, the status legend top right
         from pygmt.params import Position
 
+        position = Position("BR", cstype="inside", offset=("0.4c", foot))
         fig.scalebar(
             length=f"{km:g}k", label=True, unit=True, box="+gwhite@20",
-            position=Position("BR", cstype="inside", offset=("0.4c", foot)),
+            position=position,
         )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
+        position = f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}"
+        from gps_plot.maps import CornerRegion
+
+        if isinstance(args.region, CornerRegion):  # the overview: bottom left
+            position = f"jBL+o0.35c/{LOGO_FOOT_OBLIQUE}+w{LOGO_WIDTH}"
         fig.image(
             **gmt_overrides.layer_kw(
                 "logo",
                 imagefile=logo,
-                position=f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}",
+                position=position,
                 transparency=LOGO_TRANSPARENCY,
             )
         )
