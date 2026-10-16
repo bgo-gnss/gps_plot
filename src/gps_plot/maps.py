@@ -588,6 +588,9 @@ def _draw_frame(fig: Any, frame_args: Sequence[str]) -> None:
     """The map frame, drawn last: its annotations sit inside the map
     (:data:`DEFAULT_GMT_DEFAULTS`), so anything drawn after would hide them."""
     fig.basemap(**layer_kw("frame", frame=list(frame_args)))
+    # kept, so an embellishment added later (the overview logo) can have
+    # the annotations drawn over it again
+    fig.gpsplot_frame = list(frame_args)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -876,8 +879,14 @@ def _draw_basemap(
             outline = zone.cmap.lower() == ZONE_OUTLINE_ONLY
             if not outline and palettes.resolve(zone.cmap).kind == palettes.COLOUR:
                 flat = zone.cmap
-        if zone.pen is not None or flat is not None:
-            fig.plot(**layer_kw("zones", data=zone.polygons, pen=zone.pen, fill=flat))
+        if flat is not None:
+            fig.plot(**layer_kw("zones", data=zone.polygons, fill=flat))
+    if dem_grid is None and zones:
+        # a zone recolours land only: the sea over its flat fill again
+        fig.coast(water=water, resolution=resolution)
+    for zone in zones:
+        if zone.pen is not None:
+            fig.plot(**layer_kw("zones", data=zone.polygons, pen=zone.pen))
     if glaciers is not None:
         fill = None
         if dem_grid is None:  # a flat fill: a colour, not a CPT

@@ -38,7 +38,7 @@ LEFT_LABEL_CM = (1.2, 0.25)
 #: left and the scale bar bottom right: the overview frame keeps them at sea)
 LEGEND_CORNERS = ("TL", "TR", "BL", "BR")
 #: the fixed logo's box, bottom left: width, bottom, top [cm]
-LOGO_BOX_CM = (2.95, 1.0, 2.15)
+LOGO_BOX_CM = (2.45, 0.0, 0.9)
 #: the fixed scale bar's box: width from the right, bottom, top [cm]
 SCALE_BAR_BOX_CM = (3.4, 1.55, 2.45)
 #: half the size of a station symbol, kept free of the legend [cm]

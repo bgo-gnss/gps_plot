@@ -252,11 +252,25 @@ gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
 - A plain W/E/S/N region with `-JS` keeps GMT's meaning: a meridian and
   parallel boundary, which comes out fan-shaped.
 
+**`--fissure-swarms`: the FutureVolc fissure swarms and central volcanoes**
+on any map, as on the iceland3 overview.
+- **Fill:** the land inside them is slate blue, from the closed polygons
+  (`FISSURE_SWARM_ZONES`). With a DEM the colour sits under the hillshade.
+  Without one it is a flat fill, and the sea is painted over it again.
+- **Outline:** drawn from the FutureVolc GeoJSON as served
+  (`FISSURE_SWARM_OUTLINES`), so no closing edge shows.
+- **Building them:** both come from `vector/build_07_volcanic.sh`. If they
+  are missing, the map stops with that hint.
+
+```bash
+gpsplot map station --tos --fissure-swarms --save pdf
+```
+
 **A full-Iceland map is an overview by default.** Neither `--region`
 nor `--projection` given, and an extent of at least 8° × 2.5° (`map base`,
 `--tos`, every station): the map takes the overview frame.
 - **Frame:** `OVERVIEW_PROJECTION` `S-19/65/12c` over the corners
-  `OVERVIEW_CORNERS` -25.4/62.6/-12.4/66.9+r, with the longitudes along their
+  `OVERVIEW_CORNERS` -25.2/62.9/-12.4/66.9+r, with the longitudes along their
   meridians.
 - **Sea:** with a DEM and no `--bathymetry-cmap`, the light-blue sea of
   `OVERVIEW_SEA` under the sea-floor hillshade.
@@ -264,9 +278,13 @@ nor `--projection` given, and an extent of at least 8° × 2.5° (`map base`,
   stays a Mercator box (`map._overview`). `--projection M12c` keeps the
   Mercator box too.
 - **Logo, legend and scale bar over the sea.** `OVERVIEW_CORNERS`
-  (-25.4/62.6/-12.4/66.9) widens the iceland3 frame so the fixed places
-  are sea: the logo bottom left, above the upright longitudes, and the
-  scale bar bottom right.
+  (-25.2/62.9/-12.4/66.9) widens the iceland3 frame just enough:
+  - the logo, small (`OVERVIEW_LOGO_WIDTH` 1.6 cm), sits bottom left
+    between the 24°W and 22°W annotations. The frame is drawn again over
+    it, so an annotation stays on top should they meet;
+  - the scale bar sits bottom right.
+- **DEM by default:** a full-Iceland overview takes `--dem iceland` when
+  it is built (`_iceland_dem_built`). `--dem none` keeps flat land.
 - **The status legend finds its place** (`gps_plot.layout`): the free
   sea position nearest the top left, else the top right, the bottom left,
   the bottom right. The mask is 1 mm cells of the drawn DEM (z >= 0 is
