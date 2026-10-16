@@ -1988,6 +1988,24 @@ def confounded_rate_warnings(
     return out
 
 
+def _warn_if_skipped(sta: str) -> None:
+    """A commit for a station detrend_status.csv marks ``skip`` is allowed
+    (the operator may have changed their mind), but the batch will leave
+    the station out until the row goes: say so."""
+    from gps_parser import outlier_catalogs as _oc
+
+    try:
+        skipped = _oc.skipped_detrend_stations()
+    except Exception:  # noqa: BLE001 - the report covers an unreadable catalog
+        return
+    if sta in skipped:
+        print(
+            f"warning: {sta} is 'skip' in detrend_status.csv ({skipped[sta]}); "
+            "gps-estimate-detrend leaves it out until that row is removed",
+            file=sys.stderr,
+        )
+
+
 def commit_record(
     sta: str,
     record: dict[str, Any],
@@ -2477,7 +2495,6 @@ def _print_status() -> int:
     anywhere.  The authoritative "how many are done" lives in
     ``detrend_params.json``, not here — this only counts against it.
     """
-    import csv
 
     from gps_parser import ConfigParser
     from geo_dataread.gps_views import (
@@ -2510,21 +2527,10 @@ def _print_status() -> int:
     # skipped = status=skip rows in the optional detrend_status.csv
     skipped: dict[str, str] = {}
     status_path = _oc.catalog_path("detrend_status", DETREND_STATUS_FILENAME)
-    if status_path is not None and Path(status_path).is_file():
-        try:
-            with open(status_path, encoding="utf-8") as f:
-                lines = [
-                    ln
-                    for ln in f.read().splitlines()
-                    if ln.strip() and not ln.lstrip().startswith("#")
-                ]
-            for row in csv.DictReader(lines):
-                sta = (row.get("sta") or "").strip().upper()
-                status = (row.get("status") or "").strip().lower()
-                if sta and status == "skip":
-                    skipped[sta] = (row.get("notes") or "").strip()
-        except Exception as exc:
-            print(f"warning: detrend_status.csv unreadable ({exc})", file=sys.stderr)
+    try:
+        skipped = _oc.skipped_detrend_stations(status_path)
+    except Exception as exc:
+        print(f"warning: detrend_status.csv unreadable ({exc})", file=sys.stderr)
 
     pending = [s for s in active if s not in done and s not in skipped]
     unknown_skips = [s for s in skipped if s not in active]
@@ -2934,6 +2940,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.commit:
+        _warn_if_skipped(sta)
         record.setdefault("refs", {})["generator"] = "gps-detrend-workbench"
         try:
             target, before, after = commit_record(
