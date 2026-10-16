@@ -52,6 +52,15 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "lakes": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "coastline": ("Figure.plot", {"pen": "W"}),
     "overlay": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    # the named --layers (gps_plot.gis_layers), one step each
+    "roads": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "towns": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "lavas": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "graben": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "fissures": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "barriers": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "place-labels": ("Figure.text", {"font": "F", "justify": "F"}),
+    "leaders": ("Figure.plot", {"pen": "W"}),
     "stations": ("Figure.plot", {"style": "S", "pen": "W", "fill": "G"}),
     "labels": ("Figure.text", {"font": "F", "justify": "F", "fill": "G",
                                "offset": "D"}),
@@ -61,6 +70,11 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "grid": ("Figure.basemap", {"frame": "B"}),
     "frame": ("Figure.basemap", {"frame": "B"}),
     "logo": ("Figure.image", {"position": "D", "box": "F", "transparency": "t"}),
+    "scalebar": ("Figure.scalebar", {}),
+    # the Iceland locator inset and the zoom inset (gps_plot.insets)
+    "locator": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "inset": ("Figure.inset", {}),
+    "zoom-box": ("Figure.plot", {"pen": "W"}),
 }  # fmt: skip
 #: keys gpsplot always sets itself
 OWNED = frozenset({
