@@ -48,7 +48,7 @@ def rate_settings(
             series, other detrend terms, the detrended view of old).
     """
     from geo_dataread.pos import pos_frame
-    from geo_dataread.velocity import VelocitySettings
+    from geo_dataread.velocity import DEFAULT_VIEW, VelocitySettings
 
     if ref == "plate":
         vref = "plate"
@@ -72,8 +72,11 @@ def rate_settings(
         )
     if view not in ("raw", "cleaned"):
         raise ValueError(f"--rate: --view {view} (raw or cleaned)")
+    # the product's view, not the plot's: a rate on a cleaned plot is the
+    # map's number (declared epochs out, no detection); --view raw stays raw
     return VelocitySettings(
-        frame=pos_frame(pos_id), ref=vref, view=view, uncert=float(uncert),
+        frame=pos_frame(pos_id), ref=vref,
+        view="raw" if view == "raw" else DEFAULT_VIEW, uncert=float(uncert),
         pos_dir=Dir,
     )  # fmt: skip
 
@@ -144,7 +147,7 @@ def add_rate_lines(
                 text = f"{tag}rate refused: {_tex(r.refused or '')}"
             else:
                 ok = inside & np.isfinite(yy[c]) & np.isfinite(ss[c]) & (ss[c] > 0)
-                if ok.sum() >= 2:
+                if ok.sum() >= 2 and np.isfinite(r.rate[c]):
                     w = 1.0 / ss[c, ok] ** 2
                     tm = float(np.sum(w * tt[ok]) / np.sum(w))
                     ym = float(np.sum(w * yy[c, ok]) / np.sum(w))
@@ -153,6 +156,10 @@ def add_rate_lines(
                     ax.plot(list(gpsr.toDateTime(ends)), line, color=color,
                             linewidth=RATE_LINEWIDTH, zorder=7)  # fmt: skip
                 text = f"{tag}$v = {r.rate[c]:.1f} \\pm {r.sigma[c]:.1f}$ mm/yr"
+                if not np.isfinite(r.rate[c]):  # a short-tier part refused
+                    part = "up" if c == 2 else "horizontal"
+                    why = r.parts_refused.get(part, "not estimated")
+                    text = f"{tag}rate refused: {_tex(part + ' ' + why)}"
             ax.set_xlim(xlim)
             ax.set_ylim(ylim)
             ax.text(

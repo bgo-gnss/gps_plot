@@ -423,15 +423,16 @@ def test_velocity_windows_one_colour_each(fake_maps, fake_product, tmp_path, cap
     )
 
 
-def test_velocity_windows_default_to_plate_periodic_cleaned(
+def test_velocity_windows_default_to_plate_periodic_declared(
     fake_maps, fake_product, tmp_path
 ):
     assert _run(["velocity", "SENG", "--last", "14"], tmp_path) == 0
     (settings,) = {c[3] for c in fake_product}
     assert (settings.ref, settings.view, settings.frame) == (
-        "plate-periodic", "cleaned", "itrf2014",
+        "plate-periodic", "declared", "itrf2014",
     )  # fmt: skip
-    assert settings.min_obs == 5
+    assert settings == type(settings)(**{**settings.__dict__})  # frozen, complete
+    assert (settings.min_obs, settings.short_tier) == (5, True)
 
 
 def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):
@@ -912,3 +913,22 @@ def test_fissure_swarms_flag(fake_maps, monkeypatch, tmp_path):
         str(gis / o) for o in gmap.FISSURE_SWARM_OUTLINES
     ]
     assert all(o.fill is None for o in kw["overlays"])
+
+
+def test_a_short_tier_record_draws_only_its_standing_part(fake_maps, tmp_path, capsys):
+    import dataclasses
+
+    from geo_dataread import velocity as vprod
+
+    rec = dataclasses.replace(
+        _product_record("SENG", [1.0, 2.0, np.nan]), tier="short",
+        parts_refused={"up": "snr=1.2<5"},
+    )  # fmt: skip
+    paths = vprod.write_velocity_set([rec], tmp_path / "set", "s")
+    assert _run(["velocity", "SENG", "--velocities", str(paths["csv"])], tmp_path) == 0
+    (vectors,), _kw = fake_maps["velocity_map"]
+    assert [v.marker for v in vectors] == ["SENG"]
+    assert _run(["velocity", "SENG", "--velocities", str(paths["csv"]), "--vertical"],
+                tmp_path) == 1  # fmt: skip
+    err = capsys.readouterr().err
+    assert "SENG" in err and "up snr=1.2<5" in err, err

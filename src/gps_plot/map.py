@@ -452,11 +452,13 @@ def _add_series_args(p: argparse.ArgumentParser, *, velocity: bool = False) -> N
         p,
         refs=refs,
         ref_help=ref_help,
-        views=["raw", "cleaned"],
+        # declared (the velocity product's default): raw less the declared
+        # blunder epochs, no detection (which flags unrest signal)
+        views=["declared", "raw", "cleaned"] if velocity else ["raw", "cleaned"],
         types=["POS", "TOT"],
         sessions=["24h", "8h"],
         session_help="24h daily solutions (default) or 8h sessions (itrf2020)",
-        view_default="cleaned" if velocity else "raw",
+        view_default="declared" if velocity else "raw",
     )
 
 
@@ -723,7 +725,7 @@ def _request(args: argparse.Namespace, parser: Any, config: Any,
         Dir=kwargs["Dir"],
         tType=kwargs["tType"],
         uncert=args.uncert,
-        view=args.view,
+        view="raw" if args.view == "declared" else args.view,
         pos_id=kwargs.get("pos_id"),
     )
 
@@ -1533,7 +1535,7 @@ def _product_settings(args: Any, parser: Any, config: Any) -> Any:
     kw: dict[str, Any] = {
         "frame": args.frame or common.DEFAULT_PLOT_FRAME,
         "ref": ref,
-        "view": args.view or "cleaned",
+        "view": args.view or "declared",
         "uncert": float(args.uncert),
         "pos_dir": args.Dir or common.config_dir(config, "pos_dir", None),
     }
@@ -1572,6 +1574,13 @@ def _add_records(
             continue
         if not r.accepted:
             dropped.append(f"{r.station} {label}: {r.refused}")
+            continue
+        part = "horizontal" if comp is None else "up"
+        idx = [0, 1] if comp is None else [comp]
+        if not all(math.isfinite(r.rate[i]) for i in idx):
+            # a short-tier record whose other part stood
+            why = r.parts_refused.get(part, "not estimated")
+            dropped.append(f"{r.station} {label}: {part} {why}")
             continue
         fallback = "fallback:plate" in r.flags
         any_pale |= fallback
