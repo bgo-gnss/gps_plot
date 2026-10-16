@@ -83,7 +83,8 @@ A:B` (repeatable) draw the velocity product's rate per window
 (`layers/rate.py`: line with the product's slope through the plotted points,
 `v = rate ± σ` per panel, or the refusal reason; files `-rate`): `--ref plate`
 → plate, `--ref detrend` → background (`--detrend-terms periodic` →
-plate-periodic) — the map's and `gps-velocities`' numbers.
+plate-periodic) — the map's and `gps-velocities`' numbers for the same ref
+and view (they default to plate-periodic + cleaned; `ts` follows the plot).
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
 (patterns match stations.cfg). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity

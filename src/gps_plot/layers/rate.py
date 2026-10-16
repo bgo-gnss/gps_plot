@@ -3,7 +3,9 @@
 The rate is the velocity product's (:func:`geo_dataread.velocity.
 estimate_station_velocity`), for the same station, frame, view and
 reference as the plot, so the number on a time-series plot is the number
-on the map and in the velocity files. Each window gets:
+on the map and in the velocity files for the same ref and view (the map and
+``gps-velocities`` default to plate-periodic + cleaned; this follows the
+plot's ``--ref``/``--view``). Each window gets:
 
 - a line with the product's slope, through the plotted points' weighted
   mean inside the window (the plotted series has its own datum; the slope

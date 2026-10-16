@@ -654,9 +654,11 @@ def build_parser(
         action="store_true",
         help="draw the velocity product's rate over the plotted window: a line "
         "with its slope and, per panel, v = rate ± σ mm/yr (honest σ: formal "
-        "× the station's empirical k). The same number as gpsplot map velocity "
-        "and gps-velocities: --ref plate → ref plate; --ref detrend → "
-        "background (--detrend-terms periodic → plate-periodic). Files end -rate",
+        "× the station's empirical k). The number gpsplot map velocity and "
+        "gps-velocities give for the same ref and view (those default to "
+        "plate-periodic, cleaned; this follows the plot): --ref plate → ref "
+        "plate; --ref detrend → background (--detrend-terms periodic → "
+        "plate-periodic). Files end -rate",
     )
     parser.add_argument(
         "--rate-window",
