@@ -72,6 +72,14 @@ DEFAULT_GIS_DIR = "~/gps-data/gis"
 LABEL_LIMIT = 60
 #: a map with no stations and no --region (``gpsplot map base``): Iceland
 DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
+#: a full-Iceland map (neither --region nor --projection given): the
+#: iceland3 overview's oblique stereographic frame, longitudes along their
+#: meridians, and with a DEM a light-blue sea under the sea-floor hillshade
+OVERVIEW_PROJECTION = "S-19/65/12c"
+OVERVIEW_CORNERS = (-25.0, 63.0, -12.8, 66.7)
+OVERVIEW_SEA = "lightblue"
+#: an extent at least this wide and tall [deg lon, deg lat] is all Iceland
+FULL_ICELAND_SPAN = (8.0, 2.5)
 #: ``map base``: a station map without stations
 BASE = "base"
 #: the legend group of stations.cfg stations drawn beside --stations-file ones
@@ -101,6 +109,13 @@ examples:
       --projection S-19/65/12c --region -25/63/-12.8/66.7+r --save pdf
                         the iceland3 overview: oblique stereographic, tilted
                         graticule, its relief colours and flat blue sea
+  gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap none \\
+      --projection S-19/65/12c --region -25/63/-12.8/66.7+r \\
+      --dem-zone vector/iceland3/fisswarms_fil.xy \\
+      --dem-zone vector/iceland3/centralvolc.xy \\
+      --dem-zone vector/iceland3/centralvolc2.xy:none --save pdf
+                        icel-overv.pdf again: fissure swarms and central
+                        volcanoes slate-blue under the hillshade
   gpsplot map station --tos --dem iceland --projection M18c --save pdf
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
@@ -202,7 +217,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--margin", type=float, default=None, metavar="DEG",
         help="padding around the stations when --region is not given",
     )  # fmt: skip
-    g.add_argument("--projection", default=None, help="GMT projection (default M12c)")
+    g.add_argument(
+        "--projection", default=None,
+        help="GMT projection (default M12c; a full-Iceland map with neither "
+        "--region nor --projection: the overview S-19/65/12c, see --region +r)",
+    )  # fmt: skip
     g.add_argument(
         "--resolution", default=None,
         help="shoreline resolution: auto (default), full, high, intermediate, low",
@@ -247,6 +266,14 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--lakes", default=None, metavar="FILE",
         help="lake polygons, filled as water (default with --dem iceland: "
         "IS 50V lakes and wide rivers; 'none' = off)",
+    )  # fmt: skip
+    g.add_argument(
+        "--dem-zone", action="append", default=[], metavar="POLYGONS[:CMAP]",
+        help="polygons whose land the DEM recolours under its hillshade "
+        "(repeatable; later ones on top), as the iceland3 overview's fissure "
+        "swarms and central volcanoes: e.g. vector/iceland3/fisswarms_fil.xy "
+        "(a path, or one under the GIS directory); CMAP a colour or CPT name "
+        "(default lightslategrey 119/136/153), or none for the outline alone",
     )  # fmt: skip
     g.add_argument(
         "--overlay", action="append", default=[], metavar="GEOJSON",
@@ -612,6 +639,12 @@ def _style(
     else the box around ``points`` (what the map function derives too),
     else all Iceland.
     """
+    overview = _overview(args, region, points)
+    if overview is not None:
+        region = args.region = overview
+        args.projection = OVERVIEW_PROJECTION
+        if args.dem is not None and args.bathymetry_cmap is None:
+            args.bathymetry_cmap = OVERVIEW_SEA
     kw: dict[str, Any] = {"region": region, "title": args.title}
     for opt, key in (("margin", "margin"), ("projection", "projection"),
                      ("resolution", "resolution"), ("dem", "dem_grid"),
@@ -636,6 +669,8 @@ def _style(
         for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
             if getattr(choice, key) is not None:
                 kw[key] = getattr(choice, key)
+    if getattr(args, "dem_zone", None):
+        kw["zones"] = tuple(args.dem_zone)
     for key in ("glaciers", "lakes"):
         value = getattr(args, key, None)
         if value is not None:
@@ -659,6 +694,29 @@ def _style(
     return kw
 
 
+def _overview(args: argparse.Namespace, region: Any, points: Sequence[Any]) -> Any:
+    """The overview ``CornerRegion`` for a full-Iceland map: no --region
+    nor --projection given, an extent of at least :data:`FULL_ICELAND_SPAN`
+    (``region``, else the box around ``points``), and every point inside
+    the overview frame; else None."""
+    if args.region is not None or getattr(args, "projection", None) is not None:
+        return None
+    from gps_plot import maps
+
+    extent = region
+    if extent is None and points:
+        extent = _region_of(points, args.margin, maps)
+    if extent is None:
+        return None
+    w, e, s, n = extent
+    if e - w < FULL_ICELAND_SPAN[0] or n - s < FULL_ICELAND_SPAN[1]:
+        return None
+    frame = maps.corner_region(OVERVIEW_CORNERS, OVERVIEW_PROJECTION)
+    if len(maps.within(frame, points)) < len(points):
+        return None
+    return frame
+
+
 def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) -> None:
     """Resolve the colour-map options in place, before the map is drawn.
 
@@ -670,28 +728,66 @@ def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) ->
     Raises:
         ValueError: naming the closest known colour maps.
     """
-    from gps_plot import palettes
+    from gps_plot import maps, palettes
 
     for opt in CMAP_OPTIONS:
         name = getattr(args, opt, None)
         if name is None or (opt == "bathymetry_cmap" and name.lower() == palettes.NONE):
             continue
-        palette = palettes.resolve(name, user_dir=user_dir)
-        if palette.kind == palettes.FILE:
-            setattr(args, opt, palette.source)
-        if palette.kind != palettes.COLOUR:
-            continue
-        try:  # not a CPT anywhere: GMT must know it as a colour
-            palettes.segment(pygmt_mod, palette, 0.0, 1.0)
-        except Exception as exc:  # noqa: BLE001 - GMTCLibError, kept lazy
-            close = palettes.suggest(name, user_dir=user_dir)
-            hint = f"; did you mean {', '.join(close)}?" if close else ""
-            flag = "--" + opt.replace("_", "-")
-            raise ValueError(
-                f"{flag} {name!r} is not a CPT (gpsplot's, yours in "
-                f"{user_dir}, GMT's or a file) nor a GMT colour{hint} "
-                f"({flag} list prints the names)"
-            ) from exc
+        setattr(args, opt, _resolve_cmap(name, "--" + opt.replace("_", "-"),
+                                         pygmt_mod, user_dir))  # fmt: skip
+    zones = []
+    for spec in getattr(args, "dem_zone", None) or ():
+        if isinstance(spec, str):
+            path, cmap = zone_spec(spec, os.path.dirname(user_dir))
+            if cmap.lower() != maps.ZONE_OUTLINE_ONLY:
+                cmap = _resolve_cmap(cmap, "--dem-zone", pygmt_mod, user_dir)
+            spec = maps.DemZone(path, cmap)
+        zones.append(spec)
+    if zones:
+        args.dem_zone = zones
+
+
+def _resolve_cmap(name: str, flag: str, pygmt_mod: Any, user_dir: str) -> str:
+    """A colour-map name as the map functions take it: a CPT file's path,
+    else the name (a GMT CPT, or a colour GMT must know)."""
+    from gps_plot import palettes
+
+    palette = palettes.resolve(name, user_dir=user_dir)
+    if palette.kind == palettes.FILE:
+        return palette.source
+    if palette.kind != palettes.COLOUR:
+        return name
+    try:  # not a CPT anywhere: GMT must know it as a colour
+        palettes.segment(pygmt_mod, palette, 0.0, 1.0)
+    except Exception as exc:  # noqa: BLE001 - GMTCLibError, kept lazy
+        close = palettes.suggest(name, user_dir=user_dir)
+        hint = f"; did you mean {', '.join(close)}?" if close else ""
+        raise ValueError(
+            f"{flag} {name!r} is not a CPT (gpsplot's, yours in "
+            f"{user_dir}, GMT's or a file) nor a GMT colour{hint} "
+            f"({flag.split()[0]} list prints the names)"
+        ) from exc
+    return name
+
+
+def zone_spec(spec: str, gis: str) -> tuple[str, str]:
+    """``POLYGONS[:CMAP]`` -> (an existing polygon path, the CMAP name).
+    A path that does not exist is looked up under the GIS directory
+    ``gis``; a colon that is part of an existing path stays.
+
+    Raises:
+        ValueError: no such polygon file.
+    """
+    from gps_plot import maps
+
+    path, sep, cmap = spec.rpartition(":")
+    if not sep or not path or Path(spec).expanduser().exists():
+        path, cmap = spec, ""
+    for candidate in (Path(path).expanduser(), Path(gis) / path):
+        if candidate.is_file():
+            return str(candidate), cmap or maps.DEFAULT_ZONE_CMAP
+    raise ValueError(f"--dem-zone {spec!r}: no polygon file {path} (nor in {gis})")
 
 
 def print_palettes(user_dir: str) -> None:

@@ -187,6 +187,14 @@ DEFAULT_LAKE_PEN = "0.1p,steelblue"
 #: sea and ice draw in ONE grdimage (a second, NaN-transparent ice image
 #: came out red outside the ice: GMT -Q fails on such a grid here)
 GLACIER_Z_OFFSET = 100_000.0
+#: --dem-zone: each zone's slices sit this far above the previous layer's
+ZONE_Z_OFFSET = 100_000.0
+#: the iceland3 overview's swarm and volcano colour (lightslategrey.cpt)
+DEFAULT_ZONE_CMAP = "119/136/153"
+#: a zone drawn as its outline only (the overview's centralvolc2/calderas)
+ZONE_OUTLINE_ONLY = "none"
+#: ... and its psxy -W2 outline
+DEFAULT_ZONE_PEN = "0.25p,black"
 
 #: pen of a ``coastline`` file (thin and grey: the IS 50V coast has
 #: thousands of islets, e.g. in Breiðafjörður)
@@ -595,6 +603,24 @@ class MapOverlay:
     fill: str | None = DEFAULT_OVERLAY_FILL
 
 
+@dataclasses.dataclass(frozen=True)
+class DemZone:
+    """Polygons whose land is recoloured on the DEM, keeping its hillshade:
+    the fissure swarms and central volcanoes of the iceland3 overview
+    (``psclip fisswarms_fil.xy`` + ``grdimage -Clightslategrey.cpt
+    -Igrad.grd``, then the outline).
+
+    ``polygons`` is a GMT-readable polygon file (``.gmt``/``.xy``
+    multisegment; every segment is taken as closed), ``cmap`` a colour-map
+    name (:mod:`gps_plot.palettes`; :data:`ZONE_OUTLINE_ONLY`: the
+    outline alone), ``pen`` the outline (None: none).
+    """
+
+    polygons: str
+    cmap: str = DEFAULT_ZONE_CMAP
+    pen: str | None = DEFAULT_ZONE_PEN
+
+
 def overlay_segments(geojson: Mapping[str, Any]) -> tuple[str, str]:
     """``(polygons, lines)`` of a GeoJSON as GMT multisegment text.
 
@@ -760,6 +786,7 @@ def _draw_basemap(
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
 ) -> None:
@@ -821,6 +848,7 @@ def _draw_basemap(
             sea=bathymetry_cmap,
             glacier=glacier_cmap,
             glaciers=glaciers,
+            zones=zones,
             water=water,
         )
         fig.grdimage(
@@ -838,6 +866,16 @@ def _draw_basemap(
                     pen=DEFAULT_GLACIER_CONTOUR_PEN,
                 )
             )
+    for zone in zones:
+        flat = None
+        if dem_grid is None:  # a flat fill: a colour, not a CPT
+            from gps_plot import palettes
+
+            outline = zone.cmap.lower() == ZONE_OUTLINE_ONLY
+            if not outline and palettes.resolve(zone.cmap).kind == palettes.COLOUR:
+                flat = zone.cmap
+        if zone.pen is not None or flat is not None:
+            fig.plot(**layer_kw("zones", data=zone.polygons, pen=zone.pen, fill=flat))
     if glaciers is not None:
         fill = None
         if dem_grid is None:  # a flat fill: a colour, not a CPT
@@ -881,6 +919,7 @@ def _dem_colours(
     sea: str | None = None,
     glacier: str = DEFAULT_GLACIER_FILL,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     water: str = DEFAULT_WATER,
 ) -> tuple[Any, Any, str, Any | None]:
     """``(grid, shading, cpt, ice)``: the DEM coloured in one grdimage pass.
@@ -890,7 +929,10 @@ def _dem_colours(
     which move up by :data:`GLACIER_Z_OFFSET` into their own slices and
     take a gentle two-azimuth hillshade
     (:data:`DEFAULT_GLACIER_SHADING_AZIMUTH`) instead of the land one —
-    the clip + white CPT + -Nt0.4 recipe of BGÓ's GMT maps.
+    the clip + white CPT + -Nt0.4 recipe of BGÓ's GMT maps. The land cells
+    of each of ``zones`` move up another :data:`ZONE_Z_OFFSET` per zone
+    and take its colour map under the land hillshade; a later zone, and
+    the ice, take a cell from an earlier one.
 
     ``sea`` None: the land map's own sea half when it has one (geo,
     sealand, a file reaching below 0), else :data:`palettes.DEFAULT_SEA`.
@@ -918,7 +960,22 @@ def _dem_colours(
         sea_pal = palettes.resolve(palettes.DEFAULT_SEA)
 
     ice = _ice_mask(pygmt_mod, grid, glaciers) if glaciers is not None else None
-    ground = grid if ice is None else grid.where(~ice)
+    # land in each zone, the later zones and the ice taking their cells
+    taken = np.zeros(grid.shape, dtype=bool) if ice is None else ice.copy()
+    zone_cells: list[Any] = []
+    for zone in reversed(zones):
+        if zone.cmap.lower() == ZONE_OUTLINE_ONLY:
+            zone_cells.append(None)
+            continue
+        inside = _ice_mask(pygmt_mod, grid, zone.polygons)
+        cells = None
+        if inside is not None:
+            cells = inside & ~taken & (grid.values >= 0)
+            taken |= cells
+            cells = cells if cells.any() else None
+        zone_cells.append(cells)
+    zone_cells.reverse()
+    ground = grid.where(~taken) if taken.any() else grid
     lo, hi = float(ground.min()), float(ground.max())
     parts = []
     if lo < 0:
@@ -951,6 +1008,21 @@ def _dem_colours(
         )
         grid = _like_grid(grid.where(~ice, grid + GLACIER_Z_OFFSET), grid)
         gradient = _like_grid(gradient.where(~ice, ice_gradient), grid)
+    for k, (zone, cells) in enumerate(zip(zones, zone_cells, strict=True)):
+        if cells is None:
+            continue
+        dz = GLACIER_Z_OFFSET + (k + 1) * ZONE_Z_OFFSET
+        heights = grid.values[cells]
+        z_lo, z_hi = float(heights.min()), float(heights.max())
+        parts.append(
+            palettes.shift(
+                palettes.segment(
+                    pygmt_mod, palettes.resolve(zone.cmap), z_lo, max(z_hi, z_lo + 1.0)
+                ),
+                dz,
+            )
+        )
+        grid = _like_grid(grid.where(~cells, grid + dz), grid)
     text = palettes.stitch(parts)
     palettes.check_gaps(text)
     return grid, gradient, _cached_cpt(text), ice_heights
@@ -1192,6 +1264,7 @@ def station_map(
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
     outfile: str | os.PathLike[str] | None = None,
@@ -1252,6 +1325,9 @@ def station_map(
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
         glaciers: A glacier polygon file: with a DEM the ice is drawn
             white with its own gentle hillshade (see :func:`_draw_basemap`).
+        zones: :class:`DemZone` polygons whose land the DEM recolours
+            under the land hillshade (fissure swarms, central volcanoes);
+            later zones and the glaciers win.
         lakes: A lake polygon file, filled as water.
         glacier_contours: Contour interval [m] drawn on the glaciers
             (annotated every 3rd), or None.
@@ -1300,6 +1376,7 @@ def station_map(
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
+        zones=zones,
         lakes=lakes,
         glacier_contours=glacier_contours,
     )
@@ -1551,6 +1628,7 @@ def velocity_map(
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
     outfile: str | os.PathLike[str] | None = None,
@@ -1624,6 +1702,9 @@ def velocity_map(
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
         glaciers: A glacier polygon file: with a DEM the ice is drawn
             white with its own gentle hillshade (see :func:`_draw_basemap`).
+        zones: :class:`DemZone` polygons whose land the DEM recolours
+            under the land hillshade (fissure swarms, central volcanoes);
+            later zones and the glaciers win.
         lakes: A lake polygon file, filled as water.
         glacier_contours: Contour interval [m] drawn on the glaciers
             (annotated every 3rd), or None.
@@ -1669,6 +1750,7 @@ def velocity_map(
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
+        zones=zones,
         lakes=lakes,
         glacier_contours=glacier_contours,
     )
@@ -1943,6 +2025,7 @@ def deformation_vectors(
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
     parser: Any | None = None,
@@ -2019,6 +2102,9 @@ def deformation_vectors(
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
         glaciers: A glacier polygon file: with a DEM the ice is drawn
             white with its own gentle hillshade (see :func:`_draw_basemap`).
+        zones: :class:`DemZone` polygons whose land the DEM recolours
+            under the land hillshade (fissure swarms, central volcanoes);
+            later zones and the glaciers win.
         lakes: A lake polygon file, filled as water.
         glacier_contours: Contour interval [m] drawn on the glaciers
             (annotated every 3rd), or None.
@@ -2083,6 +2169,7 @@ def deformation_vectors(
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
+        zones=zones,
         lakes=lakes,
         glacier_contours=glacier_contours,
     )
@@ -2360,6 +2447,7 @@ def slip_map(
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
+    zones: Sequence[DemZone] = (),
     lakes: str | None = None,
     glacier_contours: float | None = None,
     parser: Any | None = None,
@@ -2442,6 +2530,9 @@ def slip_map(
             instead of GSHHG (e.g. the IS 50V coast of the Iceland DEM).
         glaciers: A glacier polygon file: with a DEM the ice is drawn
             white with its own gentle hillshade (see :func:`_draw_basemap`).
+        zones: :class:`DemZone` polygons whose land the DEM recolours
+            under the land hillshade (fissure swarms, central volcanoes);
+            later zones and the glaciers win.
         lakes: A lake polygon file, filled as water.
         glacier_contours: Contour interval [m] drawn on the glaciers
             (annotated every 3rd), or None.
@@ -2516,6 +2607,7 @@ def slip_map(
             overlays=overlays,
             coastline=coastline,
             glaciers=glaciers,
+            zones=zones,
             lakes=lakes,
             glacier_contours=glacier_contours,
         )

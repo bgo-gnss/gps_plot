@@ -79,6 +79,20 @@ def test_corner_region_is_parsed_as_corners():
     assert not isinstance(plain, gmap.Corners)
 
 
+def test_dem_zone_spec_finds_the_file_and_its_cmap(tmp_path):
+    (tmp_path / "vector").mkdir()
+    poly = tmp_path / "vector" / "swarms.xy"
+    poly.write_text("0 0\n1 0\n1 1\n0 0\n")
+    gis = str(tmp_path)
+    assert gmap.zone_spec("vector/swarms.xy", gis) == (str(poly), "119/136/153")
+    assert gmap.zone_spec(f"{poly}:lightslategrey", gis) == (
+        str(poly),
+        "lightslategrey",
+    )
+    with pytest.raises(ValueError, match="no polygon file"):
+        gmap.zone_spec("vector/none.xy:red", gis)
+
+
 def test_windows_and_last_days():
     now = dt.datetime(2026, 10, 14, 12)
     w = [gmap._window("20231027:20231109"), gmap._window("20231123:")]
@@ -659,12 +673,20 @@ def test_gmt_overrides_hold_while_the_map_is_drawn(fake_maps, monkeypatch, tmp_p
 
 
 def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
-    # no stations, no region: Iceland
+    from gps_plot import maps
+
+    # no stations, no region: all Iceland, in the iceland3 overview frame
     assert _run(["base", "--logo", "none"], tmp_path) == 0
     (stations,), kw = fake_maps["station_map"]
     assert stations == [] and kw["markers"] is False and kw["labels"] is False
-    assert kw["region"] == gmap.DEFAULT_BASE_REGION
+    assert isinstance(kw["region"], maps.CornerRegion)
+    assert kw["region"].corners == gmap.OVERVIEW_CORNERS
+    assert kw["projection"] == gmap.OVERVIEW_PROJECTION
     assert fake_maps["fig"].saved == [str(tmp_path / "map_base_region_0.png")]
+    # a projection of one's own keeps the plain Iceland box
+    assert _run(["base", "--projection", "M12c", "--logo", "none"], tmp_path) == 0
+    (_,), kw = fake_maps["station_map"]
+    assert kw["region"] == gmap.DEFAULT_BASE_REGION and kw["projection"] == "M12c"
     # stations still set the extent, but are not drawn
     assert _run(["station", "SEY?", "--no-stations", "--logo", "none"], tmp_path) == 0
     (stations,), kw = fake_maps["station_map"]
@@ -740,3 +762,28 @@ def test_no_stations_reaches_the_vector_maps(fake_maps, monkeypatch, tmp_path):
     argv = ["velocity", "SEY?", "--window", "20231027:20231109", "--no-stations"]
     assert _run([*argv, "--logo", "none"], tmp_path) == 0
     assert fake_maps["velocity_map"][1]["markers"] is False
+
+
+def test_full_iceland_overview_only_when_everything_fits():
+    """All Iceland with no --region/--projection: the overview frame; a
+    small extent, a station outside the frame (Kolbeinsey), or a
+    projection of one's own keep the plain box."""
+    from types import SimpleNamespace
+
+    from gps_plot import maps
+
+    def args(**kw):
+        return SimpleNamespace(
+            **{"region": None, "projection": None, "margin": None, **kw}
+        )
+
+    spread = [
+        maps.StationCoordinate("W", -23.0, 64.0),
+        maps.StationCoordinate("E", -14.5, 65.9),
+    ]
+    frame = gmap._overview(args(), None, spread)
+    assert isinstance(frame, maps.CornerRegion)
+    assert gmap._overview(args(), (-22.8, -21.9, 63.75, 64.1), []) is None
+    kolbeinsey = [*spread, maps.StationCoordinate("KOSK", -18.7, 67.1)]
+    assert gmap._overview(args(), None, kolbeinsey) is None
+    assert gmap._overview(args(projection="M12c"), None, spread) is None

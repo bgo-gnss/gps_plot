@@ -143,7 +143,7 @@ filter costs about a second there. The filter is the `smooth` step, so
 Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT
 argument to every PyGMT call of that step, or replaces gpsplot's own value.
 The flag can be repeated. The steps are coast, smooth, gradient, glacier-gradient,
-dem, contours, glaciers, lakes, coastline, overlay, grid, stations, labels,
+dem, contours, zones, glaciers, lakes, coastline, overlay, grid, stations, labels,
 vectors, legend, frame and logo (`gmt_overrides.LAYERS`).
 
 ```bash
@@ -224,6 +224,45 @@ gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
   of the taller upright labels.
 - A plain W/E/S/N region with `-JS` keeps GMT's meaning: a meridian and
   parallel boundary, which comes out fan-shaped.
+
+**A full-Iceland map is an overview by default.** Neither `--region`
+nor `--projection` given, and an extent of at least 8° × 2.5° (`map base`,
+`--tos`, every station): the map takes the overview frame.
+- **Frame:** `OVERVIEW_PROJECTION` `S-19/65/12c` over the corners
+  `OVERVIEW_CORNERS` -25/63/-12.8/66.7+r, with the longitudes along their
+  meridians.
+- **Sea:** with a DEM and no `--bathymetry-cmap`, the light-blue sea of
+  `OVERVIEW_SEA` under the sea-floor hillshade.
+- **When not:** if a station falls outside the frame (Kolbeinsey), the map
+  stays a Mercator box (`map._overview`). `--projection M12c` keeps the
+  Mercator box too.
+
+**Fissure swarms and central volcanoes: `--dem-zone POLYGONS[:CMAP]`.**
+The overview recoloured them on the relief itself: `psclip
+fisswarms_fil.xy` then `grdimage -Clightslategrey.cpt -Igrad.grd`, then
+the outline. `maps.DemZone` does the same in the one DEM pass.
+- **Colours:** the land cells inside each zone move up into their own
+  slices of the stitched CPT (`ZONE_Z_OFFSET` per zone, above the glacier
+  slices) and keep the land hillshade.
+- **Overlaps:** sea cells stay sea. A later zone, and the glaciers, take
+  the cells they overlap.
+- **Outline:** each zone's outline is drawn over the DEM (`zones` step).
+  `CMAP` `none` draws the outline alone. Without a DEM, a colour zone is a
+  flat fill.
+- **Files:** a path that does not exist is looked up under the GIS
+  directory. The overview's own polygons are in `gis/vector/iceland3/`,
+  copied from `/mnt_data/gps_gmt_data/isl`: 22 swarms, 33 volcanoes,
+  `centralvolc2.xy` and the calderas.
+- **FutureVolc:** its swarms (`build_07_volcanic.sh`) are partly open
+  lines and cannot be zones; use them with `--overlay`.
+
+```bash
+gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap none \
+    --projection S-19/65/12c --region -25/63/-12.8/66.7+r \
+    --dem-zone vector/iceland3/fisswarms_fil.xy \
+    --dem-zone vector/iceland3/centralvolc.xy \
+    --dem-zone vector/iceland3/centralvolc2.xy:none --save pdf
+```
 
 The logo is the two-line Veðurstofa logo of the RTK plots
 (`logos/vi_logos/VI_Two_Line_Blue.png`), 2.5 cm wide at the top left and
