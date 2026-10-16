@@ -252,6 +252,20 @@ gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
 - A plain W/E/S/N region with `-JS` keeps GMT's meaning: a meridian and
   parallel boundary, which comes out fan-shaped.
 
+**`--fissure-swarms`: the FutureVolc fissure swarms and central volcanoes**
+on any map, as on the iceland3 overview.
+- **Fill:** the land inside them is slate blue, from the closed polygons
+  (`FISSURE_SWARM_ZONES`). With a DEM the colour sits under the hillshade.
+  Without one it is a flat fill, and the sea is painted over it again.
+- **Outline:** drawn from the FutureVolc GeoJSON as served
+  (`FISSURE_SWARM_OUTLINES`), so no closing edge shows.
+- **Building them:** both come from `vector/build_07_volcanic.sh`. If they
+  are missing, the map stops with that hint.
+
+```bash
+gpsplot map station --tos --fissure-swarms --save pdf
+```
+
 **A full-Iceland map is an overview by default.** Neither `--region`
 nor `--projection` given, and an extent of at least 8° × 2.5° (`map base`,
 `--tos`, every station): the map takes the overview frame.

@@ -72,6 +72,16 @@ DEFAULT_GIS_DIR = "~/gps-data/gis"
 LABEL_LIMIT = 60
 #: a map with no stations and no --region (``gpsplot map base``): Iceland
 DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
+#: --fissure-swarms: the FutureVolc zones under the GIS directory
+#: (vector/build_07_volcanic.sh: closed from its GeoJSON by close_outlines.py)
+FISSURE_SWARM_ZONES = (
+    "vector/futurevolc_fissure_swarms_closed.gmt",
+    "vector/futurevolc_central_volcanoes_closed.gmt",
+)
+FISSURE_SWARM_OUTLINES = (
+    "vector/futurevolc_fissure_swarms.geojson",
+    "vector/futurevolc_central_volcanoes.geojson",
+)
 #: a full-Iceland map (neither --region nor --projection given): the
 #: iceland3 overview's oblique stereographic frame, longitudes along their
 #: meridians, and with a DEM a light-blue sea under the sea-floor hillshade
@@ -124,6 +134,9 @@ examples:
       --dem-zone vector/iceland3/centralvolc2.xy:none --save pdf
                         icel-overv.pdf again: fissure swarms and central
                         volcanoes slate-blue under the hillshade
+  gpsplot map station --tos --fissure-swarms --save pdf
+                        every GPS station in TOS over the FutureVolc fissure
+                        swarms and central volcanoes, Iceland overview
   gpsplot map station --tos --dem iceland --projection M18c --save pdf
                         every GPS station in TOS, by status, Iceland DEM
   gpsplot map station --tos --dem iceland --dem-cmap slate --bathymetry-cmap none
@@ -283,6 +296,12 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "swarms and central volcanoes: e.g. vector/iceland3/fisswarms_fil.xy "
         "(a path, or one under the GIS directory); CMAP a colour or CPT name "
         "(default lightslategrey 119/136/153), or none for the outline alone",
+    )  # fmt: skip
+    g.add_argument(
+        "--fissure-swarms", action="store_true",
+        help="the FutureVolc fissure swarms and central volcanoes, slate-blue "
+        "under the hillshade as on the iceland3 overview (--dem-zone of the "
+        "GIS vector/futurevolc_*_closed.gmt, built by build_07_volcanic.sh)",
     )  # fmt: skip
     g.add_argument(
         "--overlay", action="append", default=[], metavar="GEOJSON",
@@ -695,11 +714,20 @@ def _style(
                 kw[key] = value
     if "dem_grid" in kw:
         kw.setdefault("dem_cmap", DEFAULT_DEM_CPT)
+    if getattr(args, "fissure_swarms", False):
+        from gps_plot.maps import DEFAULT_ZONE_PEN, MapOverlay
+
+        kw["overlays"] = tuple(
+            MapOverlay(
+                os.path.join(gis_dir(config), path), pen=DEFAULT_ZONE_PEN, fill=None
+            )
+            for path in FISSURE_SWARM_OUTLINES
+        )
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
         fill = args.overlay_fill or DEFAULT_OVERLAY_FILL
-        kw["overlays"] = tuple(
+        kw["overlays"] = kw.get("overlays", ()) + tuple(
             MapOverlay(path, pen=args.overlay_pen or DEFAULT_OVERLAY_PEN,
                        fill=None if fill.lower() == "none" else fill)
             for path in args.overlay
@@ -981,6 +1009,22 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     if any(str(getattr(args, o, None)).lower() == LIST for o in CMAP_OPTIONS):
         print_palettes(cpt_dir(config))
         return 0
+    if getattr(args, "fissure_swarms", False):
+        missing = [z for z in (*FISSURE_SWARM_ZONES, *FISSURE_SWARM_OUTLINES)
+                   if not os.path.isfile(os.path.join(gis_dir(config), z))]  # fmt: skip
+        if missing:
+            parser.error(
+                f"--fissure-swarms: no {', '.join(missing)} in {gis_dir(config)}; "
+                "run vector/build_07_volcanic.sh there"
+            )
+        # filled from the closed polygons, under any --dem-zone of one's own
+        # (later zones on top); outlined from the GeoJSON as served, so no
+        # closing edge shows (_style adds them as overlays)
+        gis = gis_dir(config)
+        args.dem_zone = [
+            maps.DemZone(os.path.join(gis, z), maps.DEFAULT_ZONE_CMAP, pen=None)
+            for z in FISSURE_SWARM_ZONES
+        ] + list(args.dem_zone)
     try:
         import pygmt
 
