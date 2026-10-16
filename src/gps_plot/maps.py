@@ -92,8 +92,9 @@ DEFAULT_LAND = "lightgrey"
 DEFAULT_WATER = "lightblue"
 DEFAULT_SHORELINES = "0.2p,black"
 #: the frame: annotated W and S, ticked all round (iceland3/iceland.gmt's
-#: ``-Ba…WSne``); drawn last, so the annotations inside the map stay on top
-DEFAULT_FRAME: tuple[str, ...] = ("WSne", "af")
+#: ``-Ba…WSne``; ``+e``: none at the corners, where W and S would
+#: collide); drawn last, so the annotations inside the map stay on top
+DEFAULT_FRAME: tuple[str, ...] = ("WSne", "af+e")
 #: dashed graticule at the annotations (``+n``: their text comes with the
 #: frame), over the base layers and under stations and legends
 DEFAULT_GRID: tuple[str, ...] = ("ag", "+n")
@@ -155,6 +156,8 @@ DEFAULT_PATCH_PEN = "0.25p,gray30"  # fault-patch outline
 DEFAULT_PLANE_PROJECTION = "X12c/-6c"  # plane view: x right, depth-axis down
 DEFAULT_PLANE_XLABEL = "along-strike distance (km)"
 DEFAULT_PLANE_YLABEL = "down-dip distance (km)"
+#: the plane view's axes keep GMT's outside ticks and annotations
+PLANE_GMT_DEFAULTS = {"MAP_TICK_LENGTH_PRIMARY": "4p", "MAP_ANNOT_OFFSET_PRIMARY": "4p"}
 
 #: DEM/hillshade background (slice 3).
 DEFAULT_DEM_CMAP = "geo"  # GMT builtin topo colour map
@@ -2399,11 +2402,14 @@ def slip_map(
         if region is None:
             region = plane_region or _region_of_points(all_x, all_y, 0.0)
         plane_frame = list(frame) + [f"x+l{plane_xlabel}", f"y+l{plane_ylabel}"]
-        fig.basemap(
-            region=region,
-            projection=plane_projection,
-            frame=_frame_args(plane_frame, title),
-        )
+        # a section, not a map: ticks and annotations outside the axes,
+        # where the patches drawn next cannot cover them
+        with pygmt_mod.config(**PLANE_GMT_DEFAULTS):
+            fig.basemap(
+                region=region,
+                projection=plane_projection,
+                frame=_frame_args(plane_frame, title),
+            )
 
     pygmt_mod.makecpt(cmap=cmap, series=list(series), reverse=cmap_reverse)
     for patch in patches:

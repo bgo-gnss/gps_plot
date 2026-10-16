@@ -165,8 +165,9 @@ gpsplot map station --tos --dem iceland --region -17.9/-16.9/64.45/64.85 \
   `dem:cmap`/`C`, because the glacier slices sit 100 000 m up in the
   stitched CPT. Use `--dem-cmap` and friends for colours.
 - **Where a step applies:** `coast` applies to both coast calls, but the
-  shoreline-only call over a DEM takes no fill (`land`/`water`) and no
-  frame. `stations` applies to every station marker, including all four
+  shoreline-only call over a DEM takes no fill (`land`/`water`). Neither
+  coast call draws the frame: `--gmt frame:…` sets the frame and
+  `--gmt grid:…` the graticule. `stations` applies to every station marker, including all four
   status symbols of a `--tos` map. `vectors` applies to the reference arrow
   of the vector legend too, so it keeps the scale.
 - **`--gmt-config`** sets GMT defaults (`pygmt.config`) for the whole map,
@@ -190,7 +191,10 @@ The frame copies the iceland3 overview map (`gogn/gmt_maps/iceland3/iceland.gmt`
 The graticule (`grid` step) goes over the base layers, under the stations
 and legends. The frame (`frame` step) is drawn last, since anything drawn
 after it would hide the annotations inside the map. Both are `basemap` calls.
-A title rides on the axes spec (`WSne+t…`): GMT refuses a separate `+t`
+`+e` skips the annotations at the axis ends, which would pile up in the
+corners. The slip plane view, a section rather than a map, keeps its ticks
+and annotations outside (`PLANE_GMT_DEFAULTS`). A title rides on the axes
+spec (`WSne+t…`): GMT refuses a separate `+t`
 beside `WSne` when the title has spaces.
 
 The old map's tilted graticule and vertical longitude labels come from its

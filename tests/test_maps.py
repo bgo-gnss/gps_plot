@@ -741,7 +741,7 @@ def test_frame_is_drawn_last_and_the_grid_under_the_stations(monkeypatch) -> Non
     )
     names = [name for name, _ in calls]
     assert names[-1] == "basemap"
-    assert calls[-1][1]["frame"] == ["WSne+tT", "af"]
+    assert calls[-1][1]["frame"] == ["WSne+tT", "af+e"]
     grid = names.index("basemap")
     assert calls[grid][1]["frame"] == list(maps.DEFAULT_GRID)
     assert grid < names.index("plot")
