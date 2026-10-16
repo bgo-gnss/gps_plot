@@ -352,29 +352,68 @@ def test_station_map_dispatch(fake_maps, tmp_path):
     assert [c[0] for c in fig.calls] == ["scalebar"]
 
 
-def test_velocity_windows_one_colour_each(fake_maps, monkeypatch, tmp_path, capsys):
+def _product_record(sta, rate, *, refused=None, flags=(), ref="plate-periodic"):
+    """A velocity product record as gps-velocities would return it."""
+    from geo_dataread.velocity import VelocityRecord
+
+    return VelocityRecord(
+        station=sta, lon=0.0, lat=0.0, frame="itrf2014", plate="NOAM",
+        ref="plate" if "fallback:plate" in flags else ref, ref_requested=ref,
+        series="imo.24hr_itrf14", view="cleaned", uncert=10.0,
+        window=(2023.8, 2023.9), span_used=(2023.8, 2023.9), n_epochs=(30,) * 3,
+        largest_gap=0.003, method="wls", model="linear",
+        rate=tuple(rate) if refused is None else (np.nan,) * 3,
+        sigma=(1.0, 1.0, 1.0), sigma_formal=(0.2, 0.2, 0.2),
+        sigma_method="empirical_k", k=(5.0, 5.0, 5.0), k_source={}, corr_en=0.0,
+        record=None, steps_in_window=(), outlier_abort=False, n_flagged=0,
+        flags=tuple(flags), refused=refused, software={}, input_fingerprint="x",
+    )  # fmt: skip
+
+
+@pytest.fixture
+def fake_product(monkeypatch):
+    """geo_dataread.velocity.estimate_velocities replaced: SENG and SKSH
+    have rates, SKSH only on plate (no record), every other station is
+    refused. Records each call's (stations, start, end, settings)."""
+    from geo_dataread import velocity as vprod
+
     rates = {"SENG": [100.0, -300.0, 50.0], "SKSH": [0.0, 400.0, 0.0]}
-    refs = set()
+    calls = []
 
-    def window_velocity(sta, req, min_epochs=3):
-        refs.add(req.ref)
-        if sta not in rates:
-            raise ValueError("no stored detrend record (the series is not detrended)")
-        return vsource.StationRate(sta, np.array(rates[sta]), np.ones(3), 10)
+    def estimate(stations, start, end, settings, progress=None):
+        calls.append((list(stations), start, end, settings))
+        out = []
+        for sta in sorted(stations):
+            if sta not in rates:
+                out.append(_product_record(sta, [0, 0, 0], refused="cover=0.10<0.8"))
+            else:
+                flags = ("fallback:plate", "background:none") if sta == "SKSH" else ()
+                out.append(_product_record(sta, rates[sta], flags=flags,
+                                           ref=settings.ref))  # fmt: skip
+        return out
 
-    monkeypatch.setattr(vsource, "window_velocity", window_velocity)
+    monkeypatch.setattr(vprod, "estimate_velocities", estimate)
+    return calls
+
+
+def test_velocity_windows_one_colour_each(fake_maps, fake_product, tmp_path, capsys):
     argv = ["velocity", "--region", "-23/-14/63/66", "--window", "20231027:20231109",
             "--window", "20231123:20231205", "--min-snr", "1",
             "--ref", "detrend"]  # fmt: skip
     assert _run(argv, tmp_path) == 0
-    assert refs == {"detrend"}
+    assert {c[3].ref for c in fake_product} == {"background"}  # detrend = background
+    assert fake_product[0][1:3] == (dt.date(2023, 10, 27), dt.date(2023, 11, 9))
     (vectors,), kw = fake_maps["velocity_map"]
-    assert {v.method for v in vectors} == {"2023/10/27 - 2023/11/09",
-                                           "2023/11/23 - 2023/12/05"}  # fmt: skip
-    assert list(kw["method_colors"].values()) == ["blue", "red"]
-    assert [v.marker for v in vectors][:2] == ["SENG", "SKSH"]
+    assert {v.method for v in vectors} == {
+        "2023/10/27 - 2023/11/09", "2023/10/27 - 2023/11/09 (plate only)",
+        "2023/11/23 - 2023/12/05", "2023/11/23 - 2023/12/05 (plate only)",
+    }  # fmt: skip
+    # each window its colour; its plate-only fallbacks the same colour, pale
+    assert list(kw["method_colors"].values()) == ["blue", "blue@55", "red", "red@55"]
+    seng = next(v for v in vectors if v.marker == "SENG")
+    assert (seng.north, seng.east, seng.sigma_east) == (100.0, -300.0, 1.0)
     err = capsys.readouterr().err
-    assert "without a stored detrend record: --ref plate" in err
+    assert "cover=0.10<0.8" in err  # refusals are named
     assert (
         fake_maps["fig"]
         .saved[0]
@@ -384,16 +423,34 @@ def test_velocity_windows_one_colour_each(fake_maps, monkeypatch, tmp_path, caps
     )
 
 
-def test_velocity_windows_default_to_plate(fake_maps, monkeypatch, tmp_path):
-    refs = set()
-
-    def window_velocity(sta, req, min_epochs=3):
-        refs.add(req.ref)
-        return vsource.StationRate(sta, np.array([5.0, 5.0, 0.0]), np.ones(3), 10)
-
-    monkeypatch.setattr(vsource, "window_velocity", window_velocity)
+def test_velocity_windows_default_to_plate_periodic_cleaned(
+    fake_maps, fake_product, tmp_path
+):
     assert _run(["velocity", "SENG", "--last", "14"], tmp_path) == 0
-    assert refs == {"plate"}
+    (settings,) = {c[3] for c in fake_product}
+    assert (settings.ref, settings.view, settings.frame) == (
+        "plate-periodic", "cleaned", "itrf2014",
+    )  # fmt: skip
+    assert settings.min_obs == 20
+
+
+def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):
+    with pytest.raises(SystemExit):
+        _run(["velocity", "SENG", "--last", "14", "--tType", "TOT"], tmp_path)
+    with pytest.raises(SystemExit):
+        _run(["velocity", "SENG", "--last", "14", "--session", "8h"], tmp_path)
+
+
+def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path):
+    from geo_dataread import velocity as vprod
+
+    recs = [_product_record("SENG", [1.0, 2.0, 3.0]),
+            _product_record("SKSH", [0, 0, 0], refused="no_record")]  # fmt: skip
+    paths = vprod.write_velocity_set(recs, tmp_path / "set", "s")
+    assert _run(["velocity", "SENG", "SKSH", "--velocities", str(paths["csv"])],
+                tmp_path) == 0  # fmt: skip
+    (vectors,), _kw = fake_maps["velocity_map"]
+    assert [(v.marker, v.north, v.east) for v in vectors] == [("SENG", 1.0, 2.0)]
 
 
 def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, capsys):
@@ -466,10 +523,12 @@ def test_velocity_map_renders(monkeypatch, tmp_path):
     from gps_plot import maps
 
     monkeypatch.setattr(maps, "station_coordinates", lambda m, parser=None: coords(m))
+    from geo_dataread import velocity as vprod
+
     monkeypatch.setattr(
-        vsource, "window_velocity",
-        lambda sta, req, min_epochs=3: vsource.StationRate(
-            sta, np.array([50.0, -80.0, 10.0]), np.full(3, 5.0), 10),
+        vprod, "estimate_velocities",
+        lambda stations, start, end, settings, progress=None: [
+            _product_record(s, [50.0, -80.0, 10.0]) for s in sorted(stations)],
     )  # fmt: skip
     p = gmap.build_parser(config=None)
     args = p.parse_args(["velocity", "SENG", "SKSH", "--last", "10", "--save", "png",
@@ -766,12 +825,10 @@ def test_tos_search_selects_and_groups(fake_maps, monkeypatch, tmp_path):
         _run(["station", "--tos-search", "bad"], tmp_path)
 
 
-def test_no_stations_reaches_the_vector_maps(fake_maps, monkeypatch, tmp_path):
-    def window_velocity(sta, req, min_epochs=3):
-        return vsource.StationRate(sta, np.array([1.0, 1.0, 0.0]), np.ones(3), 10)
-
-    monkeypatch.setattr(vsource, "window_velocity", window_velocity)
+def test_no_stations_reaches_the_vector_maps(fake_maps, fake_product, tmp_path):
     argv = ["velocity", "SEY?", "--window", "20231027:20231109", "--no-stations"]
+    assert _run([*argv, "--logo", "none"], tmp_path) == 1  # every SEY? refused
+    argv = ["velocity", "SENG", "--window", "20231027:20231109", "--no-stations"]
     assert _run([*argv, "--logo", "none"], tmp_path) == 0
     assert fake_maps["velocity_map"][1]["markers"] is False
 

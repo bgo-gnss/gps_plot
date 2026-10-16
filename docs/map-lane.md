@@ -461,6 +461,31 @@ Known: place names may still overlap each other (Reykjanesvirkjun /
 Reykjanesviti, Svartsengi / Bláa lónið); the vector legend has no box and
 can sit on land labels. Lava colour per eruption is not done (one fill).
 
+## Velocity maps read the velocity product (2026-10-16)
+
+Windowed velocity maps (`--window`, `--last`) no longer fit their own line:
+they call `geo_dataread.velocity.estimate_velocities`, the estimator of
+`gps-velocities`, so a map, a velocity file and a model input are the same
+numbers (BGÓ 2026-10-16; design in memory `velocity-product`).
+
+- `--ref plate-periodic` (default: the stored seasonal removed), `background`
+  (`detrend`, the old name: secular + seasonal removed, the transient) or
+  `plate`. A station without a stored record falls back to plate and is drawn
+  in its window's colour, pale (`@55`), as its own legend line
+  `… (plate only)`.
+- `--view cleaned` is now the default for velocity maps (the product's).
+- σ is honest: formal × the station's empirical k(T) (`sigma_method` in the
+  product); `--min-snr` filters on it. Ellipses carry `corr_en`.
+- Refused stations (too few epochs, window not covered, a declared step
+  inside, …) are named on stderr with the reason; `--min-epochs` sets the
+  product's `min_obs` (default 20).
+- `--velocities FILE` draws a product set (`.jsonl`/`.csv`/`.gmt`) instead of
+  estimating; `--velocities-out DIR` writes the set a map draws. Measured:
+  the map from the file is pixel-identical to the map that wrote it.
+- `--tType TOT` and `--session 8h` are refused for windowed maps (the
+  product reads the 24 h `.pos`; 8 h is deferred). The secular map (no
+  window) still reads the detrend records (phase 2 of the product).
+
 ## Installing the lane
 
 The `maps` extra is `pygmt>=0.19` (PyPI) on top of a **system GMT ≥ 6** C

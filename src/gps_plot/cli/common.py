@@ -150,6 +150,7 @@ def add_series_options(
     types: Sequence[str],
     sessions: Sequence[str],
     session_help: str,
+    view_default: str = "raw",
 ) -> None:
     """--ref/--view/--tType/--frame/--session/-u/-i: which series is read."""
     parser.add_argument(
@@ -162,13 +163,13 @@ def add_series_options(
     parser.add_argument(
         "--view",
         type=str,
-        default="raw",
+        default=view_default,
         # "detrended" is still accepted (old scripts) but no longer offered:
         # detrending is --ref detrend; --ref detrend --remove-steps all is
         # the same full-trajectory removal
         choices=list(views) + ["detrended"],
         metavar="{" + ",".join(views) + "}",
-        help="data view: raw (default) or cleaned (outlier epochs masked "
+        help=f"data view: raw or cleaned (default {view_default}; outlier epochs masked "
         "from the main series; the grey overlay is OFF by default -- add "
         "--show-outliers to see what was set aside). Detrending is --ref "
         "detrend (add --remove-steps all to remove the steps as well)",
