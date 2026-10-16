@@ -695,7 +695,7 @@ def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
         maps._draw_basemap(
             Spy(), fig, region=(-20.0, -19.0, 64.0, 64.5), projection="M6c",
             resolution="crude", land="gray", water="white", shorelines="thin",
-            frame_args=("a",), dem_grid=grid, dem_cmap="lightgrey",
+            dem_grid=grid, dem_cmap="lightgrey",
             dem_smooth=smooth,
         )  # fmt: skip
     raw, smoothed = seen["gradient"]
@@ -704,3 +704,45 @@ def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
     np.testing.assert_array_equal(
         np.asarray(seen["image"][0]), np.asarray(seen["image"][1])
     )
+
+
+def test_frame_title_joins_the_axes_spec() -> None:
+    """GMT refuses ``-BWSne -B+tTitle`` with a spaced title: the title
+    rides on the axes spec; without one it stays a separate element."""
+    from gps_plot import maps
+
+    assert maps._frame_args(("WSne", "af"), "North Iceland") == [
+        "WSne+tNorth Iceland",
+        "af",
+    ]
+    assert maps._frame_args(("af",), "T") == ["af", "+tT"]
+    assert maps._frame_args(maps.DEFAULT_FRAME, None) == list(maps.DEFAULT_FRAME)
+
+
+def test_frame_is_drawn_last_and_the_grid_under_the_stations(monkeypatch) -> None:
+    """The frame's annotations sit inside the map: the frame comes after
+    every layer, the dashed graticule before the station markers."""
+    from gps_plot import maps
+
+    calls: list[tuple[str, dict]] = []
+
+    class _Fig:
+        def __getattr__(self, name):
+            return lambda **kw: calls.append((name, kw))
+
+    class _Pygmt:
+        Figure = _Fig
+
+    monkeypatch.setattr(maps, "_import_pygmt", lambda: _Pygmt)
+    maps.station_map(
+        [StationCoordinate("AKUR", -18.1, 65.7, None, "active")],
+        region=(-19.0, -17.0, 65.0, 66.0),
+        title="T",
+    )
+    names = [name for name, _ in calls]
+    assert names[-1] == "basemap"
+    assert calls[-1][1]["frame"] == ["WSne+tT", "af"]
+    grid = names.index("basemap")
+    assert calls[grid][1]["frame"] == list(maps.DEFAULT_GRID)
+    assert grid < names.index("plot")
+    assert "frame" not in calls[0][1]  # the coast call

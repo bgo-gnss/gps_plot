@@ -57,7 +57,9 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "vectors": ("Figure.velo", {"spec": "S", "pen": "W", "vector": "A",
                                 "line": "L", "uncertainty_fill": "E"}),
     "legend": ("Figure.legend", {"position": "D", "box": "F"}),
-    "logo": ("Figure.image", {"position": "D", "box": "F"}),
+    "grid": ("Figure.basemap", {"frame": "B"}),
+    "frame": ("Figure.basemap", {"frame": "B"}),
+    "logo": ("Figure.image", {"position": "D", "box": "F", "transparency": "t"}),
 }  # fmt: skip
 #: keys gpsplot always sets itself
 OWNED = frozenset({

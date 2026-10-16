@@ -304,6 +304,14 @@ def _run(argv, tmp_path):
     return gmap.run(args, p, _Config())
 
 
+def test_default_logo_is_the_two_line_logo_30_percent_transparent(fake_maps, tmp_path):
+    assert _run(["station", "SEY?"], tmp_path) == 0
+    kw = dict(fake_maps["fig"].calls)["image"]
+    assert kw["imagefile"].endswith("VI_Two_Line_Blue.png")
+    assert kw["transparency"] == gmap.LOGO_TRANSPARENCY
+    assert "box" not in kw
+
+
 def test_station_map_dispatch(fake_maps, tmp_path):
     assert _run(["station", "SEY?", "--logo", "none"], tmp_path) == 0
     args, kw = fake_maps["station_map"]

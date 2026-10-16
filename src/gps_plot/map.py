@@ -44,13 +44,13 @@ REFS = ("detrend", "plate")
 WINDOW_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 #: the 90th-percentile arrow is drawn this long [cm] by the automatic scale
 TARGET_ARROW_CM = 2.0
-#: the Veðurstofa name logo, top left (source checkout only: not packaged)
+#: the Veðurstofa name logo, top left (source checkout only: not packaged):
+#: the two-line logo of the RTK plots, drawn 30 % transparent as they do
 DEFAULT_LOGO = (
-    Path(__file__).resolve().parents[2]
-    / "logos"
-    / "vi_logos"
-    / "VI_bottom_gradient_office_web_pos_rgb.png"
+    Path(__file__).resolve().parents[2] / "logos" / "vi_logos" / "VI_Two_Line_Blue.png"
 )
+LOGO_WIDTH = "3.6c"
+LOGO_TRANSPARENCY = 30
 DATE_FORMAT = "%Y%m%d"
 #: --dem land colours: one grey, so the hillshade alone shows the relief
 #: (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200 so the
@@ -709,13 +709,16 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
 
         fig.scalebar(
             length=f"{km:g}k", label=True, unit=True, box="+gwhite@20",
-            position=Position("BR", cstype="inside", offset=("0.4c", "0.6c")),
+            position=Position("BR", cstype="inside", offset=("0.4c", "1.0c")),
         )  # fmt: skip
     logo = args.logo if args.logo is not None else str(DEFAULT_LOGO)
     if logo.lower() != "none" and os.path.isfile(logo):
         fig.image(
             **gmt_overrides.layer_kw(
-                "logo", imagefile=logo, position="jTL+o0.15c+w2.2c", box="+gwhite@20"
+                "logo",
+                imagefile=logo,
+                position=f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}",
+                transparency=LOGO_TRANSPARENCY,
             )
         )
 
@@ -759,7 +762,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     except ValueError as exc:
         parser.error(str(exc))
     with contextlib.ExitStack() as stack:
-        stack.enter_context(pygmt.config(FONT_TITLE=TITLE_FONT, MAP_TITLE_OFFSET="6p"))
+        stack.enter_context(
+            pygmt.config(
+                FONT_TITLE=TITLE_FONT,
+                MAP_TITLE_OFFSET="6p",
+                **maps.DEFAULT_GMT_DEFAULTS,
+            )
+        )
         try:  # the user's defaults win; GMT checks them on entry
             stack.enter_context(pygmt.config(**defaults))
         except pygmt.exceptions.GMTCLibError as exc:

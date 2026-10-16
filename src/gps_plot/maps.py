@@ -91,7 +91,26 @@ DEFAULT_RESOLUTION = "auto"  # GSHHG shoreline resolution (auto per region)
 DEFAULT_LAND = "lightgrey"
 DEFAULT_WATER = "lightblue"
 DEFAULT_SHORELINES = "0.2p,black"
-DEFAULT_FRAME: tuple[str, ...] = ("af",)
+#: the frame: annotated W and S, ticked all round (iceland3/iceland.gmt's
+#: ``-Ba…WSne``); drawn last, so the annotations inside the map stay on top
+DEFAULT_FRAME: tuple[str, ...] = ("WSne", "af")
+#: dashed graticule at the annotations (``+n``: their text comes with the
+#: frame), over the base layers and under stations and legends
+DEFAULT_GRID: tuple[str, ...] = ("ag", "+n")
+#: GMT defaults of the iceland3 overview frame (icel-overv.pdf), scaled
+#: from its 30 cm to the 12 cm default map: a plain heavy frame, ticks and
+#: annotations inside it, degrees and minutes. ``gpsplot map`` sets them
+#: under the user's ``--gmt-config``.
+DEFAULT_GMT_DEFAULTS: dict[str, str] = {
+    "MAP_FRAME_TYPE": "plain",
+    "MAP_FRAME_PEN": "1.25p,black",
+    "MAP_TICK_LENGTH_PRIMARY": "-0.15c",
+    "MAP_TICK_PEN_PRIMARY": "0.5p,black",
+    "MAP_ANNOT_OFFSET_PRIMARY": "-0.1c",
+    "MAP_GRID_PEN_PRIMARY": "0.25p,gray40,dashed",
+    "FORMAT_GEO_MAP": "ddd:mmF",
+    "FONT_ANNOT_PRIMARY": "8p,Helvetica,black",
+}
 DEFAULT_MARKER_STYLE = "d7p"  # diamond, 7 points — gmtplot.velomap heritage
 DEFAULT_MARKER_PEN = "1p,red"
 DEFAULT_MARKER_FILL = "yellow"
@@ -124,7 +143,7 @@ DEFAULT_SOURCE_PEN = "0.6p,black"
 DEFAULT_LEGEND_FONT = "9p,Helvetica-Bold"
 #: Legend anchor as (east-fraction, north-fraction) of the region extent,
 #: measured from the south-west corner.
-DEFAULT_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.05)
+DEFAULT_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.09)
 #: Vertical spacing between legend lines as a fraction of the N-S extent.
 DEFAULT_LEGEND_LINE_SPACING = 0.045
 
@@ -418,12 +437,28 @@ def _region_of_points(
     )
 
 
+#: a -B axes spec: which sides to draw (``WSne``), with its modifiers
+_SIDES = re.compile(r"^[WESNZwesnzlrbtu]+(\+|$)")
+
+
 def _frame_args(frame: Sequence[str], title: str | None) -> list[str]:
-    """Base-map frame spec list, with the title appended as ``+t``."""
+    """Base-map frame spec list, with the title appended as ``+t`` — to
+    the axes spec (``WSne+t…``) when there is one: GMT refuses a separate
+    ``+t`` element beside it."""
     args = list(frame)
     if title is not None:
-        args.append(f"+t{title}")
+        sides = next((k for k, a in enumerate(args) if _SIDES.match(a)), None)
+        if sides is None:
+            args.append(f"+t{title}")
+        else:
+            args[sides] += f"+t{title}"
     return args
+
+
+def _draw_frame(fig: Any, frame_args: Sequence[str]) -> None:
+    """The map frame, drawn last: its annotations sit inside the map
+    (:data:`DEFAULT_GMT_DEFAULTS`), so anything drawn after would hide them."""
+    fig.basemap(**layer_kw("frame", frame=list(frame_args)))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -594,7 +629,6 @@ def _draw_basemap(
     land: str,
     water: str,
     shorelines: str,
-    frame_args: Sequence[str],
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
@@ -637,7 +671,6 @@ def _draw_basemap(
             resolution=resolution,
             land=land,
             water=water,
-            frame=list(frame_args),
             **({"shorelines": shorelines} if plain else {}),
         )
     )
@@ -715,6 +748,7 @@ def _draw_basemap(
             )
         )
     _draw_overlays(fig, overlays)
+    fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
 
 
 def _dem_colours(
@@ -1132,7 +1166,6 @@ def station_map(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -1175,6 +1208,8 @@ def station_map(
                 offset=label_offset,
             )
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -1500,7 +1535,6 @@ def velocity_map(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -1588,6 +1622,8 @@ def velocity_map(
             anchor=legend_anchor,
             line_spacing=legend_line_spacing,
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -1913,7 +1949,6 @@ def deformation_vectors(
         land=land,
         water=water,
         shorelines=shorelines,
-        frame_args=_frame_args(frame, title),
         dem_grid=dem_grid,
         dem_cmap=dem_cmap,
         bathymetry_cmap=bathymetry_cmap,
@@ -2002,6 +2037,8 @@ def deformation_vectors(
             anchor=legend_anchor,
             line_spacing=legend_line_spacing,
         )
+
+    _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
@@ -2345,7 +2382,6 @@ def slip_map(
             land=land,
             water=water,
             shorelines=shorelines,
-            frame_args=_frame_args(frame, title),
             dem_grid=dem_grid,
             dem_cmap=dem_cmap,
             bathymetry_cmap=bathymetry_cmap,
@@ -2402,6 +2438,9 @@ def slip_map(
     if colorbar:
         label = colorbar_label if colorbar_label is not None else f"{comp} slip (m)"
         fig.colorbar(frame=["af", f"x+l{label}"])
+
+    if view == "map":
+        _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)
