@@ -342,7 +342,9 @@ def test_station_map_dispatch(fake_maps, tmp_path):
     args, kw = fake_maps["station_map"]
     assert [c.marker for c in args[0]] == ["SEY1", "SEY2"] and kw["labels"] is True
     fig = fake_maps["fig"]
-    assert fig.saved == [str(tmp_path / "map_station_SEY1_2.png")]
+    assert fig.saved == [
+        str(tmp_path / "map_station_14.51W-13.5W_64.76N-65.77N_SEY.png")
+    ]
     assert [c[0] for c in fig.calls] == ["scalebar"]
 
 
@@ -373,7 +375,7 @@ def test_velocity_windows_one_colour_each(fake_maps, monkeypatch, tmp_path, caps
         fake_maps["fig"]
         .saved[0]
         .endswith(
-            "map_velocity_HOFN_5-20231027-20231109_20231123-20231205-horizontal.png"
+            "map_velocity_iceland_20231027-20231109_20231123-20231205_horizontal.png"
         )
     )
 
@@ -433,7 +435,9 @@ def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
     assert (
         fake_maps["fig"]
         .saved[0]
-        .endswith("map_deformation_SENG_2-20231101-20231115-mogi.png")
+        .endswith(
+            "map_deformation_22.98W-21.93W_63.35N-64.37N_SENG-SKSH_20231101-20231115_mogi.png"
+        )
     )
 
 
@@ -565,7 +569,9 @@ def test_station_tos_carries_status_and_reaches_stations_cfg_gaps(
         ("SENG", "active"),
     ]
     assert seen["refresh"] is True and kw["labels"] is True
-    assert fake_maps["fig"].saved == [str(tmp_path / "map_station_FAFC_3-tos.png")]
+    assert fake_maps["fig"].saved == [
+        str(tmp_path / "map_station_23W-22W_63.5N-64N_tos.png")
+    ]
     # no region and no pattern: the whole fleet
     assert _run(["station", "--tos", "--logo", "none"], tmp_path) == 0
     assert len(fake_maps["station_map"][0][0]) == 4
@@ -682,7 +688,7 @@ def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
     assert isinstance(kw["region"], maps.CornerRegion)
     assert kw["region"].corners == gmap.OVERVIEW_CORNERS
     assert kw["projection"] == gmap.OVERVIEW_PROJECTION
-    assert fake_maps["fig"].saved == [str(tmp_path / "map_base_region_0.png")]
+    assert fake_maps["fig"].saved == [str(tmp_path / "map_base_iceland.png")]
     # a projection of one's own keeps the plain Iceland box
     assert _run(["base", "--projection", "M12c", "--logo", "none"], tmp_path) == 0
     (_,), kw = fake_maps["station_map"]
@@ -691,7 +697,9 @@ def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
     assert _run(["station", "SEY?", "--no-stations", "--logo", "none"], tmp_path) == 0
     (stations,), kw = fake_maps["station_map"]
     assert len(stations) == 2 and kw["markers"] is False and kw["region"] is None
-    assert fake_maps["fig"].saved == [str(tmp_path / "map_base_SEY1_2.png")]
+    assert fake_maps["fig"].saved == [
+        str(tmp_path / "map_base_14.51W-13.5W_64.76N-65.77N_SEY.png")
+    ]
 
 
 def test_stations_files_alone_or_beside_tos(fake_maps, monkeypatch, tmp_path):
