@@ -746,3 +746,34 @@ def test_frame_is_drawn_last_and_the_grid_under_the_stations(monkeypatch) -> Non
     assert calls[grid][1]["frame"] == list(maps.DEFAULT_GRID)
     assert grid < names.index("plot")
     assert "frame" not in calls[0][1]  # the coast call
+
+
+def test_plain_region_within_and_point_fractions() -> None:
+    from gps_plot import maps
+
+    pts = [StationCoordinate("A", -20.0, 64.0), StationCoordinate("B", -10.0, 64.0)]
+    assert [c.marker for c in maps.within((-21, -19, 63, 65), pts)] == ["A"]
+    assert maps.within(None, pts) == pts
+    assert maps.region_point((-20, -10, 60, 70), 0.5, 0.1) == (-15.0, 61.0)
+    assert maps.gmt_region((1, 2, 3, 4)) == (1, 2, 3, 4)
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_corner_region_is_the_oblique_rectangle() -> None:
+    """The iceland3 overview: a tuple of the lon/lat box around the
+    rectangle, the GMT corner form, and the rectangle itself for
+    inside tests and fraction positions."""
+    from gps_plot import maps
+
+    r = maps.corner_region((-25, 63, -12.8, 66.7), "S-19/65/12c")
+    assert r.gmt == "-25/63/-12.8/66.7+r"
+    w, e, s, n = r
+    # the top edge bows north of the corners, the west edge west of them
+    assert w < -25 and e == pytest.approx(-12.8) and s == pytest.approx(63) and n > 66.7
+    assert r.size[0] == pytest.approx(12.0)
+    assert r.at(0, 0) == pytest.approx((-25, 63))
+    assert r.at(1, 1) == pytest.approx((-12.8, 66.7))
+    # inside the box, outside the rectangle: the box's SW corner
+    inside = [StationCoordinate("IN", -19.0, 65.0), StationCoordinate("OUT", w, s)]
+    assert [c.marker for c in maps.within(r, inside)] == ["IN"]
+    assert maps.gmt_region(r) == r.gmt

@@ -197,19 +197,45 @@ and annotations outside (`PLANE_GMT_DEFAULTS`). A title rides on the axes
 spec (`WSne+t…`): GMT refuses a separate `+t`
 beside `WSne` when the title has spaces.
 
-The old map's tilted graticule and vertical longitude labels come from its
-oblique stereographic projection (`-JS-19/65 -R…r`). GMT refuses `+a`
-rotation on geographic axes, so the Mercator default keeps horizontal
-labels.
+**Oblique maps: `--region LON/LAT/LON/LAT+r`.** The old map's tilted
+graticule and upright longitude labels come from its oblique stereographic
+projection with a corner region (`-JS-19/65 -R-25/63/-12.8/66.7r`):
+
+```bash
+gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
+    --projection S-19/65/12c --region -25/63/-12.8/66.7+r --save pdf
+```
+
+- A `+r` region (or GMT4's trailing `r`) is parsed into the map's
+  lower-left and upper-right corners (`map.Corners`). Once the projection
+  is known it becomes a `maps.CornerRegion`.
+- That object is a tuple: GMT's lon/lat box around the rectangle
+  (`mapproject -Wr`). So whatever needs a box takes it unchanged: the DEM
+  level, `grdcut`, the scale-bar length.
+- The coast call draws from its corner form (`gmt_region`).
+- Station and vector filters use `maps.within`. It applies the box, then
+  the rectangle itself (`contains`).
+- The vector legend is placed by map fraction (`region_point`, `at`).
+- `MAP_ANNOT_OBLIQUE=anywhere` writes the longitudes along their meridians,
+  as the overview's `OBLIQUE_ANNOTATION = 0` did. East of the central
+  meridian they read downwards, as in `icel-overv.pdf`. It has no effect on
+  Mercator.
+- On an oblique map, the scale bar and the vector legend sit higher, clear
+  of the taller upright labels.
+- A plain W/E/S/N region with `-JS` keeps GMT's meaning: a meridian and
+  parallel boundary, which comes out fan-shaped.
 
 The logo is the two-line Veðurstofa logo of the RTK plots
-(`logos/vi_logos/VI_Two_Line_Blue.png`), 3.6 cm wide at the top left and
+(`logos/vi_logos/VI_Two_Line_Blue.png`), 2.5 cm wide at the top left and
 30 % transparent, as `rtk_gps` draws it with `alpha=0.7`. Its white ground
 gives the faint box.
 
 The old map's land colours are `icel.cpt` in the GIS `cpt/` directory:
 - `--dem-cmap icel` gives the relief colours on land and its pale sea half;
-- add `--bathymetry-cmap lightblue` for the old flat blue sea.
+- add `--bathymetry-cmap lightblue` for the old flat blue sea;
+- `pol.cpt` is its all-white glacier palette (`--glacier-cmap pol`);
+- `lightslategrey.cpt` is its blue-grey fill of the fissure swarms and
+  central volcanoes, which also works as a land colour.
 
 Any `--dem` grid is drawn with its NaN cells transparent and **no water
 painted over it**, so a topo-bathymetry grid shows its sea floor. A
