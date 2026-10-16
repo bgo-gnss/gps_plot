@@ -795,3 +795,25 @@ def test_full_iceland_overview_only_when_everything_fits():
     kolbeinsey = [*spread, maps.StationCoordinate("KOSK", -18.7, 67.1)]
     assert gmap._overview(args(), None, kolbeinsey) is None
     assert gmap._overview(args(projection="M12c"), None, spread) is None
+
+
+def test_overview_defaults_to_the_iceland_dem(fake_maps, monkeypatch, tmp_path):
+    """A full-Iceland map takes --dem iceland when it is built; --dem none
+    keeps flat land; without the DEM on the host, no DEM."""
+    from gps_plot import maps
+
+    def choice(gis, region, proj):
+        return maps.DemChoice("dem.nc", None)
+
+    monkeypatch.setattr(maps, "iceland_dem", choice)
+    monkeypatch.setattr(gmap, "_iceland_dem_built", lambda config: True)
+    assert _run(["base", "--logo", "none"], tmp_path) == 0
+    (_,), kw = fake_maps["station_map"]
+    assert kw["dem_grid"] == "dem.nc" and kw["bathymetry_cmap"] == gmap.OVERVIEW_SEA
+    assert _run(["base", "--dem", "none", "--logo", "none"], tmp_path) == 0
+    (_,), kw = fake_maps["station_map"]
+    assert "dem_grid" not in kw
+    monkeypatch.setattr(gmap, "_iceland_dem_built", lambda config: False)
+    assert _run(["base", "--logo", "none"], tmp_path) == 0
+    (_,), kw = fake_maps["station_map"]
+    assert "dem_grid" not in kw

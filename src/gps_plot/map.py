@@ -54,8 +54,6 @@ LOGO_WIDTH = "2.5c"
 SCALE_BAR_FOOT = "1.0c"
 SCALE_BAR_FOOT_OBLIQUE = "1.7c"
 LOGO_TRANSPARENCY = 30
-#: on the overview the logo sits bottom left, above the upright longitudes
-LOGO_FOOT_OBLIQUE = "1.15c"
 DATE_FORMAT = "%Y%m%d"
 #: --dem land colours: one grey, so the hillshade alone shows the relief
 #: (the Reykjanes maps' lightgrey.cpt, darkened from 225-235 to 200 so the
@@ -78,10 +76,15 @@ DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
 #: iceland3 overview's oblique stereographic frame, longitudes along their
 #: meridians, and with a DEM a light-blue sea under the sea-floor hillshade
 OVERVIEW_PROJECTION = "S-19/65/12c"
-#: (the iceland3 frame -25/63/-12.8/66.7, opened south-west to -25.4°/62.6°
-#: so the logo sits on the sea bottom left, east to -12.4° for the scale
-#: bar, north to 66.9° for the legend top left)
-OVERVIEW_CORNERS = (-25.4, 62.6, -12.4, 66.9)
+#: (the iceland3 frame -25/63/-12.8/66.7, opened south-west to -25.2°/62.9°
+#: for the small logo bottom left, east to -12.4° for the scale bar, north
+#: to 66.9° for the legend top left)
+OVERVIEW_CORNERS = (-25.2, 62.9, -12.4, 66.9)
+#: the overview's logo: smaller, bottom left (the annotations are drawn
+#: over it should they meet)
+OVERVIEW_LOGO_WIDTH = "1.6c"
+#: ... set between the 24°W and 22°W annotations
+OVERVIEW_LOGO_X = "1.45c"
 OVERVIEW_SEA = "lightblue"
 #: an extent at least this wide and tall [deg lon, deg lat] is all Iceland
 FULL_ICELAND_SPAN = (8.0, 2.5)
@@ -235,7 +238,8 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--dem", default=None, metavar="GRID",
         help="hillshade background: 'iceland' (the Iceland topo-bathymetry "
         "DEM, the level the map needs, with the IS 50V coast), a grid file, "
-        "or a GMT remote grid such as @earth_relief_15s",
+        "or a GMT remote grid such as @earth_relief_15s (default on a "
+        "full-Iceland overview: iceland, when built; 'none' = flat land)",
     )  # fmt: skip
     g.add_argument(
         "--dem-cmap", default=None, metavar="CPT",
@@ -648,7 +652,9 @@ def _style(
     if overview is not None:
         region = args.region = overview
         args.projection = OVERVIEW_PROJECTION
-        if args.dem is not None and args.bathymetry_cmap is None:
+        if args.dem is None and _iceland_dem_built(config):
+            args.dem = ICELAND_DEM
+        if args.dem not in (None, "none") and args.bathymetry_cmap is None:
             args.bathymetry_cmap = OVERVIEW_SEA
     kw: dict[str, Any] = {"region": region, "title": args.title}
     for opt, key in (("margin", "margin"), ("projection", "projection"),
@@ -659,6 +665,8 @@ def _style(
                      ("dem_smooth", "dem_smooth")):  # fmt: skip
         if getattr(args, opt) is not None:
             kw[key] = getattr(args, opt)
+    if str(kw.get("dem_grid", "")).lower() == "none":
+        kw.pop("dem_grid")
     if str(kw.get("dem_grid", "")).lower() == ICELAND_DEM:
         from gps_plot import maps
 
@@ -697,6 +705,14 @@ def _style(
             for path in args.overlay
         )  # fmt: skip
     return kw
+
+
+def _iceland_dem_built(config: Any) -> bool:
+    """Whether the overview's ``--dem iceland`` level is on this host."""
+    from gps_plot import maps
+
+    name = maps.ICELAND_DEM_LEVELS[-1][0]
+    return os.path.isfile(os.path.join(gis_dir(config), maps.GIS_DEM, name))
 
 
 def _overview(args: argparse.Namespace, region: Any, points: Sequence[Any]) -> Any:
@@ -847,8 +863,9 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         position = f"jTL+o0.35c/0.15c+w{LOGO_WIDTH}"
         from gps_plot.maps import CornerRegion
 
-        if isinstance(args.region, CornerRegion):  # the overview: bottom left
-            position = f"jBL+o0.35c/{LOGO_FOOT_OBLIQUE}+w{LOGO_WIDTH}"
+        overview = isinstance(args.region, CornerRegion)
+        if overview:  # bottom left, the annotations drawn over it
+            position = f"jBL+o{OVERVIEW_LOGO_X}/0.15c+w{OVERVIEW_LOGO_WIDTH}"
         fig.image(
             **gmt_overrides.layer_kw(
                 "logo",
@@ -857,6 +874,9 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
                 transparency=LOGO_TRANSPARENCY,
             )
         )
+        frame = getattr(fig, "gpsplot_frame", None)
+        if overview and frame:
+            fig.basemap(**gmt_overrides.layer_kw("frame", frame=frame))
 
 
 def _save(fig: Any, args: argparse.Namespace, config: Any, stem: str) -> list[str]:

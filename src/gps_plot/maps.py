@@ -588,6 +588,9 @@ def _draw_frame(fig: Any, frame_args: Sequence[str]) -> None:
     """The map frame, drawn last: its annotations sit inside the map
     (:data:`DEFAULT_GMT_DEFAULTS`), so anything drawn after would hide them."""
     fig.basemap(**layer_kw("frame", frame=list(frame_args)))
+    # kept, so an embellishment added later (the overview logo) can have
+    # the annotations drawn over it again
+    fig.gpsplot_frame = list(frame_args)
 
 
 @dataclasses.dataclass(frozen=True)
