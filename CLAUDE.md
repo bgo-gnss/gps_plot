@@ -78,7 +78,13 @@ One command, `gpsplot`, one subcommand per plot kind (`cli/__init__.py`
 `plot_gps_timeseries.build_parser`, shared with the old name. `--model
 curve|residual|both` draws the stored model over the plate / detrended
 series (line = what the model still has in the data, in the window's datum;
-`--model-terms` picks the line's terms independently of the data's).
+`--model-terms` picks the line's terms independently of the data's). `--rate` / `--rate-window
+A:B` (repeatable) draw the velocity product's rate per window
+(`layers/rate.py`: line with the product's slope through the plotted points,
+`v = rate ± σ` per panel, or the refusal reason; files `-rate`): `--ref plate`
+→ plate, `--ref detrend` → background (`--detrend-terms periodic` →
+plate-periodic) — the map's and `gps-velocities`' numbers for the same ref
+and view (they default to plate-periodic + cleaned; `ts` follows the plot).
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
 (patterns match stations.cfg). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
@@ -188,7 +194,9 @@ sites from files, `map base`/`--no-stations` draws none), and
 (the TOS current-value rules are in the lane doc). Regional maps
 (2026-10-16): `--region reykjanes`, `--layers reykjanes` (roads, towns,
 lavas, graben, fissures, barriers, places), `--inset svartsengi` (zoom box),
-the Iceland locator and decluttered station names. Signatures, inputs and
+the Iceland locator and decluttered station names. Windowed velocity maps
+read the velocity product (`geo_dataread.velocity`; `--velocities FILE`,
+`--velocities-out DIR`, `--ref plate-periodic|background|plate`). Signatures, inputs and
 the install story are in **[`docs/map-lane.md`](docs/map-lane.md)**.
 
 ```python
@@ -215,7 +223,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-16 — regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

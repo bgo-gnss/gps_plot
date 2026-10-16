@@ -40,6 +40,9 @@ from gps_plot.cli import common
 
 KINDS = ("station", "velocity", "deformation", "slip")
 REFS = ("detrend", "plate")
+#: velocity maps: the velocity product's refs (geo_dataread.velocity.REFS);
+#: detrend is the old name of background
+VELOCITY_REFS = ("plate-periodic", "background", "plate", "detrend")
 #: one colour per window, in order (the Reykjanes maps: blue, then red)
 WINDOW_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 #: the 90th-percentile arrow is drawn this long [cm] by the automatic scale
@@ -425,19 +428,35 @@ def _add_station_args(p: argparse.ArgumentParser) -> None:
     )  # fmt: skip
 
 
-def _add_series_args(p: argparse.ArgumentParser) -> None:
+def _add_series_args(p: argparse.ArgumentParser, *, velocity: bool = False) -> None:
+    if velocity:
+        refs: Sequence[str] = VELOCITY_REFS
+        ref_help = (
+            "what the windowed velocities are relative to (the velocity "
+            "product, geo_dataread.velocity), the plate always removed: "
+            "plate-periodic (default) = the station's stored seasonal "
+            "removed too; background (or detrend) = its stored secular + "
+            "seasonal removed, the transient alone; plate = nothing more. A "
+            "station without a stored record falls back to plate, drawn "
+            "pale and named in the legend"
+        )
+    else:
+        refs = REFS
+        ref_help = (
+            "series the vectors are measured on: detrend = plate "
+            "velocity and the stored secular + seasonal model removed, so the "
+            "vectors are relative to each station's background; plate = only "
+            "the plate velocity removed. Default: detrend"
+        )
     common.add_series_options(
         p,
-        refs=REFS,
-        ref_help="series the vectors are measured on: detrend = plate "
-        "velocity and the stored secular + seasonal model removed, so the "
-        "vectors are relative to each station's background; plate = only "
-        "the plate velocity removed. Default: plate for --window/--last "
-        "velocity maps, detrend otherwise",
+        refs=refs,
+        ref_help=ref_help,
         views=["raw", "cleaned"],
         types=["POS", "TOT"],
         sessions=["24h", "8h"],
         session_help="24h daily solutions (default) or 8h sessions (itrf2020)",
+        view_default="cleaned" if velocity else "raw",
     )
 
 
@@ -527,14 +546,25 @@ def build_parser(
         "0.75); default 0 = keep all",
     )  # fmt: skip
     p.add_argument(
-        "--min-epochs", type=int, default=3,
-        help="fewest epochs in a window for a fit (default 3)",
+        "--min-epochs", type=int, default=None,
+        help="fewest epochs in a window for a rate (default 5, the velocity "
+        "product's gate)",
+    )  # fmt: skip
+    p.add_argument(
+        "--velocities", default=None, metavar="FILE",
+        help="draw a velocity product set (gps-velocities estimate: .jsonl, "
+        ".csv or .gmt of one set) instead of estimating here",
+    )  # fmt: skip
+    p.add_argument(
+        "--velocities-out", default=None, metavar="DIR",
+        help="also write the velocities drawn, as a product set per window "
+        "(.gmt/.csv/.jsonl), so the file and the map are the same numbers",
     )  # fmt: skip
     p.add_argument("--scale", type=float, default=None, metavar="CM_PER_UNIT",
                    help="arrow length per mm/yr [cm] (default: automatic)")  # fmt: skip
     p.add_argument("--scale-ref", type=float, default=None, metavar="MM_YR",
                    help="length of the legend arrow (default: automatic)")  # fmt: skip
-    _add_series_args(p)
+    _add_series_args(p, velocity=True)
     _add_map_options(p, config)
 
     p = sub.add_parser("deformation", help="displacement from -s to -e (+ Mogi)")
@@ -639,7 +669,9 @@ def resolve_windows(
 ) -> list[tuple[dt.datetime, dt.datetime]]:
     """``--window`` and ``--last`` as concrete (start, end) pairs, in order."""
     out = [(s, e or now) for s, e in windows or ()]
-    out += [(now - dt.timedelta(days=d), now) for d in last or ()]
+    # --last 7: seven whole days, today included (the product's windows
+    # are whole days, both ends in)
+    out += [(now - dt.timedelta(days=d - 1), now) for d in last or ()]
     return out
 
 
@@ -971,11 +1003,11 @@ def _insets(
     style: dict[str, Any],
     points: Sequence[Any],
     zoom_symbols: Any,
-    reserve: Sequence[tuple[float, ...]] = (),
+    legend_lines: int = 0,
 ) -> None:
     """The zoom inset (--inset) and the Iceland locator, where they fit
     (:func:`gps_plot.insets.place`): clear of the logo, the scale bar,
-    ``reserve`` boxes [cm] and the station symbols."""
+    a vector legend of ``legend_lines`` rows and the station symbols."""
     from gps_plot import insets, layout, maps
 
     region = style.get("region") or tuple(fig.region)
@@ -990,8 +1022,8 @@ def _insets(
     width, height = sea.width, sea.height
     sea.reserve((0.0, LOGO_BOX_CM[0], height - LOGO_BOX_CM[1], height))
     sea.reserve((width - SCALE_BOX_CM[0], width, 0.0, SCALE_BOX_CM[1]))
-    for box in reserve:
-        sea.reserve(tuple(box))  # type: ignore[arg-type]
+    if legend_lines:
+        sea.reserve(legend_box_cm(fig, style, legend_lines))  # type: ignore[arg-type]
     if args.markers:
         sea.block_points([p.lon for p in points], [p.lat for p in points])
     zoom_spot = None
@@ -1361,27 +1393,63 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
 
     now = args.end or dt.datetime.now()
     windows = resolve_windows(args.window, args.last, now)
-    if windows and args.ref is None:
-        # over days to weeks the secular rate is negligible, and plate covers
-        # every station (about half lack a stored detrend record)
-        args.ref = "plate"
     comp = 2 if args.vertical else None
-    vectors, dropped, notes = [], [], []
+    vectors: list[Any] = []
+    dropped: list[str] = []
+    notes: list[str] = []
     groups: list[tuple[str | None, str]] = []
-    if windows:
+    by_marker = {c.marker: c for c in stations}
+    if args.velocities:
+        # a product set: its windows are the groups
+        from geo_dataread import velocity as vprod
+
+        try:
+            records = vprod.read_velocity_records(args.velocities)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--velocities: {exc}")
+        spans = sorted({r.window for r in records})
+        requested = {r.ref_requested for r in records}
+        if len(requested) == 1 and args.ref is None:
+            (args.ref,) = requested  # the title says what the set is
+        elif args.ref is not None and requested != {
+            "background" if args.ref == "detrend" else args.ref
+        }:
+            parser.error(
+                f"--ref {args.ref}: the set {args.velocities} is ref "
+                f"{', '.join(sorted(requested))}"
+            )
+        in_file = {r.station for r in records}
+        dropped += [
+            f"{m}: not in {args.velocities}" for m in sorted(set(by_marker) - in_file)
+        ]
+        if in_file - set(by_marker):
+            notes.append(
+                f"{len(in_file - set(by_marker))} stations of the set not selected"
+            )
+        for k, span in enumerate(spans):
+            label = window_label(_date_of(span[0]), _last_day(span[1]))
+            chosen = [r for r in records if r.window == span and r.station in by_marker]
+            _add_records(maps, chosen, by_marker, label,
+                         WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
+                         vectors, dropped)  # fmt: skip
+        windows = [(_date_of(span[0]), _last_day(span[1])) for span in spans]
+    elif windows:
+        # the velocity product's own estimator: the numbers of gps-velocities
+        from geo_dataread import velocity as vprod
+
+        settings = _product_settings(args, parser, config)
         for k, (start, end) in enumerate(windows):
             label = window_label(start, end)
-            groups.append((label, WINDOW_COLORS[k % len(WINDOW_COLORS)]))
-            req = _request(args, parser, config, start, end)
-            for c in stations:
-                try:
-                    r = vsource.window_velocity(
-                        c.marker, req, min_epochs=args.min_epochs
-                    )
-                except Exception as exc:  # one station must not sink the map
-                    dropped.append(f"{c.marker} {label}: {exc}")
-                    continue
-                vectors.append(_vector(maps, c, r, comp, label))
+            d0, d1 = start.date(), end.date()
+            records = vprod.estimate_velocities(list(by_marker), d0, d1, settings)
+            if args.velocities_out:
+                paths = vprod.write_velocity_set(
+                    records, args.velocities_out, vprod.set_name(settings, d0, d1)
+                )
+                print(paths["jsonl"])
+            _add_records(maps, records, by_marker, label,
+                         WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
+                         vectors, dropped)  # fmt: skip
     else:
         now_req = _request(args, parser, config, now - dt.timedelta(days=1), now)
         groups.append(("secular", "blue"))
@@ -1440,15 +1508,116 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         if zoomed and zoom_scale < (args.scale or scale):
             maps.draw_scale_arrow(f, args.inset, zoom_ref, zoom_scale, "mm/yr")
 
-    legend = legend_box_cm(fig, style, len(colors) + 2)
     _finish(fig, args)
-    _insets(fig, args, config, style, kept, zoom_symbols, reserve=[legend])
+    _insets(fig, args, config, style, kept, zoom_symbols, legend_lines=len(colors) + 2)
     span = "_".join(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows) or "secular"
     stem = _stem(args, "velocity", stations, span,
                  "vertical" if args.vertical else "horizontal")  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
+
+
+def _product_settings(args: Any, parser: Any, config: Any) -> Any:
+    """The velocity product's settings from the map's series options."""
+    from geo_dataread.velocity import VelocitySettings
+
+    if args.tType not in (None, "POS"):
+        parser.error(
+            "windowed velocities come from the velocity product, which reads "
+            "the .pos series: drop --tType (pick the frame with --frame)"
+        )
+    if args.session != "24h":
+        parser.error("windowed velocities from 8 h sessions are not done yet")
+    ref = "background" if args.ref == "detrend" else (args.ref or "plate-periodic")
+    kw: dict[str, Any] = {
+        "frame": args.frame or common.DEFAULT_PLOT_FRAME,
+        "ref": ref,
+        "view": args.view or "cleaned",
+        "uncert": float(args.uncert),
+        "pos_dir": args.Dir or common.config_dir(config, "pos_dir", None),
+    }
+    if args.min_epochs is not None:
+        kw["min_obs"] = args.min_epochs
+    try:
+        return VelocitySettings(**kw)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+#: a station without a stored record drawn on plate only: its arrows pale
+FALLBACK_SUFFIX = " (plate only)"
+FALLBACK_TRANSPARENCY = 55
+
+
+def _add_records(
+    maps: Any,
+    records: Sequence[Any],
+    by_marker: dict[str, Any],
+    label: str,
+    color: str,
+    comp: int | None,
+    groups: list[tuple[str | None, str]],
+    vectors: list[Any],
+    dropped: list[str],
+) -> None:
+    """Velocity product records as one window's vectors: refused ones
+    dropped with their reason, plate-only fallbacks as a pale group."""
+    pale = label + FALLBACK_SUFFIX
+    groups.append((label, color))
+    any_pale = False
+    for r in records:
+        c = by_marker.get(r.station)
+        if c is None:
+            continue
+        if not r.accepted:
+            dropped.append(f"{r.station} {label}: {r.refused}")
+            continue
+        fallback = "fallback:plate" in r.flags
+        any_pale |= fallback
+        vectors.append(_record_vector(maps, c, r, comp, pale if fallback else label))
+    if any_pale:
+        groups.append((pale, f"{color}@{FALLBACK_TRANSPARENCY}"))
+
+
+def _record_vector(maps: Any, c: Any, r: Any, comp: int | None, method: str) -> Any:
+    """A velocity product record as a map vector (rate N/E/U, honest σ)."""
+    if comp is None:
+        e, n, se, sn = r.rate[1], r.rate[0], r.sigma[1], r.sigma[0]
+        corr = r.corr_en if math.isfinite(r.corr_en) else 0.0
+    else:  # vertical: up as a north-pointing arrow (the gpsvelo convention)
+        e, n, se, sn, corr = 0.0, r.rate[comp], 0.0, r.sigma[comp], 0.0
+    return maps.VelocityVector(
+        marker=c.marker, lon=c.lon, lat=c.lat, east=float(e), north=float(n),
+        sigma_east=float(se), sigma_north=float(sn), correlation_en=float(corr),
+        method=method,
+    )  # fmt: skip
+
+
+def _date_of(yf: float) -> dt.datetime:
+    """A fractional year as a datetime (the inverse of TimetoYearf)."""
+    year = int(yf)
+    start = dt.datetime(year, 1, 1)
+    days = (dt.datetime(year + 1, 1, 1) - start).days
+    return start + dt.timedelta(days=(yf - year) * days)
+
+
+def _last_day(end_yf: float) -> dt.datetime:
+    """The last day of a product window: its end is the midnight after it
+    (geo_dataread.velocity.window_bounds)."""
+    end = _date_of(end_yf)
+    if (
+        abs(
+            (
+                end - end.replace(hour=0, minute=0, second=0, microsecond=0)
+            ).total_seconds()
+        )
+        < 60
+    ):
+        return end.replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(
+            days=1
+        )
+    return end
 
 
 def _vector(maps: Any, c: Any, r: Any, comp: int | None, method: str) -> Any:
@@ -1469,16 +1638,21 @@ def snr(v: Any) -> float:
     return math.inf if s == 0 else m / s
 
 
+#: what a windowed velocity map's vectors are relative to, by --ref
+VELOCITY_REF_TITLES = {
+    "plate-periodic": "plate and seasonal removed",
+    "background": "relative to background",
+    "detrend": "relative to background",
+    "plate": "plate removed",
+}
+
+
 def _velocity_title(args: Any, windowed: bool) -> str:
     what = "Vertical velocity" if args.vertical else "Horizontal velocity"
     if not windowed:
         return f"{what}, secular (plate removed)"
-    ref = (
-        "relative to background"
-        if (args.ref or "detrend") == "detrend"
-        else "plate removed"
-    )
-    return f"{what}, {ref}"
+    ref = args.ref or ("plate-periodic" if not args.velocities else None)
+    return f"{what}, {VELOCITY_REF_TITLES[ref]}" if ref else what
 
 
 def _region_of(stations: Any, margin: float | None, maps: Any) -> Any:
@@ -1534,9 +1708,8 @@ def _run_deformation(
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
-    legend = legend_box_cm(fig, style, len(models) + 3)
     _finish(fig, args)
-    _insets(fig, args, config, style, coords, None, reserve=[legend])
+    _insets(fig, args, config, style, coords, None, legend_lines=len(models) + 3)
     stem = _stem(args, "deformation", coords,
                  f"{args.start:%Y%m%d}-{end:%Y%m%d}", "mogi" if models else "")  # fmt: skip
     for p in _save(fig, args, config, stem):

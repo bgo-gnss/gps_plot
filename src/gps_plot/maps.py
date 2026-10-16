@@ -1505,7 +1505,12 @@ def _draw_station_labels(
     those moved away from their symbol with a leader line; without it each
     sits at GMT's ``BL`` + ``offset``.
     """
-    named = [c for c in points if c.marker not in unlabelled]
+    seen: set[str] = set()
+    named = []
+    for c in points:  # a station with several vectors (windows) named once
+        if c.marker not in unlabelled and c.marker not in seen:
+            seen.add(c.marker)
+            named.append(c)
     if not named:
         return
     if rj is None:

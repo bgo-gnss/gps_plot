@@ -805,6 +805,8 @@ def plotTime(
     overlay_pos_id: str | None = None,
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
+    rate: bool = False,
+    rate_windows: Sequence[tuple[float, float]] | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -1184,6 +1186,31 @@ def plotTime(
             va="bottom",
         )
 
+    if rate or rate_windows:
+        # the velocity product's rate per window (gpsplot ts --rate): the
+        # same number as the map and the velocity files
+        from gps_plot.layers.rate import (
+            add_rate_lines,
+            default_window,
+            rate_note,
+            rate_settings,
+        )
+
+        if pair is not None:
+            raise ValueError(f"{sta}: --rate over a baseline is not supported yet")
+        if overlay_pos_id is not None or tType != "POS":
+            raise ValueError(f"{sta}: --rate reads the daily .pos series only")
+        settings = rate_settings(
+            ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
+            uncert=uncert, Dir=Dir,
+        )  # fmt: skip
+        windows = list(rate_windows or [default_window(yearf, fstart, fend)])
+        records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+        fig.axes[2].text(
+            0.99, 0.02, rate_note(records), transform=fig.axes[2].transAxes,
+            fontsize="small", color="0.3", va="bottom", ha="right",
+        )  # fmt: skip
+
     if aborted is not None and any(aborted):
         # after the overlays so the badge is never painted under them
         fig = addAbortBadge(fig, aborted)
@@ -1263,6 +1290,8 @@ def plotTime(
             filend += "-model" if model == "curve" else "-resid"
             if model_terms:
                 filend += "-line-" + "-".join(model_terms)
+        if rate or rate_windows:
+            filend += "-rate"
         if tType == "POS":
             # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
             from geo_dataread.pos import frame_name, pos_product
