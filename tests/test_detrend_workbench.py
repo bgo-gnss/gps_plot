@@ -1760,3 +1760,19 @@ class TestConfoundedRateWarning:
         assert confounded_rate_warnings(
             [(2015.0, 2016.0), (2020.0, 2021.0)], [], [(2018.3, "M6.0")]
         )
+
+
+def test_commit_of_a_skip_station_warns_that_the_batch_leaves_it_out(
+    monkeypatch, capsys
+):
+    from gps_parser import outlier_catalogs
+
+    from gps_plot import detrend_workbench as wb
+
+    monkeypatch.setattr(
+        outlier_catalogs, "skipped_detrend_stations", lambda *a, **k: {"HRAG": "unrest"}
+    )
+    wb._warn_if_skipped("HRAG")
+    assert "HRAG is 'skip' in detrend_status.csv (unrest)" in capsys.readouterr().err
+    wb._warn_if_skipped("SENG")
+    assert capsys.readouterr().err == ""
