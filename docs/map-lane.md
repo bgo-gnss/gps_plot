@@ -253,8 +253,19 @@ the outline. `maps.DemZone` does the same in the one DEM pass.
   directory. The overview's own polygons are in `gis/vector/iceland3/`,
   copied from `/mnt_data/gps_gmt_data/isl`: 22 swarms, 33 volcanoes,
   `centralvolc2.xy` and the calderas.
-- **FutureVolc:** its swarms (`build_07_volcanic.sh`) are partly open
-  lines and cannot be zones; use them with `--overlay`.
+- **FutureVolc:** `build_07_volcanic.sh` also writes its swarms and
+  volcanoes closed, one polygon per outline, through
+  `close_outlines.py`, as `vector/futurevolc_{fissure_swarms,central_volcanoes}_closed.gmt`
+  (25 swarms, 28 volcanoes). The ÍSOR 2014 outlines are open and are
+  closed explicitly:
+  - a U open to the sea, or a nearly closed ring, gets its ends joined;
+  - side lines (Krafla, Reykjanes-Svartsengi, Hrómundartindur) become a
+    band along the swarm's axis. Where only one of a system's lines runs,
+    the band reaches the nearest ÍSOR neighbour line, because a boundary
+    two swarms share is drawn once (Hrómundartindur and Hengill).
+
+  A closing edge across the sea is harmless, because a zone recolours only
+  land. The raw GeoJSON stays for `--overlay`.
 
 ```bash
 gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap none \
