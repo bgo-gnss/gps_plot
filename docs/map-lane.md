@@ -473,7 +473,9 @@ numbers (BGÓ 2026-10-16; design in memory `velocity-product`).
   `plate`. A station without a stored record falls back to plate and is drawn
   in its window's colour, pale (`@55`), as its own legend line
   `… (plate only)`.
-- `--view cleaned` is now the default for velocity maps (the product's).
+- `--view declared` is the default for velocity maps (the product's: raw
+  less the declared blunder epochs, no detection); `cleaned` and `raw`
+  remain.
 - σ is honest: formal × the station's empirical k(T) (`sigma_method` in the
   product); `--min-snr` filters on it. Ellipses carry `corr_en`.
 - Refused stations (too few epochs, window not covered, a declared step
