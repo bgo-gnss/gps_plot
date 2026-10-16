@@ -431,7 +431,7 @@ def test_velocity_windows_default_to_plate_periodic_cleaned(
     assert (settings.ref, settings.view, settings.frame) == (
         "plate-periodic", "cleaned", "itrf2014",
     )  # fmt: skip
-    assert settings.min_obs == 20
+    assert settings.min_obs == 5
 
 
 def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):

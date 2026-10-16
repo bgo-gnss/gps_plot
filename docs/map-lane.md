@@ -478,7 +478,7 @@ numbers (BGÓ 2026-10-16; design in memory `velocity-product`).
   product); `--min-snr` filters on it. Ellipses carry `corr_en`.
 - Refused stations (too few epochs, window not covered, a declared step
   inside, …) are named on stderr with the reason; `--min-epochs` sets the
-  product's `min_obs` (default 20).
+  product's `min_obs` (default 5; `min_cover` 0.8 keeps sparse windows out).
 - `--velocities FILE` draws a product set (`.jsonl`/`.csv`/`.gmt`) instead of
   estimating; `--velocities-out DIR` writes the set a map draws. Measured:
   the map from the file is pixel-identical to the map that wrote it.

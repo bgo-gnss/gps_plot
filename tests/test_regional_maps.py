@@ -217,3 +217,17 @@ def test_station_map_with_layers_and_both_insets_renders(tmp_path, monkeypatch):
                          "-d", str(tmp_path), "--name", "regional"])  # fmt: skip
     assert gmap.run(args, p, Config()) == 0
     assert (tmp_path / "regional.png").stat().st_size > 10_000
+
+
+def test_a_station_with_several_vectors_is_named_once():
+    calls = []
+
+    class Fig:
+        def text(self, **kw):
+            calls.append(kw)
+
+    pts = [maps.StationCoordinate("SENG", -22.4, 63.9),
+           maps.StationCoordinate("SENG", -22.4, 63.9),
+           maps.StationCoordinate("SKSH", -22.5, 63.9)]  # fmt: skip
+    maps._draw_station_labels(Fig(), pts, set(), "5p", "J0.2")
+    assert calls[0]["text"] == ["SENG", "SKSH"]

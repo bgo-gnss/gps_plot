@@ -547,7 +547,7 @@ def build_parser(
     )  # fmt: skip
     p.add_argument(
         "--min-epochs", type=int, default=None,
-        help="fewest epochs in a window for a rate (default 20, the velocity "
+        help="fewest epochs in a window for a rate (default 5, the velocity "
         "product's gate)",
     )  # fmt: skip
     p.add_argument(
