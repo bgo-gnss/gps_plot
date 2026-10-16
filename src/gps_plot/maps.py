@@ -811,6 +811,7 @@ def _draw_basemap(
     """
     # one coast call when GSHHG draws the shoreline straight over the fill
     plain = dem_grid is None and coastline is None
+    land_grid = None  # the DEM drawn: z >= 0 is land (glaciers, zones too)
     fig.coast(
         **layer_kw(
             "coast",
@@ -856,6 +857,7 @@ def _draw_basemap(
                 "dem", grid=subgrid, shading=gradient, cmap=cpt, nan_transparent=True
             )
         )
+        land_grid = subgrid
         if glacier_contours and ice is not None:
             fig.grdcontour(
                 **layer_kw(
@@ -908,6 +910,14 @@ def _draw_basemap(
         )
     _draw_overlays(fig, overlays)
     fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
+    if isinstance(region, CornerRegion):
+        # the overview: legend, logo and scale bar find the sea (layout)
+        from gps_plot import layout
+
+        fig.gpsplot_layout = layout.build(
+            region, land=land_grid,
+            resolution=resolution if resolution != "auto" else "intermediate",
+        )  # fmt: skip
 
 
 def _dem_colours(
@@ -1206,6 +1216,7 @@ def _draw_status_markers(
     for c in coordinates:
         groups.setdefault(c.status or "active", []).append(c)
     others = [k for k in groups if k not in STATUS_STYLES and k not in GROUP_AS_STATUS]
+    drawn: list[str] = []
     for key, members in groups.items():
         if not members:
             continue
@@ -1228,6 +1239,17 @@ def _draw_status_markers(
                 label=f"{label} ({len(members)})",
             )
         )
+        drawn.append(f"{label} ({len(members)})")
+    from gps_plot import layout
+
+    sea = getattr(fig, "gpsplot_layout", None)
+    if legend_position == DEFAULT_STATUS_LEGEND and isinstance(sea, layout.SeaLayout):
+        sea.block_points([c.lon for c in coordinates], [c.lat for c in coordinates])
+        size = layout.text_box_cm(drawn)
+        spot = sea.place(size, layout.LEGEND_CORNERS)
+        if spot is not None:  # anchored top right: GMT's own size grows inward
+            # (its estimated box, with the lower-left corner at spot)
+            legend_position = f"x{spot[0] + size[0]:.3f}c/{spot[1] + size[1]:.3f}c+jTR"
     if legend_position:
         fig.legend(
             **layer_kw("legend", position=legend_position, box="+gwhite@20+p0.4p")

@@ -229,13 +229,27 @@ gpsplot map base --dem iceland --dem-cmap icel --bathymetry-cmap lightblue \
 nor `--projection` given, and an extent of at least 8° × 2.5° (`map base`,
 `--tos`, every station): the map takes the overview frame.
 - **Frame:** `OVERVIEW_PROJECTION` `S-19/65/12c` over the corners
-  `OVERVIEW_CORNERS` -25/63/-12.8/66.7+r, with the longitudes along their
+  `OVERVIEW_CORNERS` -25.4/62.6/-12.4/66.9+r, with the longitudes along their
   meridians.
 - **Sea:** with a DEM and no `--bathymetry-cmap`, the light-blue sea of
   `OVERVIEW_SEA` under the sea-floor hillshade.
 - **When not:** if a station falls outside the frame (Kolbeinsey), the map
   stays a Mercator box (`map._overview`). `--projection M12c` keeps the
   Mercator box too.
+- **Logo, legend and scale bar over the sea.** `OVERVIEW_CORNERS`
+  (-25.4/62.6/-12.4/66.9) widens the iceland3 frame so the fixed places
+  are sea: the logo bottom left, above the upright longitudes, and the
+  scale bar bottom right.
+- **The status legend finds its place** (`gps_plot.layout`): the free
+  sea position nearest the top left, else the top right, the bottom left,
+  the bottom right. The mask is 1 mm cells of the drawn DEM (z >= 0 is
+  land), else of GSHHG land and lakes. The legend keeps clear of:
+  - the station symbols;
+  - the logo and the scale bar;
+  - the degree annotations inside the frame.
+
+  Without a free spot it keeps `jTR`. Mercator maps keep the fixed
+  corners.
 
 **Fissure swarms and central volcanoes: `--dem-zone POLYGONS[:CMAP]`.**
 The overview recoloured them on the relief itself: `psclip
