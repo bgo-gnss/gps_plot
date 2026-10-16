@@ -99,7 +99,7 @@ def test_windows_and_last_days():
     assert gmap.resolve_windows(w, [7], now) == [
         (dt.datetime(2023, 10, 27), dt.datetime(2023, 11, 9)),
         (dt.datetime(2023, 11, 23), now),
-        (now - dt.timedelta(days=7), now),
+        (now - dt.timedelta(days=6), now),  # seven whole days
     ]
     assert gmap.window_label(*w[0]) == "2023/10/27 - 2023/11/09"
 
@@ -441,7 +441,7 @@ def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):
         _run(["velocity", "SENG", "--last", "14", "--session", "8h"], tmp_path)
 
 
-def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path):
+def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path, capsys):
     from geo_dataread import velocity as vprod
 
     recs = [_product_record("SENG", [1.0, 2.0, 3.0]),
@@ -451,6 +451,13 @@ def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path):
                 tmp_path) == 0  # fmt: skip
     (vectors,), _kw = fake_maps["velocity_map"]
     assert [(v.marker, v.north, v.east) for v in vectors] == [("SENG", 1.0, 2.0)]
+    # a station not in the set is named; a --ref the set is not is refused
+    assert _run(["velocity", "SENG", "SKSH", "HOFN", "--velocities",
+                 str(paths["csv"])], tmp_path) == 0  # fmt: skip
+    assert "HOFN: not in" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        _run(["velocity", "SENG", "--ref", "detrend", "--velocities",
+              str(paths["csv"])], tmp_path)  # fmt: skip
 
 
 def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, capsys):

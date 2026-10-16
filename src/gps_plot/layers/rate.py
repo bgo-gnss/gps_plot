@@ -91,6 +91,25 @@ def window_label(window: tuple[float, float]) -> str:
     return f"{window[0]:.2f}--{window[1]:.2f}"
 
 
+def default_window(
+    t: Any, fstart: float | None, fend: float | None
+) -> tuple[float, float]:
+    """The ``--rate`` window without ``--rate-window``: whole days, as the
+    map's and ``gps-velocities``' windows, from the plot's read start (else
+    its first epoch) to its read end (else its last epoch). Same T, so the
+    same k(T) and σ as ``map --window`` over the same dates."""
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread.velocity import window_bounds
+
+    tt = np.asarray(t, dtype=float)
+    a = fstart if fstart is not None else float(np.nanmin(tt))
+    b = fend if fend is not None else float(np.nanmax(tt))
+    # +~1 min: a midnight read bound must not round back into the day before
+    first, last = (d.date() for d in gpsr.toDateTime(np.array([a, b]) + 2e-6))
+    t0, t1 = window_bounds(first, last)
+    return float(t0), float(t1)
+
+
 def add_rate_lines(
     fig: Figure,
     sta: str,

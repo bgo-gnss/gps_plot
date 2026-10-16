@@ -1189,7 +1189,12 @@ def plotTime(
     if rate or rate_windows:
         # the velocity product's rate per window (gpsplot ts --rate): the
         # same number as the map and the velocity files
-        from gps_plot.layers.rate import add_rate_lines, rate_note, rate_settings
+        from gps_plot.layers.rate import (
+            add_rate_lines,
+            default_window,
+            rate_note,
+            rate_settings,
+        )
 
         if pair is not None:
             raise ValueError(f"{sta}: --rate over a baseline is not supported yet")
@@ -1199,7 +1204,7 @@ def plotTime(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
             uncert=uncert, Dir=Dir,
         )  # fmt: skip
-        windows = list(rate_windows or [(float(yearf[0]), float(yearf[-1]))])
+        windows = list(rate_windows or [default_window(yearf, fstart, fend)])
         records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
         fig.axes[2].text(
             0.99, 0.02, rate_note(records), transform=fig.axes[2].transAxes,

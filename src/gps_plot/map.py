@@ -669,7 +669,9 @@ def resolve_windows(
 ) -> list[tuple[dt.datetime, dt.datetime]]:
     """``--window`` and ``--last`` as concrete (start, end) pairs, in order."""
     out = [(s, e or now) for s, e in windows or ()]
-    out += [(now - dt.timedelta(days=d), now) for d in last or ()]
+    # --last 7: seven whole days, today included (the product's windows
+    # are whole days, both ends in)
+    out += [(now - dt.timedelta(days=d - 1), now) for d in last or ()]
     return out
 
 
@@ -1409,6 +1411,21 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         requested = {r.ref_requested for r in records}
         if len(requested) == 1 and args.ref is None:
             (args.ref,) = requested  # the title says what the set is
+        elif args.ref is not None and requested != {
+            "background" if args.ref == "detrend" else args.ref
+        }:
+            parser.error(
+                f"--ref {args.ref}: the set {args.velocities} is ref "
+                f"{', '.join(sorted(requested))}"
+            )
+        in_file = {r.station for r in records}
+        dropped += [
+            f"{m}: not in {args.velocities}" for m in sorted(set(by_marker) - in_file)
+        ]
+        if in_file - set(by_marker):
+            notes.append(
+                f"{len(in_file - set(by_marker))} stations of the set not selected"
+            )
         for k, span in enumerate(spans):
             label = window_label(_date_of(span[0]), _last_day(span[1]))
             chosen = [r for r in records if r.window == span and r.station in by_marker]

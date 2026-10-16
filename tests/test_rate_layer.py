@@ -50,3 +50,22 @@ def test_rate_window_takes_whole_days():
         pgt._rate_window("20260102:20260101")
     with pytest.raises(argparse.ArgumentTypeError):
         pgt._rate_window("2026-01-01")
+
+
+def test_default_window_is_whole_days_like_the_map():
+    """ts --rate without --rate-window: the map's window over the same dates,
+    so the same T, k(T) and σ."""
+    import datetime as dt
+
+    import numpy as np
+    from geo_dataread.velocity import window_bounds, yearf
+
+    from gps_plot.layers.rate import default_window
+
+    noon = np.array([yearf(dt.datetime(2026, 8, 15, 12)),
+                     yearf(dt.datetime(2026, 10, 15, 12))])  # fmt: skip
+    want = window_bounds(dt.date(2026, 8, 15), dt.date(2026, 10, 15))
+    assert default_window(noon, None, None) == want
+    # the read bounds (-s/-e, midnights) win over the epochs
+    s, e = yearf(dt.date(2026, 8, 15)), yearf(dt.date(2026, 10, 15))
+    assert default_window(noon[:1] + 0.01, s, e) == want
