@@ -1608,7 +1608,9 @@ def _date_of(yf: float) -> dt.datetime:
     year = int(yf)
     start = dt.datetime(year, 1, 1)
     days = (dt.datetime(year + 1, 1, 1) - start).days
-    return start + dt.timedelta(days=(yf - year) * days)
+    # to the second: a midnight's float must not land at 23:59:59.99 the
+    # day before (a window's start label one day early)
+    return start + dt.timedelta(seconds=round((yf - year) * days * 86400))
 
 
 def _last_day(end_yf: float) -> dt.datetime:

@@ -932,3 +932,13 @@ def test_a_short_tier_record_draws_only_its_standing_part(fake_maps, tmp_path, c
                 tmp_path) == 1  # fmt: skip
     err = capsys.readouterr().err
     assert "SENG" in err and "up snr=1.2<5" in err, err
+
+
+def test_a_product_window_labels_its_own_days():
+    """A window's start midnight must not round into the day before."""
+    from geo_dataread.velocity import window_bounds
+
+    for day in (dt.date(2023, 11, 12), dt.date(2024, 2, 29), dt.date(2023, 12, 31)):
+        a, b = window_bounds(day, day)
+        assert gmap._date_of(a) == dt.datetime(day.year, day.month, day.day)
+        assert gmap._last_day(b).date() == day
