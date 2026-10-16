@@ -138,6 +138,33 @@ unfiltered grid and stay sharp. 2–4 km suits an Iceland overview, and the
 filter costs about a second there. The filter is the `smooth` step, so
 `--gmt smooth:filter=m3` gives a median filter instead.
 
+### File names: `map_{kind}_{area}_{selection}[_{extras}]`
+
+A map is named after what it shows, not its first station
+(`gps_plot.areas`). `--name` still overrides the name.
+
+- **area:** the named box of `areas.AREAS` the map's region overlaps most
+  (intersection over union ≥ 0.35): `iceland`, `reykjanes`, `hengill`,
+  `katla`, `askja`, `krafla` and others. Otherwise it is the region's own
+  coordinates, such as `22.8W-21.9W_63.75N-64.1N`. Add a box to the table
+  and maps of that area take its name.
+- **selection:** how the stations were chosen, joined by `+`:
+  - `tos` for `--tos`;
+  - `tos-<search>` for `--tos-search` (`--epos` → `tos-epos`);
+  - the station patterns (`SEY?` → `SEY`);
+  - the `--stations-file` labels.
+
+  A plain `"*"` adds nothing.
+- **extras:** the velocity windows and component, the deformation
+  window and `mogi`.
+
+| Map | File |
+|---|---|
+| `map station --tos-search "--epos" --dem iceland` | `map_station_iceland_tos-epos` |
+| `map base` | `map_base_iceland` |
+| `map station "*" --region -22.8/-21.9/63.75/64.1` | `map_station_reykjanes` |
+| `map velocity --region … --last 7` | `map_velocity_reykjanes_20261009-20261016_horizontal` |
+
 ### GMT arguments: `--gmt STEP:KEY=VALUE`, `--gmt-config KEY=VALUE`
 
 Every map is drawn in named steps. `--gmt STEP:KEY=VALUE` gives one GMT

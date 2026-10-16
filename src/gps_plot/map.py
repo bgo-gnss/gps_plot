@@ -875,8 +875,34 @@ def _save(fig: Any, args: argparse.Namespace, config: Any, stem: str) -> list[st
     return paths
 
 
-def _stem(kind: str, first: str, n: int, *parts: str) -> str:
-    return "-".join([f"map_{kind}_{first}_{n}", *[p for p in parts if p]])
+def areas_slug(text: str) -> str:
+    from gps_plot import areas
+
+    return areas.slug(text)
+
+
+def _stem(args: Any, kind: str, points: Sequence[Any], *parts: str) -> str:
+    """The file stem of a map: ``map_{kind}_{area}_{selection}_{parts}``
+    (:mod:`gps_plot.areas`); the area from the map's region, else the box
+    around ``points``, else all Iceland."""
+    from gps_plot import areas, maps
+    from gps_plot.sources import station_files
+
+    region = args.region
+    if region is None:
+        region = (
+            _region_of(points, args.margin, maps) if points else DEFAULT_BASE_REGION
+        )
+    chosen = areas.selection(
+        tos=bool(getattr(args, "tos", False)),
+        tos_search=getattr(args, "tos_search", None),
+        patterns=getattr(args, "Stations", None) or (),
+        files=[
+            station_files.split_spec(f)[1]
+            for f in getattr(args, "stations_file", None) or ()
+        ],
+    )
+    return areas.stem(kind, region, chosen, *parts)
 
 
 def _report(dropped: Sequence[str]) -> None:
@@ -1068,14 +1094,7 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         **_style(args, region, config=config, points=stations),
     )  # fmt: skip
     _finish(fig, args)
-    if stations:
-        stem = _stem(
-            "station", stations[0].marker, len(stations), "tos" if use_tos else ""
-        )
-    else:
-        stem = _stem(BASE, "region", 0)
-    if stations and not args.markers:
-        stem = stem.replace("map_station_", f"map_{BASE}_", 1)
+    stem = _stem(args, "station" if stations and args.markers else BASE, stations)
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
@@ -1146,7 +1165,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     )
     _finish(fig, args)
     span = "_".join(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows) or "secular"
-    stem = _stem("velocity", stations[0].marker, len(stations), span,
+    stem = _stem(args, "velocity", stations, span,
                  "vertical" if args.vertical else "horizontal")  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
@@ -1237,7 +1256,7 @@ def _run_deformation(
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
     _finish(fig, args)
-    stem = _stem("deformation", coords[0].marker, len(coords),
+    stem = _stem(args, "deformation", coords,
                  f"{args.start:%Y%m%d}-{end:%Y%m%d}", "mogi" if models else "")  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
@@ -1263,7 +1282,7 @@ def _run_geojson(args: Any, config: Any, maps: Any) -> int:
         **_style(args, args.region, config=config, points=vectors),
     )  # fmt: skip
     _finish(fig, args)
-    stem = _stem("velocity", Path(args.geojson).stem, len(vectors), "geojson")
+    stem = _stem(args, "velocity", vectors, areas_slug(Path(args.geojson).stem))
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
