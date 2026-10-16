@@ -78,7 +78,12 @@ One command, `gpsplot`, one subcommand per plot kind (`cli/__init__.py`
 `plot_gps_timeseries.build_parser`, shared with the old name. `--model
 curve|residual|both` draws the stored model over the plate / detrended
 series (line = what the model still has in the data, in the window's datum;
-`--model-terms` picks the line's terms independently of the data's).
+`--model-terms` picks the line's terms independently of the data's). `--rate` / `--rate-window
+A:B` (repeatable) draw the velocity product's rate per window
+(`layers/rate.py`: line with the product's slope through the plotted points,
+`v = rate ± σ` per panel, or the refusal reason; files `-rate`): `--ref plate`
+→ plate, `--ref detrend` → background (`--detrend-terms periodic` →
+plate-periodic) — the map's and `gps-velocities`' numbers.
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
 (patterns match stations.cfg). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity

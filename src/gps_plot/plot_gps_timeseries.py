@@ -471,6 +471,25 @@ def _normalize_kinds(raw: Sequence[str]) -> list[str] | None:
     return kinds
 
 
+def _rate_window(value: str) -> tuple[float, float]:
+    """``START:END`` (YYYYMMDD) as a velocity-product window [yr], whole days."""
+    import datetime as _dt
+
+    from geo_dataread.velocity import window_bounds
+
+    a, sep, b = value.partition(":")
+    try:
+        start = _dt.datetime.strptime(a, "%Y%m%d").date()
+        end = _dt.datetime.strptime(b, "%Y%m%d").date()
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: use START:END (YYYYMMDD)"
+        ) from None
+    if not sep or end < start:
+        raise argparse.ArgumentTypeError(f"{value!r}: END must not be before START")
+    return window_bounds(start, end)
+
+
 def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
     """Parse ``--detrend-terms``: comma list → canonical-order tuple."""
     if raw is None:
@@ -629,6 +648,25 @@ def build_parser(
         "of what --detrend-terms/--remove-steps take out of the data (e.g. "
         "the seasonal line over data with the seasonal removed). Default: "
         "what the model still has in the plotted data. Files add -line-<terms>",
+    )
+    parser.add_argument(
+        "--rate",
+        action="store_true",
+        help="draw the velocity product's rate over the plotted window: a line "
+        "with its slope and, per panel, v = rate ± σ mm/yr (honest σ: formal "
+        "× the station's empirical k). The same number as gpsplot map velocity "
+        "and gps-velocities: --ref plate → ref plate; --ref detrend → "
+        "background (--detrend-terms periodic → plate-periodic). Files end -rate",
+    )
+    parser.add_argument(
+        "--rate-window",
+        action="append",
+        default=None,
+        type=_rate_window,
+        metavar="START:END",
+        help="a window of its own for --rate (YYYYMMDD:YYYYMMDD, both days "
+        "in; repeatable, one colour each), e.g. the quiet stretch between two "
+        "episodes; implies --rate",
     )
     parser.add_argument(
         "--detrend-terms",
@@ -868,6 +906,12 @@ def run(
         kwargs["detrend_terms"] = _detrend_terms(kwargs["detrend_terms"])
     except ValueError as exc:
         parser.error(str(exc))
+    kwargs["rate_windows"] = kwargs.pop("rate_window")
+    if kwargs["rate"] or kwargs["rate_windows"]:
+        if kwargs["session"] != "24h":
+            parser.error("--rate: daily series only (no --session 8h/both)")
+        if kwargs.get("ref") in (None, "all"):
+            parser.error("--rate needs one --ref: plate or detrend")
     model = kwargs.pop("model")
     if model is not None:
         wanted = MODEL_REFS.get(model)

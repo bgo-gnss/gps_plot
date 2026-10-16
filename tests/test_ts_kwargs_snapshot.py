@@ -48,6 +48,9 @@ ARGV: dict[str, list[str]] = {
               "--annotate-steps"],
     "baseline": ["VFLN-VFLS", "--show-ends", "--baseline-sigma", "empirical"],
     "name": ["HOFN", "--name", "HOFN-test", "--ylim", "5"],
+    "rate": ["SENG", "--ref", "plate", "--rate"],
+    "ratewindow": ["SENG", "--ref", "detrend", "--rate-window", "20260601:20261015",
+                   "--rate-window", "20250901:20251231"],
 }  # fmt: skip
 
 
