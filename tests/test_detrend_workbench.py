@@ -1776,3 +1776,27 @@ def test_commit_of_a_skip_station_warns_that_the_batch_leaves_it_out(
     assert "HRAG is 'skip' in detrend_status.csv (unrest)" in capsys.readouterr().err
     wb._warn_if_skipped("SENG")
     assert capsys.readouterr().err == ""
+
+
+def test_a_seasonal_only_record_is_not_lent_as_a_background(tmp_path) -> None:
+    import json
+
+    from gps_plot.detrend_workbench import borrow_record
+
+    rec = {"model": "periodic", "seasonal_only": True, "detrend_method": "regional",
+           "param_names": ["cos_annual", "sin_annual", "cos_semiannual",
+                           "sin_semiannual"], "components": []}  # fmt: skip
+    path = tmp_path / "params.json"
+    path.write_text(json.dumps({"schema_version": 1, "stations": {"ELDC": rec}}))
+    with pytest.raises(RuntimeError, match="seasonal-only"):
+        borrow_record("ELDC", "THOB", params_path=path)
+
+
+def test_picker_summary_reads_the_rate_by_name() -> None:
+    from gps_plot.detrend_picker_qt import PickerWindow
+
+    names = ["cos_annual", "sin_annual", "cos_semiannual", "sin_semiannual"]
+    rec = {"model": "periodic", "param_names": names, "detrend_method": "regional",
+           "components": [{"params": [1.0, 2.0, 3.0, 4.0]}] * 3}  # fmt: skip
+    text = PickerWindow._summary(None, rec)  # type: ignore[arg-type]
+    assert "none (regional)" in text and "2.0" not in text.split("rate")[1]

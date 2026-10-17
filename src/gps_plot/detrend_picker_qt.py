@@ -1806,8 +1806,13 @@ class PickerWindow:  # pragma: no cover - GUI
             if k == "rms" and value is not None:
                 value = [round(float(v), 2) for v in value]
             lines.append(f"{k:14s} {value}")
-        rate = [round(float(c["params"][1]), 2) for c in rec["components"]]
-        lines.append(f"{'rate [mm/yr]':14s} {rate}")
+        names = list(rec.get("param_names") or [])
+        if "rate" in names:  # by name: a seasonal-only record has none
+            i = names.index("rate")
+            rate = [round(float(c["params"][i]), 2) for c in rec["components"]]
+            lines.append(f"{'rate [mm/yr]':14s} {rate}")
+        else:
+            lines.append(f"{'rate [mm/yr]':14s} none ({rec.get('detrend_method')})")
         return "\n".join(lines)
 
     def params_block(self, record: dict[str, Any]) -> str:

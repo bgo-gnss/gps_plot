@@ -1201,6 +1201,11 @@ def borrow_record(
             f"donor {donor!r} has no record in the parameter document "
             f"(looked up as {source!r}). Estimate and commit the donor first."
         )
+    if record.get("seasonal_only"):  # interpolated, not the donor's own
+        raise RuntimeError(
+            f"donor {donor!r} has a seasonal-only ({record.get('detrend_method')}) "
+            "record, no background of its own to lend"
+        )
     borrowed = dict(record)
     borrowed["borrowed"] = {
         "from": donor,
@@ -2522,7 +2527,12 @@ def _print_status() -> int:
     except Exception as exc:
         print(f"error: could not read detrend_params.json ({exc})", file=sys.stderr)
         return 1
-    done = set(doc.get("stations", {}).keys())
+    # a seasonal-only (regional) record is not a curated background: still to do
+    done = {
+        sta
+        for sta, rec in doc.get("stations", {}).items()
+        if not (rec or {}).get("seasonal_only")
+    }
 
     # skipped = status=skip rows in the optional detrend_status.csv
     skipped: dict[str, str] = {}
