@@ -971,3 +971,22 @@ def test_pre_onset_fallbacks_are_labelled_no_seasonal(monkeypatch):
                       groups, vectors, [])  # fmt: skip
     assert vectors == ["w" + gmap.NO_SEASONAL_SUFFIX]
     assert groups[1][0] == "w (no seasonal)"
+
+
+def test_velocity_pre_onset_set_names_its_reference_days(fake_maps, tmp_path):
+    import dataclasses
+
+    from geo_dataread import velocity as vprod
+
+    pre = vprod.window_bounds(dt.date(2023, 8, 6), dt.date(2023, 10, 24))
+    rec = dataclasses.replace(
+        _product_record("SENG", [1.0, 2.0, 3.0], ref="pre-onset"),
+        pre_onset={"window": list(pre)},
+    )
+    paths = vprod.write_velocity_set([rec], tmp_path / "set", "s")
+    assert _run(["velocity", "SENG", "--velocities", str(paths["jsonl"])], tmp_path) == 0
+    _args, kw = fake_maps["velocity_map"]
+    assert "(2023-08-06 to 2023-10-24)" in str(kw)
+    with pytest.raises(SystemExit):  # the set's days, not the command line's
+        _run(["velocity", "SENG", "--velocities", str(paths["jsonl"]),
+              "--pre-window", "20230801:20231024"], tmp_path)  # fmt: skip

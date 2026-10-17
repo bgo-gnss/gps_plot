@@ -1426,8 +1426,12 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 f"--ref {args.ref}: the set {args.velocities} is ref "
                 f"{', '.join(sorted(requested))}"
             )
+        if getattr(args, "pre_window", None) is not None:
+            parser.error(
+                "--pre-window: a --velocities set carries its own reference window"
+            )
         pres = {tuple(r.pre_onset["window"]) for r in records if r.pre_onset}
-        if len(pres) == 1 and getattr(args, "pre_window", None) is None:
+        if len(pres) == 1:
             import geo_dataread.gps_read as gpsr
 
             ((p0, p1),) = pres  # the title names the set's reference days
