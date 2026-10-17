@@ -42,7 +42,7 @@ KINDS = ("station", "velocity", "deformation", "slip")
 REFS = ("detrend", "plate")
 #: velocity maps: the velocity product's refs (geo_dataread.velocity.REFS);
 #: detrend is the old name of background
-VELOCITY_REFS = ("plate-periodic", "background", "plate", "detrend")
+VELOCITY_REFS = ("plate-periodic", "background", "plate", "pre-onset", "detrend")
 #: one colour per window, in order (the Reykjanes maps: blue, then red)
 WINDOW_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 #: the 90th-percentile arrow is drawn this long [cm] by the automatic scale
@@ -436,9 +436,10 @@ def _add_series_args(p: argparse.ArgumentParser, *, velocity: bool = False) -> N
             "product, geo_dataread.velocity), the plate always removed: "
             "plate-periodic (default) = the station's stored seasonal "
             "removed too; background (or detrend) = its stored secular + "
-            "seasonal removed, the transient alone; plate = nothing more. A "
-            "station without a stored record falls back to plate, drawn "
-            "pale and named in the legend"
+            "seasonal removed, the transient alone; plate = nothing more; "
+            "pre-onset = plate-periodic less the station's own rate over "
+            "--pre-window. A station without a stored record falls back to "
+            "plate, drawn pale and named in the legend"
         )
     else:
         refs = REFS
@@ -525,6 +526,11 @@ def build_parser(
         metavar="START:END",
         help="fit a line to each station's series over START:END (YYYYMMDD; "
         "END empty = now); repeat for more windows, one colour each",
+    )  # fmt: skip
+    p.add_argument(
+        "--pre-window", type=_window, default=None, metavar="START:END",
+        help="--ref pre-onset: the reference days before the onset, "
+        "YYYYMMDD:YYYYMMDD both included (e.g. 20230806:20231024)",
     )  # fmt: skip
     p.add_argument(
         "--last", type=int, action="append", default=None, metavar="DAYS",
@@ -1420,6 +1426,12 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 f"--ref {args.ref}: the set {args.velocities} is ref "
                 f"{', '.join(sorted(requested))}"
             )
+        pres = {tuple(r.pre_onset["window"]) for r in records if r.pre_onset}
+        if len(pres) == 1 and getattr(args, "pre_window", None) is None:
+            import geo_dataread.gps_read as gpsr
+
+            ((p0, p1),) = pres  # the title names the set's reference days
+            args.pre_window = tuple(gpsr.toDateTime([p0 + 1e-6, p1 - 1e-6]))
         in_file = {r.station for r in records}
         dropped += [
             f"{m}: not in {args.velocities}" for m in sorted(set(by_marker) - in_file)
@@ -1541,6 +1553,13 @@ def _product_settings(args: Any, parser: Any, config: Any) -> Any:
     }
     if args.min_epochs is not None:
         kw["min_obs"] = args.min_epochs
+    pre = getattr(args, "pre_window", None)
+    if pre is not None:
+        from geo_dataread.velocity import window_bounds
+
+        if pre[1] is None:
+            parser.error("--pre-window: give its END")
+        kw["pre_window"] = window_bounds(pre[0].date(), pre[1].date())
     try:
         return VelocitySettings(**kw)
     except ValueError as exc:
@@ -1655,6 +1674,7 @@ VELOCITY_REF_TITLES = {
     "background": "relative to background",
     "detrend": "relative to background",
     "plate": "plate removed",
+    "pre-onset": "relative to the pre-onset rate",
 }
 
 
@@ -1663,7 +1683,11 @@ def _velocity_title(args: Any, windowed: bool) -> str:
     if not windowed:
         return f"{what}, secular (plate removed)"
     ref = args.ref or ("plate-periodic" if not args.velocities else None)
-    return f"{what}, {VELOCITY_REF_TITLES[ref]}" if ref else what
+    title = f"{what}, {VELOCITY_REF_TITLES[ref]}" if ref else what
+    pre = getattr(args, "pre_window", None)
+    if ref == "pre-onset" and pre is not None and pre[1] is not None:
+        title += f" ({pre[0]:%Y-%m-%d} to {pre[1]:%Y-%m-%d})"
+    return title
 
 
 def _region_of(stations: Any, margin: float | None, maps: Any) -> Any:

@@ -434,6 +434,20 @@ def test_velocity_windows_default_to_plate_periodic_declared(
     assert (settings.min_obs, settings.short_tier) == (5, True)
 
 
+def test_velocity_pre_onset_takes_its_reference_days(fake_maps, fake_product, tmp_path):
+    argv = ["velocity", "SENG", "--last", "7", "--ref", "pre-onset"]
+    assert _run([*argv, "--pre-window", "20230806:20231024"], tmp_path) == 0
+    (settings,) = {c[3] for c in fake_product}
+    from geo_dataread.velocity import window_bounds
+
+    assert settings.ref == "pre-onset"
+    assert settings.pre_window == window_bounds(
+        dt.date(2023, 8, 6), dt.date(2023, 10, 24)
+    )
+    with pytest.raises(SystemExit):  # pre-onset without its days
+        _run(argv, tmp_path)
+
+
 def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):
     with pytest.raises(SystemExit):
         _run(["velocity", "SENG", "--last", "14", "--tType", "TOT"], tmp_path)
