@@ -1568,6 +1568,9 @@ def _product_settings(args: Any, parser: Any, config: Any) -> Any:
 
 #: a station without a stored record drawn on plate only: its arrows pale
 FALLBACK_SUFFIX = " (plate only)"
+#: ... and under ref pre-onset, where the plate drops out with the
+#: reference: no stored seasonal removed (the record's seasonal:none)
+NO_SEASONAL_SUFFIX = " (no seasonal)"
 FALLBACK_TRANSPARENCY = 55
 
 
@@ -1584,7 +1587,8 @@ def _add_records(
 ) -> None:
     """Velocity product records as one window's vectors: refused ones
     dropped with their reason, plate-only fallbacks as a pale group."""
-    pale = label + FALLBACK_SUFFIX
+    pre_onset = any(r.ref == "pre-onset" for r in records)
+    pale = label + (NO_SEASONAL_SUFFIX if pre_onset else FALLBACK_SUFFIX)
     groups.append((label, color))
     any_pale = False
     for r in records:

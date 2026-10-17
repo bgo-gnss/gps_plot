@@ -955,3 +955,19 @@ def test_a_product_window_labels_its_own_days():
         a, b = window_bounds(day, day)
         assert gmap._date_of(a) == dt.datetime(day.year, day.month, day.day)
         assert gmap._last_day(b).date() == day
+
+
+def test_pre_onset_fallbacks_are_labelled_no_seasonal(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gmap, "_record_vector", lambda maps, c, r, comp, m: m)
+    rec = SimpleNamespace(
+        station="ELDC", accepted=True, ref="pre-onset", rate=(1.0, 2.0, 3.0),
+        flags=("fallback:plate", "seasonal:none"), parts_refused={},
+    )  # fmt: skip
+    groups: list = []
+    vectors: list = []
+    gmap._add_records(None, [rec], {"ELDC": object()}, "w", "blue", None,
+                      groups, vectors, [])  # fmt: skip
+    assert vectors == ["w" + gmap.NO_SEASONAL_SUFFIX]
+    assert groups[1][0] == "w (no seasonal)"
