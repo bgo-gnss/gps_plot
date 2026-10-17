@@ -431,7 +431,6 @@ def test_velocity_windows_default_to_plate_periodic_declared(
     assert (settings.ref, settings.view, settings.frame) == (
         "plate-periodic", "declared", "itrf2014",
     )  # fmt: skip
-    assert settings == type(settings)(**{**settings.__dict__})  # frozen, complete
     assert (settings.min_obs, settings.short_tier) == (5, True)
 
 

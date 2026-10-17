@@ -3,10 +3,10 @@
 The rate is the velocity product's (:func:`geo_dataread.velocity.
 estimate_station_velocity`), for the same station, frame, view and
 reference as the plot, so the number on a time-series plot is the number
-on the map and in the velocity files for the same ref and view (the map and
+on the map and in the velocity files for the same ref (the map and
 ``gps-velocities`` default to plate-periodic + declared; the ref follows
-the plot's ``--ref``, the view is the product's: declared, raw for
-``--view raw``). Each window gets:
+the plot's ``--ref``, the view is always the product's default, declared,
+whatever the plot's ``--view``). Each window gets:
 
 - a line with the product's slope, through the plotted points' weighted
   mean inside the window (the plotted series has its own datum; the slope
@@ -73,11 +73,11 @@ def rate_settings(
         )
     if view not in ("raw", "cleaned"):
         raise ValueError(f"--rate: --view {view} (raw or cleaned)")
-    # the product's view, not the plot's: a rate on a cleaned plot is the
-    # map's number (declared epochs out, no detection); --view raw stays raw
+    # the product's view, not the plot's: the rate is the map's number
+    # (declared epochs out, no detection) on a raw plot (the ts default) and
+    # on a cleaned one; the raw-view rate is gps-velocities --view raw
     return VelocitySettings(
-        frame=pos_frame(pos_id), ref=vref,
-        view="raw" if view == "raw" else DEFAULT_VIEW, uncert=float(uncert),
+        frame=pos_frame(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
         pos_dir=Dir,
     )  # fmt: skip
 
@@ -140,7 +140,7 @@ def add_rate_lines(
         color = RATE_COLORS[i % len(RATE_COLORS)]
         r = estimate_station_velocity(sta, window[0], window[1], settings)
         records.append(r)
-        inside = (tt >= window[0]) & (tt <= window[1])
+        inside = (tt >= window[0]) & (tt < window[1])
         tag = window_label(window) + ": " if len(windows) > 1 else ""
         for c, ax in enumerate(fig.axes[:3]):
             xlim, ylim = ax.get_xlim(), ax.get_ylim()

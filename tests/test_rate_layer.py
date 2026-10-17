@@ -24,7 +24,8 @@ BASE = {"view": "raw", "pos_id": "imo.24hr_itrf14", "uncert": 10, "Dir": "/x"}
 )
 def test_the_plot_ref_maps_to_the_product_ref(ref, terms, vref):
     s = layer.rate_settings(ref=ref, detrend_terms=terms, **BASE)
-    assert (s.ref, s.frame, s.view, s.uncert) == (vref, "itrf14", "raw", 10.0)
+    # the product's view whatever the plot's: the map's number
+    assert (s.ref, s.frame, s.view, s.uncert) == (vref, "itrf14", "declared", 10.0)
 
 
 def test_refs_without_a_product_counterpart_are_refused():
