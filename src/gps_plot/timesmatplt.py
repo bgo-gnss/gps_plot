@@ -1167,7 +1167,14 @@ def plotTime(
         # layer keeps the axis limits the data set
         from gps_plot.layers.model import add_model_curve, model_note
 
-        model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
+        model_series: Any = None
+        try:
+            model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
+        except ValueError as exc:
+            # e.g. a seasonal-only (regional) record has no full model line:
+            # the plot is still worth drawing, without the line
+            warnings.warn(f"{sta}: no model line ({exc})", UserWarning, stacklevel=2)
+    if model is not None and model_series is not None:
         _shift = main_series.meta.get("zero_shift")
         if _shift is not None:
             # the data were re-zeroed: the line moves with them

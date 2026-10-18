@@ -923,3 +923,28 @@ class TestRemoveStepsFlag:
         ann = tplt.step_annotations("SELF", str(p), kinds=["equipment"])
         assert len(ann) == 1
         assert ann[0][2] == "darkgreen"
+
+
+def test_a_record_without_a_model_line_still_plots_the_data(monkeypatch, tmp_path):
+    """A seasonal-only (regional) record has no full model line: the plot is
+    drawn without it, with a warning, and keeps the asked-for filename."""
+    import sys
+    import types
+
+    from gps_plot.sources import gps as gps_source
+
+    _stub_gps_read(monkeypatch, _yesterday_noon())
+    catalog = types.ModuleType("geo_dataread.station_catalog")
+    catalog.plate_table = lambda: {"RHOF": "NOAM"}
+    monkeypatch.setitem(sys.modules, "geo_dataread.station_catalog", catalog)
+    saved = []
+    monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig, **kw: saved.append(fn))
+
+    def no_line(*a, **k):
+        raise ValueError("seasonal-only record (regional)")
+
+    monkeypatch.setattr(gps_source, "fetch_model", no_line)
+    with pytest.warns(UserWarning, match="RHOF: no model line .*seasonal-only"):
+        fig = tplt.plotTime("RHOF", ref="plate", model="curve", save="png",
+                            figDir=str(tmp_path), logo=False, special="90d")  # fmt: skip
+    assert fig is not None and saved == [str(tmp_path / "RHOF-plate-model-90d")]

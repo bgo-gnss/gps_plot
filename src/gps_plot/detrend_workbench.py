@@ -1201,6 +1201,11 @@ def borrow_record(
             f"donor {donor!r} has no record in the parameter document "
             f"(looked up as {source!r}). Estimate and commit the donor first."
         )
+    if record.get("seasonal_only"):  # interpolated, not the donor's own
+        raise RuntimeError(
+            f"donor {donor!r} has a seasonal-only ({record.get('detrend_method')}) "
+            "record, no background of its own to lend"
+        )
     borrowed = dict(record)
     borrowed["borrowed"] = {
         "from": donor,
@@ -1805,7 +1810,14 @@ def group_contribution(
     never that stage's to remove.
     """
     from gps_analysis import evaluate_record
+    from gps_analysis.detrend import is_seasonal_only
 
+    if is_seasonal_only(record):
+        # a regional seasonal: there is nothing but its periodic to peel
+        groups = [g for g in groups if g == "periodic"]
+        if not groups:
+            y = np.asarray(yearf, dtype=float)
+            return np.zeros((len(record["components"]), y.size), dtype=float)
     mask = group_param_mask(record, groups)
     if not mask.any():
         y = np.asarray(yearf, dtype=float)
@@ -1821,7 +1833,10 @@ def group_contribution(
         }
         for component in record["components"]
     ]
-    return np.asarray(evaluate_record(masked, yearf, terms="all"), dtype=float)
+    # a seasonal-only (regional) record evaluates its periodic terms only;
+    # the mask has already zeroed whatever was not asked for
+    terms = "periodic" if is_seasonal_only(record) else "all"
+    return np.asarray(evaluate_record(masked, yearf, terms=terms), dtype=float)
 
 
 def _to_datetime(yearf: Any) -> Any:
@@ -2522,7 +2537,12 @@ def _print_status() -> int:
     except Exception as exc:
         print(f"error: could not read detrend_params.json ({exc})", file=sys.stderr)
         return 1
-    done = set(doc.get("stations", {}).keys())
+    # a seasonal-only (regional) record is not a curated background: still to do
+    done = {
+        sta
+        for sta, rec in doc.get("stations", {}).items()
+        if not (rec or {}).get("seasonal_only")
+    }
 
     # skipped = status=skip rows in the optional detrend_status.csv
     skipped: dict[str, str] = {}
