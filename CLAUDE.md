@@ -21,8 +21,9 @@ modules `ignore_errors`, `tests/` out). Scope rationale: `docs/mypy-status.md`.
 ```
 gps_plot/
 ├── src/gps_plot/
-│   ├── cli/                          # gpsplot: dispatcher (ts, stack, rtk, map, devviz, workbench, picker); common.py = shared options
+│   ├── cli/                          # gpsplot: dispatcher (ts, stack, seasonal, rtk, map, devviz, workbench, picker); common.py = shared options
 │   ├── stack.py                      # gpsplot stack: several stations/baselines, patterns ("SEY?-SEYD")
+│   ├── seasonal.py                   # gpsplot seasonal: seasonal folded on one year — data, own, regional LOO
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
@@ -86,7 +87,11 @@ A:B` (repeatable) draw the velocity product's rate per window
 plate-periodic) — the map's and `gps-velocities`' numbers for the same ref
 and view (they default to plate-periodic + cleaned; `ts` follows the plot).
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
-(patterns match stations.cfg). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
+(patterns match stations.cfg). `gpsplot seasonal NYLA [--donors N]` folds the secular-removed residual
+(record fit window, datum = median of residual − own seasonal) on `yearf
+mod 1` against the record's own seasonal (±1σ) and the regional
+leave-one-out prediction (±LOO annual RMS); a seasonal-only (regional)
+station shows its stored curve and no data. `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
 window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
@@ -223,7 +228,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-19 — gpsplot seasonal; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
