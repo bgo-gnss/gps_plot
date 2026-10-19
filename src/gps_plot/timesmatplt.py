@@ -1309,6 +1309,11 @@ def plotTime(
             filend += "-" + "-".join(detrend_terms)
         if view == "cleaned":
             filend += "-cleaned"
+            if getattr(outlier_params, "method", "running") == "model":
+                # the default (running window, gps_analysis §15) is unmarked
+                # and carries no sigma, so operational graphs keep their names
+                # while the tolerance is tuned; only the old model method is
+                filend += "-modeldetect"
         elif view == "detrended":
             filend += "-detrended"
         if show_ends and pair is not None:

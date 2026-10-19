@@ -262,6 +262,16 @@ OUTLIER_PARAM_GROUPS = (
             "epoch_policy",
         ),
     ),
+    (
+        "running (§15)",
+        (
+            "method",
+            "running_half_window_days",
+            "running_n_sigma",
+            "running_min_count",
+            "running_scale_days",
+        ),
+    ),
 )
 
 
@@ -365,6 +375,28 @@ def _stage_overrides(spec: str | None) -> dict[str, bool] | None:
             "and always run)" % (", ".join(bad), ", ".join(sorted(STAGE_FLAGS)))
         )
     return {field: (name in want) for name, field in STAGE_FLAGS.items()}
+
+
+#: ``--outlier-sigma`` sets the decision threshold of the active method:
+#: the running window's k, or the model method's windowed-Hampel k_w.
+SIGMA_FIELD = {"running": "running_n_sigma", "model": "window_n_sigma"}
+#: the cleaned view's detector when neither --outlier-method nor the
+#: station's outlier_overrides.csv row names one (OutlierParams default)
+DEFAULT_METHOD = "running"
+
+
+def _method_overrides(method: str | None, sigma: float | None) -> dict[str, Any] | None:
+    """``--outlier-method`` / ``--outlier-sigma`` -> OutlierParams overrides."""
+    if method is None and sigma is None:
+        return None
+    out: dict[str, Any] = {}
+    if method is not None:
+        out["method"] = method
+    if sigma is not None:
+        if sigma <= 0.0:
+            raise SystemExit("--outlier-sigma: must be > 0, got %s" % (sigma,))
+        out[SIGMA_FIELD[method or DEFAULT_METHOD]] = sigma
+    return out
 
 
 def exit_gracefully(signum, frame):
@@ -811,6 +843,34 @@ def build_parser(
         "which is never a production setting. Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--outlier-method",
+        choices=["model", "running"],
+        default=None,
+        help="the '--view cleaned' detector: running (default) = prior-free "
+        "running window -- each day judged against robust local lines over "
+        "the 10 days before and the 10 days after it, in units of the local "
+        "noise; no steps, events or model needed, so it does not give up on "
+        "deforming stations (gps_analysis design §15). model = against one "
+        "robust trajectory fit of the plotted span, using declared steps "
+        "(the pre-2026-10-19 detector; adds -modeldetect to the file name; "
+        "--stages implies it). Per station: method in outlier_overrides.csv. "
+        "Like --outlier-param, it replaces the station's override row. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--outlier-sigma",
+        type=float,
+        default=None,
+        metavar="K",
+        help="the outlier tolerance in sigma (local noise units) of the "
+        "chosen --outlier-method: running_n_sigma (default 4.5) or, for "
+        "model, the windowed identifier's window_n_sigma (default 4). Lower "
+        "flags more; below ~2.5 the noise itself exceeds the 5%% abort "
+        "(max_flag_fraction). Not in the file name, so automatic graphs keep "
+        "theirs. Per station: running_n_sigma in outlier_overrides.csv. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "--show-outliers",
         type=int,
         nargs="?",
@@ -932,8 +992,13 @@ def run(
     # --stages sets the enable flags; an explicit --outlier-param still wins,
     # so the two compose rather than one silently overriding the other.
     stage_over = _stage_overrides(kwargs.pop("stages"))
+    method = kwargs.pop("outlier_method")
+    if method is None and stage_over is not None:
+        method = "model"  # the S0-S5 stages exist only in the model detector
+    method_over = _method_overrides(method, kwargs.pop("outlier_sigma"))
+    base = {**(stage_over or {}), **(method_over or {})} or None
     kwargs["outlier_params"] = _build_outlier_params(
-        kwargs.pop("outlier_param"), base=stage_over
+        kwargs.pop("outlier_param"), base=base
     )
     # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
     # default); the CLI inverts it -- the grey overlay is OFF unless
