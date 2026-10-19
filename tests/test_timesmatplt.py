@@ -267,7 +267,7 @@ def test_mask_outliers_masks_and_overlays(monkeypatch):
     flags[0, 2] = flags[2, 7] = True
     _install_gps_views_stub(monkeypatch, flags)
 
-    cleaned, overlay, _prov, _ab = tplt._mask_outliers(
+    cleaned, overlay, _prov, _ab, _iced = tplt._mask_outliers(
         "RHOF", yearf, data.copy(), ddata
     )
     assert overlay is not None
@@ -290,7 +290,9 @@ def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
     ddata = np.full((3, n), 0.5)
     _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
 
-    cleaned, overlay, _prov, _ab = tplt._mask_outliers("RHOF", yearf, data, ddata)
+    cleaned, overlay, _prov, _ab, _iced = tplt._mask_outliers(
+        "RHOF", yearf, data, ddata
+    )
     assert overlay is None
     assert cleaned is data  # raw path: same object, no copy, no mask
 
@@ -795,7 +797,7 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     def spy(sta, yearf, data, Ddata, **kwargs):
         seen["sta"] = sta
         seen.update(kwargs)
-        return data, None, None, None
+        return data, None, None, None, None
 
     monkeypatch.setattr(tplt, "_mask_outliers", spy)
     tplt.plotTime(
@@ -813,6 +815,8 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
         "outlier_params": "PARAMS",
         "outlier_overrides": "/tmp/ov.csv",
         "provisional_days": 7.0,
+        "icing": True,
+        "icing_ratio": None,
     }
 
 
@@ -844,7 +848,8 @@ def test_mask_outliers_annotation_matches_what_it_returns() -> None:
     from gps_plot import timesmatplt as tplt
 
     hints = typing.get_type_hints(tplt._mask_outliers)
-    assert len(typing.get_args(hints["return"])) == 4
+    # 5 since 2026-10-19: the icing overlay (GAMIT autcln index)
+    assert len(typing.get_args(hints["return"])) == 5
 
 
 class TestStepAnnotations:

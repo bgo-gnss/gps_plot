@@ -33,6 +33,9 @@ class Series:
             as ``outliers``, or None.
         aborted: Per component, whether outlier detection aborted (the
             component is then served raw), or None.
+        iced: Epochs removed from ``y`` as icing suspected (GAMIT autcln
+            index), same shape as ``outliers`` (which then excludes them),
+            or None.
         detrend_applied: Whether a stored trajectory was subtracted.
         ends: For a baseline, its two stations' own series, zeroed at the
             baseline's first common epoch; None otherwise.
@@ -54,3 +57,4 @@ class Series:
     detrend_applied: bool = False
     ends: tuple[Series, Series] | None = None
     meta: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    iced: tuple[Any, Any] | None = None
