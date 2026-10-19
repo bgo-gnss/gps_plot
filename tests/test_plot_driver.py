@@ -323,3 +323,40 @@ def test_build_outlier_params_survives_the_worker_process_boundary():
     assert restored == params
     assert restored.window_n_sigma == 3.0
     assert restored.despike is True
+
+
+# ---------------------------------------------------------------------------
+# --outlier-method / --outlier-sigma (gps_analysis design §15)
+# ---------------------------------------------------------------------------
+
+
+@requires_gps_analysis
+@pytest.mark.parametrize(
+    ("method", "sigma", "field"),
+    [
+        ("running", 5.0, "running_n_sigma"),
+        (None, 3.5, "running_n_sigma"),
+        ("model", 3.5, "window_n_sigma"),
+    ],
+)
+def test_outlier_sigma_sets_the_active_methods_threshold(method, sigma, field):
+    over = driver._method_overrides(method, sigma)
+    params = driver._build_outlier_params(None, base=over)
+    assert params.method == (method or "running")
+    assert getattr(params, field) == sigma
+
+
+@requires_gps_analysis
+def test_outlier_param_still_wins_over_the_method_flags():
+    over = driver._method_overrides("running", 5.0)
+    params = driver._build_outlier_params(["running_n_sigma=6"], base=over)
+    assert params.method == "running" and params.running_n_sigma == 6.0
+
+
+def test_method_flags_unset_defer_to_the_catalog():
+    assert driver._method_overrides(None, None) is None
+
+
+def test_outlier_sigma_must_be_positive():
+    with pytest.raises(SystemExit, match="outlier-sigma"):
+        driver._method_overrides("running", 0.0)

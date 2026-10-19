@@ -61,6 +61,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.rtk:run",
     ),
     Command(
+        "seasonal",
+        "a station's seasonal folded onto one year: data, own and regional",
+        "gps_plot.cli.seasonal:run",
+    ),
+    Command(
         "map",
         "PyGMT maps: station, velocity (windowed fits), deformation, slip",
         "gps_plot.cli.map:run",

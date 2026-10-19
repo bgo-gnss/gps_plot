@@ -807,6 +807,11 @@ def plotTime(
     model_terms: Sequence[str] | None = None,
     rate: bool = False,
     rate_windows: Sequence[tuple[float, float]] | None = None,
+    rate_segments: Sequence[str] | None = None,
+    segment_kinds: Sequence[str] = ("dike", "eruption"),
+    segment_cut: str = "span",
+    segment_min_days: int = 30,
+    events_catalog: str | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -1211,10 +1216,29 @@ def plotTime(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
             uncert=uncert, Dir=Dir,
         )  # fmt: skip
-        windows = list(rate_windows or [default_window(yearf, fstart, fend)])
-        records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+        if rate_segments is not None:
+            from gps_plot.layers.rate import (
+                add_segment_rates,
+                segment_gaps,
+                segment_table,
+                segment_windows,
+            )
+
+            gaps = segment_gaps(
+                sta, rate_segments, kinds=segment_kinds, cut=segment_cut,
+                steps=steps_catalog, events=events_catalog,
+            )  # fmt: skip
+            windows = segment_windows(
+                yearf, fstart, fend, gaps, min_days=segment_min_days
+            )
+            records = add_segment_rates(fig, sta, yearf, data, Ddata, windows, settings)
+            print(segment_table(sta, records))
+        else:
+            windows = list(rate_windows or [default_window(yearf, fstart, fend)])
+            records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
         fig.axes[2].text(
-            0.99, 0.02, rate_note(records), transform=fig.axes[2].transAxes,
+            0.99, 0.02, rate_note(records, segments=rate_segments is not None),
+            transform=fig.axes[2].transAxes,
             fontsize="small", color="0.3", va="bottom", ha="right",
         )  # fmt: skip
 
@@ -1285,6 +1309,11 @@ def plotTime(
             filend += "-" + "-".join(detrend_terms)
         if view == "cleaned":
             filend += "-cleaned"
+            if getattr(outlier_params, "method", "running") == "model":
+                # the default (running window, gps_analysis §15) is unmarked
+                # and carries no sigma, so operational graphs keep their names
+                # while the tolerance is tuned; only the old model method is
+                filend += "-modeldetect"
         elif view == "detrended":
             filend += "-detrended"
         if show_ends and pair is not None:
@@ -1299,6 +1328,10 @@ def plotTime(
                 filend += "-line-" + "-".join(model_terms)
         if rate or rate_windows:
             filend += "-rate"
+            if rate_segments is not None:
+                filend += "-seg" + "-".join(rate_segments)
+                if "events" in rate_segments and segment_cut == "onset":
+                    filend += "-onset"
         if tType == "POS":
             # one file per frame (and session): itrf2008/itrf2014/itrf2020, 8h
             from geo_dataread.pos import frame_name, pos_product

@@ -262,6 +262,16 @@ OUTLIER_PARAM_GROUPS = (
             "epoch_policy",
         ),
     ),
+    (
+        "running (§15)",
+        (
+            "method",
+            "running_half_window_days",
+            "running_n_sigma",
+            "running_min_count",
+            "running_scale_days",
+        ),
+    ),
 )
 
 
@@ -367,6 +377,28 @@ def _stage_overrides(spec: str | None) -> dict[str, bool] | None:
     return {field: (name in want) for name, field in STAGE_FLAGS.items()}
 
 
+#: ``--outlier-sigma`` sets the decision threshold of the active method:
+#: the running window's k, or the model method's windowed-Hampel k_w.
+SIGMA_FIELD = {"running": "running_n_sigma", "model": "window_n_sigma"}
+#: the cleaned view's detector when neither --outlier-method nor the
+#: station's outlier_overrides.csv row names one (OutlierParams default)
+DEFAULT_METHOD = "running"
+
+
+def _method_overrides(method: str | None, sigma: float | None) -> dict[str, Any] | None:
+    """``--outlier-method`` / ``--outlier-sigma`` -> OutlierParams overrides."""
+    if method is None and sigma is None:
+        return None
+    out: dict[str, Any] = {}
+    if method is not None:
+        out["method"] = method
+    if sigma is not None:
+        if sigma <= 0.0:
+            raise SystemExit("--outlier-sigma: must be > 0, got %s" % (sigma,))
+        out[SIGMA_FIELD[method or DEFAULT_METHOD]] = sigma
+    return out
+
+
 def exit_gracefully(signum, frame):
     """Exit gracefully on Ctrl-C"""
 
@@ -394,8 +426,8 @@ def exit_gracefully(signum, frame):
 
 EXAMPLES = """examples (gpsplot STA ... is short for gpsplot ts STA ...; plot-gps-timeseries
 is the old name of the same command):
-  gpsplot REYK --save pdf                      itrf2014 daily, nothing removed
-  gpsplot REYK --ref plate --save pdf          plate velocity removed
+  gpsplot REYK --save pdf                      itrf2014 daily, plate velocity removed
+  gpsplot REYK --ref ref_frame --save pdf      nothing removed
   gpsplot REYK --frame itrf2020 --save pdf     the itrf2020 series instead
   gpsplot RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
                                                whole series, nothing removed
@@ -616,8 +648,8 @@ def build_parser(
         "itrf2008 still works), "
         "plate = the station's plate velocity in that frame's plate-motion "
         "model, detrend = plate + the stored rate and seasonals (--detrend-terms; step offsets "
-        "stay visible); all = one plot of each. Default: plate for a baseline "
-        "(AAAA-BBBB), ref_frame otherwise",
+        "stay visible); all = one plot of each. Default: plate (with --model: "
+        "the model's own ref)",
         views=view_allow,
         types=Type_allow,
         sessions=["24h", "8h", "both"],
@@ -669,6 +701,49 @@ def build_parser(
         help="a window of its own for --rate (YYYYMMDD:YYYYMMDD, both days "
         "in; repeatable, one colour each), e.g. the quiet stretch between two "
         "episodes; implies --rate",
+    )
+    parser.add_argument(
+        "--rate-segments",
+        default=None,
+        metavar="SOURCE[,SOURCE]",
+        help="one rate per span BETWEEN events over the plotted window: "
+        "'steps' splits at the station's declared steps (steps.yaml), "
+        "'events' at the events of the event catalog (events.yaml) whose "
+        "region holds the station (--segment-kinds, --segment-cut); "
+        "'steps,events' at both. Each line is labelled rate ± σ mm/yr at its "
+        "middle (× = refused) and the table is printed. Seasonal removed "
+        "with --ref detrend --detrend-terms periodic (plate-periodic); "
+        "implies --rate. Files end -rate-seg<source>",
+    )
+    parser.add_argument(
+        "--segment-kinds",
+        default="dike,eruption",
+        metavar="KIND[,KIND...]",
+        help="--rate-segments events: the event kinds that split (default "
+        "dike,eruption; also inflation, deflation, deep_inflation, swarm, "
+        "earthquake)",
+    )
+    parser.add_argument(
+        "--segment-cut",
+        default="span",
+        choices=("span", "onset"),
+        help="--rate-segments events: take each event out from its onset to "
+        "its end (span, default: an eruption of weeks is its own regime) or "
+        "its onset day only (onset: the spans run through the eruptions)",
+    )
+    parser.add_argument(
+        "--segment-min-days",
+        type=int,
+        default=30,
+        metavar="DAYS",
+        help="--rate-segments: shortest span that gets a rate (default 30)",
+    )
+    parser.add_argument(
+        "--events-catalog",
+        default=None,
+        metavar="PATH",
+        help="--rate-segments events: the event catalog (default: the "
+        "deployed events.yaml)",
     )
     parser.add_argument(
         "--detrend-terms",
@@ -766,6 +841,34 @@ def build_parser(
         "always run. Named stages are ON, unnamed OFF. Isolation is an "
         "ATTRIBUTION tool -- with S5 off every candidate becomes a flag, "
         "which is never a production setting. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--outlier-method",
+        choices=["model", "running"],
+        default=None,
+        help="the '--view cleaned' detector: running (default) = prior-free "
+        "running window -- each day judged against robust local lines over "
+        "the 10 days before and the 10 days after it, in units of the local "
+        "noise; no steps, events or model needed, so it does not give up on "
+        "deforming stations (gps_analysis design §15). model = against one "
+        "robust trajectory fit of the plotted span, using declared steps "
+        "(the pre-2026-10-19 detector; adds -modeldetect to the file name; "
+        "--stages implies it). Per station: method in outlier_overrides.csv. "
+        "Like --outlier-param, it replaces the station's override row. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--outlier-sigma",
+        type=float,
+        default=None,
+        metavar="K",
+        help="the outlier tolerance in sigma (local noise units) of the "
+        "chosen --outlier-method: running_n_sigma (default 4.5) or, for "
+        "model, the windowed identifier's window_n_sigma (default 4). Lower "
+        "flags more; below ~2.5 the noise itself exceeds the 5%% abort "
+        "(max_flag_fraction). Not in the file name, so automatic graphs keep "
+        "theirs. Per station: running_n_sigma in outlier_overrides.csv. "
+        "Ignored unless --view cleaned",
     )
     parser.add_argument(
         "--show-outliers",
@@ -889,8 +992,13 @@ def run(
     # --stages sets the enable flags; an explicit --outlier-param still wins,
     # so the two compose rather than one silently overriding the other.
     stage_over = _stage_overrides(kwargs.pop("stages"))
+    method = kwargs.pop("outlier_method")
+    if method is None and stage_over is not None:
+        method = "model"  # the S0-S5 stages exist only in the model detector
+    method_over = _method_overrides(method, kwargs.pop("outlier_sigma"))
+    base = {**(stage_over or {}), **(method_over or {})} or None
     kwargs["outlier_params"] = _build_outlier_params(
-        kwargs.pop("outlier_param"), base=stage_over
+        kwargs.pop("outlier_param"), base=base
     )
     # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
     # default); the CLI inverts it -- the grey overlay is OFF unless
@@ -909,6 +1017,21 @@ def run(
     except ValueError as exc:
         parser.error(str(exc))
     kwargs["rate_windows"] = kwargs.pop("rate_window")
+    if kwargs["rate_segments"] is not None:
+        if kwargs["rate_windows"]:
+            parser.error("--rate-segments and --rate-window: give one")
+        try:
+            from gps_plot.layers.rate import parse_segment_sources
+
+            kwargs["rate_segments"] = parse_segment_sources(kwargs["rate_segments"])
+        except ValueError as exc:
+            parser.error(str(exc))
+        kwargs["segment_kinds"] = tuple(
+            k.strip() for k in kwargs["segment_kinds"].split(",") if k.strip()
+        )
+        kwargs["rate"] = True
+    if kwargs.get("ref") is None and kwargs.get("model") is None:
+        kwargs["ref"] = "plate"  # the default since 2026-10-19
     if kwargs["rate"] or kwargs["rate_windows"]:
         if kwargs["session"] != "24h":
             parser.error("--rate: daily series only (no --session 8h/both)")
