@@ -94,9 +94,9 @@ PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
 #: icing suspected (GAMIT autcln index): removed like an outlier, but its own
 #: colour — ice on the antenna, not a blunder
-ICING_ERRORBAR_COLOR: str = "lightsteelblue"
-ICING_EDGE_COLOR: str = "steelblue"
-ICING_FACE_COLOR: str = "#e8f4fd"  # very, very light blue (BGÓ)
+ICING_ERRORBAR_COLOR: str = "#d9e8f5"
+ICING_EDGE_COLOR: str = "#8fbbe0"
+ICING_FACE_COLOR: str = "#f4f9fe"  # very, very light blue (BGÓ)
 #: a provisional LAST point (yesterday's, when the data are current): the
 #: gold "verdict pending" face keeps a green outline, so the newest day stays
 #: recognisable instead of the yellow marker hiding the green highlight.
