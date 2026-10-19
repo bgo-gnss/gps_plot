@@ -948,3 +948,20 @@ def test_a_record_without_a_model_line_still_plots_the_data(monkeypatch, tmp_pat
         fig = tplt.plotTime("RHOF", ref="plate", model="curve", save="png",
                             figDir=str(tmp_path), logo=False, special="90d")  # fmt: skip
     assert fig is not None and saved == [str(tmp_path / "RHOF-plate-model-90d")]
+
+
+def test_provisional_last_point_keeps_a_green_outline():
+    """Yesterday's point, when provisional: gold face, green edge — only in
+    the components where the last epoch is provisional."""
+    fig, axes = plt.subplots(3, 1)
+    x = np.arange(5.0)
+    py = np.full((3, 5), np.nan)
+    py[1, -1] = 2.0  # East's last epoch pending
+    tplt.add_provisional_last(x, py, fig)
+    lines = [ax.get_lines() for ax in axes]
+    assert [len(ln) for ln in lines] == [0, 1, 0]
+    (mark,) = lines[1]
+    assert mark.get_markerfacecolor() == tplt.PROVISIONAL_FACE_COLOR
+    assert mark.get_markeredgecolor() == tplt.PROVISIONAL_LAST_EDGE_COLOR
+    assert list(mark.get_xdata()) == [4.0] and list(mark.get_ydata()) == [2.0]
+    plt.close(fig)

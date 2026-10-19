@@ -92,6 +92,11 @@ OUTLIER_FACE_COLOR: str = "lightgrey"
 PROVISIONAL_ERRORBAR_COLOR: str = "darkgoldenrod"
 PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
+#: a provisional LAST point (yesterday's, when the data are current): the
+#: gold "verdict pending" face keeps a green outline, so the newest day stays
+#: recognisable instead of the yellow marker hiding the green highlight.
+PROVISIONAL_LAST_EDGE_COLOR: str = "limegreen"
+PROVISIONAL_LAST_EDGE_WIDTH: float = 2.0
 
 #: ABORT badge.  A component whose detection aborted is served RAW with only
 #: a UserWarning, so an aborted axis is otherwise indistinguishable from a
@@ -1156,6 +1161,8 @@ def plotTime(
             markerfacecolor=PROVISIONAL_FACE_COLOR,
             markeredgecolor=PROVISIONAL_EDGE_COLOR,
         )
+        if highlight_last:
+            fig = add_provisional_last(x, provisional[0], fig)
 
     if overlay_pos_id is not None:
         fig = _add_session_overlay(
@@ -1842,6 +1849,29 @@ def addPoints(
             markeredgecolor=markeredgecolor,
         )
 
+    return fig
+
+
+def add_provisional_last(x: Any, py: Any, fig: Figure) -> Figure:
+    """Outline a provisional LAST epoch in green, per component.
+
+    The last-point highlight is green; a provisional marker drawn on top of
+    it is gold and hid it. Where the newest epoch is provisional in a
+    component, redraw it gold with a green edge: pending AND yesterday's.
+    """
+    last = np.asarray(py, dtype=float)[:, -1]
+    for i in range(min(3, last.size)):
+        if np.isfinite(last[i]):
+            fig.axes[i].plot(
+                x[-1],
+                last[i],
+                linestyle="none",
+                marker="o",
+                markersize=6.0,
+                markerfacecolor=PROVISIONAL_FACE_COLOR,
+                markeredgecolor=PROVISIONAL_LAST_EDGE_COLOR,
+                markeredgewidth=PROVISIONAL_LAST_EDGE_WIDTH,
+            )
     return fig
 
 
