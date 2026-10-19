@@ -270,6 +270,7 @@ OUTLIER_PARAM_GROUPS = (
             "running_n_sigma",
             "running_min_count",
             "running_scale_days",
+            "running_max_reach_days",
         ),
     ),
 )
