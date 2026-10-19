@@ -17,6 +17,7 @@ whatever the plot's ``--view``). Each window gets:
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from typing import Any
 
@@ -170,14 +171,248 @@ def add_rate_lines(
     return records
 
 
-def rate_note(records: Sequence[Any]) -> str:
-    """One line for the figure: what the rates are relative to and their σ."""
+def rate_note(records: Sequence[Any], *, segments: bool = False) -> str:
+    """One line for the figure: what the rates are relative to and their σ
+    (``segments``: also what the bare segment labels are)."""
     if not records:
         return ""
     r = records[0]
     refs = {x.ref for x in records}
     ref = ", ".join(sorted(refs))
     sig = {x.sigma_method for x in records}
+    seg = "; labels rate ± sigma mm/yr between events, x refused" if segments else ""
     return _tex(
         f"rates: velocity product, ref {ref}, {r.view}, sigma {'/'.join(sorted(sig))}"
+        + seg
     )
+
+
+# ---------------------------------------------------------------------------
+# rates between events (gpsplot ts --rate-segments)
+# ---------------------------------------------------------------------------
+
+#: --rate-segments sources: the station's declared steps, or the events
+SEGMENT_SOURCES = ("steps", "events")
+#: shortest span between two events that gets a rate [days]
+MIN_SEGMENT_DAYS = 30
+
+
+def segment_spans(
+    first: dt.date,
+    last: dt.date,
+    gaps: Sequence[tuple[dt.date, dt.date]],
+    *,
+    min_days: int = MIN_SEGMENT_DAYS,
+) -> list[tuple[dt.date, dt.date]]:
+    """The spans of ``[first, last]`` (whole days, both in) between gaps.
+
+    Each gap ``(a, b)`` takes out its days a..b, both in: a step's day, or
+    an event from its onset to its end. Gaps may overlap and need not be
+    sorted. Spans shorter than ``min_days`` days are dropped.
+    """
+    spans: list[tuple[dt.date, dt.date]] = []
+    cursor = first
+    one = dt.timedelta(days=1)
+    for a, b in sorted((min(g), max(g)) for g in gaps):
+        if b < cursor:
+            continue
+        if a > last:
+            break
+        if a > cursor:
+            spans.append((cursor, min(a - one, last)))
+        cursor = max(cursor, b + one)
+    if cursor <= last:
+        spans.append((cursor, last))
+    return [(a, b) for a, b in spans if (b - a).days + 1 >= min_days]
+
+
+def step_gaps(epochs: Any) -> list[tuple[dt.date, dt.date]]:
+    """Gaps of declared steps: each step's day (fractional year, noon)."""
+    import geo_dataread.gps_read as gpsr
+
+    ee = np.asarray(epochs, dtype=float)
+    if ee.size == 0:
+        return []
+    return [(d.date(), d.date()) for d in gpsr.toDateTime(ee)]
+
+
+def event_gaps(
+    events: Sequence[Any], *, cut: str = "span"
+) -> list[tuple[dt.date, dt.date]]:
+    """Gaps of events (``geo_dataread.events.Event``): onset to last day
+    (``span``), or the onset day alone (``onset``)."""
+    if cut == "onset":
+        return [(e.onset, e.onset) for e in events]
+    return [(e.onset, e.last_day) for e in events]
+
+
+def segment_windows(
+    t: Any,
+    fstart: float | None,
+    fend: float | None,
+    gaps: Sequence[tuple[dt.date, dt.date]],
+    *,
+    min_days: int = MIN_SEGMENT_DAYS,
+) -> list[tuple[float, float]]:
+    """The velocity-product windows [yr] between ``gaps`` over the plotted
+    span (as :func:`default_window`): whole days, as ``--rate-window``."""
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread.velocity import window_bounds
+
+    t0, t1 = default_window(t, fstart, fend)
+    first, last = (d.date() for d in gpsr.toDateTime(np.array([t0, t1]) + 2e-6))
+    last = last - dt.timedelta(days=1)  # window_bounds' end is exclusive
+    return [
+        tuple(map(float, window_bounds(a, b)))  # type: ignore[misc]
+        for a, b in segment_spans(first, last, gaps, min_days=min_days)
+    ]
+
+
+def add_segment_rates(
+    fig: Figure,
+    sta: str,
+    t: Any,
+    y: Any,
+    sigma: Any,
+    windows: Sequence[tuple[float, float]],
+    settings: Any,
+) -> list[Any]:
+    """Draw the product rate of each segment on the first three axes.
+
+    Like :func:`add_rate_lines`, but for many windows: each line is labelled
+    at its own middle (``rate ± σ``, mm/yr), alternating two heights, and a
+    refused segment gets a ``×`` there (its reason is in the returned
+    record). Returns the product records, in window order.
+    """
+    import geo_dataread.gps_read as gpsr
+    from geo_dataread.velocity import estimate_station_velocity
+    from matplotlib.transforms import blended_transform_factory
+
+    tt = np.asarray(t, dtype=float)
+    yy = np.atleast_2d(np.asarray(y, dtype=float))
+    ss = np.atleast_2d(np.asarray(sigma, dtype=float))
+    records = []
+    for i, window in enumerate(windows):
+        color = RATE_COLORS[i % 2]
+        r = estimate_station_velocity(sta, window[0], window[1], settings)
+        records.append(r)
+        inside = (tt >= window[0]) & (tt < window[1])
+        mid = list(gpsr.toDateTime(np.array([0.5 * (window[0] + window[1])])))[0]
+        for c, ax in enumerate(fig.axes[:3]):
+            xlim, ylim = ax.get_xlim(), ax.get_ylim()
+            text = "$\\times$"
+            if r.accepted and np.isfinite(r.rate[c]):
+                ok = inside & np.isfinite(yy[c]) & np.isfinite(ss[c]) & (ss[c] > 0)
+                if ok.sum() >= 2:
+                    w = 1.0 / ss[c, ok] ** 2
+                    tm = float(np.sum(w * tt[ok]) / np.sum(w))
+                    ym = float(np.sum(w * yy[c, ok]) / np.sum(w))
+                    ends = np.array([tt[ok].min(), tt[ok].max()])
+                    line = ym + r.rate[c] * (ends - tm)
+                    ax.plot(list(gpsr.toDateTime(ends)), line, color=color,
+                            linewidth=RATE_LINEWIDTH, zorder=7)  # fmt: skip
+                text = f"${r.rate[c]:.0f}\\pm{r.sigma[c]:.0f}$"
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+            trans = blended_transform_factory(ax.transData, ax.transAxes)
+            ax.text(
+                mid, 0.97 - 0.06 * (i % 2), text, transform=trans,
+                fontsize="x-small", color=color, va="top", ha="center",
+            )  # fmt: skip
+    return records
+
+
+def segment_table(sta: str, records: Sequence[Any]) -> str:
+    """The segments' rates as text (one line each), for the terminal."""
+    rows = [f"{sta}: rates between events (mm/yr, N E U ± σ)"]
+    for r in records:
+        span = f"{r.window[0]:.3f}–{r.window[1]:.3f}"
+        if not r.accepted:
+            rows.append(f"  {span}  refused: {r.refused}")
+            continue
+        vals = "  ".join(
+            f"{v:7.1f} ±{s:5.1f}" for v, s in zip(r.rate, r.sigma, strict=True)
+        )
+        flags = f"  [{', '.join(r.flags)}]" if r.flags else ""
+        rows.append(f"  {span}  {vals}{flags}")
+    return "\n".join(rows)
+
+
+def parse_segment_sources(value: str) -> tuple[str, ...]:
+    """``steps``, ``events`` or both (comma-separated), de-duplicated.
+
+    Raises:
+        ValueError: An unknown or no source.
+    """
+    out: list[str] = []
+    for v in (p.strip() for p in value.split(",")):
+        if v not in SEGMENT_SOURCES:
+            raise ValueError(f"--rate-segments {v!r}: one of {SEGMENT_SOURCES}")
+        if v not in out:
+            out.append(v)
+    if not out:
+        raise ValueError(f"--rate-segments: one of {SEGMENT_SOURCES}")
+    return tuple(out)
+
+
+def segment_gaps(
+    sta: str,
+    sources: Sequence[str],
+    *,
+    kinds: Sequence[str] = ("dike", "eruption"),
+    cut: str = "span",
+    steps: str | None = None,
+    events: str | None = None,
+) -> list[tuple[dt.date, dt.date]]:
+    """The gaps that split ``sta``'s series for ``--rate-segments``.
+
+    ``cut``: an event is out from onset to end (``span``) or on its onset
+    day only (``onset``).
+
+    Raises:
+        ValueError: An unknown source, kind or cut, or no catalog to read (a
+            missing catalog must not pass as "no events").
+    """
+    if cut not in ("span", "onset"):
+        raise ValueError(f"--segment-cut {cut!r}: span or onset")
+    gaps: list[tuple[dt.date, dt.date]] = []
+    for source in sources:
+        if source == "steps":
+            from geo_dataread.gps_views import read_step_catalog
+
+            try:
+                catalog = read_step_catalog(steps)
+            except FileNotFoundError as exc:
+                raise ValueError(f"--rate-segments steps: {exc}") from None
+            gaps += step_gaps(catalog.get(sta, ()))
+        elif source == "events":
+            from geo_dataread.events import (
+                read_events,
+                read_station_areas,
+                station_events,
+            )
+
+            try:
+                catalog, areas = read_events(events), read_station_areas()
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    f"--rate-segments events: {exc} (deploy events.yaml from "
+                    "gps-config-data analysis-lane/, or pass --events-catalog PATH)"
+                ) from None
+            lost = sorted(
+                {e.region or "(none)" for e in catalog if e.region not in areas}
+            )
+            if lost:  # such an event splits no station's series: say so
+                import warnings
+
+                warnings.warn(
+                    f"events with region(s) {lost} not in station_areas.yaml "
+                    "split no series",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            evs = station_events(sta, catalog, areas, kinds=kinds)
+            gaps += event_gaps(evs, cut=cut)
+        else:
+            raise ValueError(f"--rate-segments {source!r}: one of {SEGMENT_SOURCES}")
+    return gaps

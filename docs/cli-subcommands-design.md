@@ -202,6 +202,26 @@ merge (main `ff4e1f4`). Steps 0–4, 6, 7 done 2026-10-14; 5 (seismic) on ice.*
   - Gate: 60/60 byte-identical; 5 map variants (counts only — PyGMT
     output is not byte-stable).
 
+- **Seasonal view and rates between events** (2026-10-19, branches
+  `feat-seasonal-view` → `feat-rate-segments`, geo_dataread `feat-rate-segments`):
+  - `gpsplot seasonal STA [--donors N]`: the secular-removed residual over the
+    record's fit window folded on `yearf mod 1` (datum = median of residual −
+    own seasonal), 15-day bin medians, the record's own seasonal (±1σ from its
+    covariance) and the regional leave-one-out prediction (±LOO annual-vector
+    RMS). A seasonal-only (regional) record: its stored curve, no data — a
+    station with < 1 yr between events cannot separate trend and annual (GRVM:
+    a free annual U of 5.5 mm under a quadratic trend, 34 mm under a cubic).
+  - `ts --rate-segments steps|events|steps,events`: one velocity-product rate
+    per span between events. `steps` = the station's declared steps;
+    `events` = `geo_dataread.events` (events.yaml dikes/eruptions whose
+    `station_areas.yaml` region holds the station; `--segment-kinds`,
+    `--segment-cut span` = onset to end out | `onset` = the onset day only;
+    an unknown region warns). Spans < `--segment-min-days` (30) dropped;
+    windows are whole days, so a step's day is in neither neighbour. Labels
+    `rate±σ` (mm/yr) at each line's middle, × = refused, the table printed;
+    files `-rate-seg<sources>[-onset]`. With `--ref detrend --detrend-terms
+    periodic` = plate-periodic (regional seasonal: `seasonal:regional`).
+
 ## Request (BGÓ)
 
 Split `plot-gps-timeseries` into subcommands (as tostools/receivers) and make it

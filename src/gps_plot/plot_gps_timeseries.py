@@ -671,6 +671,49 @@ def build_parser(
         "episodes; implies --rate",
     )
     parser.add_argument(
+        "--rate-segments",
+        default=None,
+        metavar="SOURCE[,SOURCE]",
+        help="one rate per span BETWEEN events over the plotted window: "
+        "'steps' splits at the station's declared steps (steps.yaml), "
+        "'events' at the events of the event catalog (events.yaml) whose "
+        "region holds the station (--segment-kinds, --segment-cut); "
+        "'steps,events' at both. Each line is labelled rate ± σ mm/yr at its "
+        "middle (× = refused) and the table is printed. Seasonal removed "
+        "with --ref detrend --detrend-terms periodic (plate-periodic); "
+        "implies --rate. Files end -rate-seg<source>",
+    )
+    parser.add_argument(
+        "--segment-kinds",
+        default="dike,eruption",
+        metavar="KIND[,KIND...]",
+        help="--rate-segments events: the event kinds that split (default "
+        "dike,eruption; also inflation, deflation, deep_inflation, swarm, "
+        "earthquake)",
+    )
+    parser.add_argument(
+        "--segment-cut",
+        default="span",
+        choices=("span", "onset"),
+        help="--rate-segments events: take each event out from its onset to "
+        "its end (span, default: an eruption of weeks is its own regime) or "
+        "its onset day only (onset: the spans run through the eruptions)",
+    )
+    parser.add_argument(
+        "--segment-min-days",
+        type=int,
+        default=30,
+        metavar="DAYS",
+        help="--rate-segments: shortest span that gets a rate (default 30)",
+    )
+    parser.add_argument(
+        "--events-catalog",
+        default=None,
+        metavar="PATH",
+        help="--rate-segments events: the event catalog (default: the "
+        "deployed events.yaml)",
+    )
+    parser.add_argument(
         "--detrend-terms",
         default=None,
         metavar="TERM[,TERM...]",
@@ -909,6 +952,19 @@ def run(
     except ValueError as exc:
         parser.error(str(exc))
     kwargs["rate_windows"] = kwargs.pop("rate_window")
+    if kwargs["rate_segments"] is not None:
+        if kwargs["rate_windows"]:
+            parser.error("--rate-segments and --rate-window: give one")
+        try:
+            from gps_plot.layers.rate import parse_segment_sources
+
+            kwargs["rate_segments"] = parse_segment_sources(kwargs["rate_segments"])
+        except ValueError as exc:
+            parser.error(str(exc))
+        kwargs["segment_kinds"] = tuple(
+            k.strip() for k in kwargs["segment_kinds"].split(",") if k.strip()
+        )
+        kwargs["rate"] = True
     if kwargs["rate"] or kwargs["rate_windows"]:
         if kwargs["session"] != "24h":
             parser.error("--rate: daily series only (no --session 8h/both)")
