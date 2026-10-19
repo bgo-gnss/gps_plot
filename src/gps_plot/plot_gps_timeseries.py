@@ -394,8 +394,8 @@ def exit_gracefully(signum, frame):
 
 EXAMPLES = """examples (gpsplot STA ... is short for gpsplot ts STA ...; plot-gps-timeseries
 is the old name of the same command):
-  gpsplot REYK --save pdf                      itrf2014 daily, nothing removed
-  gpsplot REYK --ref plate --save pdf          plate velocity removed
+  gpsplot REYK --save pdf                      itrf2014 daily, plate velocity removed
+  gpsplot REYK --ref ref_frame --save pdf      nothing removed
   gpsplot REYK --frame itrf2020 --save pdf     the itrf2020 series instead
   gpsplot RHOF --ref ref_frame --frame itrf2008 --special full --save pdf
                                                whole series, nothing removed
@@ -616,8 +616,8 @@ def build_parser(
         "itrf2008 still works), "
         "plate = the station's plate velocity in that frame's plate-motion "
         "model, detrend = plate + the stored rate and seasonals (--detrend-terms; step offsets "
-        "stay visible); all = one plot of each. Default: plate for a baseline "
-        "(AAAA-BBBB), ref_frame otherwise",
+        "stay visible); all = one plot of each. Default: plate (with --model: "
+        "the model's own ref)",
         views=view_allow,
         types=Type_allow,
         sessions=["24h", "8h", "both"],
@@ -965,6 +965,8 @@ def run(
             k.strip() for k in kwargs["segment_kinds"].split(",") if k.strip()
         )
         kwargs["rate"] = True
+    if kwargs.get("ref") is None and kwargs.get("model") is None:
+        kwargs["ref"] = "plate"  # the default since 2026-10-19
     if kwargs["rate"] or kwargs["rate_windows"]:
         if kwargs["session"] != "24h":
             parser.error("--rate: daily series only (no --session 8h/both)")
