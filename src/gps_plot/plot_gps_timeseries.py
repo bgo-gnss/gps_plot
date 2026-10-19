@@ -872,6 +872,26 @@ def build_parser(
         "Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--no-icing",
+        dest="icing",
+        action="store_false",
+        help="do NOT remove the days with icing suspected. By default --view "
+        "cleaned also removes them: GAMIT's per-station residual statistics "
+        "(autcln: azimuth mean residual, normalised by the network that day, "
+        "over the station's own low level) harvested by gps-autcln-harvest "
+        "into pos_dir; drawn blue under --show-outliers, counted in a note. "
+        "No harvest for a station = no icing days. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--icing-ratio",
+        type=float,
+        default=None,
+        metavar="R",
+        help="icing threshold: the normalised azimuth mean over the station's "
+        "own low level (default 2.0). Lower flags more. Not in the file name. "
+        "Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "--show-outliers",
         type=int,
         nargs="?",

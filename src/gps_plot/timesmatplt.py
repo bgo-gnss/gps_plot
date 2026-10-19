@@ -92,6 +92,11 @@ OUTLIER_FACE_COLOR: str = "lightgrey"
 PROVISIONAL_ERRORBAR_COLOR: str = "darkgoldenrod"
 PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
+#: icing suspected (GAMIT autcln index): removed like an outlier, but its own
+#: colour — ice on the antenna, not a blunder
+ICING_ERRORBAR_COLOR: str = "lightsteelblue"
+ICING_EDGE_COLOR: str = "steelblue"
+ICING_FACE_COLOR: str = "#e8f4fd"  # very, very light blue (BGÓ)
 #: a provisional LAST point (yesterday's, when the data are current): the
 #: gold "verdict pending" face keeps a green outline, so the newest day stays
 #: recognisable instead of the yellow marker hiding the green highlight.
@@ -298,6 +303,25 @@ def _add_status_subtitle(ax: Any, title: StationTitle) -> None:
     ax.add_artist(box)
 
 
+def icing_epochs(
+    sta: str, *, icing: bool = True, icing_ratio: float | None = None
+) -> tuple[float, ...]:
+    """The station's icing days (GAMIT autcln index), or () when off/absent.
+
+    Graceful like every station catalog here: an older geo_dataread without
+    the index, or no harvest in ``pos_dir``, is simply no icing days.
+    """
+    if not icing:
+        return ()
+    from geo_dataread import gps_views
+
+    resolve = getattr(gps_views, "resolve_icing_epochs", None)
+    if resolve is None:
+        return ()
+    epochs, _src = resolve(sta, ratio=icing_ratio)
+    return tuple(epochs)
+
+
 def view_flags(
     sta: str,
     yearf: Any,
@@ -309,6 +333,8 @@ def view_flags(
     provisional_days: float | None = None,
     step_epochs: Any = None,
     restrict: Any = None,
+    icing: bool = True,
+    icing_ratio: float | None = None,
 ) -> tuple[Any, Any, list[bool] | None]:
     """Run the station-aware view detector and return its raw verdicts.
 
@@ -362,6 +388,7 @@ def view_flags(
         steps = np.atleast_1d(np.asarray(step_epochs, dtype=float))
     pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
     xepochs, _xe_src = gps_views.resolve_excluded_epochs(sta)
+    iepochs = icing_epochs(sta, icing=icing, icing_ratio=icing_ratio)
     resolved = gps_views.resolve_outlier_detection(
         sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
     )
@@ -378,6 +405,8 @@ def view_flags(
         detect_kwargs["provisional_days"] = provisional_days
     if xepochs:
         detect_kwargs["exclude_epochs"] = xepochs
+    if iepochs:
+        detect_kwargs["icing_epochs"] = iepochs
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
@@ -410,7 +439,15 @@ def _mask_outliers(
     outlier_params: Any = None,
     outlier_overrides: str | None = None,
     provisional_days: float | None = None,
-) -> tuple[Any, tuple[Any, Any] | None, tuple[Any, Any] | None, list[bool] | None]:
+    icing: bool = True,
+    icing_ratio: float | None = None,
+) -> tuple[
+    Any,
+    tuple[Any, Any] | None,
+    tuple[Any, Any] | None,
+    list[bool] | None,
+    tuple[Any, Any] | None,
+]:
     """Split a series into a cleaned main series and an outlier overlay.
 
     The station-aware resolution chain lives in :func:`view_flags` (which
@@ -464,6 +501,8 @@ def _mask_outliers(
         outlier_params=outlier_params,
         outlier_overrides=outlier_overrides,
         provisional_days=provisional_days,
+        icing=icing,
+        icing_ratio=icing_ratio,
     )
 
     provisional = None
@@ -473,11 +512,32 @@ def _mask_outliers(
             np.where(pflags, Ddata, np.nan),
         )
 
+    # the icing days (flagged by the view, every component) get their own
+    # overlay; the grey one keeps the detector's outliers only
+    imask = np.zeros_like(flags)
+    iep = icing_epochs(sta, icing=icing, icing_ratio=icing_ratio)
+    if iep:
+        from gps_parser import outlier_catalogs as _oc
+
+        idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(iep)))
+        if idx:
+            if imask.ndim == 1:
+                imask[idx] = True
+            else:
+                imask[:, idx] = True
+        imask &= flags
+    iced = None
+    if imask.any():
+        iced = (np.where(imask, data, np.nan), np.where(imask, Ddata, np.nan))
+
     if not flags.any():
-        return data, None, provisional, aborted
+        return data, None, provisional, aborted, iced
     cleaned = np.where(flags, np.nan, data)
-    overlay = (np.where(flags, data, np.nan), np.where(flags, Ddata, np.nan))
-    return cleaned, overlay, provisional, aborted
+    ofl = flags & ~imask
+    overlay = None
+    if ofl.any():
+        overlay = (np.where(ofl, data, np.nan), np.where(ofl, Ddata, np.nan))
+    return cleaned, overlay, provisional, aborted, iced
 
 
 @dataclasses.dataclass
@@ -498,6 +558,7 @@ class StationSeries:
     provisional: tuple[Any, Any] | None
     aborted: list[bool] | None
     detrend_applied: bool
+    iced: tuple[Any, Any] | None = None
 
 
 def pos_read_kwargs(
@@ -660,6 +721,8 @@ def station_series(
     steps_catalog: str | None = None,
     params: str | None = None,
     ref_position: str | None = None,
+    icing: bool = True,
+    icing_ratio: float | None = None,
     convention: str = "geodetic",
     pos_id: str | None = None,
 ) -> StationSeries:
@@ -687,9 +750,9 @@ def station_series(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
-    outliers = provisional = aborted = None
+    outliers = provisional = aborted = iced = None
     if view == "cleaned":
-        data, outliers, provisional, aborted = _mask_outliers(
+        data, outliers, provisional, aborted, iced = _mask_outliers(
             sta,
             yearf,
             data,
@@ -697,6 +760,8 @@ def station_series(
             outlier_params=outlier_params,
             outlier_overrides=outlier_overrides,
             provisional_days=provisional_days,
+            icing=icing,
+            icing_ratio=icing_ratio,
         )
 
     views = dict(
@@ -723,9 +788,10 @@ def station_series(
             return (vals, pair[1])
 
         outliers, provisional = _moved(outliers), _moved(provisional)
+        iced = _moved(iced)
 
     return StationSeries(
-        yearf, data, Ddata, outliers, provisional, aborted, detrend_applied
+        yearf, data, Ddata, outliers, provisional, aborted, detrend_applied, iced
     )
 
 
@@ -797,6 +863,8 @@ def plotTime(
     hide_outliers: bool = False,
     outlier_tail: int | None = None,
     provisional_days: float | None = None,
+    icing: bool = True,
+    icing_ratio: float | None = None,
     remove_kinds: Sequence[str] | None = None,
     detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -1041,6 +1109,8 @@ def plotTime(
         ref_position=ref_position,
         convention=convention,
         pos_id=pos_id,
+        icing=icing,
+        icing_ratio=icing_ratio,
     )
     from gps_plot.sources import gps as gps_source
 
@@ -1063,6 +1133,7 @@ def plotTime(
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
+    iced = main_series.iced
     sigma_note = main_series.meta.get("sigma_note")
     # the rho the baseline σ used (from the noise record when empirical);
     # None means formal quadrature, which names the file without -empsig
@@ -1142,6 +1213,36 @@ def plotTime(
             ecolor=OUTLIER_ERRORBAR_COLOR,
             markerfacecolor=OUTLIER_FACE_COLOR,
             markeredgecolor=OUTLIER_EDGE_COLOR,
+        )
+
+    if iced is not None:
+        # icing suspected (GAMIT autcln index, geo_dataread.autcln_stats):
+        # removed from the series like outliers, drawn in their own colour
+        # under the same --show-outliers rule, and counted in a note even
+        # when hidden -- an iced spell must never pass for clean data
+        n_iced = int(np.count_nonzero(np.isfinite(np.atleast_2d(iced[0])).any(axis=0)))
+        if not hide_outliers:
+            iy, idy = iced
+            if outlier_tail:
+                iy, idy = last_flagged(iy, idy, outlier_tail)
+            fig = addData(
+                x,
+                iy,
+                idy,
+                fig,
+                ecolor=ICING_ERRORBAR_COLOR,
+                markerfacecolor=ICING_FACE_COLOR,
+                markeredgecolor=ICING_EDGE_COLOR,
+            )
+        fig.axes[0].text(
+            0.01,
+            0.02,
+            "icing suspected: %d day%s (GAMIT autcln)"
+            % (n_iced, "" if n_iced == 1 else "s"),
+            transform=fig.axes[0].transAxes,
+            fontsize="small",
+            color=ICING_EDGE_COLOR,
+            va="bottom",
         )
 
     if provisional is not None:

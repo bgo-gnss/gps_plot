@@ -51,6 +51,8 @@ class SeriesRequest:
     ref_position: Any = None
     convention: str = "geodetic"
     pos_id: str | None = None
+    icing: bool = True
+    icing_ratio: float | None = None
 
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)
@@ -101,6 +103,7 @@ def fetch_station(sta: str, req: SeriesRequest) -> Series:
         provisional=one.provisional,
         aborted=one.aborted,
         detrend_applied=one.detrend_applied,
+        iced=one.iced,
     )
 
 
@@ -353,6 +356,7 @@ def rezero_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
         y=np.asarray(series.y, dtype=float) + col,
         outliers=moved(series.outliers),
         provisional=moved(series.provisional),
+        iced=moved(series.iced),
         meta={**series.meta, "zero_shift": shift},
     )
 
