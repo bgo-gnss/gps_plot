@@ -622,7 +622,9 @@ def build_parser(
     parser.add_argument(
         "Stations",
         nargs="+",
-        help="stations (4-char codes), or 'all'. AAAA-BBBB plots the BASELINE "
+        help="stations (4-char codes), or 'all' (every station with a .pos "
+        "series of the selected frame in the Iceland box, or in --region; "
+        "for --tType TOT the stations.cfg list). AAAA-BBBB plots the BASELINE "
         "AAAA minus BBBB (N/E/U differences on common epochs — days, or 8 h "
         "sessions within 2 h — re-zeroed at the first; sigma in quadrature, or "
         "--baseline-sigma empirical); it defaults to --ref plate and can be "
@@ -640,6 +642,7 @@ def build_parser(
         help="read in a list of events from a file: defaults to stdin",
     )
     common.add_period_options(parser, specials=special_allow)
+    common.add_selection_options(parser)
     common.add_output_options(parser, config)
     common.add_series_options(
         parser,
@@ -1186,8 +1189,12 @@ def run(
     del kwargs["eventf"]
     del kwargs["D"]
 
-    if "all" in stations:  # geting a list of all the GPS stations
-        stations = config.getStationInfo()
+    region, with_record = kwargs.pop("region"), kwargs.pop("with_record")
+    stations = common.resolve_stations(
+        stations, kwargs, config, region=region, with_record=with_record
+    )
+    if not stations:
+        parser.error("no station left to plot after 'all'/--region/--with-record")
 
     # ------------------------
 
