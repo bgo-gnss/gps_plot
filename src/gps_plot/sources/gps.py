@@ -300,8 +300,47 @@ def fetch_model(
 ZERO_SAMPLES = 5
 
 
+def zero_window(spec: str, req: SeriesRequest) -> list[tuple[float, float]] | None:
+    """The fit segments of ``spec``'s record when its LINEAR term was removed.
+
+    A record's rate is the station's velocity over its fit window, so with
+    the rate removed that window is the station's zero-velocity period and
+    the natural zero line (BGÓ 2026-10-20). None when the view keeps the
+    rate (``--detrend-terms periodic``), for a baseline, without a record,
+    and for a BORROWED record (its rate is another station's; this
+    station's own window may be all deformation -- KASC holding OLAC's).
+    """
+    from geo_dataread import gps_views as _gv
+    from geo_dataread.baseline import split_baseline
+
+    from gps_plot import timesmatplt as tplt
+
+    if split_baseline(spec) is not None:
+        return None
+    terms = req.detrend_terms or tplt.DEFAULT_DETREND_TERMS
+    if not (req.view == "detrended" or (req.ref == "detrend" and "linear" in terms)):
+        return None
+    try:
+        _frame, params = tplt.record_context(req.tType, req.pos_id, req.params)
+        record, _src = _gv.station_detrend_record(_gv.read_detrend_params(params), spec)
+    except Exception:  # noqa: BLE001 - no record: the start zero, as before
+        return None
+    if record is None or record.get("borrowed"):
+        return None
+    segs = record.get("segments") or (
+        [record["window"]] if record.get("window") else None
+    )
+    return [(float(a), float(b)) for a, b in segs] if segs else None
+
+
 def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
-    """What re-zeroes a detrended station at its start, or None.
+    """What re-zeroes a detrended station, or None.
+
+    With the record's linear term removed, the zero is the station's level
+    over the record's fit window (:func:`zero_window`, its zero-velocity
+    period: ``estimate_offset`` over every finite sample in it), when at
+    least ``ZERO_SAMPLES`` of them are in the plotted span. Otherwise, at
+    its start:
 
     ``getData`` zeroes a series at its start (``vshift``: the 1/σ-weighted
     mean of the first 5 kept samples, ``gps_analysis.prep_plot_series``),
@@ -329,8 +368,14 @@ def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
     y = np.asarray(series.y, dtype=float)
     sigma = np.asarray(series.sigma, dtype=float)
     level = np.zeros(y.shape[0])
+    in_window = np.zeros(t.shape, dtype=bool)
+    for a, b in zero_window(spec, req) or ():
+        in_window |= (t >= a) & (t <= b)
     for c in range(y.shape[0]):
-        idx = np.flatnonzero(np.isfinite(y[c]) & np.isfinite(sigma[c]))[:ZERO_SAMPLES]
+        ok = np.isfinite(y[c]) & np.isfinite(sigma[c])
+        idx = np.flatnonzero(ok & in_window)
+        if idx.size < ZERO_SAMPLES:
+            idx = np.flatnonzero(ok)[:ZERO_SAMPLES]
         if idx.size:
             level[c] = float(
                 np.asarray(estimate_offset(t[idx], y[c, idx], sigma[c, idx]))
@@ -339,7 +384,7 @@ def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
 
 
 def rezero_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
-    """A detrended station re-zeroed at its start (see :func:`detrended_shift`).
+    """A detrended station re-zeroed (see :func:`detrended_shift`).
 
     The outlier and provisional overlays (same datum as the values) move
     with it, and ``meta["zero_shift"]`` records the shift so a model line
