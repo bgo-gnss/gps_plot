@@ -751,14 +751,22 @@ def trajectory_views(
                         record, yearf, data, frame=series_frame
                     )
                 else:
+                    groups = tuple(
+                        DETREND_TERM_GROUPS[t]
+                        for t in (detrend_terms or DEFAULT_DETREND_TERMS)
+                    )
+                    # a seasonal-only (regional) record has no rate to
+                    # remove: remove what it has, the seasonal, when asked
+                    # for (BGÓ 2026-10-20) -- plotTime says so on the plot
+                    from gps_plot.sources.gps import seasonal_only
+
+                    if seasonal_only(record) and "periodic" in groups:
+                        groups = ("periodic",)
                     data = _gv.apply_stored_detrend(
                         record,
                         yearf,
                         data,
-                        groups=tuple(
-                            DETREND_TERM_GROUPS[t]
-                            for t in (detrend_terms or DEFAULT_DETREND_TERMS)
-                        ),
+                        groups=groups,
                         frame=series_frame,
                     )
                 detrend_applied = True
@@ -1266,6 +1274,20 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
     )
+
+    if ref == "detrend" and split_baseline(sta) is None:
+        from gps_plot.sources.gps import optional_record, seasonal_only
+
+        if seasonal_only(optional_record(sta, request)):
+            fig.axes[0].text(
+                0.01,
+                0.97,
+                "seasonal only (regional record): no station rate removed",
+                transform=fig.axes[0].transAxes,
+                fontsize="small",
+                color="0.3",
+                va="top",
+            )
 
     if sigma_note is not None:
         fig.axes[2].text(
