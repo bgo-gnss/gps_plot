@@ -300,6 +300,22 @@ def fetch_model(
 ZERO_SAMPLES = 5
 
 
+def optional_record(spec: str, req: SeriesRequest) -> Any:
+    """:func:`station_record`, or None where it has none (or no readable
+    document, or a frame mismatch) -- for decisions that fall back."""
+    try:
+        return station_record(spec, req)
+    except Exception:  # noqa: BLE001 - no record is an ordinary state here
+        return None
+
+
+def seasonal_only(record: Any) -> bool:
+    """Whether ``record`` has no rate of its own (a regional seasonal)."""
+    from gps_analysis.detrend import is_seasonal_only
+
+    return record is not None and bool(is_seasonal_only(record))
+
+
 def zero_window(spec: str, req: SeriesRequest) -> list[tuple[float, float]] | None:
     """The fit segments of ``spec``'s record when its LINEAR term was removed.
 
@@ -310,7 +326,6 @@ def zero_window(spec: str, req: SeriesRequest) -> list[tuple[float, float]] | No
     and for a BORROWED record (its rate is another station's; this
     station's own window may be all deformation -- KASC holding OLAC's).
     """
-    from geo_dataread import gps_views as _gv
     from geo_dataread.baseline import split_baseline
 
     from gps_plot import timesmatplt as tplt
@@ -320,12 +335,8 @@ def zero_window(spec: str, req: SeriesRequest) -> list[tuple[float, float]] | No
     terms = req.detrend_terms or tplt.DEFAULT_DETREND_TERMS
     if not (req.view == "detrended" or (req.ref == "detrend" and "linear" in terms)):
         return None
-    try:
-        _frame, params = tplt.record_context(req.tType, req.pos_id, req.params)
-        record, _src = _gv.station_detrend_record(_gv.read_detrend_params(params), spec)
-    except Exception:  # noqa: BLE001 - no record: the start zero, as before
-        return None
-    if record is None or record.get("borrowed"):
+    record = optional_record(spec, req)
+    if record is None or record.get("borrowed") or seasonal_only(record):
         return None
     segs = record.get("segments") or (
         [record["window"]] if record.get("window") else None

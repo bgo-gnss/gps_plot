@@ -391,3 +391,39 @@ def test_rezeroed_detrended_is_the_residual_from_zero(window, view):
             o = np.asarray(s.outliers[0])[c, j]
             f = np.isfinite(o)
             np.testing.assert_allclose(o[f] - want[c][f], diff[0], atol=1e-6)
+
+
+def test_a_seasonal_only_record_removes_its_seasonal_under_the_default_terms(
+    monkeypatch,
+):
+    """A regional (seasonal-only) record under --detrend-terms linear,periodic
+    removes the seasonal it has instead of refusing (BGÓ 2026-10-20)."""
+    from geo_dataread import gps_views as gv
+
+    from gps_plot import timesmatplt as tplt
+
+    rec = {
+        "record_version": 1,
+        "model": "periodic",
+        "param_names": ["cos_annual", "sin_annual", "cos_semiannual", "sin_semiannual"],
+        "step_epochs": [],
+        "frame": "plate_removed@itrf14",
+        "detrend_method": "regional",
+        "seasonal_only": True,
+        "components": [
+            {"component": c, "params": [3.0, 0.0, 0.0, 0.0]}
+            for c in ("north", "east", "up")
+        ],
+    }
+    monkeypatch.setattr(gv, "read_detrend_params", lambda params: {"stations": {}})
+    monkeypatch.setattr(gv, "station_detrend_record", lambda doc, sta: (rec, "test"))
+    t = np.linspace(2024.0, 2025.0, 50)
+    y = np.vstack([3.0 * np.cos(2 * np.pi * t)] * 3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no "could not apply" fallback warning
+        out, applied = tplt.trajectory_views(
+            "HITA", t, y, ref="detrend", view="raw", tType="POS",
+            pos_id="imo.24hr_itrf14", detrend_terms=None,
+        )  # fmt: skip
+    assert applied
+    np.testing.assert_allclose(out, 0.0, atol=1e-9)
