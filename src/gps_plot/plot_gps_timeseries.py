@@ -875,7 +875,7 @@ def build_parser(
         "--icing",
         dest="icing_mode",
         choices=["remove", "keep", "off"],
-        default="remove",
+        default=None,
         help="days with icing suspected (GAMIT autcln index, harvested by "
         "gps-autcln-harvest into pos_dir; none there = none): remove "
         "(default) = taken out like outliers; keep = left in the series "
@@ -900,6 +900,49 @@ def build_parser(
         "outliers and independent of it: --show-icing alone all of them, "
         "--show-icing N only those among the last N data points. Off by "
         "default (the note still counts them). Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--snow",
+        dest="snow_mode",
+        choices=["remove", "keep", "off"],
+        default=None,
+        help="days with the antenna suspected buried in snow (Up lifted for "
+        "weeks, horizontals quiet, GAMIT noise raised evenly; "
+        "geo_dataread.snow_burial on the autcln harvest + the station's .pos): "
+        "remove (default) / keep / off as --icing, for Up only. "
+        "--show-snow draws them. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--no-snow",
+        dest="snow",
+        action="store_false",
+        help="same as --snow off",
+    )
+    parser.add_argument(
+        "--show-snow",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="draw the snow days (pale lilac, Up), as --show-icing: alone all "
+        "of them, N only those among the last N data points",
+    )
+    parser.add_argument(
+        "--obstruction",
+        choices=["remove", "keep", "off"],
+        default=None,
+        help="icing AND snow together (antenna obstruction): sets both "
+        "--icing and --snow; an explicit --icing/--snow still wins",
+    )
+    parser.add_argument(
+        "--show-obstruction",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="--show-icing and --show-snow together (an explicit one wins)",
     )
     parser.add_argument(
         "--icing-ratio",
@@ -994,6 +1037,29 @@ def _set_parser_text(parser, description, formatter_class, epilog):
     parser.epilog = epilog
 
 
+def _resolve_obstruction(kwargs: dict[str, Any], parser: Any) -> None:
+    """--icing/--snow (+ --show-*) with the --obstruction umbrella under them.
+
+    An explicit per-kind flag wins over the umbrella, the umbrella over the
+    default (remove, not drawn). "off" (or --no-icing/--no-snow) turns the
+    index off: no days kept out of detection, none flagged, none drawn.
+    """
+    umbrella = kwargs.pop("obstruction")
+    show_umbrella = kwargs.pop("show_obstruction")
+    for kind in ("icing", "snow"):
+        mode = kwargs[f"{kind}_mode"] or umbrella or "remove"
+        if mode == "off" or not kwargs[kind]:
+            kwargs[kind], mode = False, "remove"
+        kwargs[f"{kind}_mode"] = mode
+        show = kwargs.pop(f"show_{kind}")
+        if show is None:
+            show = show_umbrella
+        if show is not None and show < 0:
+            parser.error(f"--show-{kind} N: N must be positive")
+        kwargs[f"hide_{kind}"] = show is None
+        kwargs[f"{kind}_tail"] = show or None
+
+
 def run(
     args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any = None
 ) -> None:
@@ -1043,13 +1109,7 @@ def run(
     # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
     # default); the CLI inverts it -- the grey overlay is OFF unless
     # ``--show-outliers`` asks for it, so ``hide_outliers = not show``.
-    if kwargs["icing_mode"] == "off":
-        kwargs["icing"], kwargs["icing_mode"] = False, "remove"
-    show_icing = kwargs.pop("show_icing")
-    if show_icing is not None and show_icing < 0:
-        parser.error("--show-icing N: N must be positive")
-    kwargs["hide_icing"] = show_icing is None
-    kwargs["icing_tail"] = show_icing or None
+    _resolve_obstruction(kwargs, parser)
     show_outliers = kwargs.pop("show_outliers")
     kwargs["hide_outliers"] = show_outliers is None
     if show_outliers is not None and show_outliers < 0:

@@ -54,6 +54,8 @@ class SeriesRequest:
     icing: bool = True
     icing_ratio: float | None = None
     icing_mode: str = "remove"
+    snow: bool = True
+    snow_mode: str = "remove"
 
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)
@@ -105,6 +107,7 @@ def fetch_station(sta: str, req: SeriesRequest) -> Series:
         aborted=one.aborted,
         detrend_applied=one.detrend_applied,
         iced=one.iced,
+        buried=one.buried,
     )
 
 
@@ -358,6 +361,7 @@ def rezero_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
         outliers=moved(series.outliers),
         provisional=moved(series.provisional),
         iced=moved(series.iced),
+        buried=moved(series.buried),
         meta={**series.meta, "zero_shift": shift},
     )
 

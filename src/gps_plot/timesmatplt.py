@@ -42,6 +42,7 @@ __date__ = "$Date: Feb 2016"
 __version__ = "$Revision: 0.2 $"[11:-2]
 
 import dataclasses
+import functools
 import datetime
 import os
 import warnings
@@ -97,6 +98,11 @@ PROVISIONAL_FACE_COLOR: str = "gold"
 ICING_ERRORBAR_COLOR: str = "#d9e8f5"
 ICING_EDGE_COLOR: str = "#8fbbe0"
 ICING_FACE_COLOR: str = "#f4f9fe"  # very, very light blue (BGÓ)
+#: antenna buried in snow (geo_dataread.snow_burial; Up only): pale lilac,
+#: kin to the icing blue but told apart -- a different obstruction
+SNOW_ERRORBAR_COLOR: str = "#e6dcf0"
+SNOW_EDGE_COLOR: str = "#b39ddb"
+SNOW_FACE_COLOR: str = "#f7f3fb"
 #: a provisional LAST point (yesterday's, when the data are current): the
 #: gold "verdict pending" face keeps a green outline, so the newest day stays
 #: recognisable instead of the yellow marker hiding the green highlight.
@@ -322,6 +328,44 @@ def icing_epochs(
     return tuple(epochs)
 
 
+@functools.lru_cache(maxsize=64)
+def _snow_epochs_cached(sta: str) -> tuple[float, ...]:
+    from geo_dataread import gps_views
+
+    resolve = getattr(gps_views, "resolve_snow_epochs", None)
+    if resolve is None:
+        return ()
+    epochs, _src = resolve(sta)
+    return tuple(epochs)
+
+
+def snow_epochs(sta: str, *, snow: bool = True) -> tuple[float, ...]:
+    """The station's snow-burial days (geo_dataread.snow_burial), or ().
+
+    The index reads the station's full 24 h ``.pos`` series, so it is
+    cached per station for the process (view_flags and _mask_outliers both
+    ask). An older geo_dataread or no harvest is simply no snow days.
+    """
+    return _snow_epochs_cached(sta) if snow else ()
+
+
+def _up_mask(flags: Any, yearf: Any, epochs: tuple[float, ...]) -> Any:
+    """Bool mask shaped like ``flags``, True at ``epochs`` in the LAST row
+    (Up; a 1-D series is taken to be Up)."""
+    mask = np.zeros_like(flags, dtype=bool)
+    if not epochs:
+        return mask
+    from gps_parser import outlier_catalogs as _oc
+
+    idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(epochs)))
+    if idx:
+        if mask.ndim == 1:
+            mask[idx] = True
+        else:
+            mask[-1, idx] = True
+    return mask
+
+
 def view_flags(
     sta: str,
     yearf: Any,
@@ -336,6 +380,8 @@ def view_flags(
     icing: bool = True,
     icing_ratio: float | None = None,
     icing_mode: str = "remove",
+    snow: bool = True,
+    snow_mode: str = "remove",
 ) -> tuple[Any, Any, list[bool] | None]:
     """Run the station-aware view detector and return its raw verdicts.
 
@@ -390,6 +436,7 @@ def view_flags(
     pwindows, _pw_src = gps_views.resolve_protect_windows(sta)
     xepochs, _xe_src = gps_views.resolve_excluded_epochs(sta)
     iepochs = icing_epochs(sta, icing=icing, icing_ratio=icing_ratio)
+    sepochs = snow_epochs(sta, snow=snow)
     resolved = gps_views.resolve_outlier_detection(
         sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
     )
@@ -409,6 +456,9 @@ def view_flags(
     if iepochs:
         detect_kwargs["icing_epochs"] = iepochs
         detect_kwargs["icing_mode"] = icing_mode
+    if sepochs:
+        detect_kwargs["snow_epochs"] = sepochs
+        detect_kwargs["snow_mode"] = snow_mode
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
@@ -444,11 +494,14 @@ def _mask_outliers(
     icing: bool = True,
     icing_ratio: float | None = None,
     icing_mode: str = "remove",
+    snow: bool = True,
+    snow_mode: str = "remove",
 ) -> tuple[
     Any,
     tuple[Any, Any] | None,
     tuple[Any, Any] | None,
     list[bool] | None,
+    tuple[Any, Any] | None,
     tuple[Any, Any] | None,
 ]:
     """Split a series into a cleaned main series and an outlier overlay.
@@ -507,6 +560,8 @@ def _mask_outliers(
         icing=icing,
         icing_ratio=icing_ratio,
         icing_mode=icing_mode,
+        snow=snow,
+        snow_mode=snow_mode,
     )
 
     provisional = None
@@ -536,14 +591,22 @@ def _mask_outliers(
     if imask.any():
         iced = (np.where(imask, data, np.nan), np.where(imask, Ddata, np.nan))
 
+    # snow burial likewise, its own overlay -- Up only
+    smask = _up_mask(flags, yearf, snow_epochs(sta, snow=snow))
+    if snow_mode == "remove":
+        smask &= flags
+    buried = None
+    if smask.any():
+        buried = (np.where(smask, data, np.nan), np.where(smask, Ddata, np.nan))
+
     if not flags.any():
-        return data, None, provisional, aborted, iced
+        return data, None, provisional, aborted, iced, buried
     cleaned = np.where(flags, np.nan, data)
-    ofl = flags & ~imask
+    ofl = flags & ~imask & ~smask
     overlay = None
     if ofl.any():
         overlay = (np.where(ofl, data, np.nan), np.where(ofl, Ddata, np.nan))
-    return cleaned, overlay, provisional, aborted, iced
+    return cleaned, overlay, provisional, aborted, iced, buried
 
 
 @dataclasses.dataclass
@@ -565,6 +628,7 @@ class StationSeries:
     aborted: list[bool] | None
     detrend_applied: bool
     iced: tuple[Any, Any] | None = None
+    buried: tuple[Any, Any] | None = None
 
 
 def pos_read_kwargs(
@@ -730,6 +794,8 @@ def station_series(
     icing: bool = True,
     icing_ratio: float | None = None,
     icing_mode: str = "remove",
+    snow: bool = True,
+    snow_mode: str = "remove",
     convention: str = "geodetic",
     pos_id: str | None = None,
 ) -> StationSeries:
@@ -757,9 +823,9 @@ def station_series(
     if yearf is None or len(yearf) == 0:
         raise ValueError("no data for station %s" % sta)
 
-    outliers = provisional = aborted = iced = None
+    outliers = provisional = aborted = iced = buried = None
     if view == "cleaned":
-        data, outliers, provisional, aborted, iced = _mask_outliers(
+        data, outliers, provisional, aborted, iced, buried = _mask_outliers(
             sta,
             yearf,
             data,
@@ -770,6 +836,8 @@ def station_series(
             icing=icing,
             icing_ratio=icing_ratio,
             icing_mode=icing_mode,
+            snow=snow,
+            snow_mode=snow_mode,
         )
 
     views = dict(
@@ -796,10 +864,18 @@ def station_series(
             return (vals, pair[1])
 
         outliers, provisional = _moved(outliers), _moved(provisional)
-        iced = _moved(iced)
+        iced, buried = _moved(iced), _moved(buried)
 
     return StationSeries(
-        yearf, data, Ddata, outliers, provisional, aborted, detrend_applied, iced
+        yearf,
+        data,
+        Ddata,
+        outliers,
+        provisional,
+        aborted,
+        detrend_applied,
+        iced,
+        buried,
     )
 
 
@@ -876,6 +952,10 @@ def plotTime(
     icing_mode: str = "remove",
     hide_icing: bool = True,
     icing_tail: int | None = None,
+    snow: bool = True,
+    snow_mode: str = "remove",
+    hide_snow: bool = True,
+    snow_tail: int | None = None,
     remove_kinds: Sequence[str] | None = None,
     detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -1123,6 +1203,8 @@ def plotTime(
         icing=icing,
         icing_ratio=icing_ratio,
         icing_mode=icing_mode,
+        snow=snow,
+        snow_mode=snow_mode,
     )
     from gps_plot.sources import gps as gps_source
 
@@ -1146,6 +1228,7 @@ def plotTime(
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
     iced = main_series.iced
+    buried = main_series.buried
     sigma_note = main_series.meta.get("sigma_note")
     # the rho the baseline σ used (from the noise record when empirical);
     # None means formal quadrature, which names the file without -empsig
@@ -1259,6 +1342,41 @@ def plotTime(
             transform=fig.axes[0].transAxes,
             fontsize="small",
             color=ICING_EDGE_COLOR,
+            va="bottom",
+        )
+
+    if buried is not None:
+        # antenna buried in snow (geo_dataread.snow_burial): Up only, so the
+        # note sits on the Up axis; drawn pale lilac only with --show-snow
+        # [N], counted even when hidden -- the same rules as icing
+        n_buried = int(
+            np.count_nonzero(np.isfinite(np.atleast_2d(buried[0])).any(axis=0))
+        )
+        if not hide_snow:
+            sy, sdy = buried
+            if snow_tail:
+                sy, sdy = last_flagged(sy, sdy, snow_tail)
+            fig = addData(
+                x,
+                sy,
+                sdy,
+                fig,
+                ecolor=SNOW_ERRORBAR_COLOR,
+                markerfacecolor=SNOW_FACE_COLOR,
+                markeredgecolor=SNOW_EDGE_COLOR,
+            )
+        fig.axes[-1].text(
+            0.01,
+            0.02,
+            "antenna under snow suspected: %d day%s (Up, %s)"
+            % (
+                n_buried,
+                "" if n_buried == 1 else "s",
+                "removed" if snow_mode == "remove" else "kept",
+            ),
+            transform=fig.axes[-1].transAxes,
+            fontsize="small",
+            color=SNOW_EDGE_COLOR,
             va="bottom",
         )
 
