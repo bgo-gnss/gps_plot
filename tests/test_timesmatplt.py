@@ -817,6 +817,7 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
         "provisional_days": 7.0,
         "icing": True,
         "icing_ratio": None,
+        "icing_mode": "remove",
     }
 
 

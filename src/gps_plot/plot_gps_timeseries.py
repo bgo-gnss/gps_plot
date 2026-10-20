@@ -872,15 +872,34 @@ def build_parser(
         "Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--icing",
+        dest="icing_mode",
+        choices=["remove", "keep", "off"],
+        default="remove",
+        help="days with icing suspected (GAMIT autcln index, harvested by "
+        "gps-autcln-harvest into pos_dir; none there = none): remove "
+        "(default) = taken out like outliers; keep = left in the series "
+        "(they are suspected, not decided -- e.g. for automatic runs); "
+        "off = ignored. Either way they never reach the outlier detector; "
+        "--show-icing draws them. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
         "--no-icing",
         dest="icing",
         action="store_false",
-        help="do NOT remove the days with icing suspected. By default --view "
-        "cleaned also removes them: GAMIT's per-station residual statistics "
-        "(autcln: azimuth mean residual, normalised by the network that day, "
-        "over the station's own low level) harvested by gps-autcln-harvest "
-        "into pos_dir; drawn blue under --show-outliers, counted in a note. "
-        "No harvest for a station = no icing days. Ignored unless --view cleaned",
+        help="same as --icing off",
+    )
+    parser.add_argument(
+        "--show-icing",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="draw the icing days (light blue), like --show-outliers does the "
+        "outliers and independent of it: --show-icing alone all of them, "
+        "--show-icing N only those among the last N data points. Off by "
+        "default (the note still counts them). Ignored unless --view cleaned",
     )
     parser.add_argument(
         "--icing-ratio",
@@ -1024,6 +1043,13 @@ def run(
     # plotTime's knob is ``hide_outliers`` (overlay drawn at the API by
     # default); the CLI inverts it -- the grey overlay is OFF unless
     # ``--show-outliers`` asks for it, so ``hide_outliers = not show``.
+    if kwargs["icing_mode"] == "off":
+        kwargs["icing"], kwargs["icing_mode"] = False, "remove"
+    show_icing = kwargs.pop("show_icing")
+    if show_icing is not None and show_icing < 0:
+        parser.error("--show-icing N: N must be positive")
+    kwargs["hide_icing"] = show_icing is None
+    kwargs["icing_tail"] = show_icing or None
     show_outliers = kwargs.pop("show_outliers")
     kwargs["hide_outliers"] = show_outliers is None
     if show_outliers is not None and show_outliers < 0:

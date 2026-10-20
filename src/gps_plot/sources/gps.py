@@ -53,6 +53,7 @@ class SeriesRequest:
     pos_id: str | None = None
     icing: bool = True
     icing_ratio: float | None = None
+    icing_mode: str = "remove"
 
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)

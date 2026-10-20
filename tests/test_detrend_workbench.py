@@ -139,7 +139,9 @@ def test_commit_then_detrended_view_consumes_the_record(gpsconfig, tmp_path):
     assert absent_before, "expected the 'absent record' degrade before commit"
     std_before = float(np.nanstd(d0[0]))
 
-    record, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0)
+    record, *_ = build_record(
+        STA, tot_dir=str(TOT), max_gap_years=2.0, outlier_param=["method=model"]
+    )  # pins the MODEL detector's real-data numbers (the default is running since 2026-10-19)
     path, n_before, n_after = commit_record(STA, record, params_path=doc)
     assert (path, n_after) == (doc, n_before + 1)
 
@@ -786,8 +788,8 @@ def test_hide_outliers_changes_display_only(tmp_path):
     from gps_plot.detrend_workbench import build_record, render
 
     record, yearf, data, sigma, est = build_record(
-        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0
-    )
+        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0, outlier_param=["method=model"]
+    )  # pins the MODEL detector's real-data numbers (the default is running since 2026-10-19)
     shown = render(
         STA_SELF,
         record,
@@ -1238,7 +1240,8 @@ def test_segments_estimate_the_offset_a_single_window_cannot(tmp_path):
         tot_dir=str(TOT),
         segments=((2002.1, 2008.35), (2008.7, 2019.5)),
         max_gap_years=1.5,
-    )
+        outlier_param=["method=model"],
+    )  # pins the MODEL detector's real-data numbers (the default is running since 2026-10-19)
     assert record["segments"] == [[2002.1, 2008.35], [2008.7, 2019.5]]
     assert record["window"] == [2002.1, 2019.5], "window is the hull"
     assert len(record["segment_gaps"]) == 1
