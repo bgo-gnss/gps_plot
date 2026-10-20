@@ -348,8 +348,8 @@ def test_rezero_uses_the_first_five_finite_samples_per_component():
 @pytest.mark.parametrize("view", ["raw", "cleaned"])
 def test_rezeroed_detrended_is_the_residual_from_zero(window, view):
     """Re-zeroed, a --ref detrend station is D_full(plate) − model[linear +
-    periodic] up to one constant per component, and starts at zero; its
-    outliers sit on the same residual."""
+    periodic] up to one constant per component, zero over its fit window
+    (else at its start); its outliers sit on the same residual."""
     import geo_dataread.gps_read as gpsr
     from gps_analysis import evaluate_record
 
@@ -375,9 +375,18 @@ def test_rezeroed_detrended_is_the_residual_from_zero(window, view):
         ok = np.isfinite(got[c])
         diff = got[c][ok] - want[c][ok]
         np.testing.assert_allclose(diff, diff[0], atol=1e-6)
-        first = np.flatnonzero(np.isfinite(np.asarray(s.y)[c]))[:5]
-        assert abs(np.average(np.asarray(s.y)[c][first],
-                              weights=1 / np.asarray(s.sigma)[c][first])) < 1e-9  # fmt: skip
+        # zero over the record's fit window (its zero-velocity period) when
+        # enough of it is plotted, else at the start (BGÓ 2026-10-20)
+        yc, sc = np.asarray(s.y)[c], np.asarray(s.sigma)[c]
+        okc = np.isfinite(yc) & np.isfinite(sc)
+        tt = np.asarray(s.t)
+        inw = np.zeros(tt.shape, bool)
+        for a, b in record.get("segments") or [record["window"]]:
+            inw |= (tt >= a) & (tt <= b)
+        zero = np.flatnonzero(okc & inw)
+        if zero.size < source.ZERO_SAMPLES:
+            zero = np.flatnonzero(okc)[: source.ZERO_SAMPLES]
+        assert abs(np.average(yc[zero], weights=1 / sc[zero])) < 1e-9
         if s.outliers is not None:
             o = np.asarray(s.outliers[0])[c, j]
             f = np.isfinite(o)

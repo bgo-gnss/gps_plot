@@ -365,8 +365,31 @@ def test_outlier_sigma_must_be_positive():
 def test_icing_flags_parse():
     p = driver.build_parser()
     a = p.parse_args(["GFUM"])
-    assert (a.icing_mode, a.icing, a.show_icing) == ("remove", True, None)
+    assert (a.icing_mode, a.icing, a.show_icing) == (None, True, None)
     a = p.parse_args(["GFUM", "--icing", "keep", "--show-icing", "10"])
     assert (a.icing_mode, a.show_icing) == ("keep", 10)
     assert p.parse_args(["GFUM", "--show-icing"]).show_icing == 0
     assert p.parse_args(["GFUM", "--no-icing"]).icing is False
+
+
+def _resolved(argv):
+    p = driver.build_parser()
+    kw = vars(p.parse_args(["OLAC", *argv]))
+    driver._resolve_obstruction(kw, p)
+    return kw
+
+
+def test_snow_and_obstruction_flags_resolve():
+    kw = _resolved([])
+    assert (kw["icing_mode"], kw["snow_mode"]) == ("remove", "remove")
+    assert kw["hide_icing"] and kw["hide_snow"] and kw["snow"] and kw["icing"]
+    kw = _resolved(["--obstruction", "keep", "--show-obstruction", "10"])
+    assert (kw["icing_mode"], kw["snow_mode"]) == ("keep", "keep")
+    assert (kw["icing_tail"], kw["snow_tail"]) == (10, 10)
+    # an explicit per-kind flag wins over the umbrella
+    kw = _resolved(["--obstruction", "keep", "--snow", "remove", "--show-snow"])
+    assert (kw["icing_mode"], kw["snow_mode"]) == ("keep", "remove")
+    assert not kw["hide_snow"] and kw["snow_tail"] is None and kw["hide_icing"]
+    kw = _resolved(["--obstruction", "off"])
+    assert kw["icing"] is False and kw["snow"] is False
+    assert _resolved(["--no-snow"])["snow"] is False
