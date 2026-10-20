@@ -287,3 +287,137 @@ def resolve_source(
             config, "pos_dir" if args.tType == "POS" else "totPath"
         )
     return str(session)
+
+
+#: the Icelandic network box (W, E, S, N) that ``all`` means by default: the
+#: same box the detrend inventory uses, so global IGS sites stay out
+ICELAND_REGION = (-25.5, -12.5, 62.5, 67.5)
+
+
+def region_arg(value: str) -> tuple[float, float, float, float]:
+    """``W/E/S/N`` in degrees (lon in [-180, 180)) -> a region tuple."""
+    try:
+        w, e, s, n = (float(v) for v in value.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--region {value!r}: give W/E/S/N in degrees, e.g. -25/-13/63/67"
+        ) from None
+    if not (w < e and s < n):
+        raise argparse.ArgumentTypeError(f"--region {value!r}: need W < E and S < N")
+    return w, e, s, n
+
+
+def add_selection_options(parser: Any) -> None:
+    """``--region`` / ``--with-record``: which stations ``all`` (or a list) means."""
+    parser.add_argument(
+        "--region",
+        type=region_arg,
+        default=None,
+        metavar="W/E/S/N",
+        help="keep only stations inside this box (degrees; write it with = since "
+        "west is negative: --region=-25/-13/63/67). "
+        "With 'all' it replaces the default Iceland box %s; baselines "
+        "(AAAA-BBBB) are kept when both ends are inside"
+        % "/".join(f"{v:g}" for v in ICELAND_REGION),
+    )
+    parser.add_argument(
+        "--with-record",
+        action="store_true",
+        help="keep only stations with a detrend record in the frame's detrend "
+        "document (baselines: both ends)",
+    )
+
+
+def resolve_stations(
+    stations: Sequence[str],
+    kwargs: dict[str, Any],
+    config: Any,
+    *,
+    region: tuple[float, float, float, float] | None = None,
+    with_record: bool = False,
+) -> list[str]:
+    """The station list to plot, after ``all``, ``--region`` and ``--with-record``.
+
+    ``all`` (POS series) = every station with a ``.pos`` file of the selected
+    product inside ``region`` -- by default :data:`ICELAND_REGION`; for TOT
+    series it stays the stations.cfg list. Call after :func:`resolve_source`
+    (it reads ``tType``, ``pos_id`` and ``Dir`` from ``kwargs``).
+    """
+    from geo_dataread.baseline import split_baseline
+
+    pos = kwargs.get("tType") == "POS"
+    coords: dict[str, tuple[float, float]] = {}
+    if pos:
+        from geo_dataread.pos import DEFAULT_PROD_ID, pos_stations
+
+        listed = pos_stations(
+            kwargs.get("pos_id") or DEFAULT_PROD_ID, kwargs.get("Dir")
+        )
+        coords = {sta: (lon, lat) for sta, lon, lat in listed}
+
+    if "all" in stations:
+        if pos:
+            box = region if region is not None else ICELAND_REGION
+            picked = [
+                sta for sta, (lon, lat) in coords.items() if _inside(lon, lat, box)
+            ]
+        else:
+            picked = [str(s) for s in config.getStationInfo() if str(s) != "DEFAULTS"]
+        rest = [s for s in stations if s != "all" and s not in picked]
+        stations = picked + rest
+        if not pos and region is not None:
+            stations = _filter_region(stations, region, coords)
+    elif region is not None:
+        stations = _filter_region(stations, region, coords)
+
+    if with_record:
+        from geo_dataread import gps_views as gv
+
+        from gps_plot import timesmatplt as tplt
+
+        _frame, params = tplt.record_context(
+            str(kwargs.get("tType")), kwargs.get("pos_id"), None
+        )
+        have = set(gv.read_detrend_params(params).get("stations") or {})
+        stations = [
+            s
+            for s in stations
+            if all(e.upper() in have for e in (split_baseline(s) or (s,)))
+        ]
+    return list(stations)
+
+
+def _inside(lon: float, lat: float, box: tuple[float, float, float, float]) -> bool:
+    w, e, s, n = box
+    return w <= lon <= e and s <= lat <= n
+
+
+def _station_lonlat(
+    sta: str, coords: dict[str, tuple[float, float]]
+) -> tuple[float, float] | None:
+    """A station's position: its .pos header, else stations.cfg."""
+    if sta.upper() in coords:
+        return coords[sta.upper()]
+    try:
+        from geo_dataread.velocity import _coords
+
+        lon, lat = _coords(sta.upper())
+        return float(lon), float(lat)
+    except Exception:  # noqa: BLE001 - an unknown station has no position
+        return None
+
+
+def _filter_region(
+    stations: Sequence[str],
+    box: tuple[float, float, float, float],
+    coords: dict[str, tuple[float, float]],
+) -> list[str]:
+    from geo_dataread.baseline import split_baseline
+
+    out = []
+    for s in stations:
+        ends = split_baseline(s) or (s,)
+        pts = [_station_lonlat(e, coords) for e in ends]
+        if all(p is not None and _inside(p[0], p[1], box) for p in pts):
+            out.append(s)
+    return out

@@ -86,6 +86,7 @@ A:B` (repeatable) draw the velocity product's rate per window
 → plate, `--ref detrend` → background (`--detrend-terms periodic` →
 plate-periodic) — the map's and `gps-velocities`' numbers for the same ref
 and view (they default to plate-periodic + cleaned; `ts` follows the plot). `--rate-segments steps|events` = one rate per span between events (design doc). `--view cleaned` detects outliers with the prior-free running window by default (gps_analysis design §15; `--outlier-sigma K`, default 4.5; σ not in the file name); `--outlier-method model` (or `--stages`) = the old trajectory-fit detector, file gets `-modeldetect`. Antenna obstruction, two indices: icing days (GAMIT autcln index, `gps-autcln-harvest`; all components, light blue) and snow-burial days (geo_dataread.snow_burial; Up only, pale lilac) — each `--icing`/`--snow remove|keep|off` (default remove) and `--show-icing`/`--show-snow [N]` (independent of `--show-outliers`); `--obstruction` / `--show-obstruction [N]` set both (an explicit per-kind flag wins); `--icing-ratio R`.
+`gpsplot ts all` = every station with a .pos series of the frame in the Iceland box (geo_dataread `pos_stations`; TOT: stations.cfg); `--region=W/E/S/N` (with `=`, west is negative) replaces the box and filters lists, `--with-record` keeps stations with a detrend record.
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
 (patterns match stations.cfg). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
@@ -224,7 +225,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-20 — snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
