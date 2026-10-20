@@ -92,8 +92,8 @@ OUTLIER_FACE_COLOR: str = "lightgrey"
 PROVISIONAL_ERRORBAR_COLOR: str = "darkgoldenrod"
 PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
-#: icing suspected (GAMIT autcln index): removed like an outlier, but its own
-#: colour — ice on the antenna, not a blunder
+#: icing suspected (GAMIT autcln index): removed by default (--icing keep
+#: leaves them in); its own colour — ice on the antenna, not a blunder
 ICING_ERRORBAR_COLOR: str = "#d9e8f5"
 ICING_EDGE_COLOR: str = "#8fbbe0"
 ICING_FACE_COLOR: str = "#f4f9fe"  # very, very light blue (BGÓ)
@@ -335,6 +335,7 @@ def view_flags(
     restrict: Any = None,
     icing: bool = True,
     icing_ratio: float | None = None,
+    icing_mode: str = "remove",
 ) -> tuple[Any, Any, list[bool] | None]:
     """Run the station-aware view detector and return its raw verdicts.
 
@@ -407,6 +408,7 @@ def view_flags(
         detect_kwargs["exclude_epochs"] = xepochs
     if iepochs:
         detect_kwargs["icing_epochs"] = iepochs
+        detect_kwargs["icing_mode"] = icing_mode
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
@@ -441,6 +443,7 @@ def _mask_outliers(
     provisional_days: float | None = None,
     icing: bool = True,
     icing_ratio: float | None = None,
+    icing_mode: str = "remove",
 ) -> tuple[
     Any,
     tuple[Any, Any] | None,
@@ -503,6 +506,7 @@ def _mask_outliers(
         provisional_days=provisional_days,
         icing=icing,
         icing_ratio=icing_ratio,
+        icing_mode=icing_mode,
     )
 
     provisional = None
@@ -512,8 +516,9 @@ def _mask_outliers(
             np.where(pflags, Ddata, np.nan),
         )
 
-    # the icing days (flagged by the view, every component) get their own
-    # overlay; the grey one keeps the detector's outliers only
+    # the icing days get their own overlay; the grey one keeps the
+    # detector's outliers only. icing_mode "remove": they are flagged (and
+    # removed) like outliers; "keep": they stay in the series
     imask = np.zeros_like(flags)
     iep = icing_epochs(sta, icing=icing, icing_ratio=icing_ratio)
     if iep:
@@ -525,7 +530,8 @@ def _mask_outliers(
                 imask[idx] = True
             else:
                 imask[:, idx] = True
-        imask &= flags
+        if icing_mode == "remove":
+            imask &= flags
     iced = None
     if imask.any():
         iced = (np.where(imask, data, np.nan), np.where(imask, Ddata, np.nan))
@@ -723,6 +729,7 @@ def station_series(
     ref_position: str | None = None,
     icing: bool = True,
     icing_ratio: float | None = None,
+    icing_mode: str = "remove",
     convention: str = "geodetic",
     pos_id: str | None = None,
 ) -> StationSeries:
@@ -762,6 +769,7 @@ def station_series(
             provisional_days=provisional_days,
             icing=icing,
             icing_ratio=icing_ratio,
+            icing_mode=icing_mode,
         )
 
     views = dict(
@@ -865,6 +873,9 @@ def plotTime(
     provisional_days: float | None = None,
     icing: bool = True,
     icing_ratio: float | None = None,
+    icing_mode: str = "remove",
+    hide_icing: bool = True,
+    icing_tail: int | None = None,
     remove_kinds: Sequence[str] | None = None,
     detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -1111,6 +1122,7 @@ def plotTime(
         pos_id=pos_id,
         icing=icing,
         icing_ratio=icing_ratio,
+        icing_mode=icing_mode,
     )
     from gps_plot.sources import gps as gps_source
 
@@ -1217,14 +1229,15 @@ def plotTime(
 
     if iced is not None:
         # icing suspected (GAMIT autcln index, geo_dataread.autcln_stats):
-        # removed from the series like outliers, drawn in their own colour
-        # under the same --show-outliers rule, and counted in a note even
-        # when hidden -- an iced spell must never pass for clean data
+        # removed from the series (--icing remove, default) or left in it
+        # (keep); drawn light blue only with --show-icing [N] -- independent
+        # of --show-outliers (BGÓ) -- and counted in a note even when hidden:
+        # an iced spell must never pass for clean data
         n_iced = int(np.count_nonzero(np.isfinite(np.atleast_2d(iced[0])).any(axis=0)))
-        if not hide_outliers:
+        if not hide_icing:
             iy, idy = iced
-            if outlier_tail:
-                iy, idy = last_flagged(iy, idy, outlier_tail)
+            if icing_tail:
+                iy, idy = last_flagged(iy, idy, icing_tail)
             fig = addData(
                 x,
                 iy,
@@ -1237,8 +1250,12 @@ def plotTime(
         fig.axes[0].text(
             0.01,
             0.02,
-            "icing suspected: %d day%s (GAMIT autcln)"
-            % (n_iced, "" if n_iced == 1 else "s"),
+            "icing suspected: %d day%s (GAMIT autcln, %s)"
+            % (
+                n_iced,
+                "" if n_iced == 1 else "s",
+                "removed" if icing_mode == "remove" else "kept",
+            ),
             transform=fig.axes[0].transAxes,
             fontsize="small",
             color=ICING_EDGE_COLOR,
@@ -1909,6 +1926,7 @@ def addData(
     markerfacecolor: str = "r",
     markeredgecolor: str = "r",
     label: str | None = None,
+    markeredgewidth: float | None = None,
 ) -> Figure:
     """Add a three-component data series to the figure."""
     for i in range(3):
@@ -1924,6 +1942,7 @@ def addData(
             markerfacecolor=markerfacecolor,
             markeredgecolor=markeredgecolor,
             label=label,
+            **({} if markeredgewidth is None else {"markeredgewidth": markeredgewidth}),
         )
 
     return fig

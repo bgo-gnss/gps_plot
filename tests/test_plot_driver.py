@@ -360,3 +360,13 @@ def test_method_flags_unset_defer_to_the_catalog():
 def test_outlier_sigma_must_be_positive():
     with pytest.raises(SystemExit, match="outlier-sigma"):
         driver._method_overrides("running", 0.0)
+
+
+def test_icing_flags_parse():
+    p = driver.build_parser()
+    a = p.parse_args(["GFUM"])
+    assert (a.icing_mode, a.icing, a.show_icing) == ("remove", True, None)
+    a = p.parse_args(["GFUM", "--icing", "keep", "--show-icing", "10"])
+    assert (a.icing_mode, a.show_icing) == ("keep", 10)
+    assert p.parse_args(["GFUM", "--show-icing"]).show_icing == 0
+    assert p.parse_args(["GFUM", "--no-icing"]).icing is False
