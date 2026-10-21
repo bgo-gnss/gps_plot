@@ -67,8 +67,29 @@ def config_dir(config: Any, option: str, default: str | None = None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def add_period_options(parser: Any, *, specials: Sequence[str]) -> None:
-    """-s/-e/-D/--fix/--special: which time span is plotted."""
+def special_list(specials: Sequence[str]) -> Callable[[str], str]:
+    """argparse type for ``--special A,B``: each item one of ``specials``."""
+
+    def check(value: str) -> str:
+        items = [v.strip() for v in value.split(",") if v.strip()]
+        bad = [v for v in items if v not in specials]
+        if not items or bad:
+            raise argparse.ArgumentTypeError(
+                f"invalid choice: {value!r} (choose from {', '.join(specials)}, "
+                "or a comma-separated list of them)"
+            )
+        return ",".join(items)
+
+    return check
+
+
+def add_period_options(
+    parser: Any, *, specials: Sequence[str], multi: bool = False
+) -> None:
+    """-s/-e/-D/--fix/--special: which time span is plotted.
+
+    ``multi`` lets ``--special`` take a comma-separated list (one plot each).
+    """
     parser.add_argument(
         "-s", "--start", type=str, default=None, help="start of the plot, YYYYMMDD"
     )
@@ -88,10 +109,12 @@ def add_period_options(parser: Any, *, specials: Sequence[str]) -> None:
     )
     parser.add_argument(
         "--special",
-        type=str,
+        type=special_list(specials) if multi else str,
         default=None,
-        choices=list(specials),
-        help="for routine plots: whole time series (all), One year long (year), ninety days (90d)",
+        choices=None if multi else list(specials),
+        help="for routine plots: whole time series (all), One year long (year), "
+        "ninety days (90d)"
+        + ("; a comma-separated list plots each, e.g. 90d,year,full" if multi else ""),
     )
 
 
@@ -408,21 +431,24 @@ RETIRED_STATUSES = ("discontinued", "inactive")
 
 
 def active_stations(config: Any) -> list[str]:
-    """stations.cfg stations that are operated: not passive, not retired.
+    """stations.cfg stations that are not retired (discontinued/inactive)
+    and not campaign sites (``station_type = campaign``).
 
-    ``station_role`` via gps_parser's canonical parser (missing = active);
-    ``station_status`` discontinued/inactive drops a station, as in receivers.
+    Passive stations count: ``station_role = passive`` means "we don't
+    download it", not "don't plot it" (REYK, HOFN). The foreign ones fall
+    outside the plotting box.
     """
-    from gps_parser import parse_station_role
-
     cfg = config.config
     out = []
     for sta in cfg.sections():
         if sta == "DEFAULTS" or len(sta) != 4:
             continue
-        role = parse_station_role(cfg.get(sta, "station_role", fallback=""))
         status = cfg.get(sta, "station_status", fallback="").split("#")[0]
-        if role == "active" and status.strip().lower() not in RETIRED_STATUSES:
+        kind = cfg.get(sta, "station_type", fallback="").split("#")[0]
+        if (
+            status.strip().lower() not in RETIRED_STATUSES
+            and kind.strip().lower() != "campaign"
+        ):
             out.append(sta)
     return out
 

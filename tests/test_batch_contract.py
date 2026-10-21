@@ -115,7 +115,7 @@ def test_nothing_usable_in_the_period_is_a_skip(monkeypatch) -> None:
     assert driver.tryTimes("ROTH", **KW).status == "skipped"
 
 
-def test_active_stations_drop_passive_and_retired() -> None:
+def test_active_stations_keep_passive_drop_retired() -> None:
     import configparser
     from types import SimpleNamespace
 
@@ -136,6 +136,46 @@ station_status = discontinued
 station_status = inactive
 [SENG]
 station_role = active
+[BJAC]
+station_role = passive
+station_type = campaign  # benchmark
 """
     )
-    assert active_stations(SimpleNamespace(config=cfg)) == ["VONC", "SENG"]
+    assert active_stations(SimpleNamespace(config=cfg)) == ["VONC", "ZIMM", "SENG"]
+
+
+def test_special_list_validates_each_item() -> None:
+    import argparse
+
+    from gps_plot.cli.common import special_list
+
+    check = special_list(["all", "90d", "year", "full"])
+    assert check("90d, year,full") == "90d,year,full"
+    for bad in ("90d,decade", ",", "week"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            check(bad)
+
+
+def test_special_list_expands_to_one_variant_each() -> None:
+    specials = ["90d", "year", "full", "fixedstart"]
+    got = driver._expand_variants(
+        {"ref": "plate", "special": "90d,year"}, ["plate"], specials
+    )
+    assert [v["special"] for v in got] == ["90d", "year"]
+    got = driver._expand_variants({"ref": "plate", "special": "full,all"}, [], specials)
+    assert [v["special"] for v in got] == ["full", "90d", "year", "fixedstart"]
+
+
+def test_operational_fills_defaults_but_an_explicit_flag_wins() -> None:
+    parser = driver.build_parser(config=None)
+    args = parser.parse_args(["VONC", "--operational", "--outlier-sigma", "5"])
+    driver.apply_operational(args, parser)
+    assert args.view == "cleaned" and args.strict and args.legacy_names
+    assert (args.show_outliers, args.show_obstruction) == (10, 30)
+    assert args.outlier_sigma == 5
+
+
+def test_is_no_data() -> None:
+    assert tplt.is_no_data(tplt.NoDataError("no data for station X"))
+    assert tplt.is_no_data(ValueError("uncertainty screening left no nonzero data"))
+    assert not tplt.is_no_data(ValueError("no plate assigned"))

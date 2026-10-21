@@ -785,6 +785,40 @@ class NoDataError(ValueError):
     """The station has no data in the requested period (a skip, not a fault)."""
 
 
+#: y half-range (mm) of a period plot with no data in it
+EMPTY_PERIOD_YLIM = 10.0
+
+#: errors from deeper down that mean "nothing usable in the period"
+#: (gps_analysis screens every epoch out): treated like NoDataError
+NO_DATA_MESSAGES = ("uncertainty screening left no nonzero data",)
+
+
+def is_no_data(exc: BaseException) -> bool:
+    """Whether ``exc`` says the period has no (usable) data."""
+    return isinstance(exc, NoDataError) or any(m in str(exc) for m in NO_DATA_MESSAGES)
+
+
+def _empty_period(sta: str, request: Any, exc: ValueError) -> Any:
+    """A no-points series carrying the station's last epoch for the title.
+
+    The last epoch comes from the whole raw record; it lies before the
+    plotted period, so nothing is drawn but the frame and the red
+    "Last datapoint" date. A station with no data at all re-raises ``exc``.
+    """
+    from gps_plot.series import Series
+    from gps_plot.sources import gps as gps_source
+
+    try:
+        whole = gps_source.fetch(
+            sta, request.replace(fstart=None, fend=None, view="raw", ref="itrf2008")
+        )
+    except ValueError:
+        raise exc from None
+    last = np.asarray(whole.t[-1:], dtype=float)
+    nan = np.full((3, 1), np.nan)
+    return Series(sta, last, nan, nan.copy(), meta={"empty_period": True})
+
+
 def station_series(
     sta: str,
     *,
@@ -1235,17 +1269,25 @@ def plotTime(
     from gps_plot.sources import gps as gps_source
 
     request = gps_source.SeriesRequest(**series_kw)
-    main_series = gps_source.fetch(
-        sta,
-        request,
-        gps_source.BaselineOptions(
-            tol=epoch_tol,
-            empirical=baseline_sigma == "empirical",
-            rho=baseline_rho,
-            sigma_scale=baseline_sigma_scale,
-            noise_path=baseline_noise,
-        ),
-    )
+    try:
+        main_series = gps_source.fetch(
+            sta,
+            request,
+            gps_source.BaselineOptions(
+                tol=epoch_tol,
+                empirical=baseline_sigma == "empirical",
+                rho=baseline_rho,
+                sigma_scale=baseline_sigma_scale,
+                noise_path=baseline_noise,
+            ),
+        )
+    except ValueError as exc:
+        # a station that is down still gets its 90d/year plot, empty, with
+        # the red "Last datapoint" date -- as the legacy lane did (BGÓ
+        # 2026-10-21: data is expected, the station is having issues)
+        if fstart is None or pair is not None or not is_no_data(exc):
+            raise
+        main_series = _empty_period(sta, request, exc)
     if ref == "detrend" or view == "detrended":
         # re-zero a detrended station at its start (vshift again, after the
         # detrend): the model was subtracted after getData's zeroing
@@ -1292,6 +1334,20 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
     )
+
+    if main_series.meta.get("empty_period"):
+        for ax in fig.axes:
+            if not ylim:
+                ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
+            ax.text(
+                0.5,
+                0.5,
+                "no data in this period",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                color="0.5",
+            )
 
     if ref == "detrend" and split_baseline(sta) is None:
         from gps_plot.sources.gps import optional_record, seasonal_only
