@@ -128,10 +128,11 @@ def test_plot_station_runs_every_variant(fake_gps_read, monkeypatch):
     seen = []
     monkeypatch.setattr(driver, "tryTimes", lambda sta, **kw: seen.append((sta, kw)))
     variants = [{"ref": "plate", "special": s} for s in ("90d", "year")]
-    driver.plotStation("SENG", variants)
+    driver.plotStation("SENG", variants, strict=True)
+    batch = {"strict": True, "show_traceback": False}
     assert seen == [
-        ("SENG", {"ref": "plate", "special": "90d"}),
-        ("SENG", {"ref": "plate", "special": "year"}),
+        ("SENG", {**batch, "ref": "plate", "special": "90d"}),
+        ("SENG", {**batch, "ref": "plate", "special": "year"}),
     ]
 
 

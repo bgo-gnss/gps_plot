@@ -781,6 +781,10 @@ def trajectory_views(
     return data, detrend_applied
 
 
+class NoDataError(ValueError):
+    """The station has no data in the requested period (a skip, not a fault)."""
+
+
 def station_series(
     sta: str,
     *,
@@ -829,7 +833,7 @@ def station_series(
         **pos_read_kwargs(ref_position, convention, pos_id),
     )
     if yearf is None or len(yearf) == 0:
-        raise ValueError("no data for station %s" % sta)
+        raise NoDataError("no data for station %s" % sta)
 
     outliers = provisional = aborted = iced = buried = None
     if view == "cleaned":
@@ -929,6 +933,28 @@ def resolve_period(
     return start, end, fstart, fend
 
 
+def _require_plates(sta: str) -> list[str]:
+    """The plate name of each end of ``sta`` (a station or baseline).
+
+    Raises ValueError naming the catalog to fix when an end has no plate:
+    the plate-removed series cannot be formed without one.
+    """
+    from geofunc.plates import plate_name
+
+    from geo_dataread.station_catalog import plate_table
+
+    table = plate_table()
+    ends = split_baseline(sta) or (sta,)
+    unknown = [s for s in ends if s not in table]
+    if unknown:
+        raise ValueError(
+            f"{sta}: no plate assigned to {', '.join(unknown)} in the "
+            "deployed station-plate catalog (postprocess.cfg platefile). "
+            "Add it in gps-config-data and deploy, or plot with --ref ref_frame."
+        )
+    return [plate_name(table[s]) for s in ends]
+
+
 def plotTime(
     sta: str,
     start: datetime.datetime | None = None,
@@ -985,6 +1011,7 @@ def plotTime(
     segment_min_days: int = 30,
     events_catalog: str | None = None,
     quakes: Sequence[Any] | None = None,
+    legacy_names: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -1070,23 +1097,13 @@ def plotTime(
     # graph title reference-frame string
     if ref is None:  # baselines and the detrended view default to plate
         ref = "plate" if (split_baseline(sta) or view == "detrended") else "itrf2008"
+    if ref in ("plate", "detrend"):
+        # a detrended series is the plate-removed one minus the record, so it
+        # needs the plate just as much: without this check the plate removal
+        # warns, removes nothing and the file says "Detrended" over the ITRF
+        # ramp (LAMB, 2026-10-21)
+        plates = _require_plates(sta)
     if ref == "plate":
-        from geofunc.plates import plate_name
-
-        from geo_dataread.station_catalog import plate_table
-
-        table = plate_table()
-        ends = split_baseline(sta) or (sta,)
-        unknown = [s for s in ends if s not in table]
-        if unknown:
-            # the plate-removed series cannot be formed without a plate; say
-            # which catalog to fix instead of surfacing a bare KeyError
-            raise ValueError(
-                f"{sta}: no plate assigned to {', '.join(unknown)} in the "
-                "deployed station-plate catalog (postprocess.cfg platefile). "
-                "Add it in gps-config-data and deploy, or plot with --ref ref_frame."
-            )
-        plates = [plate_name(table[s]) for s in ends]
         # a cross-rift baseline has two plates; say so rather than pick one
         refTitle = (
             plates[0]
@@ -1616,7 +1633,8 @@ def plotTime(
             from geo_dataread.pos import frame_name, pos_product
 
             _pid = pos_product(pos_id)
-            filend += f"-{frame_name(_pid)}"
+            if not legacy_names:  # the publish names carry no frame
+                filend += f"-{frame_name(_pid)}"
             if _pid.startswith("imo.08hr"):
                 filend += "-8h"
             elif overlay_pos_id is not None:
@@ -2326,12 +2344,16 @@ def saveFig(
     except Exception:  # pragma: no cover - defensive fallback
         bbox = "tight"
 
+    written = getattr(fig, "_gps_files", [])
     for fmt in formats:
+        path = "%s.%s" % (fileName, fmt)
         fig.savefig(
-            "%s.%s" % (fileName, fmt),
+            path,
             bbox_inches=bbox,
             dpi=png_dpi if fmt.lower() == "png" else "figure",
         )
+        written.append(path)
+    fig._gps_files = written  # type: ignore[attr-defined]  # for --manifest
 
     return fig
 

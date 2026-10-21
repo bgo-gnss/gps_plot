@@ -3,11 +3,13 @@
 
 import argparse
 import concurrent.futures
+import dataclasses
 import functools
 import os
 import sys
 import textwrap
 import traceback
+import warnings
 
 # Only the three helpers the MODERN lane calls are annotated below. This
 # module is `ignore_errors` for mypy (see pyproject's typing policy), so
@@ -27,38 +29,106 @@ from gps_plot.cli import common
 
 
 # functions
-def tryTimes(sta, **kwargs):
-    """
-    Catching exceptions from tplt.plotTime
+
+#: warnings that mean a plot would show something other than its file name
+#: says (a raw series under a -cleaned or -detrend name, a "plate-removed"
+#: series with no plate removed).  --strict turns them into failures before
+#: anything is written; without it they stay warnings (interactive use).
+DEGRADE_WARNINGS = (
+    r".*serving raw series",
+    r".*serving unflagged data",
+    r"Cannot determine plate velocity",
+)
+
+
+#: errors that mean "nothing usable in the plotted period" from deeper down
+#: (gps_analysis screens every epoch out): a skip, like NoDataError
+NO_DATA_MESSAGES = ("uncertainty screening left no nonzero data",)
+
+
+@dataclasses.dataclass
+class PlotOutcome:
+    """What one (station, variant) render did — the batch contract's unit.
+
+    ``status`` is ``"ok"`` (``files`` written), ``"skipped"`` (no data in
+    the plotted period: a dead or down station, expected in a network run)
+    or ``"failed"`` (``reason`` says why; nothing was written).
     """
 
+    sta: str
+    variant: str
+    status: str
+    reason: str = ""
+    files: list[str] = dataclasses.field(default_factory=list)
+
+
+def tryTimes(sta, strict=False, show_traceback=False, **kwargs):
+    """Render one plot variant; never raise — return a :class:`PlotOutcome`.
+
+    One bad station must not sink a batch, but a failure must not vanish
+    either: it is one line on stderr and a ``failed`` outcome the summary
+    counts.  ``strict`` refuses degraded output (:data:`DEGRADE_WARNINGS`).
+    """
+    variant = "%s/%s" % (kwargs.get("ref"), kwargs.get("special"))
     try:  # Trying to plot
         print("%s Plotting" % sta)
-        fig = tplt.plotTime(sta, **kwargs)
+        with warnings.catch_warnings():
+            if strict:
+                for pattern in DEGRADE_WARNINGS:
+                    warnings.filterwarnings("error", message=pattern)
+            fig = tplt.plotTime(sta, **kwargs)
         print(
             "plotted %s using: %s, %s"
             % (sta, getattr(fig, "_gps_label", kwargs["ref"]), kwargs["special"])
         )
-    except IndexError as e:
-        top = traceback.extract_stack()[-1]
-        errorstr = "%s: %s, %s: " % (sta, kwargs["ref"], kwargs["special"])
-        errorstr += ", ".join(
-            [
-                type(e).__name__,
-                os.path.basename(top[0]),
-                str(top[1]),
-                "For station %s" % sta,
-            ]
-        )
-        print(">> {}, {}".format(sys.stderr, errorstr))
+        files = list(getattr(fig, "_gps_files", []))
+        if kwargs.get("save"):
+            import matplotlib.pyplot as plt
 
-    except Exception:
-        traceback.print_exc()
-        # print >>sys.stderr, top
-        print(
-            sys.stderr,
-            "Unexpected error: %s during processing of %s" % (sys.exc_info()[0], sta),
-        )
+            plt.close(fig)  # a worker renders many stations; don't keep them
+        return PlotOutcome(sta, variant, "ok", files=files)
+    except (tplt.NoDataError, ValueError) as exc:
+        if not isinstance(exc, tplt.NoDataError) and not any(
+            m in str(exc) for m in NO_DATA_MESSAGES
+        ):
+            return _failed(sta, variant, exc, show_traceback)
+        print("skipped %s %s: %s" % (sta, variant, exc), file=sys.stderr)
+        return PlotOutcome(sta, variant, "skipped", str(exc))
+    except Exception as exc:  # noqa: BLE001 - reported, counted, exit status
+        return _failed(sta, variant, exc, show_traceback)
+
+
+def _failed(sta, variant, exc, show_traceback):
+    if show_traceback:
+        traceback.print_exception(exc)
+    reason = "%s: %s" % (type(exc).__name__, exc)
+    print("FAILED %s %s: %s" % (sta, variant, reason), file=sys.stderr)
+    return PlotOutcome(sta, variant, "failed", reason)
+
+
+def summarize(outcomes, manifest=None):
+    """Print the batch summary, write the manifest; return the exit status.
+
+    The manifest lists every file written, one absolute path per line,
+    sorted — the publish step copies exactly these instead of globbing the
+    figure directory.  Exit status 1 when any plot failed, else 0 (skips
+    are not failures).
+    """
+    ok = [o for o in outcomes if o.status == "ok"]
+    skipped = [o for o in outcomes if o.status == "skipped"]
+    failed = [o for o in outcomes if o.status == "failed"]
+    files = sorted({os.path.abspath(f) for o in ok for f in o.files})
+    if manifest:
+        with open(manifest, "w") as fh:
+            fh.writelines(f + "\n" for f in files)
+    print(
+        "gpsplot ts: %d plotted (%d files), %d skipped (no data in period), "
+        "%d failed" % (len(ok), len(files), len(skipped), len(failed)),
+        file=sys.stderr,
+    )
+    for o in sorted(failed, key=lambda o: (o.sta, o.variant)):
+        print("  failed %s %s: %s" % (o.sta, o.variant, o.reason), file=sys.stderr)
+    return 1 if failed else 0
 
 
 def _install_raw_read_cache(maxsize=4):
@@ -100,7 +170,7 @@ def _install_raw_read_cache(maxsize=4):
     gpsr.openGlobkTimes = cached_openGlobkTimes
 
 
-def plotStation(sta, variants):
+def plotStation(sta, variants, strict=False, show_traceback=False):
     """Render every requested (ref, special) plot variant for one station.
 
     This is the unit of (process-)parallel work: one station, all its
@@ -109,8 +179,10 @@ def plotStation(sta, variants):
     Per-plot fault tolerance is unchanged (:func:`tryTimes`).
     """
     _install_raw_read_cache()
-    for kwargs in variants:
-        tryTimes(sta, **kwargs)
+    return [
+        tryTimes(sta, strict=strict, show_traceback=show_traceback, **kwargs)
+        for kwargs in variants
+    ]
 
 
 def _expand_variants(kwargs, refs, specials):
@@ -622,9 +694,12 @@ def build_parser(
     parser.add_argument(
         "Stations",
         nargs="+",
-        help="stations (4-char codes), or 'all' (every station with a .pos "
-        "series of the selected frame in the Iceland box, or in --region; "
-        "for --tType TOT the stations.cfg list). AAAA-BBBB plots the BASELINE "
+        help="stations (4-char codes), 'active' (the production set: "
+        "stations.cfg stations that are not passive, discontinued or "
+        "inactive, in the Iceland box or --region, with a series), or 'all' "
+        "(every station with a .pos series of the selected frame in the "
+        "Iceland box, or in --region; for --tType TOT the stations.cfg "
+        "list). AAAA-BBBB plots the BASELINE "
         "AAAA minus BBBB (N/E/U differences on common epochs — days, or 8 h "
         "sessions within 2 h — re-zeroed at the first; sigma in quadrature, or "
         "--baseline-sigma empirical); it defaults to --ref plate and can be "
@@ -1040,6 +1115,34 @@ def build_parser(
         "defaults to min(cpu count, number of stations). Interactive "
         "mode (no --save) is always serial.",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="production mode: refuse (write nothing, count as failed) any "
+        "plot that would degrade — a raw series under a -cleaned/-detrend "
+        "name, a plate-removed series without a plate. Without it these "
+        "stay warnings",
+    )
+    parser.add_argument(
+        "--manifest",
+        metavar="FILE",
+        default=None,
+        help="write the absolute path of every file written, one per line "
+        "(sorted) — publish exactly these instead of globbing the figure "
+        "directory",
+    )
+    parser.add_argument(
+        "--legacy-names",
+        action="store_true",
+        help="publish file names: leave the frame out ({STA}-plate-90d.png, "
+        "as brunnur/cdn and their hotlinks expect); 8 h products keep -8h. "
+        "Only for one frame per figure directory, or the names collide",
+    )
+    parser.add_argument(
+        "--traceback",
+        action="store_true",
+        help="print the full traceback of a failed plot (default: one line)",
+    )
 
     return parser
 
@@ -1075,8 +1178,8 @@ def _resolve_obstruction(kwargs: dict[str, Any], parser: Any) -> None:
 
 def run(
     args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any = None
-) -> None:
-    """Plot what the parsed ``args`` ask for; ``parser`` reports errors."""
+) -> int:
+    """Plot what the parsed ``args`` ask for; return the exit status (1 = a plot failed)."""
     if config is None:
         config = _load_config()
     eventDict = {}
@@ -1225,6 +1328,9 @@ def run(
     # browser backend and stays in-process; batch mode defaults to one
     # process per station up to the core count.
     workers = kwargs.pop("workers")
+    strict = kwargs.pop("strict")
+    show_traceback = kwargs.pop("traceback")
+    manifest = kwargs.pop("manifest")
     if not args.save:
         workers = 1
     elif workers is None:
@@ -1256,29 +1362,33 @@ def run(
             file=sys.stderr,
         )
 
+    batch = {"strict": strict, "show_traceback": show_traceback}
+    outcomes = []
     if workers > 1:
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(plotStation, sta, variants): sta for sta in stations}
+            futures = {
+                pool.submit(plotStation, sta, variants, **batch): sta
+                for sta in stations
+            }
             for future in concurrent.futures.as_completed(futures):
                 try:
-                    future.result()
-                except Exception:  # one bad station must not sink the batch
-                    traceback.print_exc()
-                    print(
-                        "Unexpected error: %s during processing of %s"
-                        % (sys.exc_info()[0], futures[future]),
-                        file=sys.stderr,
-                    )
+                    outcomes.extend(future.result())
+                except Exception as exc:  # a worker died: count it, go on
+                    sta = futures[future]
+                    reason = "%s: %s" % (type(exc).__name__, exc)
+                    print("FAILED %s: %s" % (sta, reason), file=sys.stderr)
+                    outcomes.append(PlotOutcome(sta, "*", "failed", reason))
     else:
         for sta in stations:
-            plotStation(sta, variants)
+            outcomes.extend(plotStation(sta, variants, **batch))
+    return summarize(outcomes, manifest)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    """``plot-gps-timeseries``: the same as ``gpsplot ts``."""
+def main(argv: Sequence[str] | None = None) -> int:
+    """``plot-gps-timeseries``: the same as ``gpsplot ts`` (returns the exit status)."""
     config = _load_config()
     parser = build_parser(config=config)
-    run(parser.parse_args(argv), parser, config)
+    return run(parser.parse_args(argv), parser, config) or 0
 
 
 if __name__ == "__main__":
@@ -1288,4 +1398,4 @@ if __name__ == "__main__":
     original_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGINT, exit_gracefully)
 
-    main()
+    sys.exit(main())

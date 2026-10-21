@@ -102,10 +102,10 @@ def add_output_options(parser: Any, config: Any) -> None:
         type=str,
         nargs="?",
         default=None,
-        const="eps",
+        const="png",
         help="save figure to file(s): a format suffix or comma-separated "
         "formats, each written natively by matplotlib "
-        "(e.g. 'png', 'pdf' or 'eps,pdf,png'); defaults to eps",
+        "(e.g. 'png', 'pdf' or 'eps,pdf,png'); --save alone = png",
     )
     parser.add_argument(
         "--name",
@@ -336,7 +336,11 @@ def resolve_stations(
     region: tuple[float, float, float, float] | None = None,
     with_record: bool = False,
 ) -> list[str]:
-    """The station list to plot, after ``all``, ``--region`` and ``--with-record``.
+    """The station list to plot, after ``active``/``all``, ``--region`` and ``--with-record``.
+
+    ``active`` = :func:`active_stations` inside ``region`` (default
+    :data:`ICELAND_REGION`) that have a series of the selected product -- the
+    production set.
 
     ``all`` (POS series) = every station with a ``.pos`` file of the selected
     product inside ``region`` -- by default :data:`ICELAND_REGION`; for TOT
@@ -355,7 +359,18 @@ def resolve_stations(
         )
         coords = {sta: (lon, lat) for sta, lon, lat in listed}
 
-    if "all" in stations:
+    if "active" in stations:
+        # the production set: operated stations, inside the box, with a series
+        box = region if region is not None else ICELAND_REGION
+        picked = [
+            sta
+            for sta in active_stations(config)
+            if (not pos or sta in coords)
+            and (lonlat := _station_lonlat(sta, coords)) is not None
+            and _inside(*lonlat, box)
+        ]
+        stations = picked + [s for s in stations if s != "active" and s not in picked]
+    elif "all" in stations:
         if pos:
             box = region if region is not None else ICELAND_REGION
             picked = [
@@ -385,6 +400,31 @@ def resolve_stations(
             if all(e.upper() in have for e in (split_baseline(s) or (s,)))
         ]
     return list(stations)
+
+
+#: station_status values that take a station out of the production set
+#: (the same rule as receivers' scheduler)
+RETIRED_STATUSES = ("discontinued", "inactive")
+
+
+def active_stations(config: Any) -> list[str]:
+    """stations.cfg stations that are operated: not passive, not retired.
+
+    ``station_role`` via gps_parser's canonical parser (missing = active);
+    ``station_status`` discontinued/inactive drops a station, as in receivers.
+    """
+    from gps_parser import parse_station_role
+
+    cfg = config.config
+    out = []
+    for sta in cfg.sections():
+        if sta == "DEFAULTS" or len(sta) != 4:
+            continue
+        role = parse_station_role(cfg.get(sta, "station_role", fallback=""))
+        status = cfg.get(sta, "station_status", fallback="").split("#")[0]
+        if role == "active" and status.strip().lower() not in RETIRED_STATUSES:
+            out.append(sta)
+    return out
 
 
 def _inside(lon: float, lat: float, box: tuple[float, float, float, float]) -> bool:
