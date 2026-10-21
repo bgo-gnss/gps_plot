@@ -1322,6 +1322,7 @@ def plotTime(
     if save and fig is None:
         fig = _reusable_figure()
 
+    empty = bool(main_series.meta.get("empty_period"))
     fig = stdTimesPlot(
         x,
         data,
@@ -1329,16 +1330,15 @@ def plotTime(
         Title=Title,
         start=start,
         end=end,
-        ylim=ylim,
+        ylim=() if empty else ylim,  # a margin around no data is NaN
         warnp=warnp,
         fig=fig,
         highlight_last=highlight_last,
     )
 
-    if main_series.meta.get("empty_period"):
+    if empty:
         for ax in fig.axes:
-            if not ylim:
-                ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
+            ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
             ax.text(
                 0.5,
                 0.5,
