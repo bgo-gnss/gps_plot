@@ -984,6 +984,7 @@ def plotTime(
     segment_cut: str = "span",
     segment_min_days: int = 30,
     events_catalog: str | None = None,
+    quakes: Sequence[Any] | None = None,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
 
@@ -1554,6 +1555,11 @@ def plotTime(
             ):
                 tag = f"{end}: {label}" if pair else label
                 add_event_lines(fig, [(epoch, tag)], color)
+
+    if quakes:
+        from gps_plot.layers.quakes import add_quake_marks, station_points
+
+        add_quake_marks(fig, quakes, station_points(sta))
 
     if logo:
         inpLogo(fig)
