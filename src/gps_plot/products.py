@@ -19,6 +19,7 @@ from typing import Any
 #: run keys understood in plots.yaml and the ts option each becomes
 RUN_KEYS = (
     "ref",
+    "detrend_terms",
     "special",
     "ylim",
     "uncert",
@@ -131,6 +132,8 @@ def run_argv(run: Mapping[str, Any], defaults: Mapping[str, Any]) -> list[list[s
     ):
         if opts.get(key) is not None:
             base += [flag, str(opts[key])]
+    if opts.get("detrend_terms"):
+        base += ["--detrend-terms", ",".join(_as_list(opts["detrend_terms"]))]
     if opts.get("ylim") is not None:
         base += ["--ylim", *(str(v) for v in _as_list(opts["ylim"]))]
     if opts.get("operational"):
