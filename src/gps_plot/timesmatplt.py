@@ -1586,7 +1586,15 @@ def plotTime(
         if pair is not None and baseline_rho is not None:
             filend += "-empsig"
         if remove_kinds:
-            filend += f"-rm-{'-'.join(sorted(remove_kinds))}"
+            from gps_parser.outlier_catalogs import STEP_KINDS
+
+            # every kind (--remove-steps all) names as "all", not the list
+            rm = (
+                "all"
+                if set(remove_kinds) >= set(STEP_KINDS)
+                else "-".join(sorted(remove_kinds))
+            )
+            filend += f"-rm-{rm}"
         if model is not None:
             filend += "-model" if model == "curve" else "-resid"
             if model_terms:
