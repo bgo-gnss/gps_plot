@@ -103,6 +103,12 @@ ICING_FACE_COLOR: str = "#f4f9fe"  # very, very light blue (BGÓ)
 SNOW_ERRORBAR_COLOR: str = "#e6dcf0"
 SNOW_EDGE_COLOR: str = "#b39ddb"
 SNOW_FACE_COLOR: str = "#f7f3fb"
+#: network days (geo_dataread.network_days): the whole solution was bad that
+#: day -- dark grey, set apart from the station's own (light grey) outliers
+#: (BGÓ 2026-10-21)
+NETWORK_ERRORBAR_COLOR: str = "dimgrey"
+NETWORK_EDGE_COLOR: str = "black"
+NETWORK_FACE_COLOR: str = "#505050"
 #: a provisional LAST point (yesterday's, when the data are current): the
 #: gold "verdict pending" face keeps a green outline, so the newest day stays
 #: recognisable instead of the yellow marker hiding the green highlight.
@@ -349,6 +355,24 @@ def snow_epochs(sta: str, *, snow: bool = True) -> tuple[float, ...]:
     return _snow_epochs_cached(sta) if snow else ()
 
 
+@functools.lru_cache(maxsize=1)
+def _network_epochs_cached() -> tuple[float, ...]:
+    from geo_dataread import gps_views
+
+    resolve = getattr(gps_views, "resolve_network_epochs", None)
+    if resolve is None:
+        return ()
+    epochs, _src = resolve()
+    return tuple(epochs)
+
+
+def network_epochs(*, network: bool = True) -> tuple[float, ...]:
+    """The network days (whole-solution bad days, geo_dataread.network_days),
+    the same for every station, or () when off / no list in ``pos_dir``.
+    Read once per process."""
+    return _network_epochs_cached() if network else ()
+
+
 def _up_mask(flags: Any, yearf: Any, epochs: tuple[float, ...]) -> Any:
     """Bool mask shaped like ``flags``, True at ``epochs`` in the LAST row
     (Up; a 1-D series is taken to be Up)."""
@@ -382,6 +406,8 @@ def view_flags(
     icing_mode: str = "remove",
     snow: bool = True,
     snow_mode: str = "remove",
+    network: bool = True,
+    network_mode: str = "remove",
 ) -> tuple[Any, Any, list[bool] | None]:
     """Run the station-aware view detector and return its raw verdicts.
 
@@ -437,6 +463,7 @@ def view_flags(
     xepochs, _xe_src = gps_views.resolve_excluded_epochs(sta)
     iepochs = icing_epochs(sta, icing=icing, icing_ratio=icing_ratio)
     sepochs = snow_epochs(sta, snow=snow)
+    nepochs = network_epochs(network=network)
     resolved = gps_views.resolve_outlier_detection(
         sta, outlier_params=outlier_params, outlier_overrides=outlier_overrides
     )
@@ -459,6 +486,9 @@ def view_flags(
     if sepochs:
         detect_kwargs["snow_epochs"] = sepochs
         detect_kwargs["snow_mode"] = snow_mode
+    if nepochs:
+        detect_kwargs["network_epochs"] = nepochs
+        detect_kwargs["network_mode"] = network_mode
     flags, prov = gps_views.detect_view_outliers(yearf, data, Ddata, **detect_kwargs)
     flags = np.asarray(flags, dtype=bool)
 
@@ -496,11 +526,14 @@ def _mask_outliers(
     icing_mode: str = "remove",
     snow: bool = True,
     snow_mode: str = "remove",
+    network: bool = True,
+    network_mode: str = "remove",
 ) -> tuple[
     Any,
     tuple[Any, Any] | None,
     tuple[Any, Any] | None,
     list[bool] | None,
+    tuple[Any, Any] | None,
     tuple[Any, Any] | None,
     tuple[Any, Any] | None,
 ]:
@@ -548,6 +581,10 @@ def _mask_outliers(
         aborted axis is indistinguishable from a clean one.  It was missing
         from this annotation while both ``return`` statements and every
         caller had four members.
+
+        Then the icing, snow and network-day overlays (``iced``,
+        ``buried``, ``netday``): each class its own colour, kept out of the
+        grey outlier overlay.
     """
     flags, pflags, aborted = view_flags(
         sta,
@@ -562,6 +599,8 @@ def _mask_outliers(
         icing_mode=icing_mode,
         snow=snow,
         snow_mode=snow_mode,
+        network=network,
+        network_mode=network_mode,
     )
 
     provisional = None
@@ -599,14 +638,33 @@ def _mask_outliers(
     if smask.any():
         buried = (np.where(smask, data, np.nan), np.where(smask, Ddata, np.nan))
 
+    # network days (the whole solution bad that day): every component, dark
+    # grey -- a class of their own, not the station's outliers
+    nmask = np.zeros_like(flags)
+    nep = network_epochs(network=network)
+    if nep:
+        from gps_parser import outlier_catalogs as _oc
+
+        idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(nep)))
+        if idx:
+            if nmask.ndim == 1:
+                nmask[idx] = True
+            else:
+                nmask[:, idx] = True
+        if network_mode == "remove":
+            nmask &= flags
+    netday = None
+    if nmask.any():
+        netday = (np.where(nmask, data, np.nan), np.where(nmask, Ddata, np.nan))
+
     if not flags.any():
-        return data, None, provisional, aborted, iced, buried
+        return data, None, provisional, aborted, iced, buried, netday
     cleaned = np.where(flags, np.nan, data)
-    ofl = flags & ~imask & ~smask
+    ofl = flags & ~imask & ~smask & ~nmask
     overlay = None
     if ofl.any():
         overlay = (np.where(ofl, data, np.nan), np.where(ofl, Ddata, np.nan))
-    return cleaned, overlay, provisional, aborted, iced, buried
+    return cleaned, overlay, provisional, aborted, iced, buried, netday
 
 
 @dataclasses.dataclass
@@ -629,6 +687,7 @@ class StationSeries:
     detrend_applied: bool
     iced: tuple[Any, Any] | None = None
     buried: tuple[Any, Any] | None = None
+    netday: tuple[Any, Any] | None = None
 
 
 def pos_read_kwargs(
@@ -842,6 +901,8 @@ def station_series(
     icing_mode: str = "remove",
     snow: bool = True,
     snow_mode: str = "remove",
+    network: bool = True,
+    network_mode: str = "remove",
     convention: str = "geodetic",
     pos_id: str | None = None,
 ) -> StationSeries:
@@ -869,9 +930,9 @@ def station_series(
     if yearf is None or len(yearf) == 0:
         raise NoDataError("no data for station %s" % sta)
 
-    outliers = provisional = aborted = iced = buried = None
+    outliers = provisional = aborted = iced = buried = netday = None
     if view == "cleaned":
-        data, outliers, provisional, aborted, iced, buried = _mask_outliers(
+        data, outliers, provisional, aborted, iced, buried, netday = _mask_outliers(
             sta,
             yearf,
             data,
@@ -884,6 +945,8 @@ def station_series(
             icing_mode=icing_mode,
             snow=snow,
             snow_mode=snow_mode,
+            network=network,
+            network_mode=network_mode,
         )
 
     views = dict(
@@ -910,7 +973,7 @@ def station_series(
             return (vals, pair[1])
 
         outliers, provisional = _moved(outliers), _moved(provisional)
-        iced, buried = _moved(iced), _moved(buried)
+        iced, buried, netday = _moved(iced), _moved(buried), _moved(netday)
 
     return StationSeries(
         yearf,
@@ -922,6 +985,7 @@ def station_series(
         detrend_applied,
         iced,
         buried,
+        netday,
     )
 
 
@@ -1024,6 +1088,10 @@ def plotTime(
     snow_mode: str = "remove",
     hide_snow: bool = True,
     snow_tail: int | None = None,
+    network: bool = True,
+    network_mode: str = "remove",
+    hide_network: bool = True,
+    network_tail: int | None = None,
     remove_kinds: Sequence[str] | None = None,
     detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -1271,6 +1339,8 @@ def plotTime(
         icing_mode=icing_mode,
         snow=snow,
         snow_mode=snow_mode,
+        network=network,
+        network_mode=network_mode,
     )
     from gps_plot.sources import gps as gps_source
 
@@ -1303,6 +1373,7 @@ def plotTime(
     aborted = main_series.aborted
     iced = main_series.iced
     buried = main_series.buried
+    netday = main_series.netday
     sigma_note = main_series.meta.get("sigma_note")
     # the rho the baseline σ used (from the noise record when empirical);
     # None means formal quadrature, which names the file without -empsig
@@ -1479,6 +1550,37 @@ def plotTime(
             transform=fig.axes[-1].transAxes,
             fontsize="small",
             color=SNOW_EDGE_COLOR,
+            va="bottom",
+        )
+
+    if netday is not None:
+        # network days (geo_dataread.network_days): the whole solution was
+        # bad that day, every station off at once -- dark grey, apart from the
+        # station's own outliers; drawn only with --show-network [N], counted
+        # in a note even when hidden
+        n_net = int(np.count_nonzero(np.isfinite(np.atleast_2d(netday[0])).any(axis=0)))
+        if not hide_network:
+            ny, ndy = netday
+            if network_tail:
+                ny, ndy = last_flagged(ny, ndy, network_tail)
+            fig = addData(
+                x,
+                ny,
+                ndy,
+                fig,
+                ecolor=NETWORK_ERRORBAR_COLOR,
+                markerfacecolor=NETWORK_FACE_COLOR,
+                markeredgecolor=NETWORK_EDGE_COLOR,
+            )
+        fig.axes[0].text(
+            0.99,
+            0.02,
+            "network days: %d (whole solution bad, %s)"
+            % (n_net, "removed" if network_mode == "remove" else "kept"),
+            transform=fig.axes[0].transAxes,
+            fontsize="small",
+            color=NETWORK_FACE_COLOR,
+            ha="right",
             va="bottom",
         )
 

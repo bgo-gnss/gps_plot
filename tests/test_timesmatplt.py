@@ -267,7 +267,7 @@ def test_mask_outliers_masks_and_overlays(monkeypatch):
     flags[0, 2] = flags[2, 7] = True
     _install_gps_views_stub(monkeypatch, flags)
 
-    cleaned, overlay, _prov, _ab, _iced, _buried = tplt._mask_outliers(
+    cleaned, overlay, _prov, _ab, _iced, _buried, _net = tplt._mask_outliers(
         "RHOF", yearf, data.copy(), ddata
     )
     assert overlay is not None
@@ -290,11 +290,33 @@ def test_mask_outliers_no_flags_returns_input_unchanged(monkeypatch):
     ddata = np.full((3, n), 0.5)
     _install_gps_views_stub(monkeypatch, np.zeros((3, n), dtype=bool))
 
-    cleaned, overlay, _prov, _ab, _iced, _buried = tplt._mask_outliers(
+    cleaned, overlay, _prov, _ab, _iced, _buried, _net = tplt._mask_outliers(
         "RHOF", yearf, data, ddata
     )
     assert overlay is None
     assert cleaned is data  # raw path: same object, no copy, no mask
+
+
+def test_network_days_get_their_own_overlay(monkeypatch):
+    """A network day flagged in every component goes to the dark-grey
+    overlay, not the grey one; the station's own outlier stays grey."""
+    n = 10
+    yearf = np.linspace(2020.0, 2020.1, n)
+    data = np.arange(3.0 * n).reshape(3, n)
+    ddata = np.full((3, n), 0.5)
+    flags = np.zeros((3, n), dtype=bool)
+    flags[:, 4] = True  # the network day, removed in every component
+    flags[1, 7] = True  # the station's own outlier
+    _install_gps_views_stub(monkeypatch, flags)
+    monkeypatch.setattr(tplt, "network_epochs", lambda network=True: (yearf[4],))
+
+    cleaned, overlay, _p, _a, _i, _b, netday = tplt._mask_outliers(
+        "RHOF", yearf, data.copy(), ddata
+    )
+    assert netday is not None and overlay is not None
+    assert np.isfinite(netday[0][:, 4]).all() and np.isnan(netday[0][:, 7]).all()
+    assert np.isnan(overlay[0][:, 4]).all() and overlay[0][1, 7] == data[1, 7]
+    assert np.isnan(cleaned[:, 4]).all()
 
 
 # ---------------------------------------------------------------------------
@@ -797,7 +819,7 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
     def spy(sta, yearf, data, Ddata, **kwargs):
         seen["sta"] = sta
         seen.update(kwargs)
-        return data, None, None, None, None, None
+        return data, None, None, None, None, None, None
 
     monkeypatch.setattr(tplt, "_mask_outliers", spy)
     tplt.plotTime(
@@ -820,6 +842,8 @@ def test_plot_time_forwards_outlier_levers_to_the_masker(monkeypatch, tmp_path):
         "icing_mode": "remove",
         "snow": True,
         "snow_mode": "remove",
+        "network": True,
+        "network_mode": "remove",
     }
 
 
@@ -852,8 +876,8 @@ def test_mask_outliers_annotation_matches_what_it_returns() -> None:
 
     hints = typing.get_type_hints(tplt._mask_outliers)
     # 5 since 2026-10-19: the icing overlay (GAMIT autcln index); 6 since
-    # 2026-10-20: the snow-burial overlay
-    assert len(typing.get_args(hints["return"])) == 6
+    # 2026-10-20: the snow-burial overlay; 7 since 2026-10-21: network days
+    assert len(typing.get_args(hints["return"])) == 7
 
 
 class TestStepAnnotations:
