@@ -36,14 +36,38 @@ from gps_plot.cli import common
 #: anything is written; without it they stay warnings (interactive use).
 DEGRADE_WARNINGS = (
     r".*serving raw series",
-    r".*serving unflagged data",
+    # ...except too few points to run detection at all: nothing to clean
+    r"(?!.*requires N >=).*serving unflagged data",
     r"Cannot determine plate velocity",
 )
 
 
-#: errors that mean "nothing usable in the plotted period" from deeper down
-#: (gps_analysis screens every epoch out): a skip, like NoDataError
-NO_DATA_MESSAGES = ("uncertainty screening left no nonzero data",)
+#: what --operational sets (argparse dest -> value), unless given explicitly:
+#: the cleaned view at 3.5 sigma with the recent outliers and obstruction
+#: days shown, strict (no degraded file) and the publish names (BGÓ 2026-10-21)
+OPERATIONAL = {
+    "view": "cleaned",
+    "outlier_sigma": 3.5,
+    "show_outliers": 10,
+    "show_obstruction": 30,
+    "strict": True,
+    "legacy_names": True,
+}
+OPERATIONAL_FLAGS = (
+    "--view cleaned",
+    "--outlier-sigma 3.5",
+    "--show-outliers 10",
+    "--show-obstruction 30",
+    "--strict",
+    "--legacy-names",
+)
+
+
+def apply_operational(args, parser):
+    """Fill :data:`OPERATIONAL` into ``args`` where the option is at its default."""
+    for dest, value in OPERATIONAL.items():
+        if getattr(args, dest) == parser.get_default(dest):
+            setattr(args, dest, value)
 
 
 @dataclasses.dataclass
@@ -87,10 +111,8 @@ def tryTimes(sta, strict=False, show_traceback=False, **kwargs):
 
             plt.close(fig)  # a worker renders many stations; don't keep them
         return PlotOutcome(sta, variant, "ok", files=files)
-    except (tplt.NoDataError, ValueError) as exc:
-        if not isinstance(exc, tplt.NoDataError) and not any(
-            m in str(exc) for m in NO_DATA_MESSAGES
-        ):
+    except ValueError as exc:
+        if not tplt.is_no_data(exc):
             return _failed(sta, variant, exc, show_traceback)
         print("skipped %s %s: %s" % (sta, variant, exc), file=sys.stderr)
         return PlotOutcome(sta, variant, "skipped", str(exc))
@@ -189,10 +211,15 @@ def _expand_variants(kwargs, refs, specials):
     """Expand ``--ref``/``--special`` "all" into per-station plot kwargs.
 
     ``kwargs["ref"]``/``kwargs["special"]`` equal to ``"all"`` expand to
-    the allowed values (``refs`` outer, ``specials`` inner -- the legacy
+    the allowed values, and a comma list of specials to those listed (``refs`` outer, ``specials`` inner -- the legacy
     loop order); anything else passes through unchanged.  Always returns
     fresh dicts safe to ship to worker processes.
     """
+    special = kwargs.get("special")
+    if special and "," in special:  # --special 90d,year,full: one plot each
+        listed = [list(specials) if s == "all" else [s] for s in special.split(",")]
+        specials = list(dict.fromkeys(s for group in listed for s in group))
+        kwargs = dict(kwargs, special="all")
     ref_all = kwargs.get("ref") == "all"
     special_all = kwargs.get("special") == "all"
     base = {
@@ -695,8 +722,8 @@ def build_parser(
         "Stations",
         nargs="+",
         help="stations (4-char codes), 'active' (the production set: "
-        "stations.cfg stations that are not passive, discontinued or "
-        "inactive, in the Iceland box or --region, with a series), or 'all' "
+        "stations.cfg stations that are not discontinued or "
+        "inactive (passive included), in the Iceland box or --region, with a series), or 'all' "
         "(every station with a .pos series of the selected frame in the "
         "Iceland box, or in --region; for --tType TOT the stations.cfg "
         "list). AAAA-BBBB plots the BASELINE "
@@ -726,7 +753,7 @@ def build_parser(
         "(epicentral distance to the station, or to each end of a baseline). "
         "Repeatable. E.g. --quake 2026-10-19,64.63,-17.53,5.2,BB",
     )
-    common.add_period_options(parser, specials=special_allow)
+    common.add_period_options(parser, specials=special_allow, multi=True)
     common.add_selection_options(parser)
     common.add_output_options(parser, config)
     common.add_series_options(
@@ -1132,6 +1159,13 @@ def build_parser(
         "directory",
     )
     parser.add_argument(
+        "--operational",
+        action="store_true",
+        help="the operational products in one flag: "
+        + " ".join(OPERATIONAL_FLAGS)
+        + ". Any of these given explicitly (with a non-default value) wins",
+    )
+    parser.add_argument(
         "--legacy-names",
         action="store_true",
         help="publish file names: leave the frame out ({STA}-plate-90d.png, "
@@ -1182,6 +1216,8 @@ def run(
     """Plot what the parsed ``args`` ask for; return the exit status (1 = a plot failed)."""
     if config is None:
         config = _load_config()
+    if args.operational:
+        apply_operational(args, parser)
     eventDict = {}
     ref_allow = REF_ALLOW
     special_allow = SPECIAL_ALLOW
@@ -1329,6 +1365,7 @@ def run(
     # process per station up to the core count.
     workers = kwargs.pop("workers")
     strict = kwargs.pop("strict")
+    kwargs.pop("operational")
     show_traceback = kwargs.pop("traceback")
     manifest = kwargs.pop("manifest")
     if not args.save:
