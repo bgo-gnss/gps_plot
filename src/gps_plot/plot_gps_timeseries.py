@@ -1173,6 +1173,13 @@ def build_parser(
         "Only for one frame per figure directory, or the names collide",
     )
     parser.add_argument(
+        "--skip-missing",
+        action="store_true",
+        help="leave out (one line, not a failure) stations without a .pos "
+        "series of the selected frame/session — for area lists, where most "
+        "stations have no 8 h series",
+    )
+    parser.add_argument(
         "--traceback",
         action="store_true",
         help="print the full traceback of a failed plot (default: one line)",
@@ -1345,10 +1352,19 @@ def run(
     del kwargs["D"]
 
     region, with_record = kwargs.pop("region"), kwargs.pop("with_record")
+    skip_missing = kwargs.pop("skip_missing")
     stations = common.resolve_stations(
-        stations, kwargs, config, region=region, with_record=with_record
+        stations,
+        kwargs,
+        config,
+        region=region,
+        with_record=with_record,
+        skip_missing=skip_missing,
     )
     if not stations:
+        if skip_missing:  # nothing of this product here: not an error
+            print("gpsplot ts: no station with a series of this product; nothing to do")
+            return 0
         parser.error("no station left to plot after 'all'/--region/--with-record")
 
     # ------------------------

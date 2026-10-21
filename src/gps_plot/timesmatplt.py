@@ -1322,6 +1322,7 @@ def plotTime(
     if save and fig is None:
         fig = _reusable_figure()
 
+    empty = bool(main_series.meta.get("empty_period"))
     fig = stdTimesPlot(
         x,
         data,
@@ -1329,16 +1330,15 @@ def plotTime(
         Title=Title,
         start=start,
         end=end,
-        ylim=ylim,
+        ylim=() if empty else ylim,  # a margin around no data is NaN
         warnp=warnp,
         fig=fig,
         highlight_last=highlight_last,
     )
 
-    if main_series.meta.get("empty_period"):
+    if empty:
         for ax in fig.axes:
-            if not ylim:
-                ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
+            ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
             ax.text(
                 0.5,
                 0.5,
@@ -1700,7 +1700,10 @@ def plotTime(
 
         if special:
             if special == "fixedstart":
-                filend += "_since-%s" % (firstpoint.strftime("%Y%m%d"),)
+                # the REQUESTED start (-s), not the first data point: a station
+                # whose data begins later must not get its own name per run
+                since = start if start is not None else firstpoint
+                filend += "_since-%s" % (since.strftime("%Y%m%d"),)
             else:
                 filend += "-%s" % special
         else:

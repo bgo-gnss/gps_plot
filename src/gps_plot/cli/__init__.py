@@ -61,6 +61,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.rtk:run",
     ),
     Command(
+        "run",
+        "every standard-plot product of plots.yaml (or one product/area)",
+        "gps_plot.cli.run:run",
+    ),
+    Command(
         "seasonal",
         "a station's seasonal folded onto one year: data, own and regional",
         "gps_plot.cli.seasonal:run",

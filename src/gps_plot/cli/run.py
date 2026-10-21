@@ -1,0 +1,133 @@
+"""``gpsplot run``: every standard-plot product of plots.yaml in one go.
+
+Expands plots.yaml (:mod:`gps_plot.products`) into ``gpsplot ts`` jobs and
+runs them in this process through the same driver and batch contract.
+Each run gets ``<plots_dir>/_runs/<UTC stamp>/`` with one manifest per job
+group, ``publish.manifest`` (only ``publish: true`` runs: the rsync input)
+and the summary; the oldest run directories beyond ``keep_runs`` are pruned.
+Exit status 1 when any plot failed. Design: docs/plots-yaml-design.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from gps_plot import plot_gps_timeseries as driver
+from gps_plot import products
+
+DEFAULT_KEEP_RUNS = 14
+
+
+def build_parser(prog: str) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog=prog,
+        description="Plot every product of plots.yaml (or one product/area).",
+    )
+    p.add_argument(
+        "plots",
+        nargs="?",
+        default=None,
+        help="plots.yaml (default: plots.yaml in the gpsconfig directory)",
+    )
+    p.add_argument("--plots-dir", default=None, help="override plots_dir")
+    p.add_argument("--product", default=None, help="only this product")
+    p.add_argument("--area", default=None, help="only this area (cdn slug)")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the jobs (stations, directory, ts options) and exit",
+    )
+    p.add_argument("-j", "--workers", type=int, default=None)
+    return p
+
+
+def run(prog: str, argv: list[str]) -> int:
+    args = build_parser(prog).parse_args(argv)
+    config = driver._load_config()
+    cfg_dir = Path(config.config_path).expanduser()
+    plots_path = Path(args.plots) if args.plots else cfg_dir / "plots.yaml"
+    cfg = products.load_yaml(plots_path)
+    areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
+    events = products.load_yaml(_cfg_file(config, cfg, "events")).get("events") or []
+    jobs = products.expand(
+        cfg, areas=areas, events=events, product=args.product, area=args.area
+    )
+    if not jobs:
+        print(f"{prog}: no jobs (product={args.product}, area={args.area})")
+        return 1
+    root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
+    if args.dry_run:
+        for job in jobs:
+            print(
+                f"{job.name:28s} {'PUB' if job.publish else '   '} "
+                f"{root / job.out_dir}\n    {len(job.stations)} stations: "
+                f"{' '.join(job.stations[:12])}{' …' if len(job.stations) > 12 else ''}"
+                f"\n    ts {' '.join(job.argv)}"
+            )
+        return 0
+    if not str(root):
+        print(f"{prog}: no plots_dir (plots.yaml plots_dir or --plots-dir)")
+        return 2
+
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = root / "_runs" / stamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    status = 0
+    published: list[str] = []
+    for i, job in enumerate(jobs):
+        if not job.stations:
+            print(f"== {job.name} [{i + 1}/{len(jobs)}]: no stations, skipped")
+            continue
+        out = root / job.out_dir
+        with tempfile.NamedTemporaryFile("r", suffix=".txt") as man:
+            argv = [*job.stations, *job.argv, "-d", str(out), "--manifest", man.name]
+            if args.workers:
+                argv += ["-j", str(args.workers)]
+            print(f"== {job.name} [{i + 1}/{len(jobs)}]: ts {' '.join(job.argv)}")
+            parser = driver.build_parser(
+                argparse.ArgumentParser(prog="gpsplot ts"), config=config
+            )
+            try:
+                status |= driver.run(parser.parse_args(argv), parser, config) or 0
+            except SystemExit as exc:  # an argument error ends this job only
+                print(f"== {job.name}: job failed (exit {exc.code})")
+                status = 1
+            files = [line.strip() for line in open(man.name) if line.strip()]
+        tag = job.name.replace("/", "_")
+        with open(run_dir / f"{tag}.manifest", "a") as fh:
+            fh.writelines(f + "\n" for f in files)
+        if job.publish:
+            published += files
+    with open(run_dir / "publish.manifest", "w") as fh:
+        # relative to plots_dir: rsync --files-from=publish.manifest plots_dir/ target
+        fh.writelines(
+            str(Path(f).relative_to(root.resolve())) + "\n"
+            for f in sorted(set(published))
+        )
+    _prune(root / "_runs", int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)))
+    print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
+    return status
+
+
+def _cfg_file(config: Any, cfg: dict[str, Any], what: str) -> Path:
+    """station_areas.yaml / events.yaml: plots.yaml key, else the deployed one."""
+    default = {"areas": "station_areas.yaml", "events": "events.yaml"}[what]
+    name = cfg.get(f"{what}_file") or default
+    path = Path(name).expanduser()
+    return path if path.is_absolute() else Path(config.config_path) / path
+
+
+def _prune(runs: Path, keep: int) -> None:
+    old = sorted(p for p in runs.iterdir() if p.is_dir())[:-keep] if keep > 0 else []
+    for p in old:
+        shutil.rmtree(p, ignore_errors=True)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(run("gpsplot run", sys.argv[1:]))

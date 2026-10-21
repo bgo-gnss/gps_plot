@@ -358,6 +358,7 @@ def resolve_stations(
     *,
     region: tuple[float, float, float, float] | None = None,
     with_record: bool = False,
+    skip_missing: bool = False,
 ) -> list[str]:
     """The station list to plot, after ``active``/``all``, ``--region`` and ``--with-record``.
 
@@ -407,6 +408,17 @@ def resolve_stations(
             stations = _filter_region(stations, region, coords)
     elif region is not None:
         stations = _filter_region(stations, region, coords)
+
+    if skip_missing and pos:
+        # an area list names stations whatever their products: leave out
+        # those without a series of this one (most have no 8 h series)
+        with_series = [
+            s for s in stations if all(e in coords for e in (split_baseline(s) or (s,)))
+        ]
+        if len(with_series) < len(stations):
+            missing = [s for s in stations if s not in with_series]
+            print(f"no {kwargs.get('pos_id')} series, left out: {' '.join(missing)}")
+        stations = with_series
 
     if with_record:
         from geo_dataread import gps_views as gv
