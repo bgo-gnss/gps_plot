@@ -1700,7 +1700,10 @@ def plotTime(
 
         if special:
             if special == "fixedstart":
-                filend += "_since-%s" % (firstpoint.strftime("%Y%m%d"),)
+                # the REQUESTED start (-s), not the first data point: a station
+                # whose data begins later must not get its own name per run
+                since = start if start is not None else firstpoint
+                filend += "_since-%s" % (since.strftime("%Y%m%d"),)
             else:
                 filend += "-%s" % special
         else:
