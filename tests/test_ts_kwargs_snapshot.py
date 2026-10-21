@@ -75,9 +75,9 @@ def _capture(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     got: list[dict] = []
     monkeypatch.setattr(driver, "currDatetime", _fixed_now)
     monkeypatch.setattr(
-        driver, "plotStation", lambda sta, variants: got.extend(
+        driver, "plotStation", lambda sta, variants, **_: got.extend(
             {"sta": sta, **v} for v in variants
-        ),
+        ) or [],
     )  # fmt: skip
     config = _Config()
     parser = driver.build_parser(config=config)

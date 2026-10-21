@@ -15,5 +15,4 @@ from gps_plot import plot_gps_timeseries as driver
 def run(prog: str, argv: list[str]) -> int:
     config = driver._load_config()
     parser = driver.build_parser(argparse.ArgumentParser(prog=prog), config=config)
-    driver.run(parser.parse_args(argv), parser, config)
-    return 0
+    return driver.run(parser.parse_args(argv), parser, config) or 0
