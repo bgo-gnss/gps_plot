@@ -119,18 +119,11 @@ commented out area by area once BGÓ signs off the side-by-side.
 `plot-hekla-multigas.sh` (gas, hourly), `gpsplot-config-sync.sh`, `plot-eldv.sh`
 (to `brunnur:~/tryggvi/eldvatn`, not in cron).
 
-## Open questions (BGÓ)
+## Decisions (BGÓ 2026-10-21)
 
-1. brunnur: keep publishing there (map `eldfjoll/` + `skridurogflod/`), or
-   let aflogun replace it?
-2. 8 h products: same `graphs/24h/` directory (aflogun shows them as-is), or a
-   `graphs/8h/` sibling (needs the aflogun branch to read it)?
-3. Standard `full` today is `--ref all` (plate + detrend + itrf); keep the
-   itrf (no plate removed) plot?
-4. `volcanos/thorbjorn/` is still published by `plot-thorbjorn.sh` (+ the 8 h
-   variant), but station_areas.yaml marks it orphaned (Reykjanes maps to
-   `cdn: reykjanes`). Retire it, or keep a `thorbjorn` product?
-5. `plot-bardarbunga-special.sh` (fixedstart → `brunnur eldfjoll/bardarbunga/special`):
-   keep as a fixedstart override on bardarbunga, or retire?
-6. Event lines from events.yaml: which kinds become lines (eruption, dike,
-   inflation, deep_inflation, swarm, earthquake …) and in which colours?
+1. brunnur: NOT published to — aflogun replaces the brunnur pages; CDN only.
+2. 8 h products go in the same `graphs/24h/` directory (named `-8h-`).
+3. `volcanos/thorbjorn` and `bardarbunga-special` are retired.
+4. Event lines from events.yaml: all kinds — eruption (red), dike/intrusion
+   (blue), inflation/deflation, earthquake/swarm (colours set in plots.yaml).
+5. The standard `full` plot with no plate removed (`--ref all`'s itrf) is dropped.
