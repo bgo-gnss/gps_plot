@@ -641,6 +641,16 @@ def build_parser(
         const=sys.stdin,
         help="read in a list of events from a file: defaults to stdin",
     )
+    parser.add_argument(
+        "--quake",
+        action="append",
+        default=None,
+        metavar="TIME,LAT,LON,MAG[,NAME]",
+        help="mark an earthquake: a dashed line at TIME (ISO, e.g. 2026-10-19 "
+        "or 2026-10-19T14:32) on every panel, labelled 'NAME M5.2, dist 34 km' "
+        "(epicentral distance to the station, or to each end of a baseline). "
+        "Repeatable. E.g. --quake 2026-10-19,64.63,-17.53,5.2,BB",
+    )
     common.add_period_options(parser, specials=special_allow)
     common.add_selection_options(parser)
     common.add_output_options(parser, config)
@@ -1096,6 +1106,12 @@ def run(
     kwargs["start"] = start
     kwargs["end"] = end
     kwargs["events"] = eventDict
+    from gps_plot.layers.quakes import parse_quake
+
+    try:
+        kwargs["quakes"] = [parse_quake(q) for q in kwargs.pop("quake") or ()]
+    except ValueError as err:
+        parser.error(str(err))
     # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
     # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
     # --stages sets the enable flags; an explicit --outlier-param still wins,
