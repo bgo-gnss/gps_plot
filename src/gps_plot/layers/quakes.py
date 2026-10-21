@@ -21,7 +21,9 @@ from matplotlib.figure import Figure
 
 #: mean Earth radius (km) for the great-circle distance
 EARTH_RADIUS_KM = 6371.0
-QUAKE_COLOR = "darkorange"
+QUAKE_COLOR = "blue"
+#: gap between the line and its label (points)
+LABEL_GAP_PT = 4.0
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,7 @@ def add_quake_marks(
     if not quakes or not fig.axes:
         return fig
     import matplotlib.dates as mdates
-    from matplotlib.transforms import blended_transform_factory
+    from matplotlib.transforms import blended_transform_factory, offset_copy
 
     top = fig.axes[0]
     lo, hi = top.get_xlim()
@@ -112,8 +114,13 @@ def add_quake_marks(
         top.text(
             x,
             0.03,
-            " " + quake_label(q, points),
-            transform=blended_transform_factory(top.transData, top.transAxes),
+            quake_label(q, points),
+            transform=offset_copy(
+                blended_transform_factory(top.transData, top.transAxes),
+                fig=fig,
+                x=LABEL_GAP_PT,
+                units="points",
+            ),
             rotation=90,
             ha="left",
             va="bottom",
