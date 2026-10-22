@@ -56,8 +56,12 @@ from typing import Any
 # command omits the flag exactly when the workbench would default to the same
 # screen. A copy could drift; this cannot.
 from gps_plot.detrend_workbench import (
+    WORKBENCH_FRAME_DEFAULT,
+    WORKBENCH_FRAMES,
     WORKBENCH_UNCERT_DEFAULT,
     estimate_with_abort_fallback,
+    frame_params_path,
+    frame_tag,
     group_contribution,
     run_flags,
 )
@@ -531,6 +535,8 @@ class PickerWindow:  # pragma: no cover - GUI
         uncert: int = WORKBENCH_UNCERT_DEFAULT,
         provisional_days: float | None = None,
         tot_dir: str | None = None,
+        frame: str = WORKBENCH_FRAME_DEFAULT,
+        pos_dir: str | None = None,
     ) -> None:
         import numpy as np
 
@@ -546,6 +552,8 @@ class PickerWindow:  # pragma: no cover - GUI
         self.uncert = int(uncert)
         self.provisional_days = provisional_days
         self.tot_dir = tot_dir
+        self.frame = frame
+        self.pos_dir = pos_dir
 
         finite = yearf[np.isfinite(yearf)]
         self.span = (float(finite.min()), float(finite.max()))
@@ -1142,12 +1150,16 @@ class PickerWindow:  # pragma: no cover - GUI
 
     def _set_uncert(self) -> None:
         """RE-READS the series: this screen decides which epochs exist."""
-        import geo_dataread.gps_read as gpsr
+        from geo_dataread.detrend_estimate import read_plate_series
 
         want = int(self.sp_uncert.value())
         try:
-            yearf, data, sigma, _ = gpsr.getData(
-                self.sta, ref="plate", Dir=self.tot_dir, tType="TOT", uncert=want
+            yearf, data, sigma = read_plate_series(
+                self.sta,
+                tot_dir=self.tot_dir,
+                uncert=want,
+                pos_frame=None if self.frame == "tot" else self.frame,
+                pos_dir=self.pos_dir,
             )
         except Exception as exc:
             self.summary.setPlainText(f"re-read at uncert {want} failed: {exc}")
@@ -1280,7 +1292,9 @@ class PickerWindow:  # pragma: no cover - GUI
         """
         flags = list(
             run_flags(
+                frame=self.frame,
                 tot_dir=self.tot_dir,
+                pos_dir=self.pos_dir,
                 max_gap_years=self.max_gap_years,
                 uncert=self.uncert,
                 provisional_days=self.provisional_days,
@@ -1458,6 +1472,7 @@ class PickerWindow:  # pragma: no cover - GUI
                     lookup_secular=lookup,
                     anchor_window=anchor_window,
                     model=self.model,
+                    frame=frame_tag(self.frame),
                     stages=(
                         USE_FLAGGED_STAGES if self.cb_use_flagged.isChecked() else None
                     ),
@@ -1598,13 +1613,12 @@ class PickerWindow:  # pragma: no cover - GUI
         what else is being written.
         """
         from geo_dataread.gps_views import (
-            default_params_path,
             read_detrend_params,
             station_detrend_record,
         )
 
         def lookup(code: str) -> dict[str, Any]:
-            doc = read_detrend_params(default_params_path())
+            doc = read_detrend_params(frame_params_path(None, self.frame))
             rec, _src = station_detrend_record(doc, code)
             if rec is None:
                 raise RuntimeError(f"donor {code} has no stored record")
@@ -2057,12 +2071,11 @@ class PickerWindow:  # pragma: no cover - GUI
         existing = None
         try:
             from geo_dataread.gps_views import (
-                default_params_path,
                 read_detrend_params,
                 station_detrend_record,
             )
 
-            doc_path = default_params_path()
+            doc_path = frame_params_path(None, self.frame)
             if doc_path is not None and Path(doc_path).is_file():
                 existing, _src = station_detrend_record(
                     read_detrend_params(doc_path), self.sta
@@ -2278,7 +2291,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("station")
+    p.add_argument(
+        "--frame",
+        choices=WORKBENCH_FRAMES,
+        default=WORKBENCH_FRAME_DEFAULT,
+        help="series and record document, as gps-detrend-workbench --frame",
+    )
     p.add_argument("--tot-dir", default=None)
+    p.add_argument("--pos-dir", default=None)
     p.add_argument(
         "--uncert",
         type=int,
@@ -2306,16 +2326,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
 
     import numpy as np
 
-    import geo_dataread.gps_read as gpsr
     from geo_dataread.detrend_estimate import (
         FitDefaults,
         default_fit_catalog_path,
         read_fit_catalog,
+        read_plate_series,
         resolve_fit_settings,
     )
 
-    yearf, data, sigma, _off = gpsr.getData(
-        sta, ref="plate", Dir=args.tot_dir, tType="TOT", uncert=args.uncert
+    yearf, data, sigma = read_plate_series(
+        sta,
+        tot_dir=args.tot_dir,
+        uncert=args.uncert,
+        pos_frame=None if args.frame == "tot" else args.frame,
+        pos_dir=args.pos_dir,
     )
     if yearf is None or len(yearf) == 0:
         print(f"error: no data for station {sta}", file=sys.stderr)
@@ -2331,7 +2355,13 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
     # the order the workbench uses. Baking it into the defaults put it BELOW
     # the catalog row, so on a station whose fit_windows.csv sets its own gate
     # the flag was silently discarded.
-    settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
+    settings = resolve_fit_settings(
+        sta,
+        catalog,
+        FitDefaults(),
+        catalog_source=source,
+        frame="itrf08" if args.frame == "tot" else args.frame,
+    )
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     # Pin the Wayland app_id rather than letting Qt derive one from argv[0]:
@@ -2349,6 +2379,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - GUI
         uncert=args.uncert,
         provisional_days=args.provisional_days,
         tot_dir=args.tot_dir,
+        frame=args.frame,
+        pos_dir=args.pos_dir,
     )
     window.win.show()
     return int(app.exec())

@@ -111,6 +111,8 @@ belongs one level down. Read it before touching any of them.
   curation, not computation. The only config-WRITING module in the package:
   it merge-writes the record (`detrend_params.json`), the declarations
   (`steps.yaml`, via `--declare-step`) and the `analysis.yaml` keys.
+  `--frame itrf14` (default since 2026-10-22: `.pos` itrf14 +
+  `detrend_params.itrf14.json`); `--frame tot` = the old joined-TOT path.
 - **Segments** (`--segment A:B`, repeatable) — the fit domain is a union of
   intervals (answers four asks at once); the gates changed meaning per segment.
 - **Qt picker** (`gps-detrend-picker-qt`) — the one GUI, layered ON TOP of
@@ -226,7 +228,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-22 — gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-22 — workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
