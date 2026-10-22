@@ -127,3 +127,13 @@ commented out area by area once BGÓ signs off the side-by-side.
 4. Event lines from events.yaml: all kinds — eruption (red), dike/intrusion
    (blue), inflation/deflation, earthquake/swarm (colours set in plots.yaml).
 5. The standard `full` plot with no plate removed (`--ref all`'s itrf) is dropped.
+
+## Run order (2026-10-22)
+
+`prepare:` lists steps `gpsplot run` performs first, in order, before any
+product (`PREPARE_STEPS` in `cli/run.py`). `network_days` runs
+`gps-network-days`: the network-day and network common-mode lists in
+`pos_dir`, which the cleaned view removes and subtracts — so they must be
+current before a plot is drawn. A failed step ends the run with no plots;
+`--no-prepare` skips the steps (a quick re-run of one area); `--dry-run`
+lists them.

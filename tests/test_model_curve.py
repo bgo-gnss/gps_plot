@@ -208,6 +208,7 @@ def test_data_minus_line_is_the_model_residual(window, ref, view, remove):
         view=view,
         remove_kinds=list(STEP_KINDS) if remove else None,
         pos_id=pid,
+        common_mode=False,  # the identity is the datum's, not the filter's
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -273,6 +274,7 @@ def test_model_terms_line_is_those_groups_whatever_the_data(window):
         fstart=window[0], fend=window[1], ref="detrend", Dir=pos_dir,
         tType="POS", uncert=15, view="raw", detrend_terms=("periodic",),
         pos_id=pid,
+        common_mode=False,  # the identity is the datum's, not the filter's
     )  # fmt: skip
     t = np.linspace(2006.0, 2011.0, 400)
     shift = window_datum_shift(
@@ -359,6 +361,7 @@ def test_rezeroed_detrended_is_the_residual_from_zero(window, view):
     req = source.SeriesRequest(
         fstart=window[0], fend=window[1], ref="detrend", Dir=pos_dir,
         tType="POS", uncert=15, view=view, pos_id=pid,
+        common_mode=False,  # the identity is the datum's, not the filter's
     )  # fmt: skip
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

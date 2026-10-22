@@ -50,6 +50,7 @@ OPERATIONAL = {
     "outlier_sigma": 3.5,
     "show_outliers": 10,
     "show_obstruction": 30,
+    "show_network": 0,
     "strict": True,
     "legacy_names": True,
 }
@@ -58,6 +59,7 @@ OPERATIONAL_FLAGS = (
     "--outlier-sigma 3.5",
     "--show-outliers 10",
     "--show-obstruction 30",
+    "--show-network",
     "--strict",
     "--legacy-names",
 )
@@ -1044,6 +1046,43 @@ def build_parser(
         "of them, N only those among the last N data points",
     )
     parser.add_argument(
+        "--network",
+        dest="network_mode",
+        choices=["remove", "keep", "off"],
+        default=None,
+        help="network days: the whole network solution bad that day "
+        "(gps-network-days writes network_days.itrf14.csv into pos_dir; none "
+        "there = none): remove (default) = taken out of every component; "
+        "keep = left in; off = ignored. Never reach the outlier detector; "
+        "--show-network draws them dark grey. Ignored unless --view cleaned",
+    )
+    parser.add_argument(
+        "--no-network",
+        dest="network",
+        action="store_false",
+        help="same as --network off",
+    )
+    parser.add_argument(
+        "--show-network",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="draw the network days (dark grey), as --show-icing: alone all of "
+        "them, N only those among the last N data points",
+    )
+    parser.add_argument(
+        "--common-mode",
+        dest="common_mode",
+        choices=["subtract", "off"],
+        default="subtract",
+        help="the daily network common mode (gps-network-days writes "
+        "network_cm.itrf14.csv into pos_dir from the stations outside the "
+        "volcanic areas): subtract (default; okada 24 h itrf08/itrf14 series "
+        "only, before outlier detection) or off",
+    )
+    parser.add_argument(
         "--obstruction",
         choices=["remove", "keep", "off"],
         default=None,
@@ -1215,6 +1254,17 @@ def _resolve_obstruction(kwargs: dict[str, Any], parser: Any) -> None:
             parser.error(f"--show-{kind} N: N must be positive")
         kwargs[f"hide_{kind}"] = show is None
         kwargs[f"{kind}_tail"] = show or None
+    kwargs["common_mode"] = kwargs.get("common_mode", "subtract") != "off"
+    # network days: no umbrella, same rules
+    mode = kwargs["network_mode"] or "remove"
+    if mode == "off" or not kwargs["network"]:
+        kwargs["network"], mode = False, "remove"
+    kwargs["network_mode"] = mode
+    show = kwargs.pop("show_network")
+    if show is not None and show < 0:
+        parser.error("--show-network N: N must be positive")
+    kwargs["hide_network"] = show is None
+    kwargs["network_tail"] = show or None
 
 
 def run(

@@ -88,3 +88,52 @@ def test_run_argv_refuses_unknown_keys_and_empty_runs() -> None:
         products.run_argv({"special": ["90d"], "colour": "red"}, {})
     with pytest.raises(ValueError, match="special"):
         products.run_argv({"ref": "plate"}, {})
+
+
+def test_run_refuses_an_unknown_prepare_step(tmp_path, monkeypatch, capsys) -> None:
+    import yaml
+
+    from gps_plot.cli import run as run_cli
+
+    plots = tmp_path / "plots.yaml"
+    plots.write_text(yaml.safe_dump({**CFG, "prepare": ["network_days", "bogus"]}))
+    for name in ("station_areas.yaml", "events.yaml"):
+        (tmp_path / name).write_text(
+            yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
+        )
+    monkeypatch.setattr(
+        run_cli.driver,
+        "_load_config",
+        lambda: type("C", (), {"config_path": str(tmp_path)})(),
+    )
+    assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 2
+    assert "bogus" in capsys.readouterr().out
+
+
+def test_dry_run_lists_the_prepare_steps_first(tmp_path, monkeypatch, capsys) -> None:
+    import yaml
+
+    from gps_plot.cli import run as run_cli
+
+    plots = tmp_path / "plots.yaml"
+    plots.write_text(yaml.safe_dump({**CFG, "prepare": ["network_days"]}))
+    for name in ("station_areas.yaml", "events.yaml"):
+        (tmp_path / name).write_text(
+            yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
+        )
+    monkeypatch.setattr(
+        run_cli.driver,
+        "_load_config",
+        lambda: type("C", (), {"config_path": str(tmp_path)})(),
+    )
+    called = []
+    monkeypatch.setitem(
+        run_cli.PREPARE_STEPS, "network_days", lambda w: called.append(w) or 0
+    )
+    assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        out.startswith("prepare: network_days") and not called
+    )  # dry run: listed, not run
+    assert run_cli.run("gpsplot run", [str(plots), "--dry-run", "--no-prepare"]) == 0
+    assert "prepare:" not in capsys.readouterr().out

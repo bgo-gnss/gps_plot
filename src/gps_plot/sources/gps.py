@@ -56,6 +56,9 @@ class SeriesRequest:
     icing_mode: str = "remove"
     snow: bool = True
     snow_mode: str = "remove"
+    network: bool = True
+    network_mode: str = "remove"
+    common_mode: bool = True
 
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)
@@ -108,6 +111,8 @@ def fetch_station(sta: str, req: SeriesRequest) -> Series:
         detrend_applied=one.detrend_applied,
         iced=one.iced,
         buried=one.buried,
+        netday=one.netday,
+        meta={"cm_days": one.cm_days},
     )
 
 
@@ -418,6 +423,7 @@ def rezero_detrended(spec: str, req: SeriesRequest, series: Series) -> Series:
         provisional=moved(series.provisional),
         iced=moved(series.iced),
         buried=moved(series.buried),
+        netday=moved(series.netday),
         meta={**series.meta, "zero_shift": shift},
     )
 

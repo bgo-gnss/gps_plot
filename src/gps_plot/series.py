@@ -39,6 +39,9 @@ class Series:
         buried: Up epochs removed from ``y`` as antenna-under-snow suspected
             (geo_dataread.snow_burial), same shape as ``outliers`` (Up row
             only; ``outliers`` then excludes them), or None.
+        netday: Network days (whole-solution bad days,
+            geo_dataread.network_days) removed from ``y``, every component,
+            same shape as ``outliers`` (which then excludes them), or None.
         detrend_applied: Whether a stored trajectory was subtracted.
         ends: For a baseline, its two stations' own series, zeroed at the
             baseline's first common epoch; None otherwise.
@@ -62,3 +65,4 @@ class Series:
     meta: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     iced: tuple[Any, Any] | None = None
     buried: tuple[Any, Any] | None = None
+    netday: tuple[Any, Any] | None = None
