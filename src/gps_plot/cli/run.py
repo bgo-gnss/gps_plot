@@ -6,6 +6,11 @@ Each run gets ``<plots_dir>/_runs/<UTC stamp>/`` with one manifest per job
 group, ``publish.manifest`` (only ``publish: true`` runs: the rsync input)
 and the summary; the oldest run directories beyond ``keep_runs`` are pruned.
 Exit status 1 when any plot failed. Design: docs/plots-yaml-design.md.
+
+Run order: the ``prepare:`` steps of plots.yaml run first, in their order
+(``network_days`` = ``gps-network-days``: the network-day and common-mode
+lists the cleaned view reads), then the products. ``--no-prepare`` skips
+them (a quick re-run of one area); a failed step ends the run.
 """
 
 from __future__ import annotations
@@ -22,6 +27,16 @@ from gps_plot import plot_gps_timeseries as driver
 from gps_plot import products
 
 DEFAULT_KEEP_RUNS = 14
+
+
+def _network_days(workers: int | None) -> int:
+    from geo_dataread import network_days
+
+    return int(network_days.main(["-j", str(workers)] if workers else []))
+
+
+#: plots.yaml ``prepare:`` step -> what it runs (exit status)
+PREPARE_STEPS = {"network_days": _network_days}
 
 
 def build_parser(prog: str) -> argparse.ArgumentParser:
@@ -44,6 +59,11 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         help="print the jobs (stations, directory, ts options) and exit",
     )
     p.add_argument("-j", "--workers", type=int, default=None)
+    p.add_argument(
+        "--no-prepare",
+        action="store_true",
+        help="skip the plots.yaml prepare: steps (e.g. gps-network-days)",
+    )
     return p
 
 
@@ -62,7 +82,16 @@ def run(prog: str, argv: list[str]) -> int:
         print(f"{prog}: no jobs (product={args.product}, area={args.area})")
         return 1
     root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
+    steps = [] if args.no_prepare else list(cfg.get("prepare") or [])
+    unknown = [s for s in steps if s not in PREPARE_STEPS]
+    if unknown:
+        print(
+            f"{prog}: unknown prepare step(s) {unknown} (known: {sorted(PREPARE_STEPS)})"
+        )
+        return 2
     if args.dry_run:
+        for step in steps:
+            print(f"prepare: {step}")
         for job in jobs:
             print(
                 f"{job.name:28s} {'PUB' if job.publish else '   '} "
@@ -74,6 +103,12 @@ def run(prog: str, argv: list[str]) -> int:
     if not str(root):
         print(f"{prog}: no plots_dir (plots.yaml plots_dir or --plots-dir)")
         return 2
+
+    for step in steps:
+        print(f"== prepare: {step}")
+        if PREPARE_STEPS[step](args.workers):
+            print(f"{prog}: prepare step {step} failed; no plots made")
+            return 1
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = root / "_runs" / stamp
