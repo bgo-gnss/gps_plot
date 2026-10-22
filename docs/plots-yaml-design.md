@@ -137,3 +137,35 @@ product (`PREPARE_STEPS` in `cli/run.py`). `network_days` runs
 current before a plot is drawn. A failed step ends the run with no plots;
 `--no-prepare` skips the steps (a quick re-run of one area); `--dry-run`
 lists them.
+
+## Free ts options: `args:` (2026-10-22)
+
+Any `gpsplot ts` option can be given as `args:` — a string or a list of
+strings, each shell-split (`"--outlier-sigma 3.5"` is two tokens) — at four
+levels, appended general to specific after the generated options:
+`defaults` → the product → the run → an area override. argparse keeps the
+last value of a single-value option, so the most specific level wins.
+
+```yaml
+defaults: {frame: itrf14, args: [--traceback]}
+products:
+  areas:
+    args: [--show-icing, --show-snow]               # every run of the product
+    runs:
+      - {ref: detrend, special: [90d], operational: true,
+         args: ["--outlier-sigma 3", --show-outliers]}
+    overrides:
+      reykjanes: {args: ["--outlier-sigma 2.5"]}   # this area, every run
+```
+
+The typed keys (`ref`, `ylim`, …) stay; `args:` is for everything else.
+Refused (set elsewhere): `-d/--figDir` (the product's `dir:`), `--manifest`,
+`-j/--workers` (`gpsplot run -j`), `--special` (`special:`), `-s/--start`
+(`fixedstart:`). `gpsplot run` parses every job's options before anything
+runs (prepare included): an unknown option or a bad value ends the run at
+the start, exit 2. `--dry-run` shows the full ts line of each job.
+
+`operational: true` fills its presets only into options left at their
+default, so an `args:` value wins — except one equal to the ts default
+(`--outlier-sigma 4.5` with `operational` still gives 3.5); drop
+`operational` and spell the options out for that.

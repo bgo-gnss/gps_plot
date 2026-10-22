@@ -75,9 +75,19 @@ def run(prog: str, argv: list[str]) -> int:
     cfg = products.load_yaml(plots_path)
     areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
     events = products.load_yaml(_cfg_file(config, cfg, "events")).get("events") or []
-    jobs = products.expand(
-        cfg, areas=areas, events=events, product=args.product, area=args.area
-    )
+    try:
+        jobs = products.expand(
+            cfg, areas=areas, events=events, product=args.product, area=args.area
+        )
+    except ValueError as exc:
+        print(f"{prog}: {plots_path}: {exc}")
+        return 2
+    bad = _check_options(jobs, config)
+    if bad:
+        print(f"{prog}: {plots_path}: ts options refused, nothing run:")
+        for name, err in bad:
+            print(f"  {name}: {err}")
+        return 2
     if not jobs:
         print(f"{prog}: no jobs (product={args.product}, area={args.area})")
         return 1
@@ -148,6 +158,32 @@ def run(prog: str, argv: list[str]) -> int:
     _prune(root / "_runs", int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)))
     print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
     return status
+
+
+def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str]]:
+    """Parse every job's ts options before anything runs (an ``args:`` typo
+    must stop the run at the start, not fail one job an hour in)."""
+    parser = driver.build_parser(
+        argparse.ArgumentParser(prog="gpsplot ts", exit_on_error=False),
+        config=config,
+    )
+    bad: list[tuple[str, str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for job in jobs:
+        if job.argv in seen:
+            continue
+        seen.add(job.argv)
+        try:
+            _, rest = parser.parse_known_args(["XXXX", *job.argv])
+        except argparse.ArgumentError as exc:
+            bad.append((job.name, str(exc)))
+            continue
+        except SystemExit:  # the few errors argparse still exits on
+            bad.append((job.name, "refused by the ts parser (see above)"))
+            continue
+        if rest:
+            bad.append((job.name, f"unrecognized: {' '.join(rest)}"))
+    return bad
 
 
 def _cfg_file(config: Any, cfg: dict[str, Any], what: str) -> Path:
