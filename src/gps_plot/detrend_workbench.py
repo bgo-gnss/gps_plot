@@ -105,10 +105,41 @@ WORKBENCH_UNCERT_DEFAULT: int = 10
 #: and PENDING is "active and in neither".
 DETREND_STATUS_FILENAME: str = "detrend_status.csv"
 
+#: Series the workbench fits by default: the ``.pos`` itrf14 24 h product the
+#: plots, velocities and autopass use (BGÓ 2026-10-22). ``tot`` is the old
+#: joined-TOT path; ``itrf08`` is okada's ``.pos`` and shares the TOT
+#: document and frame tag.
+WORKBENCH_FRAME_DEFAULT: str = "itrf14"
+
+#: ``--frame`` choices.
+WORKBENCH_FRAMES: tuple[str, ...] = ("itrf14", "itrf20", "itrf08", "tot")
+
+
+def frame_tag(frame: str) -> str:
+    """The record frame tag of a workbench ``--frame`` (the §2.5 guard's key):
+    ``plate_removed`` for tot/itrf08, ``plate_removed@itrf14`` etc."""
+    from geo_dataread.gps_views import series_frame
+
+    return str(series_frame("itrf08" if frame == "tot" else frame))
+
+
+def frame_params_path(params: str | Path | None, frame: str) -> Path | None:
+    """The detrend document a ``--frame`` reads and commits: ``params`` when
+    given, else the deployed one of the frame (``detrend_params.json`` for
+    tot/itrf08, ``detrend_params.itrf14.json`` …)."""
+    from geo_dataread.gps_views import default_params_path
+
+    if params:
+        return Path(params)
+    path = default_params_path(None if frame == "tot" else frame)
+    return None if path is None else Path(path)
+
 
 def run_flags(
     *,
+    frame: str = WORKBENCH_FRAME_DEFAULT,
     tot_dir: str | None = None,
+    pos_dir: str | None = None,
     max_gap_years: float | None = None,
     uncert: int = WORKBENCH_UNCERT_DEFAULT,
     provisional_days: float | None = None,
@@ -136,7 +167,9 @@ def run_flags(
     can reproduce.
 
     Args:
+        frame: Series fitted (``--frame``); emitted unless the default.
         tot_dir: TOT directory, or None for the configured one.
+        pos_dir: ``.pos`` directory, or None for the configured one.
         max_gap_years: Per-segment gap gate, or None to defer.
         uncert: Formal-sigma read screen [mm]; must be integral.
         provisional_days: Recency bound of the gold lane, or None to defer.
@@ -148,8 +181,12 @@ def run_flags(
         ValueError: If ``uncert`` is not integral.
     """
     flags: list[str] = []
+    if frame != WORKBENCH_FRAME_DEFAULT:
+        flags += ["--frame", frame]
     if tot_dir is not None:
         flags += ["--tot-dir", str(tot_dir)]
+    if pos_dir is not None:
+        flags += ["--pos-dir", str(pos_dir)]
     if max_gap_years is not None:
         flags += ["--max-gap-years", str(max_gap_years)]
     if uncert != WORKBENCH_UNCERT_DEFAULT:
@@ -442,6 +479,7 @@ def estimate_record(
     terms: Sequence[str] | None = None,
     model: str | None = None,
     refs: Mapping[str, Any] | None = None,
+    frame: str | None = None,
 ) -> Any:
     """Estimate one station's detrend record — gps_plot's single call site.
 
@@ -487,6 +525,8 @@ def estimate_record(
         extra["model"] = model
     if refs is not None:
         extra["refs"] = refs
+    if frame is not None:
+        extra["frame"] = frame
     return station_estimate_from_arrays(
         sta,
         yearf,
@@ -503,10 +543,21 @@ def estimate_record(
     )
 
 
+def _data_ref(frame: str) -> str:
+    """``refs.data`` of a record, as ``gps-estimate-detrend`` writes it."""
+    if frame == "tot":
+        return "local TOT"
+    from geo_dataread.pos import pos_product
+
+    return f".pos {pos_product(frame)}"
+
+
 def build_record(
     sta: str,
     *,
+    frame: str = WORKBENCH_FRAME_DEFAULT,
     tot_dir: str | None = None,
+    pos_dir: str | None = None,
     uncert: int = WORKBENCH_UNCERT_DEFAULT,
     outlier_param: list[str] | None = None,
     fit_catalog: str | Path | None = None,
@@ -525,6 +576,11 @@ def build_record(
 ) -> tuple[dict[str, Any], Any, Any, Any, Any]:
     """Read the plate-frame series and estimate one station's record.
 
+    ``frame`` picks the series (:data:`WORKBENCH_FRAMES`): the ``.pos``
+    product of that frame in ``pos_dir`` (default), or the joined TOT in
+    ``tot_dir`` for ``tot``. The record is tagged with :func:`frame_tag`, so
+    it commits only into its own frame's document.
+
     Returns:
         ``(record, yearf, data, sigma, estimate)`` — ``estimate`` is the
         :class:`geo_dataread.detrend_estimate.StationEstimate` of the
@@ -537,16 +593,26 @@ def build_record(
             record, and the workbench must say which, loudly, rather than
             render a figure that implies success.
     """
-    import geo_dataread.gps_read as gpsr
     from geo_dataread.detrend_estimate import (
         FitDefaults,
         default_fit_catalog_path,
         read_fit_catalog,
+        read_plate_series,
         resolve_fit_settings,
     )
 
-    yearf, data, sigma, _offset = gpsr.getData(
-        sta, ref="plate", Dir=tot_dir, tType="TOT", uncert=uncert
+    if tot_dir is not None and frame != "tot":
+        # a TOT directory with a .pos frame would be ignored: the caller
+        # meant TOT and would silently get the .pos series
+        raise ValueError(f"tot_dir={tot_dir!r} needs frame='tot', got {frame!r}")
+    if frame not in WORKBENCH_FRAMES:
+        raise ValueError(f"frame {frame!r}: one of {', '.join(WORKBENCH_FRAMES)}")
+    yearf, data, sigma = read_plate_series(
+        sta,
+        tot_dir=tot_dir,
+        uncert=uncert,
+        pos_frame=None if frame == "tot" else frame,
+        pos_dir=pos_dir,
     )
     if yearf is None or len(yearf) == 0:
         raise RuntimeError(f"no data for station {sta}")
@@ -558,7 +624,13 @@ def build_record(
         catalog = read_fit_catalog(path)
         source = str(path)
 
-    settings = resolve_fit_settings(sta, catalog, FitDefaults(), catalog_source=source)
+    settings = resolve_fit_settings(
+        sta,
+        catalog,
+        FitDefaults(),
+        catalog_source=source,
+        frame="itrf08" if frame == "tot" else frame,
+    )
     settings = _override_settings(
         settings,
         sta=sta,
@@ -572,7 +644,10 @@ def build_record(
     # never sees it and a stored record would be silent about it -- yet the
     # workbench default (10) differs from the batch estimator's (15), which
     # made workbench and batch records indistinguishable but unequal.
-    kwargs: dict[str, Any] = {"refs": {"uncert": uncert}}
+    kwargs: dict[str, Any] = {
+        "refs": {"uncert": uncert, "data": _data_ref(frame)},
+        "frame": frame_tag(frame),
+    }
     if model:
         kwargs["model"] = model
 
@@ -1460,8 +1535,12 @@ def build_pages(
     outside_provisional: Any = None,
     hide_outliers: bool = False,
     show_outliers: bool = False,
+    frame: str | None = None,
 ) -> list[Figure]:
     """Build the workbench's two pages as live figures.
+
+    ``frame`` is the series' frame tag (:func:`frame_tag`), checked against
+    the record's by the §2.5 guard; None takes the record's own.
 
     Split out of :func:`render` so a caller can DISPLAY these rather than
     only write them -- the interactive pickers need the production figure,
@@ -1647,7 +1726,9 @@ def build_pages(
     # feeding it the NaN-masked series would only propagate the NaNs and
     # lose the overlay values.
     det = np.asarray(
-        apply_stored_detrend(record, yearf, data, terms=terms, frame="plate_removed")
+        apply_stored_detrend(
+            record, yearf, data, terms=terms, frame=frame or record.get("frame")
+        )
     )
     kept2, lanes2 = _lanes(det)
     title2 = tplt.make_title(sta, x[-1], ref=f"Detrended (terms={terms})")
@@ -2158,7 +2239,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="four-letter station code (omitted only with --status)",
     )
-    p.add_argument("--tot-dir", default=None, help="TOT directory (default: config)")
+    p.add_argument(
+        "--frame",
+        choices=WORKBENCH_FRAMES,
+        default=WORKBENCH_FRAME_DEFAULT,
+        help="series to fit and the record document it reads and commits: "
+        "the .pos product of an ITRF frame (default itrf14 -> "
+        "detrend_params.itrf14.json, what the plots read), or tot = the "
+        "joined TOT (detrend_params.json, shared with itrf08)",
+    )
+    p.add_argument(
+        "--tot-dir", default=None, help="TOT directory, --frame tot (default: config)"
+    )
+    p.add_argument(
+        "--pos-dir", default=None, help=".pos directory (default: config pos_dir)"
+    )
     p.add_argument(
         "--uncert",
         type=int,
@@ -2492,7 +2587,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _print_status() -> int:
+def _print_status(frame: str = WORKBENCH_FRAME_DEFAULT) -> int:
     """Curation status: active stations split done / skipped / pending.
 
     Reads three deployed sources and reconciles them:
@@ -2513,7 +2608,6 @@ def _print_status() -> int:
 
     from gps_parser import ConfigParser
     from geo_dataread.gps_views import (
-        default_params_path,
         read_detrend_params,
     )
     from gps_parser import outlier_catalogs as _oc
@@ -2532,7 +2626,7 @@ def _print_status() -> int:
 
     # done = present in the deployed detrend record document
     try:
-        params_path = default_params_path()
+        params_path = frame_params_path(None, frame)
         doc = read_detrend_params(params_path)
     except Exception as exc:
         print(f"error: could not read detrend_params.json ({exc})", file=sys.stderr)
@@ -2593,8 +2687,10 @@ def _print_columns(items: list[str], width: int = 78) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.tot_dir is not None and args.frame != "tot":
+        _build_parser().error("--tot-dir needs --frame tot")
     if args.status:
-        return _print_status()
+        return _print_status(args.frame)
     if args.station is None:
         _build_parser().error("station is required unless --status is given")
     sta = args.station.upper()
@@ -2650,14 +2746,13 @@ def main(argv: list[str] | None = None) -> int:
     donor_lookup = None
     if stage_plan is not None:
         from geo_dataread.gps_views import (
-            default_params_path,
             read_detrend_params,
             station_detrend_record,
         )
         from geo_dataread.stage_plan import check_stage_plan_sources
 
         def _donor(code: str) -> dict[str, Any]:
-            doc = read_detrend_params(args.params or default_params_path())
+            doc = read_detrend_params(frame_params_path(args.params, args.frame))
             rec, _src = station_detrend_record(doc, code)
             if rec is None:
                 raise RuntimeError(
@@ -2708,7 +2803,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         record, yearf, data, sigma, estimate = build_record(
             sta,
+            frame=args.frame,
             tot_dir=args.tot_dir,
+            pos_dir=args.pos_dir,
             uncert=args.uncert,
             outlier_param=args.outlier_param,
             fit_catalog=args.fit_catalog,
@@ -2746,7 +2843,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             record, yearf, data, sigma, estimate = build_record(
                 sta,
+                frame=args.frame,
                 tot_dir=args.tot_dir,
+                pos_dir=args.pos_dir,
                 uncert=args.uncert,
                 outlier_param=args.outlier_param,
                 fit_catalog=args.fit_catalog,
@@ -2774,7 +2873,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.donor:
         try:
-            borrowed = borrow_record(args.donor, sta, params_path=args.params)
+            borrowed = borrow_record(
+                args.donor, sta, params_path=frame_params_path(args.params, args.frame)
+            )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 4
@@ -2890,6 +2991,7 @@ def main(argv: list[str] | None = None) -> int:
         outside_provisional=outside_prov,
         hide_outliers=args.hide_outliers,
         show_outliers=args.show_outliers,
+        frame=frame_tag(args.frame),
     )
     n_out = [int(v) for v in np.asarray(estimate.outliers).sum(axis=1)]
     n_unjudged = int(np.count_nonzero(~np.asarray(estimate.in_window)))
@@ -2966,7 +3068,7 @@ def main(argv: list[str] | None = None) -> int:
             target, before, after = commit_record(
                 sta,
                 record,
-                params_path=args.params,
+                params_path=frame_params_path(args.params, args.frame),
                 init=args.init,
                 force=args.force,
             )

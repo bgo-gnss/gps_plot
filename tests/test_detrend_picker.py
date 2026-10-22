@@ -505,10 +505,28 @@ class TestBothPickersEmitTheSameRunFlags:
     def test_tot_dir_reaches_the_command(self) -> None:
         from gps_plot.detrend_workbench import _build_parser, run_flags
 
-        flags = run_flags(tot_dir="/data/alt-tot", max_gap_years=1.5)
-        assert flags[:2] == ["--tot-dir", "/data/alt-tot"]
+        flags = run_flags(frame="tot", tot_dir="/data/alt-tot", max_gap_years=1.5)
+        assert flags[:4] == ["--frame", "tot", "--tot-dir", "/data/alt-tot"]
         ns = _build_parser().parse_args(["SELF", *flags])
         assert ns.tot_dir == "/data/alt-tot" and ns.max_gap_years == 1.5
+        assert ns.frame == "tot"
+
+    def test_frame_reaches_the_command_unless_default(self) -> None:
+        from gps_plot.detrend_workbench import (
+            WORKBENCH_FRAME_DEFAULT,
+            _build_parser,
+            run_flags,
+        )
+
+        assert WORKBENCH_FRAME_DEFAULT == "itrf14"
+        assert run_flags(frame="itrf14") == []
+        assert run_flags(frame="itrf20", pos_dir="/p") == [
+            "--frame",
+            "itrf20",
+            "--pos-dir",
+            "/p",
+        ]
+        assert _build_parser().parse_args(["SELF"]).frame == WORKBENCH_FRAME_DEFAULT
 
     def test_a_non_integral_screen_raises_rather_than_rounding(self) -> None:
         """Rounding would be the fixed bug wearing a disguise.

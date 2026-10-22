@@ -9,8 +9,10 @@ Runs the FULL loop — estimate, commit, read back through
 ``plot-gps-timeseries``'s data path — against a throwaway ``GPS_CONFIG_PATH``
 so the operator's own parameter document is never touched.
 
-Needs the local joined TOT dataset and the 33-station document; skipped
-without them, so a checkout on another machine stays green.
+The round trip runs on the .pos itrf14 series and its document (what the
+plots read); the rest of the file still fits the local joined TOT
+(``--frame tot``), whose numbers they were calibrated on. Skipped without
+the data, so a checkout on another machine stays green.
 """
 
 from __future__ import annotations
@@ -24,19 +26,29 @@ import pytest
 
 TOT = Path.home() / "gps-data" / "TOT"
 TESTCFG = Path.home() / "gps-data" / "testcfg"
+#: The round trip runs on what production reads (BGÓ 2026-10-22): the .pos
+#: itrf14 series and its own record document, deployed next to testcfg's.
+POS_ITRF14 = Path.home() / "gps-data" / "pos" / "RHOF.imo.24hr_itrf14.pos"
+ITRF14_DOC = Path.home() / ".config" / "gpsconfig" / "detrend_params.itrf14.json"
 STA = "RHOF"
 STA_SELF = "SELF"
 
 #: Thresholds for "the trajectory really was removed", CALIBRATED rather than
-#: guessed. Measured on RHOF: a CORRECT record leaves rate residuals
-#: [0.003, 0.075, 0.034] mm/yr and seasonal [0.123, 0.031, 0.305] mm; a
-#: north/east swap leaves rate [0.483, 0.406, 0.034]. These sit between —
-#: ~4x above the correct case, comfortably below the corruption.
+#: guessed. Measured 2026-10-22 on RHOF itrf14, refitted INSIDE the record's
+#: segments (2012.66 on, fit_windows.csv): a CORRECT record leaves rate
+#: residuals [0.026, 0.028, 0.003] mm/yr and seasonal [0.143, 0.188, 0.336]
+#: mm; a north/east swap leaves rate [0.939, 0.937, 0.003]; flipped seasonal
+#: signs leave seasonal [0.938, 1.186, 4.011]. These sit between — ~10x above
+#: the correct rate, ~3x above the correct seasonal.
+#:
+#: Refit inside the segments, never the whole series: outside them the record
+#: claims nothing (RHOF's pre-2012 east runs ~0.7 mm/yr differently, which a
+#: whole-series refit reports as 0.4 mm/yr "left in").
 #:
 #: Honest limit: a component swap is only detectable to the extent the
-#: components differ. RHOF's N/E rates are -0.706 / -1.186 mm/yr, so the swap
-#: leaves 0.48. On a station whose N and E rates happened to match, this test
-#: could not see it — no residual-based check can.
+#: components differ. RHOF's itrf14 N/E rates are -0.70 / -1.67 mm/yr, so the
+#: swap leaves 0.94. On a station whose N and E rates happened to match, this
+#: test could not see it — no residual-based check can.
 MAX_RESIDUAL_RATE = 0.3
 MAX_RESIDUAL_SEASONAL = 1.0
 
@@ -68,6 +80,49 @@ def gpsconfig(tmp_path, monkeypatch):
 
     monkeypatch.setenv("GPS_CONFIG_PATH", str(dst))
     return dst
+
+
+needs_itrf14 = pytest.mark.skipif(
+    not (POS_ITRF14.is_file() and ITRF14_DOC.is_file()),
+    reason=f"needs {POS_ITRF14} and {ITRF14_DOC}",
+)
+
+
+@pytest.fixture
+def gpsconfig14(gpsconfig):
+    """:func:`gpsconfig` plus a copy of the deployed itrf14 document, ``STA``
+    removed — the document ``--frame itrf14`` reads and commits."""
+    payload = json.loads(ITRF14_DOC.read_text())
+    payload["stations"].pop(STA, None)
+    doc = gpsconfig / "detrend_params.itrf14.json"
+    doc.write_text(json.dumps(payload, indent=1))
+    return gpsconfig
+
+
+def _detrended14() -> tuple[np.ndarray, np.ndarray, bool]:
+    """``_detrended`` on the itrf14 .pos series and document."""
+    from geo_dataread import gps_views
+    from geo_dataread.detrend_estimate import read_plate_series
+
+    y, d, _s = read_plate_series(STA, uncert=10, pos_frame="itrf14")
+    doc = gps_views.read_detrend_params(gps_views.default_params_path("itrf14"))
+    record, _src = gps_views.station_detrend_record(doc, STA)
+    if record is None:
+        return y, d, True
+    out = gps_views.apply_stored_detrend(
+        record, y, d, frame=gps_views.series_frame("itrf14")
+    )
+    return y, out, False
+
+
+def _in_segments(yearf: np.ndarray, record: dict) -> np.ndarray:
+    """Epochs inside the record's fit segments (open bounds = open)."""
+    keep = np.zeros(yearf.size, dtype=bool)
+    for lo, hi in record["segments"]:
+        lo = -np.inf if lo is None else lo
+        hi = np.inf if hi is None else hi
+        keep |= (yearf >= lo) & (yearf <= hi)
+    return keep
 
 
 def _detrended() -> tuple[np.ndarray, np.ndarray, bool]:
@@ -118,44 +173,47 @@ def _residual_trend(yearf: np.ndarray, series: np.ndarray) -> tuple[float, float
     return rate, seasonal
 
 
-def test_commit_then_detrended_view_consumes_the_record(gpsconfig, tmp_path):
+@needs_itrf14
+def test_commit_then_detrended_view_consumes_the_record(gpsconfig14, tmp_path):
     """The whole point: commit a record, and the consumption path sees it.
 
-    ``apply_stored_detrend`` (the same function the plot driver's
-    ``--remove-steps`` pipeline calls) reads the deployed document and
-    returns the record-subtracted series.  Before commit: absent + raw;
+    On the itrf14 .pos series and ``detrend_params.itrf14.json`` — what the
+    plots read. ``apply_stored_detrend`` (the same function the plot
+    driver's ``--remove-steps`` pipeline calls) reads the document and
+    returns the record-subtracted series. Before commit: absent + raw;
     after commit: present + detrended.
     """
-    import json
-
     from gps_plot.detrend_workbench import build_record, commit_record
 
-    doc = gpsconfig / "detrend_params.json"
+    doc = gpsconfig14 / "detrend_params.itrf14.json"
     before_doc = json.loads(doc.read_text())
-    # guaranteed by the gpsconfig fixture, which removes STA from its copy
+    # guaranteed by the gpsconfig14 fixture, which removes STA from its copy
     assert STA not in before_doc["stations"]
 
-    y0, d0, absent_before = _detrended()
+    y0, d0, absent_before = _detrended14()
     assert absent_before, "expected the 'absent record' degrade before commit"
     std_before = float(np.nanstd(d0[0]))
 
     record, *_ = build_record(
-        STA, tot_dir=str(TOT), max_gap_years=2.0, outlier_param=["method=model"]
+        STA, frame="itrf14", max_gap_years=2.0, outlier_param=["method=model"]
     )  # pins the MODEL detector's real-data numbers (the default is running since 2026-10-19)
+    assert record["frame"] == "plate_removed@itrf14"
+    assert record["refs"]["data"] == ".pos imo.24hr_itrf14"
     path, n_before, n_after = commit_record(STA, record, params_path=doc)
     assert (path, n_after) == (doc, n_before + 1)
 
-    y1, d1, absent_after = _detrended()
+    y1, d1, absent_after = _detrended14()
     assert not absent_after, "record was committed but production did not read it"
     # (a) consumption: something was subtracted
     assert float(np.nanstd(d1[0])) < std_before * 0.75
 
-    # (b) CORRECTNESS, on ALL THREE components: refitting the detrended
-    # series must find no trend and no seasonal left. This is what catches a
-    # sign flip, a component swap, or a stale window -- none of which (a)
-    # can see.
+    # (b) CORRECTNESS, on ALL THREE components, inside the record's segments:
+    # refitting the detrended series must find no trend and no seasonal left.
+    # This is what catches a sign flip, a component swap, or a stale window
+    # -- none of which (a) can see.
+    keep = _in_segments(y1, record)
     for c, name in enumerate(("north", "east", "up")):
-        rate, seasonal = _residual_trend(y1, d1[c])
+        rate, seasonal = _residual_trend(y1[keep], d1[c][keep])
         assert rate < MAX_RESIDUAL_RATE, f"{name}: {rate:.3f} mm/yr of trend left in"
         assert seasonal < MAX_RESIDUAL_SEASONAL, f"{name}: {seasonal:.3f} mm seasonal"
 
@@ -185,7 +243,7 @@ def test_commit_refuses_to_clobber_without_force(gpsconfig):
     # {"model": "lineperiodic"}, which the validator now (correctly) refuses.
     # That stub passing was itself the bug -- it would have degraded the
     # station to raw at every read.
-    rec, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0)
+    rec, *_ = build_record(STA, frame="tot", tot_dir=str(TOT), max_gap_years=2.0)
     commit_record(STA, rec, params_path=doc)
     with pytest.raises(RuntimeError, match="already has a record"):
         commit_record(STA, rec, params_path=doc)
@@ -210,7 +268,7 @@ def test_commit_rejects_a_frame_mismatch(gpsconfig):
     from gps_plot.detrend_workbench import build_record, commit_record
 
     doc = gpsconfig / "detrend_params.json"
-    rec, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0)
+    rec, *_ = build_record(STA, frame="tot", tot_dir=str(TOT), max_gap_years=2.0)
     rec["frame"] = "itrf2008"
     with pytest.raises(RuntimeError, match="!= document frame"):
         commit_record(STA, rec, params_path=doc, force=True)
@@ -238,6 +296,8 @@ def test_declare_step_writes_the_catalog_and_enters_the_fit(gpsconfig, monkeypat
     rc = wb.main(
         [
             STA,
+            "--frame",
+            "tot",
             "--tot-dir",
             str(TOT),
             "--no-tos",
@@ -284,7 +344,8 @@ def test_declare_step_refuses_an_offvocabulary_kind(gpsconfig):
         (lambda r: _swap_components(r), "north/east swapped"),
     ],
 )
-def test_correctness_assertions_catch_wrong_records(gpsconfig, corrupt, label):
+@needs_itrf14
+def test_correctness_assertions_catch_wrong_records(gpsconfig14, corrupt, label):
     """The wrong records that passed the FIRST version of this test.
 
     Each was constructed by an adversarial review and slipped through the
@@ -292,15 +353,16 @@ def test_correctness_assertions_catch_wrong_records(gpsconfig, corrupt, label):
     """
     from gps_plot.detrend_workbench import build_record, commit_record
 
-    doc = gpsconfig / "detrend_params.json"
-    record, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0)
+    doc = gpsconfig14 / "detrend_params.itrf14.json"
+    record, *_ = build_record(STA, frame="itrf14", max_gap_years=2.0)
     commit_record(STA, corrupt(record), params_path=doc, force=True)
 
-    y, d, absent = _detrended()
+    y, d, absent = _detrended14()
     assert not absent, "the corrupt record should still be CONSUMED"
+    keep = _in_segments(y, record)
     caught = any(
-        _residual_trend(y, d[c])[0] >= MAX_RESIDUAL_RATE
-        or _residual_trend(y, d[c])[1] >= MAX_RESIDUAL_SEASONAL
+        _residual_trend(y[keep], d[c][keep])[0] >= MAX_RESIDUAL_RATE
+        or _residual_trend(y[keep], d[c][keep])[1] >= MAX_RESIDUAL_SEASONAL
         for c in range(3)
     )
     assert caught, f"{label}: corruption slipped through the assertions"
@@ -701,8 +763,12 @@ def test_a_half_day_epoch_shift_does_not_move_the_fit():
     # spelling there merges into two steps for one event -- which is now a
     # hard error (see the next test). RHOF declares none, so each run here
     # fits exactly one step and the comparison is of epochs, not of counts.
-    a, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0, steps=[midnight])
-    b, *_ = build_record(STA, tot_dir=str(TOT), max_gap_years=2.0, steps=[noon])
+    a, *_ = build_record(
+        STA, frame="tot", tot_dir=str(TOT), max_gap_years=2.0, steps=[midnight]
+    )
+    b, *_ = build_record(
+        STA, frame="tot", tot_dir=str(TOT), max_gap_years=2.0, steps=[noon]
+    )
     assert [round(float(v), 4) for v in a["rms"]] == [
         round(float(v), 4) for v in b["rms"]
     ]
@@ -725,7 +791,13 @@ def test_redeclaring_a_catalog_step_is_refused_not_silently_degenerate():
     from gps_plot.detrend_workbench import build_record
 
     with pytest.raises(RuntimeError, match="not separable"):
-        build_record(STA_SELF, tot_dir=str(TOT), max_gap_years=2.0, steps=[2008.4071])
+        build_record(
+            STA_SELF,
+            frame="tot",
+            tot_dir=str(TOT),
+            max_gap_years=2.0,
+            steps=[2008.4071],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +819,7 @@ def test_grey_overlay_count_matches_the_printed_n_rejected():
     from gps_plot.detrend_workbench import build_record, split_outliers
 
     record, _yearf, data, sigma, est = build_record(
-        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0
+        STA_SELF, frame="tot", tot_dir=str(TOT), max_gap_years=1.0
     )
     n_rejected = [int(v) for v in record["n_rejected"]]
     assert n_rejected == [int(v) for v in est.outliers.sum(axis=1)]
@@ -788,7 +860,11 @@ def test_hide_outliers_changes_display_only(tmp_path):
     from gps_plot.detrend_workbench import build_record, render
 
     record, yearf, data, sigma, est = build_record(
-        STA_SELF, tot_dir=str(TOT), max_gap_years=1.0, outlier_param=["method=model"]
+        STA_SELF,
+        frame="tot",
+        tot_dir=str(TOT),
+        max_gap_years=1.0,
+        outlier_param=["method=model"],
     )  # pins the MODEL detector's real-data numbers (the default is running since 2026-10-19)
     shown = render(
         STA_SELF,
@@ -828,7 +904,11 @@ def _windowed_estimate(sta=STA):
     from gps_plot.detrend_workbench import build_record
 
     return build_record(
-        sta, tot_dir=str(TOT), segments=((None, WINDOW_END),), max_gap_years=2.0
+        sta,
+        frame="tot",
+        tot_dir=str(TOT),
+        segments=((None, WINDOW_END),),
+        max_gap_years=2.0,
     )
 
 
@@ -900,6 +980,7 @@ def test_screen_is_fed_the_fits_own_declared_steps():
     step = 2016.5
     _record, yearf, data, sigma, est = wb.build_record(
         STA,
+        frame="tot",
         tot_dir=str(TOT),
         segments=((None, WINDOW_END),),
         max_gap_years=2.0,
@@ -956,6 +1037,8 @@ def test_provisional_days_reaches_the_detector_from_the_cli(tmp_path, monkeypatc
         rc = wb.main(
             [
                 STA,
+                "--frame",
+                "tot",
                 "--tot-dir",
                 str(TOT),
                 "--window-end",
@@ -1237,6 +1320,7 @@ def test_segments_estimate_the_offset_a_single_window_cannot(tmp_path):
 
     record, *_ = build_record(
         STA_SELF,
+        frame="tot",
         tot_dir=str(TOT),
         segments=((2002.1, 2008.35), (2008.7, 2019.5)),
         max_gap_years=1.5,
@@ -1270,6 +1354,8 @@ def test_cli_segment_flag_reaches_the_fit(tmp_path, monkeypatch):
     rc = wb.main(
         [
             STA_SELF,
+            "--frame",
+            "tot",
             "--tot-dir",
             str(TOT),
             "--no-tos",
@@ -1316,6 +1402,8 @@ def test_open_bounds_are_expressible_from_the_cli(tmp_path, monkeypatch):
     rc = wb.main(
         [
             STA_SELF,
+            "--frame",
+            "tot",
             "--tot-dir",
             str(TOT),
             "--no-tos",
@@ -1398,7 +1486,7 @@ class TestTrajectoryCurveSpansGaps:
         from gps_plot.detrend_workbench import build_record
 
         record, yearf, *_ = build_record(
-            STA_SELF, tot_dir=str(TOT), max_gap_years=1.5, **kw
+            STA_SELF, frame="tot", tot_dir=str(TOT), max_gap_years=1.5, **kw
         )
         return record, yearf
 
@@ -1509,6 +1597,8 @@ def test_joint_commit_clears_a_stale_stage_plan(gpsconfig, tmp_path):
     ]
     common = [
         "SELF",
+        "--frame",
+        "tot",
         "--tot-dir",
         str(TOT),
         "--max-gap-years",
@@ -1557,6 +1647,8 @@ def test_the_saved_background_can_be_held_later(gpsconfig, tmp_path):
     yaml_path.write_text("detrend:\n  estimation:\n    enabled: true\n")
     common = [
         "SELF",
+        "--frame",
+        "tot",
         "--tot-dir",
         str(TOT),
         "--max-gap-years",
@@ -1620,6 +1712,8 @@ def test_a_store_hold_without_a_saved_background_is_refused(gpsconfig, tmp_path)
     rc = main(
         [
             "RHOF",
+            "--frame",
+            "tot",
             "--tot-dir",
             str(TOT),
             "--max-gap-years",

@@ -86,6 +86,20 @@ if the excess-candidate rule aborts — an S0 record leaves model-visible outlie
 in the fit, so on a fallback declaring the missing step beats accepting it
 (measured on RHOF vertical: 0.54 mm/yr of rate difference).
 
+**Frame (2026-10-22).** `--frame itrf14` is the default: the `.pos`
+`imo.24hr_itrf14` series and `detrend_params.itrf14.json`, what the plots,
+velocities and autopass read. `--frame itrf20|itrf08` take that frame's
+`.pos` and document; `--frame tot` is the joined TOT (`--tot-dir`, refused
+with any other frame) and shares `detrend_params.json` and the
+`plate_removed` tag with itrf08. The record is tagged with the frame
+(`plate_removed@itrf14`, `refs.data = .pos imo.24hr_itrf14`), `--commit`,
+`--donor`, donor holds and `--status` use that frame's document, and
+`fit_windows.csv` rows scoped to another frame are not read. The Qt picker
+takes the same `--frame`/`--pos-dir` and emits them (`run_flags`). Not per
+frame yet: the `analysis.yaml` keys `--commit`/`--save-secular` write
+(station models, stage plans, saved backgrounds — their `frame:` is the
+plate, EURA/NOAM, not the ITRF realisation).
+
 **First `gps_plot` module that writes config.** `--commit` merge-writes one
 station into `detrend_params.json`, preserving the rest; without it nothing is
 stored. Proven end-to-end: `plot-gps-timeseries <STA> --view detrended` then
