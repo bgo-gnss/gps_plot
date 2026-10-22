@@ -137,3 +137,85 @@ def test_dry_run_lists_the_prepare_steps_first(tmp_path, monkeypatch, capsys) ->
     )  # dry run: listed, not run
     assert run_cli.run("gpsplot run", [str(plots), "--dry-run", "--no-prepare"]) == 0
     assert "prepare:" not in capsys.readouterr().out
+
+
+def test_args_are_appended_general_to_specific() -> None:
+    cfg = {
+        "defaults": {"args": ["--traceback"]},
+        "products": {
+            "areas": {
+                "stations": "area",
+                "dir": "a/{cdn}",
+                "args": "--show-icing --outlier-sigma 4",
+                "runs": [
+                    {
+                        "ref": "detrend",
+                        "special": ["90d"],
+                        "args": ["--outlier-sigma 3", "--show-outliers"],
+                    }
+                ],
+                "overrides": {"reykjanes": {"args": ["--outlier-sigma", "2.5"]}},
+            }
+        },
+    }
+    jobs = products.expand(cfg, areas=products.area_table(AREAS_DOC))
+    rey = next(j for j in jobs if j.area == "reykjanes").argv
+    tail = rey[rey.index("--traceback") : rey.index("--special")]
+    assert tail == (
+        "--traceback",
+        "--show-icing",
+        "--outlier-sigma",
+        "4",
+        "--outlier-sigma",
+        "3",
+        "--show-outliers",
+        "--outlier-sigma",
+        "2.5",
+    )
+    hen = next(j for j in jobs if j.area == "hengill").argv
+    assert hen[hen.index("--show-outliers") - 1] == "3"  # no override there
+
+
+@pytest.mark.parametrize("bad", [["-d", "/tmp"], "--figDir=/tmp", ["--special 90d"]])
+def test_args_refuse_runner_owned_options(bad: object) -> None:
+    with pytest.raises(ValueError, match="not allowed"):
+        products.run_argv({"special": ["90d"], "args": bad}, {})
+
+
+def test_args_must_be_a_string_or_list() -> None:
+    with pytest.raises(ValueError, match="string or a list"):
+        products.extra_args({"outlier_sigma": 3.5})
+
+
+def _run_cli(tmp_path, monkeypatch, cfg):
+    import yaml
+
+    from gps_plot.cli import run as run_cli
+
+    plots = tmp_path / "plots.yaml"
+    plots.write_text(yaml.safe_dump(cfg))
+    for name in ("station_areas.yaml", "events.yaml"):
+        (tmp_path / name).write_text(
+            yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
+        )
+    monkeypatch.setattr(
+        run_cli.driver,
+        "_load_config",
+        lambda: type("C", (), {"config_path": str(tmp_path)})(),
+    )
+    return run_cli.run("gpsplot run", [str(plots), "--dry-run"])
+
+
+def test_run_refuses_an_unknown_ts_option_before_anything(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    cfg = {**CFG, "defaults": {**CFG["defaults"], "args": ["--no-such-flag"]}}
+    assert _run_cli(tmp_path, monkeypatch, cfg) == 2
+    out = capsys.readouterr().out
+    assert "nothing run" in out and "--no-such-flag" in out
+
+
+def test_run_reports_a_refused_args_key(tmp_path, monkeypatch, capsys) -> None:
+    cfg = {**CFG, "defaults": {**CFG["defaults"], "args": ["-j", "4"]}}
+    assert _run_cli(tmp_path, monkeypatch, cfg) == 2
+    assert "gpsplot run -j" in capsys.readouterr().out

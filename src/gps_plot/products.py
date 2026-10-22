@@ -11,6 +11,7 @@ runner (:mod:`gps_plot.cli.run`) executes the jobs.
 from __future__ import annotations
 
 import datetime as dt
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,22 @@ RUN_KEYS = (
     "view",
     "publish",
     "fixedstart",
+    "args",
 )
+
+#: ts options a plots.yaml ``args:`` list may not carry: the runner sets
+#: them per job (output dir, manifest, workers) or the job's own keys do
+#: (``special``/``fixedstart`` make one job per period)
+RESERVED_OPTIONS: Mapping[str, str] = {
+    "-d": "the product's dir:",
+    "--figDir": "the product's dir:",
+    "--manifest": "the runner",
+    "-j": "gpsplot run -j",
+    "--workers": "gpsplot run -j",
+    "--special": "the run's special:",
+    "-s": "the run's fixedstart:",
+    "--start": "the run's fixedstart:",
+}
 
 #: event colours when plots.yaml sets none (eruption red, dike blue as the
 #: legacy Reykjanes list; the rest BGÓ 2026-10-21)
@@ -114,8 +130,47 @@ def event_specs(
     return sorted(out)
 
 
-def run_argv(run: Mapping[str, Any], defaults: Mapping[str, Any]) -> list[list[str]]:
-    """The ``gpsplot ts`` options of one run; a ``fixedstart`` list adds one each."""
+def extra_args(value: Any) -> list[str]:
+    """An ``args:`` value as ts tokens: a string or a list of strings, each
+    shell-split (``"--outlier-sigma 3.5"`` is two tokens).
+
+    Raises:
+        ValueError: Not a string/list, or a runner-owned option
+            (:data:`RESERVED_OPTIONS`).
+    """
+    if value is None or value == []:
+        return []
+    if isinstance(value, str):
+        items: list[Any] = [value]
+    elif isinstance(value, list | tuple):
+        items = list(value)
+    else:
+        raise ValueError(f"plots.yaml args: a string or a list, got {value!r}")
+    tokens = [tok for item in items for tok in shlex.split(str(item))]
+    for tok in tokens:
+        opt = tok.split("=", 1)[0]
+        if opt in RESERVED_OPTIONS:
+            raise ValueError(
+                f"plots.yaml args: {opt} is not allowed here; "
+                f"it is set by {RESERVED_OPTIONS[opt]}"
+            )
+    return tokens
+
+
+def run_argv(
+    run: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    product_args: Any = None,
+    override_args: Any = None,
+) -> list[list[str]]:
+    """The ``gpsplot ts`` options of one run; a ``fixedstart`` list adds one each.
+
+    ``args:`` lists are appended last, general to specific: defaults, the
+    product, the run, an area override — a later one wins for a
+    single-value option (argparse keeps the last), and any of them wins
+    over the ``--operational`` presets (those fill only options left at
+    their default).
+    """
     unknown = set(run) - set(RUN_KEYS)
     if unknown:
         raise ValueError(f"plots.yaml run: unknown key(s) {sorted(unknown)}")
@@ -138,6 +193,8 @@ def run_argv(run: Mapping[str, Any], defaults: Mapping[str, Any]) -> list[list[s
         base += ["--ylim", *(str(v) for v in _as_list(opts["ylim"]))]
     if opts.get("operational"):
         base.append("--operational")
+    for value in (defaults.get("args"), product_args, run.get("args"), override_args):
+        base += extra_args(value)
     out = []
     specials = _as_list(opts.get("special") or [])
     if specials:
@@ -178,10 +235,19 @@ def expand(
                 )
                 for run in runs:
                     publish = bool({**run, **over}.get("publish", False))
-                    merged = {**run, **{k: v for k, v in over.items() if k in RUN_KEYS}}
+                    merged = {
+                        **run,
+                        **{
+                            k: v
+                            for k, v in over.items()
+                            if k in RUN_KEYS and k != "args"
+                        },
+                    }
                     if run.get("fixedstart") is False:  # the run opts out
                         merged["fixedstart"] = []
-                    for argv in run_argv(merged, defaults):
+                    for argv in run_argv(
+                        merged, defaults, spec.get("args"), over.get("args")
+                    ):
                         if ev:
                             argv = argv + ["--events", *ev]
                         jobs.append(
@@ -199,7 +265,7 @@ def expand(
                 continue
             stations = tuple(_as_list(spec.get("stations") or "active"))
             for run in runs:
-                for argv in run_argv(run, defaults):
+                for argv in run_argv(run, defaults, spec.get("args")):
                     jobs.append(
                         Job(
                             pname,
