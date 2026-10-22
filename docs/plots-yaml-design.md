@@ -87,12 +87,20 @@ events.yaml (region + kind). The catalog has ~34 Reykjanes rows in 6 kinds
 where the legacy list has 19 dates; drawing catalog rows as lines is new code
 (`addEvent` takes only the CLI dict today).
 
-### 3. Runner: `gpsplot run [plots.yaml] [--product P] [--area A] [--dry-run]`
+### 3. Runner: `gpsplot run [plots.yaml] [STA ...] [--product P] [--area A] [--dry-run]`
 
 In-process (no subprocess per area): expands products → (stations, variants),
 runs them through the same batch contract as `gpsplot ts` (strict, one-line
 errors), writes one manifest per product, prunes `_runs/`, exit 1 if anything
 failed. `--dry-run` prints the expanded plan (what would be plotted where).
+
+Stations (2026-10-22): `gpsplot run SENG,THOB [--product P] [--area A]`
+plots only those stations of the selected jobs — each job keeps the ones in
+its list, a job with none is dropped, and a station no job has is reported
+("left out"). An `active` list matches the operated stations of
+stations.cfg; ts `--skip-missing` still drops one without a series. The
+positional words may be in any order: a `.yaml`/`.yml` path (or one with a
+`/`) is the plots file, the rest are stations (space or comma separated).
 
 ### 4. Viewing on the laptop
 

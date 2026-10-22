@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import datetime as dt
 import shlex
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -277,6 +277,40 @@ def expand(
                         )
                     )
     return jobs
+
+
+def select_stations(
+    jobs: Sequence[Job],
+    wanted: Sequence[str],
+    keywords: Mapping[str, Collection[str] | None] | None = None,
+) -> tuple[list[Job], list[str]]:
+    """Narrow jobs to the ``wanted`` stations (``gpsplot run STA ...``).
+
+    Each job keeps the wanted stations it would plot, in the order given;
+    a job left with none is dropped. A station keyword in a job's list
+    (``active``) is matched through ``keywords``: ``{keyword: its
+    stations}``, or ``None`` for "any station" (``all``).
+
+    Returns:
+        The narrowed jobs and the wanted stations no job plots.
+    """
+    keywords = keywords or {}
+    want = [s.upper() for s in wanted]
+    out: list[Job] = []
+    used: set[str] = set()
+    for job in jobs:
+        members = {s.upper() for s in job.stations if s not in keywords}
+        pool = [keywords[k] for k in job.stations if k in keywords]
+        keep = tuple(
+            s
+            for s in want
+            if s in members
+            or any(p is None or s in {m.upper() for m in p} for p in pool)
+        )
+        if keep:
+            out.append(replace(job, stations=keep))
+            used.update(keep)
+    return out, [s for s in want if s not in used]
 
 
 def _as_list(value: Any) -> list[Any]:

@@ -11,6 +11,10 @@ Run order: the ``prepare:`` steps of plots.yaml run first, in their order
 (``network_days`` = ``gps-network-days``: the network-day and common-mode
 lists the cleaned view reads), then the products. ``--no-prepare`` skips
 them (a quick re-run of one area); a failed step ends the run.
+
+Stations: ``gpsplot run [plots.yaml] [STA ...]`` plots only those stations
+of the jobs ``--product``/``--area`` select (each job keeps the ones it
+has; ``active`` lists match the operated stations of stations.cfg).
 """
 
 from __future__ import annotations
@@ -39,26 +43,87 @@ def _network_days(workers: int | None) -> int:
 PREPARE_STEPS = {"network_days": _network_days}
 
 
+DESCRIPTION = """\
+Make the standard plots defined in plots.yaml (default: the one in the
+gpsconfig directory, ~/.config/gpsconfig/plots.yaml).
+
+plots.yaml lists products (standard = every active station; areas = one
+plot set per volcanic/regional area) and their runs (ref, frame, view,
+periods, ts options). Each (product, area, run) becomes one `gpsplot ts`
+job. The prepare: steps run first (network_days = gps-network-days: the
+network bad days and common mode the cleaned view uses), then the jobs.
+
+Output goes under plots_dir (the CDN tree). Each run also writes
+plots_dir/_runs/<UTC stamp>/: one manifest per job and publish.manifest
+(only the publish: true runs; the rsync input). Exit status 1 if any plot
+failed, 2 if plots.yaml or a job's ts options are wrong (checked before
+anything runs).
+
+Selecting: --product and --area pick jobs; station codes after them keep
+only those stations in the picked jobs (a job without any is dropped,
+a station no job has is reported as "left out").
+"""
+
+EPILOG = """\
+examples:
+  gpsplot run --dry-run
+      show every job (stations, output directory, full ts line); plots nothing
+  gpsplot run -j 12
+      the whole production run: prepare, then all products, 12 workers
+  gpsplot run --product standard
+      only the standard (all active stations) plots
+  gpsplot run --product areas --area reykjanes
+      only the Reykjanes area plots (area = the cdn slug in station_areas.yaml)
+  gpsplot run SENG THOB
+      SENG and THOB in every product that has them (standard + their areas)
+  gpsplot run seng,thob --area reykjanes --no-prepare
+      a quick re-plot of two stations in one area, without gps-network-days
+  gpsplot run RHOF --product standard --dry-run
+      what would be plotted for RHOF in the standard product
+  gpsplot run ~/test/plots.yaml --plots-dir /tmp/plots
+      another plots.yaml, written to another directory (not the CDN tree)
+"""
+
+
 def build_parser(prog: str) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=prog,
-        description="Plot every product of plots.yaml (or one product/area).",
+        description=DESCRIPTION,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
-        "plots",
-        nargs="?",
-        default=None,
-        help="plots.yaml (default: plots.yaml in the gpsconfig directory)",
+        "targets",
+        nargs="*",
+        metavar="plots.yaml|STA",
+        help="a plots.yaml (a .yaml/.yml path) and/or station codes, space or "
+        "comma separated, any case: only these stations of the selected jobs",
     )
-    p.add_argument("--plots-dir", default=None, help="override plots_dir")
-    p.add_argument("--product", default=None, help="only this product")
-    p.add_argument("--area", default=None, help="only this area (cdn slug)")
+    p.add_argument(
+        "--plots-dir",
+        default=None,
+        help="write under this directory instead of plots.yaml plots_dir",
+    )
+    p.add_argument(
+        "--product", default=None, help="only this product (e.g. standard, areas)"
+    )
+    p.add_argument(
+        "--area",
+        default=None,
+        help="only this area (cdn slug, e.g. reykjanes, askja, tjornes)",
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",
         help="print the jobs (stations, directory, ts options) and exit",
     )
-    p.add_argument("-j", "--workers", type=int, default=None)
+    p.add_argument(
+        "-j",
+        "--workers",
+        type=int,
+        default=None,
+        help="parallel plot workers per job (and for the prepare steps)",
+    )
     p.add_argument(
         "--no-prepare",
         action="store_true",
@@ -68,10 +133,14 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
 
 
 def run(prog: str, argv: list[str]) -> int:
-    args = build_parser(prog).parse_args(argv)
+    parser = build_parser(prog)
+    args = parser.parse_args(argv)
+    plots_arg, wanted = _split_targets(args.targets)
+    if len(plots_arg) > 1:
+        parser.error(f"one plots.yaml, got {' '.join(plots_arg)}")
     config = driver._load_config()
     cfg_dir = Path(config.config_path).expanduser()
-    plots_path = Path(args.plots) if args.plots else cfg_dir / "plots.yaml"
+    plots_path = Path(plots_arg[0]) if plots_arg else cfg_dir / "plots.yaml"
     cfg = products.load_yaml(plots_path)
     areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
     events = products.load_yaml(_cfg_file(config, cfg, "events")).get("events") or []
@@ -88,8 +157,17 @@ def run(prog: str, argv: list[str]) -> int:
         for name, err in bad:
             print(f"  {name}: {err}")
         return 2
+    if wanted:
+        jobs, unused = products.select_stations(
+            jobs, wanted, {"active": _active(config), "all": None}
+        )
+        if unused:
+            print(f"{prog}: not in the selected jobs, left out: {' '.join(unused)}")
     if not jobs:
-        print(f"{prog}: no jobs (product={args.product}, area={args.area})")
+        print(
+            f"{prog}: no jobs (product={args.product}, area={args.area}"
+            + (f", stations={' '.join(wanted)})" if wanted else ")")
+        )
         return 1
     root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
     steps = [] if args.no_prepare else list(cfg.get("prepare") or [])
@@ -184,6 +262,25 @@ def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str
         if rest:
             bad.append((job.name, f"unrecognized: {' '.join(rest)}"))
     return bad
+
+
+def _split_targets(targets: list[str]) -> tuple[list[str], list[str]]:
+    """Positional words -> (plots.yaml paths, station codes)."""
+    plots: list[str] = []
+    stations: list[str] = []
+    for word in targets:
+        if word.lower().endswith((".yaml", ".yml")) or "/" in word:
+            plots.append(word)
+        else:
+            stations += [s.strip().upper() for s in word.split(",") if s.strip()]
+    return plots, stations
+
+
+def _active(config: Any) -> list[str]:
+    """The operated stations (stations.cfg) an ``active`` job list stands for."""
+    from gps_plot.cli.common import active_stations
+
+    return list(active_stations(config))
 
 
 def _cfg_file(config: Any, cfg: dict[str, Any], what: str) -> Path:

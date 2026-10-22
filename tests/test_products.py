@@ -219,3 +219,53 @@ def test_run_reports_a_refused_args_key(tmp_path, monkeypatch, capsys) -> None:
     cfg = {**CFG, "defaults": {**CFG["defaults"], "args": ["-j", "4"]}}
     assert _run_cli(tmp_path, monkeypatch, cfg) == 2
     assert "gpsplot run -j" in capsys.readouterr().out
+
+
+def test_select_stations_narrows_each_job_and_reports_the_unused() -> None:
+    jobs = products.expand(CFG, areas=products.area_table(AREAS_DOC))
+    kept, unused = products.select_stations(
+        jobs, ["kriv", "OLKE", "ZZZZ"], {"active": ["OLKE"], "all": None}
+    )
+    by = {(j.product, j.area): j.stations for j in kept}
+    assert by[("standard", None)] == ("OLKE",)  # active matched via keywords
+    assert by[("areas", "reykjanes")] == ("KRIV",)
+    assert by[("areas", "hengill")] == ("OLKE",)
+    assert unused == ["ZZZZ"]
+    # every run of an area keeps its jobs (fixedstart included)
+    assert sum(j.area == "reykjanes" for j in kept) == sum(
+        j.area == "reykjanes" for j in jobs
+    )
+
+
+def test_select_stations_drops_jobs_without_a_wanted_station() -> None:
+    jobs = products.expand(CFG, areas=products.area_table(AREAS_DOC))
+    kept, unused = products.select_stations(jobs, ["SENG"], {"active": []})
+    assert {j.area for j in kept} == {"reykjanes"} and not unused
+
+
+def test_run_takes_stations_and_a_plots_file_in_any_order(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import yaml
+
+    from gps_plot.cli import run as run_cli
+
+    plots = tmp_path / "plots.yaml"
+    plots.write_text(yaml.safe_dump(CFG))
+    for name in ("station_areas.yaml", "events.yaml"):
+        (tmp_path / name).write_text(
+            yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
+        )
+    monkeypatch.setattr(
+        run_cli.driver,
+        "_load_config",
+        lambda: type("C", (), {"config_path": str(tmp_path)})(),
+    )
+    monkeypatch.setattr(run_cli, "_active", lambda config: ["SENG"])
+    argv = ["seng,kriv", str(plots), "--area", "reykjanes", "--dry-run"]
+    assert run_cli.run("gpsplot run", argv) == 0
+    out = capsys.readouterr().out
+    assert "2 stations: SENG KRIV" in out and "ELDC" not in out
+    assert run_cli.run("gpsplot run", [str(plots), "QQQQ", "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "left out: QQQQ" in out and "no jobs" in out
