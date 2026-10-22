@@ -998,3 +998,18 @@ def test_provisional_last_point_keeps_a_green_outline():
     assert mark.get_markeredgecolor() == tplt.PROVISIONAL_LAST_EDGE_COLOR
     assert list(mark.get_xdata()) == [4.0] and list(mark.get_ydata()) == [2.0]
     plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("ttype", "pos_id", "applies"),
+    [
+        ("POS", None, True),
+        ("POS", "imo.24hr_itrf14", True),
+        ("POS", "imo.24hr_itrf08", True),
+        ("POS", "imo.24hr_itrf20", False),  # gamit-p01: another solution
+        ("POS", "imo.08hr_itrf20", False),
+        ("TOT", None, False),
+    ],
+)
+def test_common_mode_only_for_okada_24h_series(ttype, pos_id, applies) -> None:
+    assert tplt.common_mode_applies(ttype, pos_id) is applies

@@ -1073,6 +1073,16 @@ def build_parser(
         "them, N only those among the last N data points",
     )
     parser.add_argument(
+        "--common-mode",
+        dest="common_mode",
+        choices=["subtract", "off"],
+        default="subtract",
+        help="the daily network common mode (gps-network-days writes "
+        "network_cm.itrf14.csv into pos_dir from the stations outside the "
+        "volcanic areas): subtract (default; okada 24 h itrf08/itrf14 series "
+        "only, before outlier detection) or off",
+    )
+    parser.add_argument(
         "--obstruction",
         choices=["remove", "keep", "off"],
         default=None,
@@ -1244,6 +1254,7 @@ def _resolve_obstruction(kwargs: dict[str, Any], parser: Any) -> None:
             parser.error(f"--show-{kind} N: N must be positive")
         kwargs[f"hide_{kind}"] = show is None
         kwargs[f"{kind}_tail"] = show or None
+    kwargs["common_mode"] = kwargs.get("common_mode", "subtract") != "off"
     # network days: no umbrella, same rules
     mode = kwargs["network_mode"] or "remove"
     if mode == "off" or not kwargs["network"]:

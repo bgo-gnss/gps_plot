@@ -366,6 +366,28 @@ def _network_epochs_cached() -> tuple[float, ...]:
     return tuple(epochs)
 
 
+@functools.lru_cache(maxsize=1)
+def _common_mode_cached() -> tuple[Any, Any]:
+    from geo_dataread import gps_views
+
+    resolve = getattr(gps_views, "resolve_common_mode", None)
+    if resolve is None:
+        return np.zeros(0), np.zeros((3, 0))
+    epochs, values, _src = resolve()
+    return epochs, values
+
+
+def common_mode_applies(tType: str, pos_id: str | None) -> bool:
+    """The network common mode is estimated from okada's 24 h solutions
+    (itrf08 and itrf14 share them): only those series get it subtracted --
+    gamit-p01's IGb20 is another solution, and 8 h sessions another product."""
+    if tType != "POS":
+        return False
+    from geo_dataread.pos import pos_frame, pos_product
+
+    return pos_frame(pos_id) in ("itrf08", "itrf14") and "24hr" in pos_product(pos_id)
+
+
 def network_epochs(*, network: bool = True) -> tuple[float, ...]:
     """The network days (whole-solution bad days, geo_dataread.network_days),
     the same for every station, or () when off / no list in ``pos_dir``.
@@ -688,6 +710,7 @@ class StationSeries:
     iced: tuple[Any, Any] | None = None
     buried: tuple[Any, Any] | None = None
     netday: tuple[Any, Any] | None = None
+    cm_days: int = 0
 
 
 def pos_read_kwargs(
@@ -903,6 +926,7 @@ def station_series(
     snow_mode: str = "remove",
     network: bool = True,
     network_mode: str = "remove",
+    common_mode: bool = True,
     convention: str = "geodetic",
     pos_id: str | None = None,
 ) -> StationSeries:
@@ -929,6 +953,20 @@ def station_series(
     )
     if yearf is None or len(yearf) == 0:
         raise NoDataError("no data for station %s" % sta)
+
+    # the network common mode (geo_dataread network_cm list, BGÓ 2026-10-21:
+    # estimate and subtract): high-pass by construction, so rates, seasonals
+    # and stored records are unaffected; BEFORE detection, so the flags are
+    # those of the plotted data
+    cm_days = 0
+    if common_mode and common_mode_applies(tType, pos_id):
+        cm_epochs, cm_values = _common_mode_cached()
+        if np.size(cm_epochs):
+            from geo_dataread import gps_views
+
+            data, cm_days = gps_views.subtract_common_mode(
+                yearf, data, cm_epochs, cm_values
+            )
 
     outliers = provisional = aborted = iced = buried = netday = None
     if view == "cleaned":
@@ -986,6 +1024,7 @@ def station_series(
         iced,
         buried,
         netday,
+        cm_days,
     )
 
 
@@ -1092,6 +1131,7 @@ def plotTime(
     network_mode: str = "remove",
     hide_network: bool = True,
     network_tail: int | None = None,
+    common_mode: bool = True,
     remove_kinds: Sequence[str] | None = None,
     detrend_terms: Sequence[str] | None = None,
     annotate_steps: bool | Sequence[str] | None = False,
@@ -1341,6 +1381,7 @@ def plotTime(
         snow_mode=snow_mode,
         network=network,
         network_mode=network_mode,
+        common_mode=common_mode,
     )
     from gps_plot.sources import gps as gps_source
 
@@ -1374,6 +1415,7 @@ def plotTime(
     iced = main_series.iced
     buried = main_series.buried
     netday = main_series.netday
+    cm_days = int(main_series.meta.get("cm_days", 0) or 0)
     sigma_note = main_series.meta.get("sigma_note")
     # the rho the baseline σ used (from the noise record when empirical);
     # None means formal quadrature, which names the file without -empsig
@@ -1578,6 +1620,20 @@ def plotTime(
             "network days: %d (whole solution bad, %s)"
             % (n_net, "removed" if network_mode == "remove" else "kept"),
             transform=fig.axes[0].transAxes,
+            fontsize="small",
+            color=NETWORK_FACE_COLOR,
+            ha="right",
+            va="bottom",
+        )
+
+    if cm_days:
+        # the network common mode was subtracted (station_series): say so on
+        # every such plot -- the series is no longer the raw solution
+        fig.axes[-1].text(
+            0.99,
+            0.02,
+            "network common mode removed",
+            transform=fig.axes[-1].transAxes,
             fontsize="small",
             color=NETWORK_FACE_COLOR,
             ha="right",

@@ -58,6 +58,7 @@ class SeriesRequest:
     snow_mode: str = "remove"
     network: bool = True
     network_mode: str = "remove"
+    common_mode: bool = True
 
     def replace(self, **changes: Any) -> SeriesRequest:
         return dataclasses.replace(self, **changes)
@@ -111,6 +112,7 @@ def fetch_station(sta: str, req: SeriesRequest) -> Series:
         iced=one.iced,
         buried=one.buried,
         netday=one.netday,
+        meta={"cm_days": one.cm_days},
     )
 
 
