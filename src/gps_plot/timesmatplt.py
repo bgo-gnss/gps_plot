@@ -1149,7 +1149,13 @@ def plotTime(
     elif ref == "detrend":
         refTitle = "Detrended"
         if detrend_terms and tuple(detrend_terms) != DEFAULT_DETREND_TERMS:
-            refTitle += f" ({' + '.join(detrend_terms)})"
+            # without "linear" the terms are removed from the plate-fixed
+            # series: "(periodic)" alone hid which frame (BGÓ 2026-10-21);
+            # the file name keeps the bare terms
+            terms = " + ".join(detrend_terms)
+            refTitle += (
+                f" ({terms})" if "linear" in detrend_terms else f" (plate-{terms})"
+            )
     else:
         refTitle = ref.upper()
         if ref == "itrf2008" and tType == "POS" and pos_id is not None:
