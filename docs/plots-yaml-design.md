@@ -94,6 +94,10 @@ runs them through the same batch contract as `gpsplot ts` (strict, one-line
 errors), writes one manifest per product, prunes `_runs/`, exit 1 if anything
 failed. `--dry-run` prints the expanded plan (what would be plotted where).
 
+`--product` and `--area` take comma lists (2026-10-23), e.g.
+`--product baselines,stacks --area vatnsfell,karahnjukar`; a name that
+plots.yaml / station_areas.yaml does not have stops the run (exit 2).
+
 Stations (2026-10-22): `gpsplot run SENG,THOB [--product P] [--area A]`
 plots only those stations of the selected jobs — each job keeps the ones in
 its list, a job with none is dropped, and a station no job has is reported
