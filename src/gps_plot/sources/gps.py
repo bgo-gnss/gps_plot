@@ -123,10 +123,11 @@ def fetch(
 ) -> Series:
     """A station (``HOFN``) or a baseline (``VFLN-VFLS``) as a Series.
 
-    A baseline's per-station overlays do not survive differencing (their
-    epochs belong to one end; masked epochs are NaN in the difference), so
-    it carries no ``outliers``/``provisional``; a component is ``aborted``
-    if it aborted at either end. ``ends`` holds both stations zeroed at the
+    A baseline's ``outliers`` are the baseline on the days the cleaned view
+    set aside at either end (:func:`_baseline_outliers`), so
+    ``--show-outliers`` draws them grey as on a station; the other overlays
+    (provisional, icing, snow, network days) are not carried. A component
+    is ``aborted`` if it aborted at either end. ``ends`` holds both stations zeroed at the
     baseline's first common epoch. ``meta`` holds the ``rho`` and
     ``sigma_scale`` the baseline σ was formed with (None = formal
     quadrature) and a ``sigma_note`` saying which σ an empirical request
@@ -160,6 +161,9 @@ def fetch(
         sigma_scale=sigma_scale,
         **tol_kw,
     )
+    outliers = _baseline_outliers(
+        ends, bl, pair=pair, rho=rho, sigma_scale=sigma_scale, tol_kw=tol_kw
+    )
     aborts = [e.aborted for e in ends if e.aborted is not None]
     zeroed = tuple(
         Series(label=e.label, t=t, y=d, sigma=e.sigma)
@@ -170,10 +174,66 @@ def fetch(
         t=bl.yearf,
         y=bl.data,
         sigma=bl.sigma,
+        outliers=outliers,
         aborted=[any(c) for c in zip(*aborts, strict=True)] if aborts else None,
         detrend_applied=all(e.detrend_applied for e in ends),
         ends=(zeroed[0], zeroed[1]),
         meta={"rho": rho, "sigma_scale": sigma_scale, "sigma_note": sigma_note},
+    )
+
+
+def _baseline_outliers(
+    ends: Sequence[Series],
+    bl: Any,
+    *,
+    pair: tuple[str, str],
+    rho: Any,
+    sigma_scale: Any,
+    tol_kw: dict[str, Any],
+) -> tuple[Any, Any] | None:
+    """The baseline on the days the cleaned view set aside at either end.
+
+    Each end's flagged values are put back (``outliers`` holds them, the
+    series has NaN there), the baseline is formed again from those full
+    ends, and its values are kept where the cleaned baseline is NaN because
+    of an outlier. The full baseline is shifted onto the cleaned one's zero
+    (they differ when the first common day was an outlier). Days removed
+    for icing, snow or a network day stay out: only outliers are put back.
+
+    Returns:
+        ``(values, sigma)`` like a station's ``outliers`` (NaN elsewhere),
+        or None when neither end flagged anything.
+    """
+    from geo_dataread.baseline import baseline as compute_baseline
+
+    if all(e.outliers is None for e in ends):
+        return None
+    full = []
+    for e in ends:
+        y, sig = np.array(e.y, dtype=float), np.array(e.sigma, dtype=float)
+        if e.outliers is not None:
+            oy, ody = (np.asarray(v, dtype=float) for v in e.outliers)
+            put = np.isfinite(oy)
+            y[put], sig[put] = oy[put], ody[put]
+        full.append((e.t, y, sig))
+    fb = compute_baseline(
+        full[0], full[1], stations=pair, rho=rho, sigma_scale=sigma_scale, **tol_kw
+    )
+    clean = np.asarray(bl.data, dtype=float)
+    values = np.asarray(fb.data, dtype=float)
+    if values.shape != clean.shape:  # different common days: nothing to add
+        return None
+    both = np.isfinite(clean) & np.isfinite(values)
+    for c in range(values.shape[0]):  # onto the cleaned baseline's zero
+        if both[c].any():
+            values[c] += np.median(clean[c, both[c]] - values[c, both[c]])
+    extra = ~np.isfinite(clean) & np.isfinite(values)
+    if not extra.any():
+        return None
+    nan = np.full_like(values, np.nan)
+    return (
+        np.where(extra, values, nan),
+        np.where(extra, np.asarray(fb.sigma, dtype=float), nan),
     )
 
 
