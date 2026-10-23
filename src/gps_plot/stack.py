@@ -87,6 +87,19 @@ def build_parser(
         "only; the frame defaults to itrf2020)",
     )
     parser.add_argument(
+        "--label",
+        default=None,
+        metavar="NAME",
+        help="name the stack in the file name: stack_<NAME>-<ref>-...-<period> "
+        "instead of stack_<first series>_<count> (plots.yaml baseline groups)",
+    )
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        metavar="FILE",
+        help="append the files written to FILE, one absolute path per line",
+    )
+    parser.add_argument(
         "--detrend-terms",
         default=None,
         metavar="TERM[,TERM...]",
@@ -155,8 +168,11 @@ def expand_series(specs: Sequence[str], stations: Sequence[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _ref_title(ref: str, tType: str, pos_id: str | None, terms: Any) -> str:
-    """The title's frame text: what was removed, and in which frame."""
+def _ref_title(
+    ref: str, tType: str, pos_id: str | None, terms: Any, frame: bool = True
+) -> str:
+    """The title's frame text: what was removed, and in which frame
+    (``frame=False``: not named -- a stack of baselines, where it cancels)."""
     if ref == "plate":
         text = "Plate velocity removed"
     elif ref == "detrend":
@@ -167,18 +183,76 @@ def _ref_title(ref: str, tType: str, pos_id: str | None, terms: Any) -> str:
             text += f" ({' + '.join(terms)})"
     else:
         text = "Reference frame"
-    if tType == "POS" and pos_id is not None:
+    if frame and tType == "POS" and pos_id is not None:
         from geo_dataread.pos import POS_PRODUCTS, pos_product
 
-        frame = POS_PRODUCTS.get(pos_product(pos_id), ("", ""))[0]
-        if frame:
-            text = f"{text}, {frame}"
+        name = POS_PRODUCTS.get(pos_product(pos_id), ("", ""))[0]
+        if name:
+            text = f"{text}, {name}"
     return text
 
 
-def file_stem(series: Sequence[str]) -> str:
-    """``stack_SEY1_SEYD_9``: no ``-`` before the ref (publish globs split there)."""
+def file_stem(series: Sequence[str], label: str | None = None) -> str:
+    """``stack_SEY1_SEYD_9`` (or ``stack_<label>``): no ``-`` before the ref
+    (publish globs split there)."""
+    if label:
+        return "stack_" + label.replace("-", "_")
     return f"stack_{series[0].replace('-', '_')}_{len(series)}"
+
+
+def output_stem(
+    series: Sequence[str],
+    *,
+    label: str | None,
+    ref: str,
+    detrend_terms: Sequence[str] | None,
+    view: str | None,
+    offset: float,
+    tType: str,
+    pos_id: str | None,
+    special: str | None,
+    first: Any,
+    last: Any,
+) -> str:
+    """The figure's file name (no directory, no suffix).
+
+    ``stack_<label or first series_count>-<ref>[-terms][-cleaned]
+    [-offsetN][-<frame>][-8h]-<period>``. A labelled (plots.yaml) stack
+    leaves out the offset (a display setting, not another product), and a
+    stack of baselines the frame (it cancels in a baseline).
+    """
+    from geo_dataread.baseline import split_baseline
+
+    from gps_plot import timesmatplt as tplt
+
+    tag = "ref_frame" if ref == common.REF_FRAME_INTERNAL else ref
+    stem = f"{file_stem(series, label)}-{tag}"
+    if (
+        ref == "detrend"
+        and detrend_terms
+        and tuple(detrend_terms) != tplt.DEFAULT_DETREND_TERMS
+    ):
+        stem += "-" + "-".join(detrend_terms)
+    if view == "cleaned":
+        stem += "-cleaned"
+    if offset and not label:
+        stem += f"-offset{offset:g}"
+    if tType == "POS" and pos_id is not None:
+        from geo_dataread.pos import frame_name, pos_product
+
+        if not all(split_baseline(x) for x in series):
+            stem += f"-{frame_name(pos_product(pos_id))}"
+        if pos_id.startswith("imo.08hr"):
+            stem += "-8h"
+    elif tType != "TOT":
+        stem += f"-{tType}"
+    if special == "fixedstart":
+        stem += "_since-%s" % first.strftime("%Y%m%d")
+    elif special:
+        stem += f"-{special}"
+    else:
+        stem += "_%s-%s" % (first.strftime("%Y%m%d"), last.strftime("%Y%m%d"))
+    return stem
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
@@ -256,10 +330,18 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     if not args.save:
         mpl.use("WebAgg")
     last = max(tplt._as_datetime_list(s.t)[-1] for s in got)
-    title_text = _ref_title(ref, kwargs["tType"], pos_id, detrend_terms)
+    all_baselines = all(split_baseline(x) for x in series_specs)
+    title_text = _ref_title(
+        ref, kwargs["tType"], pos_id, detrend_terms, frame=not all_baselines
+    )
     status = tplt.make_title(series_specs[0], last, ref=title_text)
     title = tplt.StationTitle(
-        main=r"\Huge %d series \ \Large %s" % (len(got), title_text),
+        main=(
+            r"\Huge %s \ \Large %d series, %s"
+            % (args.label.replace("_", r"\_"), len(got), title_text)
+            if args.label
+            else r"\Huge %d series \ \Large %s" % (len(got), title_text)
+        ),
         status=status.status,
         created=status.created,
         status_color=status.status_color,
@@ -281,35 +363,26 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
         plt.show()
         return 0
-    if args.name:
-        stem = args.name
-    else:
-        tag = "ref_frame" if ref == common.REF_FRAME_INTERNAL else ref
-        stem = f"{file_stem(series_specs)}-{tag}"
-        if (
-            ref == "detrend"
-            and detrend_terms
-            and tuple(detrend_terms) != tplt.DEFAULT_DETREND_TERMS
-        ):
-            stem += "-" + "-".join(detrend_terms)
-        if args.view == "cleaned":
-            stem += "-cleaned"
-        if args.offset:
-            stem += f"-offset{args.offset:g}"
-        if kwargs["tType"] == "POS" and pos_id is not None:
-            from geo_dataread.pos import frame_name, pos_product
-
-            stem += f"-{frame_name(pos_product(pos_id))}" + ("-8h" if is_8h else "")
-        elif kwargs["tType"] != "TOT":
-            stem += f"-{kwargs['tType']}"
-        first = min(tplt._as_datetime_list(s.t)[0] for s in got)
-        if args.special == "fixedstart":
-            stem += "_since-%s" % first.strftime("%Y%m%d")
-        elif args.special:
-            stem += f"-{args.special}"
-        else:
-            stem += "_%s-%s" % (first.strftime("%Y%m%d"), last.strftime("%Y%m%d"))
+    first = min(tplt._as_datetime_list(s.t)[0] for s in got)
+    stem = args.name or output_stem(
+        series_specs,
+        label=args.label,
+        ref=ref,
+        detrend_terms=detrend_terms,
+        view=args.view,
+        offset=args.offset,
+        tType=kwargs["tType"],
+        pos_id=pos_id,
+        special=args.special,
+        first=first,
+        last=last,
+    )
     tplt.saveFig(os.path.join(kwargs["figDir"], stem), args.save, fig)
+    if args.manifest:
+        with open(args.manifest, "a") as fh:
+            fh.writelines(
+                os.path.abspath(f) + "\n" for f in getattr(fig, "_gps_files", ())
+            )
     if dropped:
         print(f"plotted {len(got)} of {len(series_specs)} series", file=sys.stderr)
     return 0
