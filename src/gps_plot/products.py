@@ -326,10 +326,13 @@ def expand(
     *,
     areas: Mapping[str, Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]] = (),
-    product: str | None = None,
+    product: str | Sequence[str] | None = None,
     area: str | None = None,
 ) -> list[Job]:
-    """All jobs of a plots.yaml document (optionally one product / one area).
+    """All jobs of a plots.yaml document (optionally some products / one area).
+
+    ``product`` is one product name or several; a name plots.yaml does not
+    have is a ValueError (a typo would otherwise just drop that product).
 
     A product's ``stations:`` is ``active``/a list (one job per run), or an
     area kind (:data:`AREA_KINDS`): one job per area and run with the area
@@ -343,8 +346,20 @@ def expand(
     defaults = dict(cfg.get("defaults") or {})
     colours = {**DEFAULT_EVENT_COLOURS, **(cfg.get("event_colours") or {})}
     jobs: list[Job] = []
-    for pname, spec in (cfg.get("products") or {}).items():
-        if product is not None and pname != product:
+    all_products = cfg.get("products") or {}
+    wanted = (
+        None
+        if product is None
+        else {product}
+        if isinstance(product, str)
+        else set(product)
+    )
+    if wanted is not None and (missing := wanted - set(all_products)):
+        raise ValueError(
+            f"no product {', '.join(sorted(missing))} (have {', '.join(all_products)})"
+        )
+    for pname, spec in all_products.items():
+        if wanted is not None and pname not in wanted:
             continue
         runs = spec.get("runs") or []
         kind = spec.get("stations")
