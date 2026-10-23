@@ -95,14 +95,16 @@ PROVISIONAL_EDGE_COLOR: str = "darkgoldenrod"
 PROVISIONAL_FACE_COLOR: str = "gold"
 #: icing suspected (GAMIT autcln index): removed by default (--icing keep
 #: leaves them in); its own colour — ice on the antenna, not a blunder
-ICING_ERRORBAR_COLOR: str = "#d9e8f5"
-ICING_EDGE_COLOR: str = "#8fbbe0"
-ICING_FACE_COLOR: str = "#f4f9fe"  # very, very light blue (BGÓ)
+#: (darkened 2026-10-23, BGÓ: the first very light blue was too vague)
+ICING_ERRORBAR_COLOR: str = "#8fb8de"
+ICING_EDGE_COLOR: str = "#3d7fc1"
+ICING_FACE_COLOR: str = "#cfe3f5"
 #: antenna buried in snow (geo_dataread.snow_burial; Up only): pale lilac,
 #: kin to the icing blue but told apart -- a different obstruction
-SNOW_ERRORBAR_COLOR: str = "#e6dcf0"
-SNOW_EDGE_COLOR: str = "#b39ddb"
-SNOW_FACE_COLOR: str = "#f7f3fb"
+#: (darkened with the icing blue 2026-10-23)
+SNOW_ERRORBAR_COLOR: str = "#b9a5d9"
+SNOW_EDGE_COLOR: str = "#7b5cb8"
+SNOW_FACE_COLOR: str = "#e4daf2"
 #: network days (geo_dataread.network_days): the whole solution was bad that
 #: day -- dark grey, set apart from the station's own (light grey) outliers
 #: (BGÓ 2026-10-21)
