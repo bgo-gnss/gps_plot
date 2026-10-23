@@ -177,3 +177,40 @@ the start, exit 2. `--dry-run` shows the full ts line of each job.
 default, so an `args:` value wins — except one equal to the ts default
 (`--outlier-sigma 4.5` with `operational` still gives 3.5); drop
 `operational` and spell the options out for that.
+
+## Baselines and stacks (2026-10-23)
+
+BGÓ: baselines only make sense within a region or a monitoring concept
+(Reykjanes, Seyðisfjörður, Landsvirkjun: Vatnsfell, Kárahnjúkar), and only
+chosen pairs — never every combination.
+
+- **Where the pairs live:** `baselines:` on the area in station_areas.yaml,
+  a mapping `{group: [AAAA-BBBB, ...]}` (or a plain list = one unnamed
+  group). Pairs are kept as written — no reference-second rule (VFLN-VFLS
+  is just the change of the baseline). Ends need not be area members. A
+  pair may not repeat in one group (either way round); across groups it
+  may, reversed too (each fan has its own reference: AUSV-ELDC in `eldc`,
+  ELDC-AUSV in `ausv`). Areas sharing a `cdn:` slug merge their groups.
+- **Two products** (`products.py`):
+  - `stations: area_baselines` — one `gpsplot ts` job per area and run
+    with every pair of the area once (a reversed repeat left out):
+    `SEY2_SEYD-baseline-plate-90d.png`.
+  - `stations: area_stacks` — one `gpsplot stack` figure per group of 2+
+    pairs and period (stack takes one `--special`), named by the group:
+    `stack_<group>-plate-itrf2014-90d.png` (`stack --label`), title
+    "<group> N series". Either a fan from one reference (`eldc`, `seyd`,
+    `alfd`) or a free mix (`karahnjukar`: SAUD-INTA HAHV-INTA HAHV-BALD
+    INTA-BALD). No event lines on stacks (stack has no `--events`).
+- **Plot root by category:** `dir:` may use `{root}`, from station_areas.yaml
+  `category_roots: {<category>: <root>}` (category = the `<category>_areas`
+  section; next to `category_labels`, so aflogun reads the same map),
+  default `volcanos`: monitoring → `skridurogflod` (the brunnur name),
+  infrastructure → `voktun/landsvirkjun`.
+- **Runs:** plate 90d/year/full; no detrended baseline (a record fitted to
+  the whole series makes it flat by construction).
+- `gpsplot run SEYD` matches a baseline by either end; a stack is one
+  figure, so it is kept whole when any of its pairs matches. `gpsplot stack
+  --manifest` lists its files, so stacks reach `publish.manifest`.
+- aflogun lists only `locations/volcanos/<cdn>/graphs/24h` today: the
+  `graphs/baselines/` directories and the `voktun/` root need it to learn
+  a second listing (follow-up).

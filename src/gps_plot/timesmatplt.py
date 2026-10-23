@@ -1271,8 +1271,10 @@ def plotTime(
             from geo_dataread.pos import POS_PRODUCTS, pos_product
 
             refTitle = POS_PRODUCTS.get(pos_product(pos_id), (refTitle, ""))[0]
-    if tType == "POS" and ref != "itrf2008":
+    if tType == "POS" and ref != "itrf2008" and split_baseline(sta) is None:
         # name the series' frame: plate-removed or detrended in which ITRF
+        # (not for a baseline: both ends are in the same solution, so the
+        # frame cancels -- BGÓ 2026-10-23)
         from geo_dataread.pos import POS_PRODUCTS, pos_product
 
         _label = POS_PRODUCTS.get(pos_product(pos_id), ("", ""))[0]

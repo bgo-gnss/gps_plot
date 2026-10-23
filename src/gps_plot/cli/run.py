@@ -48,9 +48,10 @@ Make the standard plots defined in plots.yaml (default: the one in the
 gpsconfig directory, ~/.config/gpsconfig/plots.yaml).
 
 plots.yaml lists products (standard = every active station; areas = one
-plot set per volcanic/regional area) and their runs (ref, frame, view,
-periods, ts options). Each (product, area, run) becomes one `gpsplot ts`
-job. The prepare: steps run first (network_days = gps-network-days: the
+plot set per area; baselines = the chosen station pairs of each area;
+stacks = one figure per baseline group) and their runs (ref, frame, view,
+periods, options). Each (product, area, run) becomes one `gpsplot ts` job
+(a stack: one `gpsplot stack` job per group and period). The prepare: steps run first (network_days = gps-network-days: the
 network bad days and common mode the cleaned view uses), then the jobs.
 
 Output goes under plots_dir (the CDN tree). Each run also writes
@@ -61,7 +62,8 @@ anything runs).
 
 Selecting: --product and --area pick jobs; station codes after them keep
 only those stations in the picked jobs (a job without any is dropped,
-a station no job has is reported as "left out").
+a station no job has is reported as "left out"). A station also picks the
+baselines it is an end of; a stack is kept whole.
 """
 
 EPILOG = """\
@@ -78,6 +80,10 @@ examples:
       SENG and THOB in every product that has them (standard + their areas)
   gpsplot run seng,thob --area reykjanes --no-prepare
       a quick re-plot of two stations in one area, without gps-network-days
+  gpsplot run --product stacks --area karahnjukar
+      the Kárahnjúkar baseline groups, one stack figure per group and period
+  gpsplot run SEYD --product baselines
+      every Seyðisfjörður baseline with SEYD as an end (SEY1-SEYD ... SEY9-SEYD)
   gpsplot run RHOF --product standard --dry-run
       what would be plotted for RHOF in the standard product
   gpsplot run ~/test/plots.yaml --plots-dir /tmp/plots
@@ -142,9 +148,9 @@ def run(prog: str, argv: list[str]) -> int:
     cfg_dir = Path(config.config_path).expanduser()
     plots_path = Path(plots_arg[0]) if plots_arg else cfg_dir / "plots.yaml"
     cfg = products.load_yaml(plots_path)
-    areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
     events = products.load_yaml(_cfg_file(config, cfg, "events")).get("events") or []
     try:
+        areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
         jobs = products.expand(
             cfg, areas=areas, events=events, product=args.product, area=args.area
         )
@@ -185,7 +191,7 @@ def run(prog: str, argv: list[str]) -> int:
                 f"{job.name:28s} {'PUB' if job.publish else '   '} "
                 f"{root / job.out_dir}\n    {len(job.stations)} stations: "
                 f"{' '.join(job.stations[:12])}{' …' if len(job.stations) > 12 else ''}"
-                f"\n    ts {' '.join(job.argv)}"
+                f"\n    {job.tool} {' '.join(job.argv)}"
             )
         return 0
     if not str(root):
@@ -210,14 +216,14 @@ def run(prog: str, argv: list[str]) -> int:
         out = root / job.out_dir
         with tempfile.NamedTemporaryFile("r", suffix=".txt") as man:
             argv = [*job.stations, *job.argv, "-d", str(out), "--manifest", man.name]
-            if args.workers:
+            if args.workers and job.tool == "ts":
                 argv += ["-j", str(args.workers)]
-            print(f"== {job.name} [{i + 1}/{len(jobs)}]: ts {' '.join(job.argv)}")
-            parser = driver.build_parser(
-                argparse.ArgumentParser(prog="gpsplot ts"), config=config
+            print(
+                f"== {job.name} [{i + 1}/{len(jobs)}]: {job.tool} {' '.join(job.argv)}"
             )
+            run_tool, parser = _tool(job.tool, config)
             try:
-                status |= driver.run(parser.parse_args(argv), parser, config) or 0
+                status |= run_tool(parser.parse_args(argv), parser, config) or 0
             except SystemExit as exc:  # an argument error ends this job only
                 print(f"== {job.name}: job failed (exit {exc.code})")
                 status = 1
@@ -238,19 +244,34 @@ def run(prog: str, argv: list[str]) -> int:
     return status
 
 
-def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str]]:
-    """Parse every job's ts options before anything runs (an ``args:`` typo
-    must stop the run at the start, not fail one job an hour in)."""
+def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:
+    """``(run function, parser)`` of a job tool: ``ts`` or ``stack``."""
+    if name == "stack":
+        from gps_plot import stack
+
+        parser = stack.build_parser(
+            argparse.ArgumentParser(prog="gpsplot stack", **parser_kw), config=config
+        )
+        return stack.run, parser
     parser = driver.build_parser(
-        argparse.ArgumentParser(prog="gpsplot ts", exit_on_error=False),
-        config=config,
+        argparse.ArgumentParser(prog="gpsplot ts", **parser_kw), config=config
     )
+    return driver.run, parser
+
+
+def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str]]:
+    """Parse every job's options before anything runs (an ``args:`` typo
+    must stop the run at the start, not fail one job an hour in)."""
+    parsers: dict[str, Any] = {}
     bad: list[tuple[str, str]] = []
     seen: set[tuple[str, ...]] = set()
     for job in jobs:
-        if job.argv in seen:
+        if (job.tool, *job.argv) in seen:
             continue
-        seen.add(job.argv)
+        seen.add((job.tool, *job.argv))
+        if job.tool not in parsers:
+            parsers[job.tool] = _tool(job.tool, config, exit_on_error=False)[1]
+        parser = parsers[job.tool]
         try:
             _, rest = parser.parse_known_args(["XXXX", *job.argv])
         except argparse.ArgumentError as exc:
