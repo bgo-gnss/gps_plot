@@ -206,6 +206,13 @@ chosen pairs — never every combination.
   section; next to `category_labels`, so aflogun reads the same map),
   default `volcanos`: monitoring → `skridurogflod` (the brunnur name),
   infrastructure → `voktun/landsvirkjun`.
+- **Outliers on a baseline** (2026-10-23): the cleaned view cleans each
+  end before the difference; the baseline's `outliers` are the baseline on
+  the days set aside at either end (the flagged values put back, shifted
+  onto the cleaned zero), so `--show-outliers` draws them grey as on a
+  station (`sources/gps.py::_baseline_outliers`). Icing/snow/network days
+  stay out. plots.yaml baselines: `--view cleaned --show-outliers
+  --baseline-sigma empirical`, ylim 15 (BGÓ).
 - **Runs:** plate 90d/year/full; no detrended baseline (a record fitted to
   the whole series makes it flat by construction).
 - `gpsplot run SEYD` matches a baseline by either end; a stack is one

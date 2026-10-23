@@ -97,3 +97,54 @@ def test_outlier_params_reach_station_series_as_the_same_object(
     gps.fetch("AAAA-BBBB", REQ.replace(view="cleaned", outlier_params=params))
     assert [kw["outlier_params"] for _, kw in calls] == [params, params]
     assert all(kw["outlier_params"] is params for _, kw in calls)
+
+
+def test_baseline_carries_the_ends_outliers_as_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A day set aside at either end is drawn on the baseline (grey), at
+    the baseline's value with the flagged value put back -- also when the
+    flagged day is the first common one (the zero moves)."""
+    t = np.linspace(2025.0, 2025.1, 10)
+    ramp = np.vstack([np.arange(10.0)] * 3)
+
+    def fake(sta: str, **kw: Any) -> tplt.StationSeries:
+        y = ramp * (2.0 if sta == "AAAA" else 1.0)  # baseline = the ramp
+        flagged = np.full((3, 10), np.nan)
+        day = 4 if sta == "AAAA" else 0  # BBBB: its first day is an outlier
+        y = y.copy()
+        flagged[2, day] = y[2, day] + (30.0 if sta == "AAAA" else -5.0)
+        y[2, day] = np.nan
+        sig = np.ones((3, 10))
+        return tplt.StationSeries(
+            t,
+            y,
+            sig,
+            (flagged, np.where(np.isfinite(flagged), 2.0, np.nan)),
+            None,
+            None,
+            False,
+        )
+
+    monkeypatch.setattr(tplt, "station_series", fake)
+    s = gps.fetch("AAAA-BBBB", REQ)
+    assert s.outliers is not None
+    oy, ody = s.outliers
+    assert np.isnan(oy[:2]).all()  # N and E had nothing set aside
+    got = np.flatnonzero(np.isfinite(oy[2]))
+    assert list(got) == [0, 4]
+    # the cleaned Up starts at day 1 (day 0 is NaN): its zero is ramp[1]=1
+    clean_up = s.y[2]
+    assert np.isnan(clean_up[0]) and clean_up[1] == pytest.approx(0.0)
+    # day 4: AAAA +30 -> baseline 4 + 30, on the cleaned zero (-1)
+    assert oy[2, 4] == pytest.approx(4.0 + 30.0 - 1.0)
+    # day 0: BBBB -5 -> A - B = 0 - (0 - 5) = +5, on the cleaned zero
+    assert oy[2, 0] == pytest.approx(5.0 - 1.0)
+    assert ody[2, 4] == pytest.approx(np.hypot(2.0, 1.0))  # flagged σ + the other end
+
+
+def test_baseline_without_flags_has_no_outliers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_station_series(monkeypatch)
+    assert gps.fetch("AAAA-BBBB", REQ).outliers is None
