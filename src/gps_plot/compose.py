@@ -103,6 +103,10 @@ def stack_figure(
     ]
     ymin = [min(float(np.nanmin(y[i])) for y in shifted) for i in range(3)]
     ymax = [max(float(np.nanmax(y[i])) for y in shifted) for i in range(3)]
+    for k, s in enumerate(series):  # a backcast line starts at the zero
+        if "backcast" in s.meta:
+            ymin = [min(v, k * float(offset)) for v in ymin]
+            ymax = [max(v, k * float(offset)) for v in ymax]
     fig = tplt.setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
     # lines first, then markers: dense line series must not hide points
@@ -128,6 +132,18 @@ def stack_figure(
             markeredgecolor="black" if style == "marked" else color,
             label=label,
         )
+    # a late series' backcast (stack.backcast_late_starts): its fitted rate,
+    # dashed, from the stack's first epoch (zero) to where its data begin
+    for k, s in enumerate(series):
+        if "backcast" not in s.meta:
+            continue
+        t0, t1, at_t1 = s.meta["backcast"]
+        xb = tplt._as_datetime_list(np.array([t0, t1]))
+        for i, ax in enumerate(axes[:3]):
+            ax.plot(
+                xb, [k * float(offset), at_t1[i] + k * float(offset)],
+                color=colors[k], linestyle="--", linewidth=1.0,
+            )  # fmt: skip
     axes[0].legend(
         loc="upper left",
         fontsize="medium",
