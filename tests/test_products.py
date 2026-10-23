@@ -83,6 +83,29 @@ def test_expand_filters_product_and_area() -> None:
     )
 
 
+def test_expand_takes_several_products_and_refuses_unknown_ones() -> None:
+    areas = products.area_table(AREAS_DOC)
+    both = products.expand(CFG, areas=areas, product=["standard", "areas"])
+    assert {j.product for j in both} == {"standard", "areas"}
+    with pytest.raises(ValueError, match="no product stacks"):
+        products.expand(CFG, areas=areas, product=["standard", "stacks"])
+
+
+def test_product_option_splits_a_comma_list() -> None:
+    from gps_plot.cli import run as run_cli
+
+    assert run_cli._names(None) is None
+    assert run_cli._names("baselines, stacks,") == ["baselines", "stacks"]
+
+
+def test_expand_takes_several_areas_and_refuses_unknown_ones() -> None:
+    areas = products.area_table(AREAS_DOC)
+    both = products.expand(CFG, areas=areas, area=["hengill", "reykjanes"])
+    assert {j.area for j in both} == {"hengill", "reykjanes"}
+    with pytest.raises(ValueError, match="no area askja"):
+        products.expand(CFG, areas=areas, area=["hengill", "askja"])
+
+
 def test_run_argv_refuses_unknown_keys_and_empty_runs() -> None:
     with pytest.raises(ValueError, match="unknown"):
         products.run_argv({"special": ["90d"], "colour": "red"}, {})

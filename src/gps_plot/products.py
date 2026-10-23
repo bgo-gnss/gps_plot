@@ -326,10 +326,14 @@ def expand(
     *,
     areas: Mapping[str, Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]] = (),
-    product: str | None = None,
-    area: str | None = None,
+    product: str | Sequence[str] | None = None,
+    area: str | Sequence[str] | None = None,
 ) -> list[Job]:
-    """All jobs of a plots.yaml document (optionally one product / one area).
+    """All jobs of a plots.yaml document (optionally some products / areas).
+
+    ``product`` and ``area`` are each one name or several; a name plots.yaml
+    (or station_areas.yaml) does not have is a ValueError (a typo would
+    otherwise just drop it).
 
     A product's ``stations:`` is ``active``/a list (one job per run), or an
     area kind (:data:`AREA_KINDS`): one job per area and run with the area
@@ -343,15 +347,18 @@ def expand(
     defaults = dict(cfg.get("defaults") or {})
     colours = {**DEFAULT_EVENT_COLOURS, **(cfg.get("event_colours") or {})}
     jobs: list[Job] = []
-    for pname, spec in (cfg.get("products") or {}).items():
-        if product is not None and pname != product:
+    all_products = cfg.get("products") or {}
+    want_products = _picked(product, all_products, "product")
+    want_areas = _picked(area, areas, "area")
+    for pname, spec in all_products.items():
+        if want_products is not None and pname not in want_products:
             continue
         runs = spec.get("runs") or []
         kind = spec.get("stations")
         if kind in AREA_KINDS:
             names = [a for a in areas if a not in set(spec.get("exclude") or ())]
             for slug in names:
-                if area is not None and slug != area:
+                if want_areas is not None and slug not in want_areas:
                     continue
                 jobs += _area_jobs(
                     pname,
@@ -364,7 +371,7 @@ def expand(
                     events,
                 )
         else:
-            if area is not None:
+            if want_areas is not None:
                 continue
             stations = tuple(_as_list(spec.get("stations") or "active"))
             for run in runs:
@@ -380,6 +387,20 @@ def expand(
                         )
                     )
     return jobs
+
+
+def _picked(
+    value: str | Sequence[str] | None, known: Mapping[str, Any], what: str
+) -> set[str] | None:
+    """The names picked by ``value`` (None = all); unknown names are an error."""
+    if value is None:
+        return None
+    picked = {value} if isinstance(value, str) else set(value)
+    if missing := picked - set(known):
+        raise ValueError(
+            f"no {what} {', '.join(sorted(missing))} (have {', '.join(known)})"
+        )
+    return picked
 
 
 def _area_jobs(

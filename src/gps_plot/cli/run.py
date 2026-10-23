@@ -82,6 +82,10 @@ examples:
       a quick re-plot of two stations in one area, without gps-network-days
   gpsplot run --product stacks --area karahnjukar
       the Kárahnjúkar baseline groups, one stack figure per group and period
+  gpsplot run --product baselines,stacks --area vatnsfell
+      every Vatnsfell baseline plot and stack (a comma list picks several products)
+  gpsplot run --product baselines,stacks --area vatnsfell,karahnjukar
+      the same for Vatnsfell and Kárahnjúkar (--area takes a comma list too)
   gpsplot run SEYD --product baselines
       every Seyðisfjörður baseline with SEYD as an end (SEY1-SEYD ... SEY9-SEYD)
   gpsplot run RHOF --product standard --dry-run
@@ -111,12 +115,14 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         help="write under this directory instead of plots.yaml plots_dir",
     )
     p.add_argument(
-        "--product", default=None, help="only this product (e.g. standard, areas)"
+        "--product",
+        default=None,
+        help="only these products, comma separated (e.g. standard, baselines,stacks)",
     )
     p.add_argument(
         "--area",
         default=None,
-        help="only this area (cdn slug, e.g. reykjanes, askja, tjornes)",
+        help="only these areas, comma separated (cdn slug, e.g. reykjanes, askja,tjornes)",
     )
     p.add_argument(
         "--dry-run",
@@ -138,6 +144,13 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     return p
 
 
+def _names(arg: str | None) -> list[str] | None:
+    """``--product a,b`` / ``--area a,b`` → ``["a", "b"]`` (None = all)."""
+    if arg is None:
+        return None
+    return [p for p in (s.strip() for s in arg.split(",")) if p]
+
+
 def run(prog: str, argv: list[str]) -> int:
     parser = build_parser(prog)
     args = parser.parse_args(argv)
@@ -152,7 +165,11 @@ def run(prog: str, argv: list[str]) -> int:
     try:
         areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
         jobs = products.expand(
-            cfg, areas=areas, events=events, product=args.product, area=args.area
+            cfg,
+            areas=areas,
+            events=events,
+            product=_names(args.product),
+            area=_names(args.area),
         )
     except ValueError as exc:
         print(f"{prog}: {plots_path}: {exc}")
