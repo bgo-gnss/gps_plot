@@ -584,3 +584,38 @@ def test_a_stacked_group_need_not_be_plotted_pair_by_pair() -> None:
     assert [j.stations for j in single] == [("VFLN-VFLS",)]
     stacks = [j for j in jobs if j.product == "stacks"]
     assert {j.stations for j in stacks} == {("VFLS-BUDH", "VFLN-BUDH")}
+
+
+def test_stale_baseline_plots_are_the_pairs_and_groups_no_longer_configured(
+    tmp_path,
+) -> None:
+    jobs = products.expand(BL_CFG, areas=products.area_table(BL_AREAS_DOC))
+    folder = tmp_path / "locations/voktun/landsvirkjun/vatnsfell/graphs/baselines"
+    folder.mkdir(parents=True)
+    names = [
+        "VFLN_VFLS-baseline-plate-90d.png",  # configured
+        "VFLN_BUDH-baseline-plate-cleaned-empsig-year.png",  # configured
+        "VFLN_XXXX-baseline-plate-90d.png",  # dropped pair
+        "stack_budh-plate-full.png",  # configured group
+        "stack_old-plate-90d.png",  # dropped group
+        "notes.txt",  # not a plot of ours
+    ]
+    for n in names:
+        (folder / n).touch()
+    stale = products.stale_baseline_plots(jobs, jobs, tmp_path)
+    assert sorted(f.name for f in stale) == [
+        "VFLN_XXXX-baseline-plate-90d.png",
+        "stack_old-plate-90d.png",
+    ]
+
+
+def test_a_filtered_run_judges_staleness_by_the_whole_config(tmp_path) -> None:
+    areas = products.area_table(BL_AREAS_DOC)
+    configured = products.expand(BL_CFG, areas=areas)
+    stacks_only = products.expand(
+        BL_CFG, areas=areas, product="stacks", area="vatnsfell"
+    )
+    folder = tmp_path / "locations/voktun/landsvirkjun/vatnsfell/graphs/baselines"
+    folder.mkdir(parents=True)
+    (folder / "VFLN_VFLS-baseline-plate-90d.png").touch()  # the baselines product's
+    assert products.stale_baseline_plots(stacks_only, configured, tmp_path) == []
