@@ -48,8 +48,8 @@ Make the standard plots defined in plots.yaml (default: the one in the
 gpsconfig directory, ~/.config/gpsconfig/plots.yaml).
 
 plots.yaml lists products (standard = every active station; areas = one
-plot set per area; baselines = the chosen station pairs of each area;
-stacks = one figure per baseline group) and their runs (ref, frame, view,
+plot set per area; baselines = each pair in an area's station_areas.yaml
+baselines: list; stacks = one figure per group of its stacks:) and their runs (ref, frame, view,
 periods, options). Each (product, area, run) becomes one `gpsplot ts` job
 (a stack: one `gpsplot stack` job per group and period). The prepare: steps run first (network_days = gps-network-days: the
 network bad days and common mode the cleaned view uses), then the jobs.
@@ -81,7 +81,7 @@ examples:
   gpsplot run seng,thob --area reykjanes --no-prepare
       a quick re-plot of two stations in one area, without gps-network-days
   gpsplot run --product stacks --area karahnjukar
-      the Kárahnjúkar baseline groups, one stack figure per group and period
+      the Kárahnjúkar stacks: groups, one stack figure per group and period
   gpsplot run --product baselines,stacks --area vatnsfell
       every Vatnsfell baseline plot and stack (a comma list picks several products)
   gpsplot run --product baselines,stacks --area vatnsfell,karahnjukar

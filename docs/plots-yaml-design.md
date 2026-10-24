@@ -188,19 +188,24 @@ BGÓ: baselines only make sense within a region or a monitoring concept
 (Reykjanes, Seyðisfjörður, Landsvirkjun: Vatnsfell, Kárahnjúkar), and only
 chosen pairs — never every combination.
 
-- **Where the pairs live:** `baselines:` on the area in station_areas.yaml,
-  a mapping `{group: [AAAA-BBBB, ...]}` (or a plain list = one unnamed
-  group). Pairs are kept as written — no reference-second rule (VFLN-VFLS
-  is just the change of the baseline). Ends need not be area members. A
-  pair may not repeat in one group (either way round); across groups it
-  may, reversed too (each fan has its own reference: AUSV-ELDC in `eldc`,
-  ELDC-AUSV in `ausv`). Areas sharing a `cdn:` slug merge their groups.
+- **Where the pairs live:** station_areas.yaml, per area (2026-10-24, BGÓ:
+  single plots and stacks chosen independently):
+  - `baselines: [AAAA-BBBB, ...]` — the pairs plotted one by one;
+  - `stacks: {group: [AAAA-BBBB, ...]}` — one stacked figure per group
+    (two or more pairs), named by the group.
+  A pair may be in either or both (Vatnsfell: VFLN-VFLS single, the `budh`
+  pairs only stacked). Pairs are kept as written — no reference-second rule
+  (VFLN-VFLS is just the change of the baseline). Ends need not be area
+  members. No pair twice in `baselines:` or in one stack (either way
+  round); across stacks a pair may repeat, reversed too (each fan has its
+  own reference: AUSV-ELDC in `eldc`, ELDC-AUSV in `ausv`). Areas sharing a
+  `cdn:` slug merge both.
 - **Two products** (`products.py`):
   - `stations: area_baselines` — one `gpsplot ts` job per area and run
-    with every pair of the area once (a reversed repeat left out):
+    with the area's `baselines:` pairs:
     `SEY2_SEYD-baseline-plate-90d.png`.
-  - `stations: area_stacks` — one `gpsplot stack` figure per group of 2+
-    pairs and period (stack takes one `--special`), named by the group:
+  - `stations: area_stacks` — one `gpsplot stack` figure per `stacks:`
+    group and period (stack takes one `--special`), named by the group:
     `stack_<group>-plate-itrf2014-90d.png` (`stack --label`), title
     "<group> N series". Either a fan from one reference (`eldc`, `seyd`,
     `alfd`) or a free mix (`karahnjukar`: SAUD-INTA HAHV-INTA HAHV-BALD

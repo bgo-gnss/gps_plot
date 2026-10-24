@@ -300,7 +300,8 @@ BL_AREAS_DOC = {
         "reykjanesskagi": {
             "cdn": "reykjanes",
             "stations": ["SENG", "ELDC"],
-            "baselines": {
+            "baselines": ["SENG-ELDC", "skSH-ELDC  # x", "AUSV-ELDC", "SENG-AUSV"],
+            "stacks": {
                 "eldc": ["SENG-ELDC", "skSH-ELDC  # x", "AUSV-ELDC"],
                 "ausv": ["ELDC-AUSV", "SENG-AUSV"],
             },
@@ -311,10 +312,8 @@ BL_AREAS_DOC = {
         "vatnsfell": {
             "cdn": "vatnsfell",
             "stations": ["VFLN", "VFLS"],
-            "baselines": {
-                "vatnsfell": ["VFLN-VFLS"],
-                "budh": ["VFLS-BUDH", "VFLN-BUDH"],
-            },
+            "baselines": ["VFLN-VFLS", "VFLS-BUDH", "VFLN-BUDH"],
+            "stacks": {"budh": ["VFLS-BUDH", "VFLN-BUDH"]},
         },
     },
 }
@@ -338,36 +337,27 @@ BL_CFG = {
 }
 
 
-def test_area_table_reads_baseline_groups_and_the_category() -> None:
+def test_area_table_reads_baselines_stacks_and_the_category() -> None:
     table = products.area_table(BL_AREAS_DOC)
     rey = table["reykjanes"]
     assert rey["category"] == "volcanic"  # the first area of the slug
     assert rey["stations"] == ["SENG", "ELDC", "KRIV"]
-    assert rey["baselines"]["eldc"] == ["SENG-ELDC", "SKSH-ELDC", "AUSV-ELDC"]
+    assert rey["baselines"] == ["SENG-ELDC", "SKSH-ELDC", "AUSV-ELDC", "SENG-AUSV"]
+    assert rey["stacks"]["eldc"] == ["SENG-ELDC", "SKSH-ELDC", "AUSV-ELDC"]
+    assert rey["stacks"]["ausv"] == ["ELDC-AUSV", "SENG-AUSV"]  # reversed: own fan
     assert rey["root"] == "volcanos"  # no category_roots entry
     assert table["vatnsfell"]["category"] == "infrastructure"
     assert table["vatnsfell"]["root"] == "voktun/landsvirkjun"
 
 
-def test_area_pairs_keep_one_direction_of_a_reversed_repeat() -> None:
-    groups = products.area_table(BL_AREAS_DOC)["reykjanes"]["baselines"]
-    # ELDC-AUSV (the ausv fan) is AUSV-ELDC reversed: plotted once
-    assert products.area_pairs(groups) == [
-        "SENG-ELDC",
-        "SKSH-ELDC",
-        "AUSV-ELDC",
-        "SENG-AUSV",
-    ]
-
-
 @pytest.mark.parametrize(
     ("value", "match"),
     [
-        ({"g": ["SENG-ELD"]}, "not AAAA-BBBB"),
-        ({"g": ["SENG-SENG"]}, "itself"),
-        ({"g": ["SENG-ELDC", "ELDC-SENG"]}, "twice"),
-        ({"g": "SENG-ELDC"}, "a list"),
-        ("SENG-ELDC", "mapping of groups or a list"),
+        (["SENG-ELD"], "not AAAA-BBBB"),
+        (["SENG-SENG"], "itself"),
+        (["SENG-ELDC", "ELDC-SENG"], "twice"),
+        ("SENG-ELDC", "a list"),
+        ({"g": ["SENG-ELDC"]}, "go under stacks"),
     ],
 )
 def test_area_baselines_refuse_malformed_lists(value: object, match: str) -> None:
@@ -375,19 +365,29 @@ def test_area_baselines_refuse_malformed_lists(value: object, match: str) -> Non
         products.area_baselines(value)
 
 
-def test_area_baselines_plain_list_is_one_unnamed_group() -> None:
-    assert products.area_baselines(["vfln-vfls"]) == {"": ["VFLN-VFLS"]}
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ({"g": ["SENG-ELDC"]}, "two or more"),
+        ({"g": "SENG-ELDC"}, "a list"),
+        (["SENG-ELDC", "AUSV-ELDC"], "mapping of groups"),
+        ({"g": ["SENG-ELDC", "ELDC-SENG"]}, "twice"),
+    ],
+)
+def test_area_stacks_refuse_malformed_groups(value: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        products.area_stacks(value)
 
 
-def test_area_table_refuses_a_group_that_differs_between_same_slug_areas() -> None:
+def test_same_slug_areas_merge_baselines_once_and_refuse_differing_stacks() -> None:
     doc = {
         "volcanic_areas": {
-            "a": {"cdn": "x", "stations": [], "baselines": {"g": ["AAAA-BBBB"]}}
+            "a": {"cdn": "x", "baselines": ["AAAA-BBBB"], "stacks": {"g": ["AAAA-BBBB", "CCCC-BBBB"]}}
         },
-        "regional_areas": {
-            "b": {"cdn": "x", "stations": [], "baselines": {"g": ["CCCC-BBBB"]}}
-        },
-    }
+        "regional_areas": {"b": {"cdn": "x", "baselines": ["BBBB-AAAA", "CCCC-BBBB"]}},
+    }  # fmt: skip
+    assert products.area_table(doc)["x"]["baselines"] == ["AAAA-BBBB", "CCCC-BBBB"]
+    doc["regional_areas"]["b"]["stacks"] = {"g": ["CCCC-BBBB", "DDDD-BBBB"]}
     with pytest.raises(ValueError, match="differs"):
         products.area_table(doc)
 
@@ -567,3 +567,20 @@ def test_stack_output_stem(series, label, offset, pos_id, stem) -> None:
         last=day,
     )
     assert got == stem
+
+
+def test_a_stacked_group_need_not_be_plotted_pair_by_pair() -> None:
+    doc = {
+        "infrastructure_areas": {
+            "vatnsfell": {
+                "cdn": "vatnsfell",
+                "baselines": ["VFLN-VFLS"],
+                "stacks": {"budh": ["VFLS-BUDH", "VFLN-BUDH"]},
+            }
+        }
+    }
+    jobs = products.expand(BL_CFG, areas=products.area_table(doc))
+    single = [j for j in jobs if j.product == "baselines"]
+    assert [j.stations for j in single] == [("VFLN-VFLS",)]
+    stacks = [j for j in jobs if j.product == "stacks"]
+    assert {j.stations for j in stacks} == {("VFLS-BUDH", "VFLN-BUDH")}
