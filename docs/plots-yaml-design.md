@@ -200,6 +200,14 @@ chosen pairs — never every combination.
   round); across stacks a pair may repeat, reversed too (each fan has its
   own reference: AUSV-ELDC in `eldc`, ELDC-AUSV in `ausv`). Areas sharing a
   `cdn:` slug merge both.
+- **Stale plots** (2026-10-24): after its jobs, `gpsplot run` deletes the
+  baseline / stack PNGs in those directories that the config no longer has
+  (a pair dropped from `baselines:`, a group from `stacks:`), judged
+  against the whole config so a filtered run never touches another
+  product's plots; `--dry-run` lists them, `--keep-stale` keeps them. Only
+  gpsplot's own names (`A_B-baseline-*`, `stack_<group>-*`); other periods /
+  frames of a kept pair stay. The CDN copy is rsync'd from publish.manifest
+  without `--delete`, so a stale plot already published stays there.
 - **Two products** (`products.py`):
   - `stations: area_baselines` — one `gpsplot ts` job per area and run
     with the area's `baselines:` pairs:

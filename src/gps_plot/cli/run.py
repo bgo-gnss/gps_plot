@@ -12,6 +12,11 @@ Run order: the ``prepare:`` steps of plots.yaml run first, in their order
 lists the cleaned view reads), then the products. ``--no-prepare`` skips
 them (a quick re-run of one area); a failed step ends the run.
 
+Stale plots: after the jobs, baseline and stack plots in their directories
+that the config no longer has (a pair dropped from ``baselines:``, a group
+from ``stacks:``) are deleted (:func:`products.stale_baseline_plots`);
+``--dry-run`` lists them, ``--keep-stale`` keeps them.
+
 Stations: ``gpsplot run [plots.yaml] [STA ...]`` plots only those stations
 of the jobs ``--product``/``--area`` select (each job keeps the ones it
 has; ``active`` lists match the operated stations of stations.cfg).
@@ -137,6 +142,11 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         help="parallel plot workers per job (and for the prepare steps)",
     )
     p.add_argument(
+        "--keep-stale",
+        action="store_true",
+        help="keep baseline/stack plots the config no longer has (default: delete)",
+    )
+    p.add_argument(
         "--no-prepare",
         action="store_true",
         help="skip the plots.yaml prepare: steps (e.g. gps-network-days)",
@@ -171,6 +181,7 @@ def run(prog: str, argv: list[str]) -> int:
             product=_names(args.product),
             area=_names(args.area),
         )
+        configured = products.expand(cfg, areas=areas, events=events)
     except ValueError as exc:
         print(f"{prog}: {plots_path}: {exc}")
         return 2
@@ -210,6 +221,9 @@ def run(prog: str, argv: list[str]) -> int:
                 f"{' '.join(job.stations[:12])}{' …' if len(job.stations) > 12 else ''}"
                 f"\n    {job.tool} {' '.join(job.argv)}"
             )
+        if not args.keep_stale and str(root):
+            for f in products.stale_baseline_plots(jobs, configured, root):
+                print(f"stale (would delete): {f}")
         return 0
     if not str(root):
         print(f"{prog}: no plots_dir (plots.yaml plots_dir or --plots-dir)")
@@ -257,6 +271,13 @@ def run(prog: str, argv: list[str]) -> int:
             for f in sorted(set(published))
         )
     _prune(root / "_runs", int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)))
+    if not args.keep_stale:
+        stale = products.stale_baseline_plots(jobs, configured, root)
+        for f in stale:
+            f.unlink(missing_ok=True)
+        if stale:
+            print(f"{prog}: deleted {len(stale)} plot(s) the config no longer has:")
+            print("".join(f"  {f}\n" for f in stale), end="")
     print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
     return status
 

@@ -546,3 +546,49 @@ def _as_list(value: Any) -> list[Any]:
 def _ymd(value: Any) -> str:
     day = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
     return f"{day:%Y%m%d}"
+
+
+_BASELINE_FILE = re.compile(r"([A-Z0-9]{4})_([A-Z0-9]{4})-baseline-.+\.(png|pdf)")
+_STACK_FILE = re.compile(r"stack_.+\.(png|pdf)")
+
+
+def stale_baseline_plots(
+    jobs: Sequence[Job], configured: Sequence[Job], root: Path
+) -> list[Path]:
+    """Baseline / stack plots in the jobs' directories the config no longer has.
+
+    ``configured`` is every job of the whole config (unfiltered), so a run of
+    one area or product never takes another one's plots for stale. Only files
+    named like gpsplot's own baseline (``A_B-baseline-*``) and stack
+    (``stack_<group>-*``) plots are considered: a pair no baseline job of
+    that directory plots, or a stack of a group no stack job there makes.
+    Other files, and other variants (periods, frames) of a kept pair or
+    group, are left alone.
+    """
+    pairs: dict[str, set[str]] = {}
+    groups: dict[str, set[str]] = {}
+    for job in configured:
+        if job.tool == "stack" and job.group:
+            groups.setdefault(job.out_dir, set()).add(job.group)
+        elif job.stations and all(_PAIR.match(s) for s in job.stations):
+            pairs.setdefault(job.out_dir, set()).update(job.stations)
+    dirs = {
+        j.out_dir
+        for j in jobs
+        if j.tool == "stack" or (j.stations and all(_PAIR.match(s) for s in j.stations))
+    }
+    stale: list[Path] = []
+    for out_dir in sorted(dirs):
+        folder = root / out_dir
+        if not folder.is_dir():
+            continue
+        kept_pairs = pairs.get(out_dir, set())
+        kept_groups = groups.get(out_dir, set())
+        for f in sorted(folder.iterdir()):
+            if m := _BASELINE_FILE.fullmatch(f.name):
+                if f"{m.group(1)}-{m.group(2)}" not in kept_pairs:
+                    stale.append(f)
+            elif _STACK_FILE.fullmatch(f.name):
+                if not any(f.name.startswith(f"stack_{g}-") for g in kept_groups):
+                    stale.append(f)
+    return stale
