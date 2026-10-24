@@ -209,3 +209,64 @@ def test_stack_figure_draws_the_backcast_dashed_from_zero():
     dashed = [ln for ln in fig.axes[0].lines if ln.get_linestyle() == "--"]
     assert len(dashed) == 1
     np.testing.assert_allclose(dashed[0].get_ydata(), [10.0, 15.0])  # k=1 offset
+
+
+def _with_outliers(label, n=30, at=(5, 20), value=9.0):
+    s = _series(label, n)
+    oy = np.full((3, n), np.nan)
+    oy[:, list(at)] = value
+    import dataclasses
+
+    return dataclasses.replace(s, outliers=(oy, np.ones((3, n))))
+
+
+def test_stack_figure_draws_outliers_in_the_series_colour_with_a_black_outline():
+    from gps_plot.timesmatplt import StationTitle
+
+    series = [_with_outliers("A-B"), _series("C-D")]
+    title = StationTitle("x", "y", "z", "black")
+    fig = compose.stack_figure(
+        series, title=title, offset=10.0, show_outliers=0, fig=Figure()
+    )
+    ax = fig.axes[0]
+    flagged = [ln for ln in ax.lines if ln.get_markeredgecolor() == "black"
+               and len(ln.get_xdata())]  # fmt: skip
+    assert len(flagged) == 1
+    assert flagged[0].get_markerfacecolor() == compose.series_colors(["A-B", "C-D"])[0]
+    np.testing.assert_allclose(np.asarray(flagged[0].get_ydata())[[5, 20]], 9.0)
+    assert ax.get_ylim()[1] >= 9.0  # the axis keeps them in view
+    legend = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "outlier (its series' colour)" in legend
+
+
+def test_stack_figure_shows_no_outliers_unless_asked_or_only_the_tail():
+    from gps_plot.timesmatplt import StationTitle
+
+    title = StationTitle("x", "y", "z", "black")
+    fig = compose.stack_figure([_with_outliers("A-B")], title=title, fig=Figure())
+    assert not [ln for ln in fig.axes[0].lines if ln.get_markeredgecolor() == "black"]
+    fig = compose.stack_figure(
+        [_with_outliers("A-B")], title=title, show_outliers=5, fig=Figure()
+    )
+    # both flagged epochs (5, 20) are older than the last 5: nothing drawn
+    assert not [ln for ln in fig.axes[0].lines if ln.get_markeredgecolor() == "black"]
+
+
+def test_backcast_moves_a_late_series_outliers_with_it():
+    import dataclasses
+
+    early = _ramp("A", 2025.0, 365, 10.0)
+    late = _ramp("B", 2025.5, 180, 10.0)
+    oy = np.full((3, 180), np.nan)
+    oy[:, 50] = 1.0
+    late = dataclasses.replace(late, outliers=(oy, np.ones((3, 180))))
+    out, _ = stk.backcast_late_starts([early, late])
+    np.testing.assert_allclose(out[1].outliers[0][:, 50], 1.0 + 5.0)
+
+
+def test_stack_parser_takes_baseline_sigma_and_show_outliers():
+    parser = stk.build_parser(config=type("C", (), {"getStationInfo": lambda s: []})())
+    args = parser.parse_args(
+        ["A-B", "--baseline-sigma", "empirical", "--show-outliers"]
+    )
+    assert (args.baseline_sigma, args.show_outliers) == ("empirical", 0)
