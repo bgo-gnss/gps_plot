@@ -99,6 +99,25 @@ def build_parser(
         "only; the frame defaults to itrf2020)",
     )
     parser.add_argument(
+        "--baseline-sigma",
+        choices=("formal", "empirical"),
+        default="formal",
+        help="baselines: 'formal' (default) = quadrature of the two stations' "
+        "GLOBK sigma; 'empirical' = the fitted baseline noise record, as "
+        "gpsplot ts --baseline-sigma. Adds -empsig",
+    )
+    parser.add_argument(
+        "--show-outliers",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="with --view cleaned: draw each series' outliers in its own colour "
+        "with a bold black outline (all of them; N: only among its last N "
+        "epochs). Off by default",
+    )
+    parser.add_argument(
         "--label",
         default=None,
         metavar="NAME",
@@ -200,10 +219,15 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
         # value of each line at t0 (the shift) and at t1 (where it meets the data)
         at_t0 = np.array([lv + r * (t0 - t1) for lv, r in lines])  # type: ignore[misc]
         at_t1 = np.array([lv for lv, _ in lines])  # type: ignore[misc]
+        shifted_outliers = None
+        if s.outliers is not None:  # the overlay moves with its series
+            oy, ody = s.outliers
+            shifted_outliers = (np.asarray(oy, dtype=float) - at_t0[:, None], ody)
         out.append(
             dataclasses.replace(
                 s,
                 y=y - at_t0[:, None],
+                outliers=shifted_outliers,
                 meta={**s.meta, "backcast": (t0, t1, at_t1 - at_t0)},
             )
         )
@@ -310,11 +334,13 @@ def output_stem(
     special: str | None,
     first: Any,
     last: Any,
+    baseline_sigma: str = "formal",
 ) -> str:
     """The figure's file name (no directory, no suffix).
 
-    ``stack_<label or first series_count>-<ref>[-terms][-cleaned]
-    [-offsetN][-<frame>][-8h]-<period>``. A labelled (plots.yaml) stack
+    ``stack_<label or first series_count>-<ref>[-terms][-cleaned][-empsig]
+    [-offsetN][-<frame>][-8h]-<period>`` (``-empsig``: empirical baseline σ,
+    when a series is a baseline — as gpsplot ts names it). A labelled (plots.yaml) stack
     leaves out the offset (a display setting, not another product), and a
     stack of baselines the frame (it cancels in a baseline).
     """
@@ -332,6 +358,8 @@ def output_stem(
         stem += "-" + "-".join(detrend_terms)
     if view == "cleaned":
         stem += "-cleaned"
+    if baseline_sigma == "empirical" and any(split_baseline(x) for x in series):
+        stem += "-empsig"
     if offset and not label:
         stem += f"-offset{offset:g}"
     if tType == "POS" and pos_id is not None:
@@ -370,6 +398,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         parser.error(str(exc))
     if detrend_terms is not None and args.ref != "detrend":
         parser.error("--detrend-terms needs --ref detrend")
+    if args.show_outliers is not None and args.show_outliers < 0:
+        parser.error("--show-outliers N: N must be positive")
     start, end = common.resolve_dates(args, currDatetime)
     common.resolve_source(kwargs, args, parser, config)
     start, end, fstart, fend = tplt.resolve_period(start, end, args.special, args.fix)
@@ -394,8 +424,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         detrend_terms=detrend_terms,
         pos_id=pos_id,
     )
+    empirical = args.baseline_sigma == "empirical"
+    if empirical and is_8h:
+        parser.error(
+            "--baseline-sigma empirical: the noise record is fitted on daily "
+            "solutions; use formal for 8 h sessions"
+        )
     bl_opts = source.BaselineOptions(
-        tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS
+        tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS,
+        empirical=empirical,
     )
 
     got, labels, dropped = [], [], []
@@ -457,6 +494,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         end=end,
         ylim=args.ylim,
         offset=args.offset,
+        show_outliers=args.show_outliers if args.view == "cleaned" else None,
         fig=tplt._reusable_figure() if args.save else None,
     )
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
@@ -479,6 +517,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         special=args.special,
         first=first,
         last=last,
+        baseline_sigma=args.baseline_sigma,
     )
     tplt.saveFig(os.path.join(kwargs["figDir"], stem), args.save, fig)
     if args.manifest:

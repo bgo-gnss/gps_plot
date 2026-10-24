@@ -64,6 +64,7 @@ def stack_figure(
     end: datetime.datetime | None = None,
     ylim: Sequence[Any] = (),
     offset: float = 0.0,
+    show_outliers: int | None = None,
     styles: Sequence[str] | None = None,
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
@@ -77,6 +78,10 @@ def stack_figure(
         start, end: Axis span (None: the union of the series' epochs).
         ylim: ``--ylim`` semantics of ``timesmatplt.setYlim``.
         offset: Vertical spacing [mm] between consecutive series.
+        show_outliers: Draw each series' outliers (cleaned view: its
+            ``outliers`` overlay) in the series' colour with a bold black
+            outline — 0 all of them, N only among its last N epochs; None
+            (default) none. They widen the y range, so none is cut off.
         styles: Per series ``"points"`` (markers with error bars, the
             default), ``"marked"`` (larger, dark-edged points, to stand out
             over lines) or ``"line"`` (a thin line, no error bars: dense
@@ -101,8 +106,23 @@ def stack_figure(
     shifted = [
         np.asarray(s.y, dtype=float) + k * float(offset) for k, s in enumerate(series)
     ]
+    flagged: list[Any] = [None] * len(series)
+    if show_outliers is not None:
+        for k, s in enumerate(series):
+            if s.outliers is None:
+                continue
+            oy, ody = s.outliers
+            if show_outliers:
+                oy, ody = tplt.last_flagged(oy, ody, show_outliers)
+            oy = np.asarray(oy, dtype=float) + k * float(offset)
+            if np.isfinite(oy).any():
+                flagged[k] = (oy, ody)
     ymin = [min(float(np.nanmin(y[i])) for y in shifted) for i in range(3)]
     ymax = [max(float(np.nanmax(y[i])) for y in shifted) for i in range(3)]
+    for f in flagged:
+        if f is not None:
+            ymin = [min(v, float(np.nanmin(f[0][i]))) for i, v in enumerate(ymin)]
+            ymax = [max(v, float(np.nanmax(f[0][i]))) for i, v in enumerate(ymax)]
     for k, s in enumerate(series):  # a backcast line starts at the zero
         if "backcast" in s.meta:
             ymin = [min(v, k * float(offset)) for v in ymin]
@@ -132,6 +152,28 @@ def stack_figure(
             markeredgecolor="black" if style == "marked" else color,
             label=label,
         )
+    # outliers: the series' colour, a bold black outline, drawn over the data
+    # (most cancel in a baseline; the few left must not go unseen)
+    for k, f in enumerate(flagged):
+        if f is None:
+            continue
+        tplt.addData(
+            xs[k],
+            f[0],
+            f[1],
+            fig,
+            ecolor="0.5",
+            markersize=5.0,
+            markerfacecolor=colors[k],
+            markeredgecolor="black",
+            markeredgewidth=1.6,
+        )
+    if any(f is not None for f in flagged):  # one legend key for all of them
+        axes[0].plot(
+            [], [], linestyle="none", marker="o", markersize=5.0,
+            markerfacecolor="white", markeredgecolor="black",
+            markeredgewidth=1.6, label="outlier (its series' colour)",
+        )  # fmt: skip
     # a late series' backcast (stack.backcast_late_starts): its fitted rate,
     # dashed, from the stack's first epoch (zero) to where its data begin
     for k, s in enumerate(series):
