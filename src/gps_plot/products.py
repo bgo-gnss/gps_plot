@@ -46,12 +46,12 @@ RESERVED_OPTIONS: Mapping[str, str] = {
     "--special": "the run's special:",
     "-s": "the run's fixedstart:",
     "--start": "the run's fixedstart:",
-    "--label": "the baseline group name (station_areas.yaml baselines:)",
+    "--label": "the stack group name (station_areas.yaml stacks:)",
 }
 
 #: ``stations:`` values of a product that read station_areas.yaml: the area
 #: members (ts), every baseline pair of the area (ts), or one stack figure
-#: per baseline group of two or more pairs (``gpsplot stack``)
+#: per stacks: group (``gpsplot stack``)
 AREA_KINDS = ("area", "area_baselines", "area_stacks")
 
 #: the plot root of an area whose category has no station_areas.yaml
@@ -86,7 +86,7 @@ class Job:
     argv: tuple[str, ...]  # tool options (no stations, -d, --manifest)
     publish: bool
     tool: str = "ts"  # "ts" or "stack" (one figure of all the stations)
-    group: str | None = None  # the baseline group of a stack
+    group: str | None = None  # the stacks: group of a stack
 
     @property
     def name(self) -> str:
@@ -102,17 +102,18 @@ def load_yaml(path: str | Path) -> Any:
 
 
 def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """``{cdn slug: {"key", "category", "root", "stations", "baselines"}}``
-    from a station_areas.yaml document.
+    """``{cdn slug: {"key", "category", "root", "stations", "baselines",
+    "stacks"}}`` from a station_areas.yaml document.
 
     Only areas with a ``cdn:`` slug have a plot directory; the slug names
     the area everywhere (plot tree, aflogun, events.yaml regions). Areas
-    sharing a slug are merged (members and baseline groups); the category
+    sharing a slug are merged (members, baselines and stacks); the category
     (``volcanic`` of ``volcanic_areas``) is the first one's, and the root
     its top-level ``category_roots:`` entry (default :data:`DEFAULT_ROOT`).
 
     Raises:
-        ValueError: A malformed ``baselines:`` (see :func:`area_baselines`).
+        ValueError: A malformed ``baselines:`` / ``stacks:`` (see
+            :func:`area_baselines`, :func:`area_stacks`).
     """
     out: dict[str, dict[str, Any]] = {}
     roots = {str(k): str(v) for k, v in (doc.get("category_roots") or {}).items()}
@@ -132,69 +133,93 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                     "category": category,
                     "root": roots.get(category, DEFAULT_ROOT),
                     "stations": [],
-                    "baselines": {},
+                    "baselines": [],
+                    "stacks": {},
                 },
             )
             for sta in members:
                 if sta and sta not in entry["stations"]:
                     entry["stations"].append(sta)
             try:
-                groups = area_baselines(spec.get("baselines"))
+                pairs = area_baselines(spec.get("baselines"))
+                groups = area_stacks(spec.get("stacks"))
             except ValueError as exc:
                 raise ValueError(f"station_areas {section}.{key}: {exc}") from None
-            for name, pairs in groups.items():
-                old = entry["baselines"].get(name)
-                if old is not None and old != pairs:
+            entry["baselines"] = area_pairs({"": entry["baselines"], key: pairs})
+            for name, group in groups.items():
+                old = entry["stacks"].get(name)
+                if old is not None and old != group:
                     raise ValueError(
-                        f"station_areas {section}.{key}: baseline group {name!r} "
+                        f"station_areas {section}.{key}: stack {name!r} "
                         f"differs from the one of another {cdn!r} area"
                     )
-                entry["baselines"][name] = pairs
+                entry["stacks"][name] = group
     return out
 
 
-def area_baselines(value: Any) -> dict[str, list[str]]:
-    """An area's ``baselines:`` as ``{group: [AAAA-BBBB, ...]}``.
+def area_baselines(value: Any) -> list[str]:
+    """An area's ``baselines:``: the pairs plotted one by one (``AAAA-BBBB``).
 
-    A mapping names the groups (each group of two or more pairs is also one
-    stack figure); a plain list is one unnamed group (``""``), plotted pair
-    by pair only. Pairs are kept as written (no reference-second rule);
-    ``# comments`` and case are dropped.
+    Pairs are kept as written (no reference-second rule); ``# comments`` and
+    case are dropped. Stacked figures are a separate list (:func:`area_stacks`).
 
     Raises:
-        ValueError: Not a mapping/list, a pair not ``AAAA-BBBB``, a station
-            paired with itself, or a pair twice in one group (either way
-            round). Across groups a pair may repeat or be reversed: each
-            stack fans out from its own reference (AUSV-ELDC in the ELDC
-            group, ELDC-AUSV in the AUSV one).
+        ValueError: Not a list (groups belong under ``stacks:``), a pair not
+            ``AAAA-BBBB``, a station paired with itself, or a pair twice
+            (either way round).
+    """
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        raise ValueError(
+            "baselines: a list of AAAA-BBBB (named groups go under stacks:)"
+        )
+    if not isinstance(value, list):
+        raise ValueError(f"baselines: a list of AAAA-BBBB, got {value!r}")
+    return _pairs("baselines", value)
+
+
+def area_stacks(value: Any) -> dict[str, list[str]]:
+    """An area's ``stacks:`` as ``{group: [AAAA-BBBB, ...]}``: one stacked
+    figure per group (named by it), two or more pairs each.
+
+    Across groups (and with ``baselines:``) a pair may repeat or be
+    reversed: each stack fans out from its own reference (AUSV-ELDC in the
+    ELDC stack, ELDC-AUSV in the AUSV one).
+
+    Raises:
+        ValueError: Not a mapping of lists, a group with fewer than two
+            pairs, or a bad pair (see :func:`area_baselines`).
     """
     if value is None:
         return {}
-    if isinstance(value, list):
-        raw: Mapping[Any, Any] = {"": value}
-    elif isinstance(value, Mapping):
-        raw = value
-    else:
-        raise ValueError(f"baselines: a mapping of groups or a list, got {value!r}")
+    if not isinstance(value, Mapping):
+        raise ValueError(f"stacks: a mapping of groups, got {value!r}")
     out: dict[str, list[str]] = {}
-    for name, items in raw.items():
+    for name, items in value.items():
         if not isinstance(items, list):
-            raise ValueError(f"baselines {name!r}: a list of AAAA-BBBB, got {items!r}")
-        pairs: list[str] = []
-        for item in items:
-            pair = str(item).split("#")[0].strip().upper()
-            if not _PAIR.match(pair):
-                raise ValueError(f"baselines {name!r}: {item!r} is not AAAA-BBBB")
-            a, b = pair.split("-")
-            if a == b:
-                raise ValueError(
-                    f"baselines {name!r}: {pair} pairs a station with itself"
-                )
-            if pair in pairs or f"{b}-{a}" in pairs:
-                raise ValueError(f"baselines {name!r}: {a}-{b}/{b}-{a} twice")
-            pairs.append(pair)
+            raise ValueError(f"stacks {name!r}: a list of AAAA-BBBB, got {items!r}")
+        pairs = _pairs(f"stacks {name!r}", items)
+        if len(pairs) < 2:
+            raise ValueError(f"stacks {name!r}: a stack needs two or more pairs")
         out[str(name)] = pairs
     return out
+
+
+def _pairs(where: str, items: Sequence[Any]) -> list[str]:
+    """Validated ``AAAA-BBBB`` pairs, none twice (either way round)."""
+    pairs: list[str] = []
+    for item in items:
+        pair = str(item).split("#")[0].strip().upper()
+        if not _PAIR.match(pair):
+            raise ValueError(f"{where}: {item!r} is not AAAA-BBBB")
+        a, b = pair.split("-")
+        if a == b:
+            raise ValueError(f"{where}: {pair} pairs a station with itself")
+        if pair in pairs or f"{b}-{a}" in pairs:
+            raise ValueError(f"{where}: {a}-{b}/{b}-{a} twice")
+        pairs.append(pair)
+    return pairs
 
 
 def area_pairs(groups: Mapping[str, Sequence[str]]) -> list[str]:
@@ -338,7 +363,7 @@ def expand(
     A product's ``stations:`` is ``active``/a list (one job per run), or an
     area kind (:data:`AREA_KINDS`): one job per area and run with the area
     members (``area``), the area's baselines (``area_baselines``), or one
-    ``gpsplot stack`` job per baseline group and period (``area_stacks``).
+    ``gpsplot stack`` job per ``stacks:`` group and period (``area_stacks``).
     The ``dir:`` of an area product may use ``{cdn}``, ``{root}`` (the area's
     category root, station_areas.yaml ``category_roots:``) and, for stacks,
     ``{group}``. A product's ``overrides:`` are keyed by area slug, or for
@@ -415,16 +440,16 @@ def _area_jobs(
 ) -> list[Job]:
     """The jobs of one area product for one area (see :func:`expand`)."""
     kind = spec["stations"]
-    groups: Mapping[str, Sequence[str]] = entry.get("baselines") or {}
     if kind == "area":
         targets: list[tuple[str | None, tuple[str, ...]]] = [
             (None, tuple(entry["stations"]))
         ]
     elif kind == "area_baselines":
-        pairs = area_pairs(groups)
+        pairs = entry.get("baselines") or []
         targets = [(None, tuple(pairs))] if pairs else []
-    else:  # area_stacks: groups of two or more pairs
-        targets = [(g, tuple(p)) for g, p in groups.items() if g and len(p) > 1]
+    else:  # area_stacks: one figure per group
+        stacks: Mapping[str, Sequence[str]] = entry.get("stacks") or {}
+        targets = [(g, tuple(p)) for g, p in stacks.items()]
     tool = "stack" if kind == "area_stacks" else "ts"
     overrides = spec.get("overrides") or {}
     ev = (
