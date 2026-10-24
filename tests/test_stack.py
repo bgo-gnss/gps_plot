@@ -162,3 +162,50 @@ def test_stack_has_no_fan_out_options(bad, capsys):
     parser = stk.build_parser(config=_Config())
     with pytest.raises(SystemExit):
         parser.parse_args(["HOFN", *bad])
+
+
+def _ramp(label, start, n, rate, step=1.0 / 365.25):
+    """Daily epochs from ``start``, moving ``rate`` mm/yr, zeroed at its start."""
+    t = start + step * np.arange(n)
+    y = np.vstack([rate * (t - start)] * 3)
+    return Series(label, t, y, np.ones((3, n)))
+
+
+def test_a_late_series_is_put_on_the_common_zero_along_its_rate():
+    early = _ramp("A", 2025.0, 365, 10.0)
+    late = _ramp("B", 2025.5, 180, 10.0)  # same motion, measured from mid-year
+    out, unfitted = stk.backcast_late_starts([early, late])
+    assert unfitted == [False, False]
+    assert out[0] is early
+    # B's values now sit where they would had it been measured since 2025.0
+    np.testing.assert_allclose(out[1].y, np.vstack([10.0 * (late.t - 2025.0)] * 3))
+    t0, t1, at_t1 = out[1].meta["backcast"]
+    assert (t0, t1) == (2025.0, 2025.5)
+    np.testing.assert_allclose(at_t1, 5.0)
+
+
+def test_a_series_too_short_to_fit_stays_zeroed_at_its_start():
+    early = _ramp("A", 2025.0, 365, 10.0)
+    late = _ramp("B", 2025.5, 5, 10.0)
+    out, unfitted = stk.backcast_late_starts([early, late])
+    assert unfitted == [False, True]
+    assert out[1] is late and "backcast" not in out[1].meta
+
+
+def test_series_starting_together_are_left_alone():
+    a, b = _ramp("A", 2025.0, 100, 3.0), _ramp("B", 2025.0 + 2 / 365.25, 100, -3.0)
+    out, unfitted = stk.backcast_late_starts([a, b])
+    assert out == [a, b] and unfitted == [False, False]
+
+
+def test_stack_figure_draws_the_backcast_dashed_from_zero():
+    from gps_plot.timesmatplt import StationTitle
+
+    out, _ = stk.backcast_late_starts(
+        [_ramp("A", 2025.0, 365, 10.0), _ramp("B", 2025.5, 180, 10.0)]
+    )
+    title = StationTitle("x", "y", "z", "black")
+    fig = compose.stack_figure(out, title=title, offset=10.0, fig=Figure())
+    dashed = [ln for ln in fig.axes[0].lines if ln.get_linestyle() == "--"]
+    assert len(dashed) == 1
+    np.testing.assert_allclose(dashed[0].get_ydata(), [10.0, 15.0])  # k=1 offset

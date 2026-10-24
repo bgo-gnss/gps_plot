@@ -7,6 +7,13 @@ clean and detrend as ``gpsplot ts``) and is drawn by
 patterns matched against the station list, on either side of a baseline:
 ``"SEY?-SEYD"`` is the nine SEY1…SEY9 − SEYD baselines (the self-pair
 SEYD-SEYD is dropped). Quote patterns: an unquoted ``?`` is the shell's.
+
+Each series is zeroed at its own first epoch. A series that starts later
+than the others is put on the common start instead (:func:`backcast_late_starts`,
+BGÓ 2026-10-23): its rate over its first stretch of data is extended back to
+the stack's first epoch and the series is shifted so that line is zero there;
+the figure draws that line dashed. Too little data to fit a rate leaves the
+series zeroed at its start, and the legend says so.
 """
 
 from __future__ import annotations
@@ -17,10 +24,14 @@ import os
 import sys
 import textwrap
 import warnings
+import dataclasses
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
+
 from gps_plot.cli import common
+from gps_plot.series import Series
 
 SPECIALS = ["90d", "year", "full", "fixedstart"]
 REFS = ["plate", "detrend", common.REF_FRAME]
@@ -52,7 +63,8 @@ def build_parser(
         "Several GPS time series in one figure: stations and/or baselines "
         "AAAA-BBBB, overlaid with a legend (--offset spaces them). Each series "
         "is read, cleaned and detrended exactly as by gpsplot ts and zeroed at "
-        "its own first epoch.",
+        "its own first epoch; one that starts late is put on the common start "
+        "along its early rate (dashed line).",
         width=78,
     )
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
@@ -112,6 +124,91 @@ def build_parser(
 # ---------------------------------------------------------------------------
 # series list
 # ---------------------------------------------------------------------------
+
+
+#: a series starting more than this after the stack's first epoch is backcast
+BACKCAST_MIN_GAP_DAYS = 3.0
+#: the rate is fitted over the series' first max(gap, this) days of data
+BACKCAST_FIT_DAYS = 90.0
+#: and needs at least this many epochs spanning at least this many days
+BACKCAST_MIN_POINTS = 10
+BACKCAST_MIN_SPAN_DAYS = 30.0
+_DAYS_PER_YEAR = 365.25
+
+
+def _rate_line(
+    t: np.ndarray, y: np.ndarray, sigma: np.ndarray, t_ref: float
+) -> tuple[float, float] | None:
+    """σ-weighted straight line through (t, y): (value at ``t_ref``, rate/yr)."""
+    ok = np.isfinite(t) & np.isfinite(y) & np.isfinite(sigma) & (sigma > 0)
+    if ok.sum() < 2:
+        return None
+    dt = t[ok] - t_ref
+    w = 1.0 / sigma[ok] ** 2
+    a = np.array([[w.sum(), (w * dt).sum()], [(w * dt).sum(), (w * dt * dt).sum()]])
+    b = np.array([(w * y[ok]).sum(), (w * dt * y[ok]).sum()])
+    try:
+        level, rate = np.linalg.solve(a, b)
+    except np.linalg.LinAlgError:
+        return None
+    return float(level), float(rate)
+
+
+def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[bool]]:
+    """Put series that start late on the stack's common zero (best effort).
+
+    Every series arrives zeroed at its own first epoch. One that starts more
+    than :data:`BACKCAST_MIN_GAP_DAYS` after the earliest series gets a
+    straight line (σ-weighted, per component) through its first
+    max(gap, :data:`BACKCAST_FIT_DAYS`) days of data; the line is extended
+    back to the stack's first epoch ``t0`` and the series shifted so that the
+    line is zero at ``t0`` — where it would sit had it been measured from the
+    start and moved at that rate. ``meta["backcast"]`` keeps ``(t0, t1,
+    values at t1)`` of the line for the figure. A series with fewer than
+    :data:`BACKCAST_MIN_POINTS` epochs (or :data:`BACKCAST_MIN_SPAN_DAYS`) in
+    the fit stretch is left as it is.
+
+    Returns the series and, per series, whether it was left zeroed at its
+    own start although it starts late.
+    """
+    starts = [float(np.nanmin(np.asarray(s.t, dtype=float))) for s in series]
+    t0 = min(starts)
+    out: list[Series] = []
+    unfitted: list[bool] = []
+    for s, t1 in zip(series, starts, strict=True):
+        gap = (t1 - t0) * _DAYS_PER_YEAR
+        if gap <= BACKCAST_MIN_GAP_DAYS:
+            out.append(s)
+            unfitted.append(False)
+            continue
+        t = np.asarray(s.t, dtype=float)
+        y = np.asarray(s.y, dtype=float)
+        sigma = np.asarray(s.sigma, dtype=float)
+        stretch = (t >= t1) & (t <= t1 + max(gap, BACKCAST_FIT_DAYS) / _DAYS_PER_YEAR)
+        lines = []
+        for c in range(y.shape[0]):
+            ok = stretch & np.isfinite(y[c])
+            span = (t[ok].max() - t[ok].min()) * _DAYS_PER_YEAR if ok.any() else 0.0
+            if ok.sum() < BACKCAST_MIN_POINTS or span < BACKCAST_MIN_SPAN_DAYS:
+                lines.append(None)
+                continue
+            lines.append(_rate_line(t[ok], y[c][ok], sigma[c][ok], t1))
+        if any(line is None for line in lines):
+            out.append(s)
+            unfitted.append(True)
+            continue
+        # value of each line at t0 (the shift) and at t1 (where it meets the data)
+        at_t0 = np.array([lv + r * (t0 - t1) for lv, r in lines])  # type: ignore[misc]
+        at_t1 = np.array([lv for lv, _ in lines])  # type: ignore[misc]
+        out.append(
+            dataclasses.replace(
+                s,
+                y=y - at_t0[:, None],
+                meta={**s.meta, "backcast": (t0, t1, at_t1 - at_t0)},
+            )
+        )
+        unfitted.append(False)
+    return out, unfitted
 
 
 def _is_pattern(code: str) -> bool:
@@ -326,6 +423,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     if not got:
         print("nothing plotted", file=sys.stderr)
         return 1
+
+    got, unfitted = backcast_late_starts(got)
+    labels = [
+        f"{label} (zeroed at its start)" if late else label
+        for label, late in zip(labels, unfitted, strict=True)
+    ]
 
     if not args.save:
         mpl.use("WebAgg")
