@@ -240,3 +240,47 @@ def test_detrend_terms_parse_to_canonical_order():
     assert _detrend_terms("Transient") == ("transient",)
     with pytest.raises(ValueError, match="seasonal"):
         _detrend_terms("seasonal")
+
+
+def test_resolve_events_file_then_line_skipping_comments(tmp_path) -> None:
+    import argparse
+    import io
+
+    from gps_plot.cli import common
+
+    args = argparse.Namespace(
+        eventf=io.StringIO("# Bárðarbunga\n20140816,b\n\n20140831\n"),
+        events=["20140831,g", "20060923"],
+    )
+    assert common.resolve_events(args) == {
+        "20140816": ["b"],
+        "20140831": ["g"],  # --events after --eventf: a later date wins
+        "20060923": [],
+    }
+    assert common.resolve_events(argparse.Namespace()) == {}
+
+
+class _EventConfig:
+    def getPostProcessDir(self, option):
+        return "/tmp"
+
+    def getStationInfo(self):
+        return ["HOFN"]
+
+
+@pytest.mark.parametrize(
+    "module, argv",
+    [
+        ("gps_plot.plot_gps_timeseries", ["HOFN"]),
+        ("gps_plot.stack", ["HOFN"]),
+        ("gps_plot.rtk", ["SEY1-SEYD"]),
+    ],
+)
+def test_every_time_series_subcommand_takes_events(
+    module: str, argv: list[str]
+) -> None:
+    import importlib
+
+    parser = importlib.import_module(module).build_parser(config=_EventConfig())
+    args = parser.parse_args([*argv, "--events", "20140816,b", "20150227"])
+    assert args.events == ["20140816,b", "20150227"] and args.eventf is None

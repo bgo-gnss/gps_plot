@@ -409,6 +409,35 @@ def zero_window(spec: str, req: SeriesRequest) -> list[tuple[float, float]] | No
     return [(float(a), float(b)) for a, b in segs] if segs else None
 
 
+#: the start zero screens this many first samples (× ZERO_SAMPLES) and drops
+#: those further than ZERO_CLIP_SIGMA robust σ from their median
+ZERO_SCREEN = 3
+ZERO_CLIP_SIGMA = 4.0
+
+
+def first_clean(y: Any, sigma: Any, ok: Any) -> Any:
+    """Indices of the first :data:`ZERO_SAMPLES` usable samples, an
+    undetected outlier among them left out.
+
+    The first ``ZERO_SCREEN × ZERO_SAMPLES`` finite samples are screened:
+    any further than :data:`ZERO_CLIP_SIGMA` × max(1.4826·MAD, median σ)
+    from their median is dropped (OLAC, July 2021: one Up epoch ~330 mm off
+    set the zero of the whole series — the old Askja plot used a window
+    median for the same reason). Falls back to the plain first samples
+    when the screen leaves too few.
+    """
+    first = np.flatnonzero(ok)[: ZERO_SCREEN * ZERO_SAMPLES]
+    if first.size < 3:
+        return first[:ZERO_SAMPLES]
+    vals = y[first]
+    med = float(np.median(vals))
+    scale = max(
+        1.4826 * float(np.median(np.abs(vals - med))), float(np.median(sigma[first]))
+    )
+    kept = first[np.abs(vals - med) <= ZERO_CLIP_SIGMA * scale]
+    return (kept if kept.size >= min(3, first.size) else first)[:ZERO_SAMPLES]
+
+
 def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
     """What re-zeroes a detrended station, or None.
 
@@ -416,7 +445,7 @@ def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
     over the record's fit window (:func:`zero_window`, its zero-velocity
     period: ``estimate_offset`` over every finite sample in it), when at
     least ``ZERO_SAMPLES`` of them are in the plotted span. Otherwise, at
-    its start:
+    its start (the first clean samples, :func:`first_clean`):
 
     ``getData`` zeroes a series at its start (``vshift``: the 1/σ-weighted
     mean of the first 5 kept samples, ``gps_analysis.prep_plot_series``),
@@ -451,7 +480,7 @@ def detrended_shift(spec: str, req: SeriesRequest, series: Series) -> Any:
         ok = np.isfinite(y[c]) & np.isfinite(sigma[c])
         idx = np.flatnonzero(ok & in_window)
         if idx.size < ZERO_SAMPLES:
-            idx = np.flatnonzero(ok)[:ZERO_SAMPLES]
+            idx = first_clean(y[c], sigma[c], ok)
         if idx.size:
             level[c] = float(
                 np.asarray(estimate_offset(t[idx], y[c, idx], sigma[c, idx]))

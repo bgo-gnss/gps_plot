@@ -148,3 +148,17 @@ def test_baseline_without_flags_has_no_outliers(
 ) -> None:
     _fake_station_series(monkeypatch)
     assert gps.fetch("AAAA-BBBB", REQ).outliers is None
+
+
+def test_start_zero_leaves_an_outlier_among_the_first_samples_out():
+    import numpy as np
+
+    from gps_plot.sources import gps as source
+
+    y = np.array([190.0, -140.0, -139.0, -141.0, -140.5, -139.5, -140.2, -138.0])
+    sigma = np.full_like(y, 3.0)
+    idx = source.first_clean(y, sigma, np.isfinite(y))
+    assert 0 not in idx and len(idx) == source.ZERO_SAMPLES
+    # no outlier: the plain first samples
+    y[0] = -140.0
+    assert list(source.first_clean(y, sigma, np.isfinite(y))) == [0, 1, 2, 3, 4]

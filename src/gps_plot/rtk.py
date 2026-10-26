@@ -125,6 +125,7 @@ def build_parser(
         help="RTK data directory (default: rtk_dir in postprocess.cfg [PATHS], "
         "then $GPS_RTK_DIR, then /mnt_data/rtgpsdata)",
     )
+    common.add_event_options(parser)
     common.add_output_options(parser, config)
     return parser
 
@@ -188,6 +189,10 @@ def _daily(
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
+    try:  # bad --events fail before the data are read
+        events = common.resolve_events(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     import matplotlib as mpl
     from geo_dataread.rtk_read import list_baselines, rtk_dir
 
@@ -274,6 +279,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             + "; ".join(notes), transform=fig.axes[2].transAxes,
             fontsize="x-small", color="0.3", va="bottom",
         )  # fmt: skip
+    if events:
+        tplt.addEvent(events, fig)
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
 
     if not args.save:
