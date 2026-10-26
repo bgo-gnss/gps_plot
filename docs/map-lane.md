@@ -445,8 +445,12 @@ gpsplot map velocity --region reykjanes --dem iceland --layers reykjanes \
   Vectors in it get their own scale (`ZOOM_ARROW_CM`) and reference arrow
   when the map's would leave the box.
 - **Iceland locator**, default on unless the map is all Iceland
-  (`--no-locator`): fig3b's small oblique Iceland, white land, slate
-  swarms, the map's box in red.
+  (`--no-locator`): the small oblique Iceland of fig1b
+  (`bb_grein/volc-systems.gmt` overview), drawn straight on the map with
+  no frame and no sea: white land, black coast, slate fissure swarms
+  with outlines, near-white glaciers (IMO 2025) with outlines, central
+  volcano outlines (FutureVolc), the map's box in red. All outlines 0.2p
+  (fig1b's `-W1`). Before 2026-10-26 it sat in a white framed box (fig3b).
 - **Placement** (`layout.build_box` for Mercator, `SeaLayout.place(...,
   on_land=)`): logo, scale bar and vector legend reserved, symbols and
   their names blocked; an inset takes the nearest free sea spot, then
