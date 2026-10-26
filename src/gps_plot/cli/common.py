@@ -1,4 +1,4 @@
-"""Options shared by the time-series subcommands (``ts``, ``stack``).
+"""Options shared by the time-series subcommands (``ts``, ``stack``, ``rtk``).
 
 Each ``add_*`` function adds one argument group; each ``resolve_*`` turns
 the parsed values into what the plot functions take. ``ts`` (via
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -116,6 +117,48 @@ def add_period_options(
         "ninety days (90d)"
         + ("; a comma-separated list plots each, e.g. 90d,year,full" if multi else ""),
     )
+
+
+def add_event_options(parser: Any) -> None:
+    """--events/--eventf: vertical event lines on every panel (all
+    time-series subcommands; ``gps_plot.timesmatplt.addEvent`` draws them)."""
+    parser.add_argument(
+        "--events",
+        nargs="+",
+        default=None,
+        metavar="YYYYMMDD[,COLOR]",
+        help="list of individual events to add: a line on every panel at "
+        "each date, in COLOR (default red), e.g. --events 20140816,b 20140831",
+    )
+    parser.add_argument(
+        "--eventf",
+        nargs="?",
+        type=argparse.FileType("r"),
+        default=None,
+        const=sys.stdin,
+        help="read in a list of events from a file: defaults to stdin "
+        "(one YYYYMMDD[,COLOR] per line)",
+    )
+
+
+def resolve_events(args: argparse.Namespace) -> dict[str, list[str]]:
+    """The events of --eventf then --events (a later date wins), as
+    ``{"YYYYMMDD": [color]}`` for ``addEvent``; empty when none given."""
+    lines: list[str] = []
+    if getattr(args, "eventf", None):
+        lines += args.eventf.read().splitlines()
+    lines += getattr(args, "events", None) or []
+    events: dict[str, list[str]] = {}
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        day, *rest = line.strip().split(",")
+        try:
+            dt.datetime.strptime(day, DATE_FORMAT)
+        except ValueError as exc:
+            raise ValueError(f"event {line!r}: the date must be YYYYMMDD") from exc
+        events[day] = rest
+    return events
 
 
 def add_output_options(parser: Any, config: Any) -> None:

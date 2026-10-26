@@ -89,7 +89,12 @@ and view (they default to plate-periodic + cleaned; `ts` follows the plot). `--r
 **Production batch contract (2026-10-21):** `gpsplot ts active` = the production set (stations.cfg, not passive/discontinued/inactive, in the box, with a series); one line per failure + a summary, exit 1 if any plot failed (no data in the period = skip, not failure); `--strict` refuses degraded output (raw under -cleaned/-detrend, no plate) before writing; `--manifest FILE` lists the files written (publish these, never glob); `--legacy-names` drops the frame tag (`STA-plate-90d.png`); `--save` alone = png. `--quake TIME,LAT,LON,MAG[,NAME]` marks an earthquake (layers/quakes.py). **`gpsplot run [STA ...]`** expands `plots.yaml` (`products.py`; stations narrow the selected jobs; baselines from station_areas.yaml `baselines:` (pairs), stacks from its `stacks:` (groups), plot roots from its `category_roots:`; design + `args:`/`prepare:` in `docs/plots-yaml-design.md`).
 `gpsplot ts all` = every station with a .pos series of the frame in the Iceland box (geo_dataread `pos_stations`; TOT: stations.cfg); `--region=W/E/S/N` (with `=`, west is negative) replaces the box and filters lists, `--with-record` keeps stations with a detrend record.
 `gpsplot stack "SEY?-SEYD" HOFN --offset 20` overlays stations and baselines
-(patterns match stations.cfg). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
+(patterns match stations.cfg). `--events YYYYMMDD[,COLOR] …` / `--eventf FILE` draw event lines on every
+panel in `ts`, `stack` and `rtk` alike (`cli/common.add_event_options`; not
+`seasonal`, which folds onto one year). A late-starting stack series is backcast
+along a robust line (MAD-clipped, `stack._rate_line`) and a detrended series is
+zeroed on its first clean samples (`sources.gps.first_clean`): one undetected
+outlier at the start no longer sets the zero (OLAC, July 2021). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
 window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.

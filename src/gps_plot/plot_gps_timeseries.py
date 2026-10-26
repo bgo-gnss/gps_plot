@@ -734,17 +734,7 @@ def build_parser(
         "--baseline-sigma empirical); it defaults to --ref plate and can be "
         "mixed with single stations, e.g. VFLN-VFLS VFLN",
     )
-    parser.add_argument(
-        "--events", nargs="+", default=None, help="list of individual events to add"
-    )
-    parser.add_argument(
-        "--eventf",
-        nargs="?",
-        type=argparse.FileType("r"),
-        default=None,
-        const=sys.stdin,
-        help="read in a list of events from a file: defaults to stdin",
-    )
+    common.add_event_options(parser)
     parser.add_argument(
         "--quake",
         action="append",
@@ -1282,20 +1272,10 @@ def run(
     # processing command line arguments --------------
     start, end = common.resolve_dates(args, currDatetime)
 
-    if args.eventf:  # reading a list of events from a file or stdin
-        eventDict.update(
-            dict(
-                [
-                    [line.split(",")[0], line.split(",")[1:]]
-                    for line in args.eventf.read().splitlines()
-                ]
-            )
-        )
-
-    if args.events:  # adding individual events from the command line
-        eventDict.update(
-            dict([[event.split(",")[0], event.split(",")[1:]] for event in args.events])
-        )
+    try:  # --eventf, then --events (common.resolve_events)
+        eventDict.update(common.resolve_events(args))
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # preparing the args for plot function
     kwargs = vars(args)

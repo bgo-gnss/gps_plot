@@ -84,6 +84,7 @@ def build_parser(
         "overlaid); the legend gives each series' offset",
     )
     common.add_period_options(parser, specials=SPECIALS)
+    common.add_event_options(parser)
     common.add_output_options(parser, config)
     common.add_series_options(
         parser,
@@ -155,22 +156,50 @@ BACKCAST_MIN_SPAN_DAYS = 30.0
 _DAYS_PER_YEAR = 365.25
 
 
+#: the backcast line rejects epochs whose residual exceeds this many robust
+#: σ (1.4826·MAD), refitting until the kept set settles
+BACKCAST_CLIP_SIGMA = 4.0
+BACKCAST_CLIP_ITER = 5
+
+
 def _rate_line(
     t: np.ndarray, y: np.ndarray, sigma: np.ndarray, t_ref: float
 ) -> tuple[float, float] | None:
-    """σ-weighted straight line through (t, y): (value at ``t_ref``, rate/yr)."""
+    """σ-weighted straight line through (t, y): (value at ``t_ref``, rate/yr).
+
+    Robust to the odd undetected outlier at a series' start (OLAC, July
+    2021: one Up epoch ~330 mm above its neighbours lifted the whole
+    backcast): after each fit, epochs further than
+    :data:`BACKCAST_CLIP_SIGMA` robust σ (1.4826·MAD of the residuals)
+    from the line are left out and the line refitted — the median/MAD
+    counterpart of the old plots' window median and rolling z-score.
+    """
     ok = np.isfinite(t) & np.isfinite(y) & np.isfinite(sigma) & (sigma > 0)
-    if ok.sum() < 2:
-        return None
-    dt = t[ok] - t_ref
-    w = 1.0 / sigma[ok] ** 2
-    a = np.array([[w.sum(), (w * dt).sum()], [(w * dt).sum(), (w * dt * dt).sum()]])
-    b = np.array([(w * y[ok]).sum(), (w * dt * y[ok]).sum()])
-    try:
-        level, rate = np.linalg.solve(a, b)
-    except np.linalg.LinAlgError:
-        return None
-    return float(level), float(rate)
+    keep = ok.copy()
+    fit: tuple[float, float] | None = None
+    for _ in range(BACKCAST_CLIP_ITER):
+        if keep.sum() < 2:
+            return fit
+        dt = t[keep] - t_ref
+        w = 1.0 / sigma[keep] ** 2
+        a = np.array([[w.sum(), (w * dt).sum()], [(w * dt).sum(), (w * dt * dt).sum()]])
+        b = np.array([(w * y[keep]).sum(), (w * dt * y[keep]).sum()])
+        try:
+            level, rate = np.linalg.solve(a, b)
+        except np.linalg.LinAlgError:
+            return fit
+        fit = (float(level), float(rate))
+        resid = np.where(ok, y - (level + rate * (t - t_ref)), np.nan)
+        scale = 1.4826 * float(
+            np.nanmedian(np.abs(resid[keep] - np.nanmedian(resid[keep])))
+        )
+        if not scale > 0:
+            break
+        new_keep = ok & (np.abs(resid) <= BACKCAST_CLIP_SIGMA * scale)
+        if np.array_equal(new_keep, keep):
+            break
+        keep = new_keep
+    return fit
 
 
 def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[bool]]:
@@ -401,6 +430,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     if args.show_outliers is not None and args.show_outliers < 0:
         parser.error("--show-outliers N: N must be positive")
     start, end = common.resolve_dates(args, currDatetime)
+    try:
+        events = common.resolve_events(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     common.resolve_source(kwargs, args, parser, config)
     start, end, fstart, fend = tplt.resolve_period(start, end, args.special, args.fix)
 
@@ -497,6 +530,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         show_outliers=args.show_outliers if args.view == "cleaned" else None,
         fig=tplt._reusable_figure() if args.save else None,
     )
+    if events:
+        tplt.addEvent(events, fig)
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
 
     if not args.save:

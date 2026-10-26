@@ -270,3 +270,48 @@ def test_stack_parser_takes_baseline_sigma_and_show_outliers():
         ["A-B", "--baseline-sigma", "empirical", "--show-outliers"]
     )
     assert (args.baseline_sigma, args.show_outliers) == ("empirical", 0)
+
+
+def test_run_draws_the_events_on_every_panel(monkeypatch, tmp_path):
+    import matplotlib.dates as mdates
+    import matplotlib.figure
+
+    seen = {}
+
+    def capture(self, *a, **k):
+        seen["lines"] = [
+            sorted(
+                (round(float(mdates.date2num(ln.get_xdata()[0]))), ln.get_color())
+                for ln in ax.get_lines()
+                if len(ln.get_xdata()) == 2 and ln.get_xdata()[0] == ln.get_xdata()[1]
+            )
+            for ax in self.axes[:3]
+        ]
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", capture)
+    argv = ["SEY1", "--events", "20140816,b", "20150227"]
+    assert (
+        _run(argv, monkeypatch, lambda spec, req, opts=None: _series(spec), tmp_path)
+        == 0
+    )
+    want = sorted(
+        [(round(mdates.datestr2num("2014-08-16")), "b"),
+         (round(mdates.datestr2num("2015-02-27")), "r")]
+    )  # fmt: skip
+    assert seen["lines"] == [want] * 3
+
+
+def test_run_refuses_an_event_that_is_not_a_date(monkeypatch, tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        _run(["HOFN", "--events", "2014-08-16"], monkeypatch, None, tmp_path)
+    assert "the date must be YYYYMMDD" in capsys.readouterr().err
+
+
+def test_backcast_line_ignores_an_outlier_at_the_start():
+    # OLAC, July 2021: one undetected Up epoch far above a steep rise
+    t = np.linspace(2021.5, 2021.75, 60)
+    y = -140.0 + 400.0 * (t - t[0])
+    y[0] += 330.0
+    level, rate = stk._rate_line(t, y, np.full_like(t, 3.0), t[0])
+    assert level == pytest.approx(-140.0, abs=1.0)
+    assert rate == pytest.approx(400.0, rel=0.01)
