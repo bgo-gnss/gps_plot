@@ -3,8 +3,10 @@
 Both follow BGÓ's ``gmt_maps/bb_grein/fig3b-overvlabel.pdf``:
 
 * **Locator** (:func:`draw_locator`): a small oblique Iceland (``S-19/65``,
-  as the overview), white land, the fissure swarms slate-blue, the map's
-  box in red.
+  as the overview) drawn straight on the map, without frame or sea, as
+  ``fig1b.pdf`` (``volc-systems.gmt`` overview): white land, black coast,
+  the fissure swarms slate-blue and outlined, the glaciers near-white and
+  outlined, the central volcanoes outlined, the map's box in red.
 * **Zoom** (:func:`draw_zoom`): a box of the map drawn again, larger,
   so a dense cluster (Svartsengi: ~20 stations in ~6 km) can be named.
   Its outline is drawn on the map; the stations inside are named only in
@@ -31,11 +33,13 @@ LOCATOR_CORNERS = (-24.6, 63.2, -13.0, 66.65)
 LOCATOR_WIDTH_CM = 2.8
 LOCATOR_CENTRE = "-19/65"
 LOCATOR_LAND = "white"
-LOCATOR_SEA = "white"
-LOCATOR_COAST_PEN = "0.2p,black"
+LOCATOR_COAST_PEN = "0.25p,black"
 LOCATOR_SWARM_FILL = "119/136/153"  # the overview's lightslategrey
+LOCATOR_SWARM_PEN = "0.2p,black"  # fig1b: -W1 on every outline
+LOCATOR_GLACIER_FILL = "245/245/245"  # fig1b's -G0-0-0.96 (HSV)
+LOCATOR_GLACIER_PEN = "0.2p,black"
+LOCATOR_VOLCANO_PEN = "0.2p,black"
 LOCATOR_BOX_PEN = "1p,red"
-LOCATOR_FRAME_PEN = "0.5p,black"
 #: the locator prefers the bottom-left corner, as on fig3b
 LOCATOR_CORNERS_PREF = ("BL", "TR", "BR", "TL")
 #: the zoom inset: width [cm] and its preferred corners
@@ -48,6 +52,8 @@ BESIDE_GAP_CM = 0.4
 #: GIS files the locator draws (under the GIS directory)
 LOCATOR_COAST = "vector/is50v_coast_wgs84_overview.gmt"
 LOCATOR_SWARMS = "vector/futurevolc_fissure_swarms_closed.gmt"
+LOCATOR_GLACIERS = "vector/imo_glaciers_wgs84.gmt"
+LOCATOR_VOLCANOES = "vector/futurevolc_central_volcanoes_closed.gmt"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,34 +135,47 @@ def _position(spot: Spot) -> Any:
 
 
 def draw_locator(fig: Any, region: Sequence[float], spot: Spot, gis_dir: str) -> None:
-    """The Iceland locator at ``spot``: white land, slate fissure swarms,
-    the lon/lat box ``region`` in red (as fig3b)."""
+    """The Iceland locator at ``spot``, as fig1b: no frame and no sea (the
+    map shows through), white land with a black coast, the fissure swarms
+    slate and outlined, the glaciers near-white and outlined, the central
+    volcanoes outlined, the lon/lat box ``region`` in red."""
     from gps_plot.maps import corner_region
 
     projection = locator_projection(spot.width)
     frame = corner_region(LOCATOR_CORNERS, projection)
     w, e, s, n = region[:4]
+
+    def path(name: str) -> str | None:
+        full = os.path.join(gis_dir, name)
+        return full if os.path.isfile(full) else None
+
+    coast, swarms = path(LOCATOR_COAST), path(LOCATOR_SWARMS)
+    glaciers, volcanoes = path(LOCATOR_GLACIERS), path(LOCATOR_VOLCANOES)
     with fig.inset(
         **layer_kw(
             "inset",
             position=_position(spot),
-            box=f"+g{LOCATOR_SEA}+p{LOCATOR_FRAME_PEN}",
             region=frame.gmt,
             projection=projection,
         )
     ):
-        coast = os.path.join(gis_dir, LOCATOR_COAST)
-        swarms = os.path.join(gis_dir, LOCATOR_SWARMS)
-        if os.path.isfile(coast):
-            fig.plot(**layer_kw("locator", data=coast, fill=LOCATOR_LAND,
-                                pen=LOCATOR_COAST_PEN))  # fmt: skip
+        if coast:
+            fig.plot(**layer_kw("locator", data=coast, fill=LOCATOR_LAND))
         else:  # GSHHG when the GIS coast is not built
-            fig.coast(land=LOCATOR_LAND, shorelines=LOCATOR_COAST_PEN,
-                      resolution="low")  # fmt: skip
-        if os.path.isfile(swarms):
-            fig.plot(**layer_kw("locator", data=swarms, fill=LOCATOR_SWARM_FILL))
-            if os.path.isfile(coast):  # the coast over the swarms' sea edges
-                fig.plot(**layer_kw("locator", data=coast, pen=LOCATOR_COAST_PEN))
+            fig.coast(land=LOCATOR_LAND, resolution="low")
+        if swarms:
+            fig.plot(**layer_kw("locator", data=swarms, fill=LOCATOR_SWARM_FILL,
+                                pen=LOCATOR_SWARM_PEN))  # fmt: skip
+        if glaciers:
+            fig.plot(**layer_kw("locator", data=glaciers, fill=LOCATOR_GLACIER_FILL,
+                                pen=LOCATOR_GLACIER_PEN))  # fmt: skip
+        if volcanoes:
+            fig.plot(**layer_kw("locator", data=volcanoes, pen=LOCATOR_VOLCANO_PEN))
+        # the coast last: over the swarms' sea edges, under the box
+        if coast:
+            fig.plot(**layer_kw("locator", data=coast, pen=LOCATOR_COAST_PEN))
+        else:
+            fig.coast(shorelines=LOCATOR_COAST_PEN, resolution="low")
         fig.plot(
             **layer_kw(
                 "locator", x=[w, e, e, w, w], y=[s, s, n, n, s], pen=LOCATOR_BOX_PEN
