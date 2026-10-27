@@ -935,6 +935,7 @@ def _draw_basemap(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -978,6 +979,8 @@ def _draw_basemap(
     )
     if dem_grid is not None:
         subgrid = pygmt_mod.grdcut(dem_grid, region=region)
+        if sea_smooth > 0:
+            subgrid = smooth_sea(pygmt_mod, subgrid, sea_smooth)
         relief = subgrid
         if dem_smooth > 0:
             # km on a lon/lat grid, the x spacing scaled by cos(lat)
@@ -1084,7 +1087,8 @@ def _draw_basemap(
 BASE_KEYS = (
     "resolution", "land", "water", "shorelines", "dem_grid", "dem_cmap",
     "bathymetry_cmap", "glacier_cmap", "dem_shading_azimuth",
-    "dem_shading_normalize", "dem_smooth", "overlays", "coastline", "glaciers",
+    "dem_shading_normalize", "dem_smooth", "sea_smooth", "overlays", "coastline",
+    "glaciers",
     "zones", "lakes", "glacier_contours",
 )  # fmt: skip
 
@@ -1108,6 +1112,37 @@ def draw_base(
     _draw_basemap(
         pygmt_mod, fig, region=region, projection=projection, graticule=False, **kw
     )
+
+
+#: the shallowest depth a smoothed sea cell keeps [m]: still sea-coloured
+SEA_SMOOTH_SHALLOWEST = -0.5
+
+
+def smooth_sea(pygmt_mod: Any, grid: Any, km: float) -> Any:
+    """``grid`` with its sea floor (z < 0) smoothed by a Gaussian filter
+    ``km`` wide; land and NaN cells unchanged. Land counts as sea level in
+    the filter, so no land height spills offshore, and a smoothed sea cell
+    stays below :data:`SEA_SMOOTH_SHALLOWEST` (sea-coloured to the coast)."""
+    z = np.asarray(grid.values, dtype=np.float64)
+    flat = _as_grid_of(grid.copy(data=np.where(z > 0, 0.0, z)), grid)  # land at 0
+    smoothed = pygmt_mod.grdfilter(
+        **layer_kw("sea-smooth", grid=flat, filter=f"g{km:g}", distance=2)
+    )
+    sm = np.minimum(np.asarray(smoothed.values, dtype=np.float64),
+                    SEA_SMOOTH_SHALLOWEST)  # fmt: skip
+    if sm.shape != z.shape:  # the filter keeps the grid; refuse to guess
+        raise ValueError(f"sea smoothing changed the grid: {z.shape} -> {sm.shape}")
+    return _as_grid_of(grid.copy(data=np.where(z < 0, sm, z)), grid)
+
+
+def _as_grid_of(new: Any, like: Any) -> Any:
+    """``new`` with ``like``'s GMT grid type and registration (xarray
+    arithmetic drops them, and GMT then reads a lon/lat grid as Cartesian)."""
+    accessor = getattr(like, "gmt", None)
+    if accessor is not None:
+        new.gmt.registration = accessor.registration
+        new.gmt.gtype = accessor.gtype
+    return new
 
 
 def _dem_colours(
@@ -1740,6 +1775,7 @@ def station_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -1799,6 +1835,10 @@ def station_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -1853,6 +1893,7 @@ def station_map(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2168,6 +2209,7 @@ def velocity_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2242,6 +2284,10 @@ def velocity_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2293,6 +2339,7 @@ def velocity_map(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2522,6 +2569,7 @@ def deformation_vectors(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2596,6 +2644,10 @@ def deformation_vectors(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2666,6 +2718,7 @@ def deformation_vectors(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2945,6 +2998,7 @@ def slip_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -3025,6 +3079,10 @@ def slip_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -3105,6 +3163,7 @@ def slip_map(
             dem_shading_azimuth=dem_shading_azimuth,
             dem_shading_normalize=dem_shading_normalize,
             dem_smooth=dem_smooth,
+            sea_smooth=sea_smooth,
             overlays=overlays,
             coastline=coastline,
             glaciers=glaciers,

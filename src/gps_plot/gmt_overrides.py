@@ -42,6 +42,7 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "coast": ("Figure.coast", {"land": "G", "water": "S", "shorelines": "W",
                                "resolution": "D", "frame": "B"}),
     "smooth": ("grdfilter", {"filter": "F", "distance": "D"}),
+    "sea-smooth": ("grdfilter", {"filter": "F", "distance": "D"}),
     "gradient": ("grdgradient", {"azimuth": "A", "normalize": "N"}),
     "glacier-gradient": ("grdgradient", {"azimuth": "A", "normalize": "N"}),
     "dem": ("Figure.grdimage", {"shading": "I", "nan_transparent": "Q"}),

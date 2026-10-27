@@ -309,6 +309,13 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "(e.g. 3 for an Iceland overview); colours and coasts stay sharp",
     )  # fmt: skip
     g.add_argument(
+        "--sea-smooth", type=float, default=None, metavar="KM",
+        help="smooth the --dem sea floor alone (colours and hillshade) with a "
+        "Gaussian filter KM wide, e.g. 0.5: off Reykjanes the bathymetry is "
+        "EMODnet's ~115 m cells, which the hillshade shows as blocks; land "
+        "and the coast stay sharp",
+    )  # fmt: skip
+    g.add_argument(
         "--glaciers", default=None, metavar="FILE",
         help="glacier polygons, drawn white with their own gentle hillshade "
         "(default with --dem iceland: IMO's 2025 outlines; 'none' = off)",
@@ -793,7 +800,8 @@ def _style(
                      ("dem_cmap", "dem_cmap"),
                      ("bathymetry_cmap", "bathymetry_cmap"),
                      ("glacier_cmap", "glacier_cmap"),
-                     ("dem_smooth", "dem_smooth")):  # fmt: skip
+                     ("dem_smooth", "dem_smooth"),
+                     ("sea_smooth", "sea_smooth")):  # fmt: skip
         if getattr(args, opt) is not None:
             kw[key] = getattr(args, opt)
     if str(kw.get("dem_grid", "")).lower() == "none":

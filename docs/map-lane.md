@@ -138,6 +138,17 @@ unfiltered grid and stay sharp. 2–4 km suits an Iceland overview, and the
 filter costs about a second there. The filter is the `smooth` step, so
 `--gmt smooth:filter=m3` gives a median filter instead.
 
+### Smoother sea floor: `--sea-smooth KM` (2026-10-27)
+
+On a local map the sea of `--dem iceland` is EMODnet's ~115 m cells (off
+Reykjanes no multibeam survey covers the shelf), and the hillshade draws
+them as blocks. `--sea-smooth KM` filters the sea floor alone, colours and
+shading (`maps.smooth_sea`, Gaussian, step `sea-smooth`): land counts as
+sea level inside the filter, so no land height spills offshore, and a
+smoothed cell stays below −0.5 m, sea-coloured to the coast. Land, ice and
+the coast are untouched. 0.5 km suits the Svartsengi maps. It hides the
+cells; it adds no detail.
+
 ### File names: `map_{kind}_{area}_{selection}[_{extras}]`
 
 A map is named after what it shows, not its first station

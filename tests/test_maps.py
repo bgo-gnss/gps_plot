@@ -889,3 +889,29 @@ def test_vector_legend_sits_in_a_box_and_points_up_on_a_vertical_map(
     calls.clear()
     maps._draw_vector_legend(_Fig(), **{**common, "projection": None})
     assert "plot" not in [name for name, _ in calls]  # no box without a projection
+
+
+def test_smooth_sea_changes_the_sea_floor_alone() -> None:
+    import types
+
+    import numpy as np
+    import xarray as xr
+
+    from gps_plot import maps
+
+    z = np.array([[-50.0, -40.0, 10.0], [-30.0, np.nan, 300.0]])
+    grid = xr.DataArray(z, dims=("lat", "lon"))
+    seen = {}
+
+    def grdfilter(grid, filter, distance):
+        seen["in"] = grid.values.copy()
+        seen["filter"] = filter
+        return xr.DataArray(np.full(z.shape, -0.1), dims=("lat", "lon"))
+
+    out = maps.smooth_sea(types.SimpleNamespace(grdfilter=grdfilter), grid, 0.5)
+    assert seen["filter"] == "g0.5"
+    assert seen["in"][0, 2] == 0.0 and seen["in"][1, 2] == 0.0  # land at sea level
+    v = out.values
+    # sea cells take the smoothed value, kept sea-coloured; land and NaN unchanged
+    assert v[0, 0] == v[0, 1] == v[1, 0] == maps.SEA_SMOOTH_SHALLOWEST
+    assert v[0, 2] == 10.0 and v[1, 2] == 300.0 and np.isnan(v[1, 1])

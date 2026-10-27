@@ -269,6 +269,10 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   and the 3 months share one map (BGÓ 2026-10-27: both on one map). On a
   `--vertical` map the windows' arrows stand side by side (0.18 cm apart).
   The same `--scale`/`--scale-ref` across maps keeps them comparable.
+- **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
+  which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
+  smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the
+  filter, smoothed cells stay sea-coloured); land and the coast unchanged.
 
 ```yaml
   svartsengi_velocity:
@@ -277,7 +281,7 @@ year and past 3 months, set up as the Kárahnjúkar report map).
     dir: maps/reykjanes/svartsengi
     args:
       - --region -22.72/-22.17/63.76/63.945
-      - --projection M15.5c --dem iceland --title=
+      - --projection M15.5c --dem iceland --sea-smooth 0.5 --title=
       - --layers roads,towns,lavas,graben,fissures,barriers
       - --scale-ref 100
       - --last 365 --last 91 --min-fill 0.6
