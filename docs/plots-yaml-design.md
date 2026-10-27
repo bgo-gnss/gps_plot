@@ -261,10 +261,14 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   white box, its arrow pointing up on `--vertical` maps; the Iceland
   locator placed clear of the arrows as well as the stations and the
   legend; place names cut by the frame or under the logo left out.
-- **A year map** wants stations that cover the year: `--min-epochs 200
-  --no-short-tier` (the short tier passes a strong but short series, such
-  as THNA, whose data stop in May 2026). The same `--scale`/`--scale-ref`
-  across a pair makes the year and the 3-month maps comparable.
+- **A year map** wants stations that cover the year. The product's cover
+  gate measures the span of the data, not the days in it (SAFH: 13 days
+  spread over the year pass), and a series that stops early is judged up
+  to its end (THNA, May 2026). `--min-fill 0.6` drops a window's rate when
+  fewer than 60 % of its days have a solution, per window, so the year
+  and the 3 months share one map (BGÓ 2026-10-27: both on one map). On a
+  `--vertical` map the windows' arrows stand side by side (0.18 cm apart).
+  The same `--scale`/`--scale-ref` across maps keeps them comparable.
 
 ```yaml
   svartsengi_velocity:
@@ -276,9 +280,8 @@ year and past 3 months, set up as the Kárahnjúkar report map).
       - --projection M15.5c --dem iceland --title=
       - --layers roads,towns,lavas,graben,fissures,barriers
       - --scale-ref 100
+      - --last 365 --last 91 --min-fill 0.6
     runs:
-      - {name: svartsengi-ar-larett, args: [--last 365 --min-epochs 200 --no-short-tier --scale 0.015]}
-      - {name: svartsengi-3man-larett, args: [--last 91 --scale 0.015]}
-      - {name: svartsengi-ar-lodrett, args: [--last 365 --min-epochs 200 --no-short-tier --vertical --scale 0.008]}
-      - {name: svartsengi-3man-lodrett, args: [--last 91 --vertical --scale 0.008]}
+      - {name: svartsengi-ar-3man-larett, args: [--scale 0.015]}
+      - {name: svartsengi-ar-3man-lodrett, args: [--vertical --scale 0.008]}
 ```

@@ -132,11 +132,12 @@ examples:
                         two windows, plate removed, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
                         vertical rate over the last 7 days (north arrow = uplift)
-  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 365 \
-      --min-epochs 200 --no-short-tier --dem iceland --title= \
+  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 365 --last 91 \
+      --min-fill 0.6 --dem iceland --title= \
       --layers roads,towns,lavas,graben,fissures,barriers --scale-ref 100 --save pdf
-                        Svartsengi over the past year, report style: no title,
-                        only stations that cover the year
+                        Svartsengi, past year and past 3 months on one map,
+                        report style: no title, only rates with data on 60%
+                        of their window's days
   gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
                         stored secular rates, Iceland
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
@@ -567,6 +568,14 @@ def build_parser(
         "--min-epochs", type=int, default=None,
         help="fewest epochs in a window for a rate (default 5, the velocity "
         "product's gate)",
+    )  # fmt: skip
+    p.add_argument(
+        "--min-fill", type=float, default=0.0, metavar="F",
+        help="drop a window's rate when fewer than F of its days have a "
+        "solution (e.g. 0.6: SAFH's 13 days of a year, THNA stopping in "
+        "May); per window, so a year and a 3-month window share one map. "
+        "Default 0: the product's gates only (they measure the span the "
+        "data cover, not the days in it)",
     )  # fmt: skip
     p.add_argument(
         "--no-short-tier", dest="short_tier", action="store_false",
@@ -1513,7 +1522,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
             chosen = [r for r in records if r.window == span and r.station in by_marker]
             _add_records(maps, chosen, by_marker, label,
                          WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
-                         vectors, dropped)  # fmt: skip
+                         vectors, dropped, args.min_fill)  # fmt: skip
         windows = [(_date_of(span[0]), _last_day(span[1])) for span in spans]
     elif windows:
         # the velocity product's own estimator: the numbers of gps-velocities
@@ -1531,7 +1540,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 print(paths["jsonl"])
             _add_records(maps, records, by_marker, label,
                          WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
-                         vectors, dropped)  # fmt: skip
+                         vectors, dropped, args.min_fill)  # fmt: skip
     else:
         # the stored records' secular rates (geo_dataread.products.secular_rate)
         from geo_dataread.products import secular_rate
@@ -1567,6 +1576,13 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     if args.title is None:
         style["title"] = _velocity_title(args, bool(windows))
     colors = dict(g for g in groups if g[0] is not None)
+    region = style.get("region")
+    if args.vertical and len(windows) > 1 and region is not None:
+        # collinear up/down arrows would hide each other: side by side
+        kept = side_by_side(
+            kept, window_index(groups), region,
+            style.get("projection", maps.DEFAULT_PROJECTION),
+        )  # fmt: skip
     zoomed = _in_inset(args, kept, maps)
     zoom_style = _unlabel_inset(style, args)
     avoid = maps.overlay_label_points(style.get("overlays", ()))
@@ -1700,9 +1716,12 @@ def _add_records(
     groups: list[tuple[str | None, str]],
     vectors: list[Any],
     dropped: list[str],
+    min_fill: float = 0.0,
 ) -> None:
     """Velocity product records as one window's vectors: refused ones
-    dropped with their reason, plate-only fallbacks as a pale group."""
+    dropped with their reason, plate-only fallbacks as a pale group, and
+    records with fewer than ``min_fill`` of the window's days
+    (:func:`window_fill`) dropped."""
     pre_onset = any(r.ref == "pre-onset" for r in records)
     pale = label + (NO_SEASONAL_SUFFIX if pre_onset else FALLBACK_SUFFIX)
     groups.append((label, color))
@@ -1713,6 +1732,10 @@ def _add_records(
             continue
         if not r.accepted:
             dropped.append(f"{r.station} {label}: {r.refused}")
+            continue
+        fill = window_fill(r) if min_fill > 0 else 1.0
+        if fill < min_fill:
+            dropped.append(f"{r.station} {label}: fill={fill:.2f}<{min_fill:g}")
             continue
         part = "horizontal" if comp is None else "up"
         idx = [0, 1] if comp is None else [comp]
@@ -1726,6 +1749,58 @@ def _add_records(
         vectors.append(_record_vector(maps, c, r, comp, pale if fallback else label))
     if any_pale:
         groups.append((pale, f"{color}@{FALLBACK_TRANSPARENCY}"))
+
+
+#: the sideways gap between the windows' arrows on a vertical map [cm]
+VERTICAL_ARROW_GAP_CM = 0.18
+
+
+def window_index(groups: Sequence[tuple[str | None, str]]) -> dict[str, int]:
+    """Each legend group's window, in order: a window's pale fallback
+    group (:data:`FALLBACK_SUFFIX`, :data:`NO_SEASONAL_SUFFIX`) shares it."""
+    out: dict[str, int] = {}
+    k = -1
+    for label, _ in groups:
+        if label is None:
+            continue
+        if not label.endswith((FALLBACK_SUFFIX, NO_SEASONAL_SUFFIX)):
+            k += 1
+        out[label] = max(k, 0)
+    return out
+
+
+def side_by_side(
+    vectors: Sequence[Any],
+    index: dict[str, int],
+    region: Sequence[float],
+    projection: str,
+    gap_cm: float = VERTICAL_ARROW_GAP_CM,
+) -> list[Any]:
+    """The vertical arrows of several windows moved apart east-west,
+    ``gap_cm`` each, centred on the station (the station symbol stays)."""
+    from gps_plot import insets
+    from gps_plot.maps import CornerRegion
+
+    if isinstance(region, CornerRegion):
+        return list(vectors)
+    n = max(index.values(), default=0) + 1
+    width, _ = insets.size_cm(region, projection)
+    deg = (region[1] - region[0]) / width
+    return [
+        dataclasses.replace(
+            v, arrow_dlon=((index.get(v.method, 0) - (n - 1) / 2) * gap_cm * deg)
+        )
+        for v in vectors
+    ]
+
+
+def window_fill(r: Any) -> float:
+    """The share of a velocity record's window days with a solution: its
+    epochs (all components) over the window length in days (8 h sessions
+    count a third of a day each)."""
+    days = (r.window[1] - r.window[0]) * 365.25
+    per_day = 3.0 if getattr(r, "session", "24h") == "8h" else 1.0
+    return min(r.n_epochs) / per_day / days if days > 0 else 0.0
 
 
 def _record_vector(maps: Any, c: Any, r: Any, comp: int | None, method: str) -> Any:

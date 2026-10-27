@@ -99,7 +99,8 @@ RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
 window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
 plots.yaml `tool: map` products run maps through `gpsplot run` (Svartsengi
-year/3-month velocity, design doc "Map products").
+year + 3 months on one map, `--min-fill 0.6` per window, vertical arrows of
+the windows side by side; design doc "Map products").
 Planned: seismic panels (on ice) — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).
@@ -235,7 +236,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

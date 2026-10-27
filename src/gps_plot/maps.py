@@ -1916,6 +1916,9 @@ class VelocityVector:
     sigma_north: float = 0.0
     correlation_en: float = 0.0
     method: str | None = None
+    #: the arrow's tail moved east of the station [degrees] (side-by-side
+    #: vertical arrows of several windows); the station symbol stays
+    arrow_dlon: float = 0.0
 
 
 def velocity_vectors(
@@ -2088,7 +2091,7 @@ def draw_velocity_vectors(
         layer_color = colors.get(method, color) if method else color
         _draw_vector_layer(
             fig,
-            lons[idx],
+            lons[idx] + np.array([vectors[i].arrow_dlon for i in idx]),
             lats[idx],
             np.array([vectors[i].east for i in idx], dtype=np.float64),
             np.array([vectors[i].north for i in idx], dtype=np.float64),
