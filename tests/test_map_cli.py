@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import types
@@ -919,9 +920,45 @@ def test_velocity_pre_onset_set_names_its_reference_days(fake_maps, tmp_path):
         pre_onset={"window": list(pre)},
     )
     paths = vprod.write_velocity_set([rec], tmp_path / "set", "s")
-    assert _run(["velocity", "SENG", "--velocities", str(paths["jsonl"])], tmp_path) == 0
+    assert (
+        _run(["velocity", "SENG", "--velocities", str(paths["jsonl"])], tmp_path) == 0
+    )
     _args, kw = fake_maps["velocity_map"]
     assert "(2023-08-06 to 2023-10-24)" in str(kw)
     with pytest.raises(SystemExit):  # the set's days, not the command line's
         _run(["velocity", "SENG", "--velocities", str(paths["jsonl"]),
               "--pre-window", "20230801:20231024"], tmp_path)  # fmt: skip
+
+
+def test_velocity_no_short_tier_and_manifest(fake_maps, fake_product, tmp_path):
+    man = tmp_path / "files.txt"
+    argv = ["velocity", "SENG", "--last", "365", "--no-short-tier",
+            "--manifest", str(man)]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    (settings,) = {c[3] for c in fake_product}
+    assert settings.short_tier is False
+    assert man.read_text().splitlines() == [
+        os.path.abspath(p) for p in fake_maps["fig"].saved
+    ]
+    # the vertical legend arrow is asked for on a --vertical map
+    assert _run(["velocity", "SENG", "--last", "14", "--vertical"], tmp_path) == 0
+    assert fake_maps["velocity_map"][1]["scale_vertical"] is True
+
+
+def test_arrow_points_follow_each_arrow_to_its_tip(monkeypatch):
+    from gps_plot import insets, maps
+
+    monkeypatch.setattr(insets, "size_cm", lambda region, projection: (10.0, 10.0))
+    v = maps.VelocityVector("SENG", -22.0, 64.0, 100.0, 0.0, 1.0, 1.0, 0.0)
+    lons, lats = gmap.arrow_points([v], 0.01, (-23.0, -21.0, 63.0, 65.0), "M10c")
+    # 100 mm/yr × 0.01 cm = 1 cm of a 10 cm, 2° wide map: the tip 0.2° east
+    assert lons[-1] == pytest.approx(-21.8) and set(lats) == {64.0}
+    assert len(lons) == 4
+
+
+def test_vector_legend_width_fits_the_longest_label():
+    from gps_plot import maps
+
+    short = gmap.vector_legend_width_cm(["100 mm/yr"], 1.5)
+    long = gmap.vector_legend_width_cm(["2025/10/28 - 2026/10/27", "100 mm/yr"], 1.5)
+    assert long > short >= 1.8 + 2 * maps.LEGEND_BOX_PAD_CM

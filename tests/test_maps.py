@@ -830,3 +830,62 @@ def test_corner_region_is_the_oblique_rectangle() -> None:
     inside = [StationCoordinate("IN", -19.0, 65.0), StationCoordinate("OUT", w, s)]
     assert [c.marker for c in maps.within(r, inside)] == ["IN"]
     assert maps.gmt_region(r) == r.gmt
+
+
+def test_place_names_cut_by_the_frame_or_under_the_logo_are_left_out(
+    monkeypatch,
+) -> None:
+    from gps_plot import maps
+
+    monkeypatch.setattr(maps, "_map_size_cm", lambda region, projection: (10.0, 10.0))
+    region = (-23.0, -22.0, 63.0, 64.0)  # 0.1° a cm
+    font = "10p,Helvetica"  # "Keilir": ~1.06 cm wide
+    labels = [
+        (-22.5, 63.5, "Keilir"),  # middle: kept
+        (-22.01, 63.5, "Keilir"),  # cut by the east edge
+        (-22.5, 63.995, "Keilir"),  # cut by the top
+        (-22.85, 63.95, "Hafnir"),  # under the logo (top left)
+        (-22.85, 63.5, "Hafnir"),  # west, below the logo: kept
+    ]
+    kept = maps.inside_frame(labels, font, region, "M10c")
+    assert kept == [labels[0], labels[4]]
+    oblique = maps.CornerRegion(
+        (-25.0, 63.0, -12.8, 66.7), "S-19/65/12c", (-25.0, -12.8, 63.0, 66.7), (12, 9)
+    )
+    assert maps.inside_frame(labels, font, oblique, "S-19/65/12c") == labels
+
+
+def test_vector_legend_sits_in_a_box_and_points_up_on_a_vertical_map(
+    monkeypatch,
+) -> None:
+    from gps_plot import maps
+
+    monkeypatch.setattr(maps, "_map_size_cm", lambda region, projection: (10.0, 10.0))
+    calls: list[tuple[str, dict]] = []
+    vectors: list[tuple[float, float]] = []
+
+    class _Fig:
+        def __getattr__(self, name):
+            return lambda **kw: calls.append((name, kw))
+
+    monkeypatch.setattr(
+        maps, "_draw_vector_layer",
+        lambda fig, x, y, e, n, **kw: vectors.append((float(e[0]), float(n[0]))),
+    )  # fmt: skip
+    common = dict(
+        region=(-23.0, -22.0, 63.0, 64.0), entries=[("2025/10/28 - 2026/10/27", "blue")],
+        scale_ref=100.0, scale_unit="mm/yr", scale=0.01, confidence=0.95,
+        head="0.3c", pen_width="1p", font=maps.DEFAULT_LEGEND_FONT,
+        anchor=maps.DEFAULT_LEGEND_ANCHOR,
+        line_spacing=maps.DEFAULT_LEGEND_LINE_SPACING, projection="M10c",
+    )  # fmt: skip
+    maps._draw_vector_legend(_Fig(), **common)
+    assert calls[0][0] == "plot" and calls[0][1]["fill"] == maps.LEGEND_BOX_FILL
+    xs = calls[0][1]["x"]
+    assert max(xs) - min(xs) > 0.3  # the date label is ~3.6 cm of a 10 cm map
+    assert vectors == [(100.0, 0.0)]
+    maps._draw_vector_legend(_Fig(), **common, vertical=True)
+    assert vectors[-1] == (0.0, 100.0)  # up, as the vertical rates
+    calls.clear()
+    maps._draw_vector_legend(_Fig(), **{**common, "projection": None})
+    assert "plot" not in [name for name, _ in calls]  # no box without a projection

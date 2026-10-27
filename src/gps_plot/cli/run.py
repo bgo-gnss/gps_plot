@@ -215,11 +215,16 @@ def run(prog: str, argv: list[str]) -> int:
         for step in steps:
             print(f"prepare: {step}")
         for job in jobs:
+            who = (
+                f"{len(job.stations)} stations: {' '.join(job.stations[:12])}"
+                f"{' …' if len(job.stations) > 12 else ''}"
+            )
+            if job.tool == "map" and not job.stations:
+                who = "stations: those in the map's --region"
             print(
                 f"{job.name:28s} {'PUB' if job.publish else '   '} "
-                f"{root / job.out_dir}\n    {len(job.stations)} stations: "
-                f"{' '.join(job.stations[:12])}{' …' if len(job.stations) > 12 else ''}"
-                f"\n    {job.tool} {' '.join(job.argv)}"
+                f"{root / job.out_dir}\n    {who}"
+                f"\n    {job.tool} {' '.join([*([job.kind] if job.kind else []), *job.argv])}"
             )
         if not args.keep_stale and str(root):
             for f in products.stale_baseline_plots(jobs, configured, root):
@@ -241,16 +246,21 @@ def run(prog: str, argv: list[str]) -> int:
     status = 0
     published: list[str] = []
     for i, job in enumerate(jobs):
-        if not job.stations:
+        if not job.stations and job.tool != "map":  # a map: those in --region
             print(f"== {job.name} [{i + 1}/{len(jobs)}]: no stations, skipped")
             continue
         out = root / job.out_dir
         with tempfile.NamedTemporaryFile("r", suffix=".txt") as man:
-            argv = [*job.stations, *job.argv, "-d", str(out), "--manifest", man.name]
+            argv = [*job.tool_argv(str(out)), "--manifest", man.name]
+            if job.tool == "map":  # --region -22.7/… as gpsplot map reads it
+                from gps_plot.cli.map import join_negative_values
+
+                argv = join_negative_values(argv)
             if args.workers and job.tool == "ts":
                 argv += ["-j", str(args.workers)]
             print(
-                f"== {job.name} [{i + 1}/{len(jobs)}]: {job.tool} {' '.join(job.argv)}"
+                f"== {job.name} [{i + 1}/{len(jobs)}]: {job.tool} "
+                f"{' '.join([*([job.kind] if job.kind else []), *job.argv])}"
             )
             run_tool, parser = _tool(job.tool, config)
             try:
@@ -283,7 +293,14 @@ def run(prog: str, argv: list[str]) -> int:
 
 
 def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:
-    """``(run function, parser)`` of a job tool: ``ts`` or ``stack``."""
+    """``(run function, parser)`` of a job tool: ``ts``, ``stack`` or ``map``."""
+    if name == "map":
+        from gps_plot import map as gmap
+
+        parser = gmap.build_parser(
+            argparse.ArgumentParser(prog="gpsplot map", **parser_kw), config=config
+        )
+        return gmap.run, parser
     if name == "stack":
         from gps_plot import stack
 
@@ -310,8 +327,13 @@ def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str
         if job.tool not in parsers:
             parsers[job.tool] = _tool(job.tool, config, exit_on_error=False)[1]
         parser = parsers[job.tool]
+        probe = [job.kind, *job.argv] if job.kind else ["XXXX", *job.argv]
+        if job.tool == "map":
+            from gps_plot.cli.map import join_negative_values
+
+            probe = join_negative_values(probe)
         try:
-            _, rest = parser.parse_known_args(["XXXX", *job.argv])
+            _, rest = parser.parse_known_args(probe)
         except argparse.ArgumentError as exc:
             bad.append((job.name, str(exc)))
             continue

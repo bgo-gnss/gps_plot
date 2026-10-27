@@ -98,6 +98,8 @@ outlier at the start no longer sets the zero (OLAC, July 2021). `gpsplot seasona
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
 window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
+plots.yaml `tool: map` products run maps through `gpsplot run` (Svartsengi
+year/3-month velocity, design doc "Map products").
 Planned: seismic panels (on ice) — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).

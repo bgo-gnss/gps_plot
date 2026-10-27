@@ -132,6 +132,11 @@ examples:
                         two windows, plate removed, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
                         vertical rate over the last 7 days (north arrow = uplift)
+  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 365 \
+      --min-epochs 200 --no-short-tier --dem iceland --title= \
+      --layers roads,towns,lavas,graben,fissures,barriers --scale-ref 100 --save pdf
+                        Svartsengi over the past year, report style: no title,
+                        only stations that cover the year
   gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
                         stored secular rates, Iceland
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
@@ -405,6 +410,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
     out.add_argument("--name", default=None, help="fixed output basename")
     out.add_argument(
+        "--manifest", default=None, metavar="FILE",
+        help="append the files written to FILE, one absolute path per line "
+        "(gpsplot run)",
+    )  # fmt: skip
+    out.add_argument(
         "-d", "--figDir", default=None,
         help="figure directory (default: fig_dir in postprocess.cfg [PATHS], "
         f"currently {common.config_dir(config, 'fig_dir', None) or 'unset'})",
@@ -557,6 +567,12 @@ def build_parser(
         "--min-epochs", type=int, default=None,
         help="fewest epochs in a window for a rate (default 5, the velocity "
         "product's gate)",
+    )  # fmt: skip
+    p.add_argument(
+        "--no-short-tier", dest="short_tier", action="store_false",
+        help="leave out the velocity product's short-tier rates (a series "
+        "short of the window's cover but with a strong signal, flagged "
+        "short:n=N), e.g. a station that stopped half way through a year map",
     )  # fmt: skip
     p.add_argument(
         "--velocities", default=None, metavar="FILE",
@@ -982,9 +998,12 @@ def _in_inset(args: Any, points: Sequence[Any], maps: Any) -> list[Any]:
     return list(maps.within(args.inset, points))
 
 
-def legend_box_cm(fig: Any, style: dict[str, Any], lines: int) -> tuple[float, ...]:
+def legend_box_cm(
+    fig: Any, style: dict[str, Any], lines: int, width_cm: float = LEGEND_WIDTH_CM
+) -> tuple[float, ...]:
     """The vector legend's box (x0, x1, y0, y1) [cm], bottom left: ``lines``
-    rows at the map functions' anchor and spacing (region fractions)."""
+    rows at the map functions' anchor and spacing (region fractions),
+    ``width_cm`` wide (:func:`vector_legend_width_cm`)."""
     from gps_plot import insets, maps
 
     region = style.get("region") or tuple(fig.region)
@@ -993,7 +1012,34 @@ def legend_box_cm(fig: Any, style: dict[str, Any], lines: int) -> tuple[float, .
     )
     fx, fy = maps._legend_anchor(maps.DEFAULT_LEGEND_ANCHOR, region)
     top = (fy + lines * maps.DEFAULT_LEGEND_LINE_SPACING) * height + 0.3
-    return (0.0, fx * width + LEGEND_WIDTH_CM, 0.0, top)
+    return (0.0, fx * width + width_cm, 0.0, top)
+
+
+def vector_legend_width_cm(labels: Sequence[str], arrow_cm: float) -> float:
+    """The width of a vector legend block [cm]: its longest label or the
+    reference arrow, with the box's padding."""
+    from gps_plot import maps
+
+    texts = [maps.text_width_cm(t, maps.DEFAULT_LEGEND_FONT) for t in labels]
+    return max([arrow_cm + 0.3, *texts]) + 2 * maps.LEGEND_BOX_PAD_CM + 0.2
+
+
+def arrow_points(
+    vectors: Sequence[Any], scale: float, region: Sequence[float], projection: str
+) -> tuple[list[float], list[float]]:
+    """Points along each vector's arrow, shaft and tip (lon, lat), so the
+    insets keep off the arrows as well as the stations."""
+    from gps_plot import insets
+
+    width, height = insets.size_cm(region, projection)
+    w, e, s, n = region[:4]
+    lons: list[float] = []
+    lats: list[float] = []
+    for v in vectors:
+        for f in (0.25, 0.5, 0.75, 1.0):
+            lons.append(v.lon + f * v.east * scale / width * (e - w))
+            lats.append(v.lat + f * v.north * scale / height * (n - s))
+    return lons, lats
 
 
 def _wants_locator(args: Any, region: Sequence[float]) -> bool:
@@ -1012,10 +1058,14 @@ def _insets(
     points: Sequence[Any],
     zoom_symbols: Any,
     legend_lines: int = 0,
+    legend_width_cm: float = LEGEND_WIDTH_CM,
+    arrows: float | None = None,
 ) -> None:
     """The zoom inset (--inset) and the Iceland locator, where they fit
     (:func:`gps_plot.insets.place`): clear of the logo, the scale bar,
-    a vector legend of ``legend_lines`` rows and the station symbols."""
+    a vector legend of ``legend_lines`` rows ``legend_width_cm`` wide, the
+    station symbols and, with ``arrows`` (the vectors' scale [cm per
+    unit]; ``points`` are then the vectors), the arrows."""
     from gps_plot import insets, layout, maps
 
     region = style.get("region") or tuple(fig.region)
@@ -1031,9 +1081,12 @@ def _insets(
     sea.reserve((0.0, LOGO_BOX_CM[0], height - LOGO_BOX_CM[1], height))
     sea.reserve((width - SCALE_BOX_CM[0], width, 0.0, SCALE_BOX_CM[1]))
     if legend_lines:
-        sea.reserve(legend_box_cm(fig, style, legend_lines))  # type: ignore[arg-type]
+        box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
+        sea.reserve(box)  # type: ignore[arg-type]
     if args.markers:
         sea.block_points([p.lon for p in points], [p.lat for p in points])
+    if arrows is not None and not isinstance(region, maps.CornerRegion):
+        sea.block_points(*arrow_points(points, arrows, region, projection))
     zoom_spot = None
     if zoom:
         box = args.inset
@@ -1123,12 +1176,17 @@ def _save(fig: Any, args: argparse.Namespace, config: Any, stem: str) -> list[st
     fig_dir = args.figDir if args.figDir is not None else (
         common.config_dir(config, "fig_dir", "") or ""
     )  # fmt: skip
+    if fig_dir:
+        os.makedirs(fig_dir, exist_ok=True)
     base = os.path.join(fig_dir, args.name or stem)
     paths = []
     for fmt in args.save.split(","):
         path = f"{base}.{fmt.strip()}"
         fig.savefig(path)
         paths.append(path)
+    if getattr(args, "manifest", None):
+        with open(args.manifest, "a") as fh:
+            fh.writelines(os.path.abspath(f) + "\n" for f in paths)
     return paths
 
 
@@ -1521,6 +1579,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         labels=args.labels,
         markers=args.markers,
         unlabelled={v.marker for v in zoomed},
+        scale_vertical=bool(args.vertical),
         **zoom_style,
     )
 
@@ -1540,7 +1599,16 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
             maps.draw_scale_arrow(f, args.inset, zoom_ref, zoom_scale, "mm/yr")
 
     _finish(fig, args)
-    _insets(fig, args, config, style, kept, zoom_symbols, legend_lines=len(colors) + 2)
+    used_scale = args.scale or scale
+    _insets(
+        fig, args, config, style, kept, zoom_symbols,
+        legend_lines=len(colors) + 2,
+        legend_width_cm=vector_legend_width_cm(
+            [*(str(k) for k in colors), f"{args.scale_ref or ref:g} mm/yr"],
+            (args.scale_ref or ref) * used_scale,
+        ),
+        arrows=used_scale,
+    )  # fmt: skip
     span = "_".join(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows) or "secular"
     stem = _stem(args, "velocity", stations, span,
                  "vertical" if args.vertical else "horizontal")  # fmt: skip
@@ -1573,6 +1641,8 @@ def _product_settings(args: Any, parser: Any, config: Any) -> Any:
     }
     if args.min_epochs is not None:
         kw["min_obs"] = args.min_epochs
+    if not getattr(args, "short_tier", True):
+        kw["short_tier"] = False
     pre = getattr(args, "pre_window", None)
     if pre is not None:
         from geo_dataread.velocity import window_bounds

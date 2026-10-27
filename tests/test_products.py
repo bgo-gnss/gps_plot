@@ -619,3 +619,96 @@ def test_a_filtered_run_judges_staleness_by_the_whole_config(tmp_path) -> None:
     folder.mkdir(parents=True)
     (folder / "VFLN_VFLS-baseline-plate-90d.png").touch()  # the baselines product's
     assert products.stale_baseline_plots(stacks_only, configured, tmp_path) == []
+
+
+MAP_CFG = {
+    "defaults": {"save": "pdf,png"},
+    "products": {
+        "svartsengi_velocity": {
+            "tool": "map",
+            "map": "velocity",
+            "dir": "maps/svartsengi",
+            "args": ["--region -22.72/-22.17/63.76/63.945", "--scale-ref 100"],
+            "runs": [
+                {"name": "ar-larett", "args": ["--last 365 --no-short-tier"]},
+                {"name": "3man-lodrett", "args": "--last 91 --vertical",
+                 "publish": True},
+            ],
+        },
+    },
+}  # fmt: skip
+
+
+def test_map_products_expand_one_job_per_named_run() -> None:
+    jobs = products.expand(MAP_CFG, areas={})
+    assert [j.name for j in jobs] == [
+        "svartsengi_velocity/ar-larett",
+        "svartsengi_velocity/3man-lodrett",
+    ]
+    ar, three = jobs
+    assert ar.tool == "map" and ar.kind == "velocity" and ar.stations == ()
+    assert ar.argv == (
+        "--save", "pdf,png", "--region", "-22.72/-22.17/63.76/63.945",
+        "--scale-ref", "100", "--last", "365", "--no-short-tier",
+        "--name", "ar-larett",
+    )  # fmt: skip
+    assert not ar.publish and three.publish
+    assert ar.tool_argv("/out")[:2] == ["velocity", "--save"]
+    assert ar.tool_argv("/out")[-2:] == ["-d", "/out"]
+    # an area filter leaves the map products out
+    assert products.expand(MAP_CFG, areas=products.area_table(AREAS_DOC),
+                           area="reykjanes") == []  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"map": "slip"}, "map: one of"),
+        ({"colour": "red"}, "unknown map key"),
+        ({"runs": [{"args": "--last 7"}]}, "its own name"),
+        ({"runs": [{"name": "a"}, {"name": "a"}]}, "its own name"),
+        ({"runs": [{"name": "a", "special": ["90d"]}]}, "unknown key"),
+        ({"runs": [{"name": "a", "args": "--name b"}]}, "--name is not allowed"),
+        ({"args": ["-d /tmp"]}, "-d is not allowed"),
+        ({"runs": []}, "needs runs"),
+    ],
+)
+def test_map_products_refuse_bad_specs(change: dict, match: str) -> None:
+    spec = {**MAP_CFG["products"]["svartsengi_velocity"], **change}
+    with pytest.raises(ValueError, match=match):
+        products.expand({"products": {"m": spec}}, areas={})
+
+
+def test_select_stations_keeps_a_listed_map_whole_and_drops_a_region_map() -> None:
+    region_map = products.expand(MAP_CFG, areas={})[0]
+    listed = products.Job("m", None, "d", ("SENG", "THOB"), (), False,
+                          tool="map", kind="velocity")  # fmt: skip
+    kept, unused = products.select_stations([region_map, listed], ["SENG"])
+    assert kept == [listed] and unused == []
+
+
+def test_dry_run_checks_map_options_with_the_map_parser(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import yaml
+
+    from gps_plot.cli import run as run_cli
+
+    plots = tmp_path / "plots.yaml"
+    plots.write_text(yaml.safe_dump(MAP_CFG))
+    (tmp_path / "station_areas.yaml").write_text(yaml.safe_dump(AREAS_DOC))
+    (tmp_path / "events.yaml").write_text(yaml.safe_dump({"events": []}))
+    monkeypatch.setattr(
+        run_cli.driver,
+        "_load_config",
+        lambda: type("C", (), {"config_path": str(tmp_path)})(),
+    )
+    assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "map velocity --save pdf,png --region -22.72" in out
+    assert "those in the map's --region" in out
+    MAP_CFG_BAD = yaml.safe_load(yaml.safe_dump(MAP_CFG))
+    MAP_CFG_BAD["products"]["svartsengi_velocity"]["args"].append("--bogus 1")
+    plots.write_text(yaml.safe_dump(MAP_CFG_BAD))
+    assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 2
+    assert "--bogus" in capsys.readouterr().out

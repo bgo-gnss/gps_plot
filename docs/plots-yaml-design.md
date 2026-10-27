@@ -238,3 +238,47 @@ chosen pairs — never every combination.
 - aflogun lists only `locations/volcanos/<cdn>/graphs/24h` today: the
   `graphs/baselines/` directories and the `voktun/` root need it to learn
   a second listing (follow-up).
+
+## Map products (2026-10-27)
+
+Velocity maps as plots.yaml products, first for Svartsengi (BGÓ: past
+year and past 3 months, set up as the Kárahnjúkar report map).
+
+- **`tool: map`** — a product drawn by `gpsplot map KIND`, `map:` velocity,
+  deformation or station. `stations:` a list, or none: every station in
+  the map's `--region`. One job per run, each with its own `name:` (the
+  file's basename, `--name`) and `args:` after the product's (and after
+  plots.yaml `defaults: map_args:`, when set). `publish:` per run as for ts.
+  Not allowed in `args:`: `-d`, `--figDir` (`dir:`), `--manifest` (the
+  runner), `--name` (`name:`), `--save` (`defaults: save:`).
+- An `--area` filter leaves map products out; `gpsplot run STA` keeps a
+  map with that station in its list whole and drops a `--region` map.
+- `gpsplot map --manifest FILE` lists the files, so maps reach
+  `publish.manifest`. `--region -22.7/…` works in `args:` (joined as on the
+  command line).
+- **Report look** (gps_plot, 2026-10-27): `--title=` (none: the caption is
+  in the document); the vector legend (window dates + reference arrow) in a
+  white box, its arrow pointing up on `--vertical` maps; the Iceland
+  locator placed clear of the arrows as well as the stations and the
+  legend; place names cut by the frame or under the logo left out.
+- **A year map** wants stations that cover the year: `--min-epochs 200
+  --no-short-tier` (the short tier passes a strong but short series, such
+  as THNA, whose data stop in May 2026). The same `--scale`/`--scale-ref`
+  across a pair makes the year and the 3-month maps comparable.
+
+```yaml
+  svartsengi_velocity:
+    tool: map
+    map: velocity
+    dir: maps/reykjanes/svartsengi
+    args:
+      - --region -22.72/-22.17/63.76/63.945
+      - --projection M15.5c --dem iceland --title=
+      - --layers roads,towns,lavas,graben,fissures,barriers
+      - --scale-ref 100
+    runs:
+      - {name: svartsengi-ar-larett, args: [--last 365 --min-epochs 200 --no-short-tier --scale 0.015]}
+      - {name: svartsengi-3man-larett, args: [--last 91 --scale 0.015]}
+      - {name: svartsengi-ar-lodrett, args: [--last 365 --min-epochs 200 --no-short-tier --vertical --scale 0.008]}
+      - {name: svartsengi-3man-lodrett, args: [--last 91 --vertical --scale 0.008]}
+```

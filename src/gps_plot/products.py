@@ -49,6 +49,21 @@ RESERVED_OPTIONS: Mapping[str, str] = {
     "--label": "the stack group name (station_areas.yaml stacks:)",
 }
 
+#: plots.yaml keys of a map product (``tool: map``) and of each of its runs
+MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs")
+MAP_RUN_KEYS = ("name", "args", "publish")
+#: map kinds a product may draw (gpsplot map KIND)
+MAP_KINDS = ("velocity", "deformation", "station")
+
+#: map options a plots.yaml ``args:`` list may not carry
+MAP_RESERVED_OPTIONS: Mapping[str, str] = {
+    "-d": "the product's dir:",
+    "--figDir": "the product's dir:",
+    "--manifest": "the runner",
+    "--name": "the run's name:",
+    "--save": "plots.yaml defaults: save:",
+}
+
 #: ``stations:`` values of a product that read station_areas.yaml: the area
 #: members (ts), every baseline pair of the area (ts), or one stack figure
 #: per stacks: group (``gpsplot stack``)
@@ -85,8 +100,15 @@ class Job:
     stations: tuple[str, ...]  # stations and/or baselines AAAA-BBBB
     argv: tuple[str, ...]  # tool options (no stations, -d, --manifest)
     publish: bool
-    tool: str = "ts"  # "ts" or "stack" (one figure of all the stations)
+    tool: str = "ts"  # "ts", "stack" (one figure of all) or "map"
     group: str | None = None  # the stacks: group of a stack
+    kind: str | None = None  # a map's KIND (velocity, deformation, station)
+
+    def tool_argv(self, out_dir: str) -> list[str]:
+        """The tool's whole argument list, writing to ``out_dir`` (a map's
+        KIND first, then its stations)."""
+        head = [self.kind] if self.kind else []
+        return [*head, *self.stations, *self.argv, "-d", out_dir]
 
     @property
     def name(self) -> str:
@@ -258,7 +280,7 @@ def event_specs(
     return sorted(out)
 
 
-def extra_args(value: Any) -> list[str]:
+def extra_args(value: Any, reserved: Mapping[str, str] | None = None) -> list[str]:
     """An ``args:`` value as ts tokens: a string or a list of strings, each
     shell-split (``"--outlier-sigma 3.5"`` is two tokens).
 
@@ -275,12 +297,13 @@ def extra_args(value: Any) -> list[str]:
     else:
         raise ValueError(f"plots.yaml args: a string or a list, got {value!r}")
     tokens = [tok for item in items for tok in shlex.split(str(item))]
+    reserved = RESERVED_OPTIONS if reserved is None else reserved
     for tok in tokens:
         opt = tok.split("=", 1)[0]
-        if opt in RESERVED_OPTIONS:
+        if opt in reserved:
             raise ValueError(
                 f"plots.yaml args: {opt} is not allowed here; "
-                f"it is set by {RESERVED_OPTIONS[opt]}"
+                f"it is set by {reserved[opt]}"
             )
     return tokens
 
@@ -380,6 +403,10 @@ def expand(
             continue
         runs = spec.get("runs") or []
         kind = spec.get("stations")
+        if spec.get("tool") == "map":
+            if want_areas is None:
+                jobs += map_jobs(pname, spec, defaults)
+            continue
         if kind in AREA_KINDS:
             names = [a for a in areas if a not in set(spec.get("exclude") or ())]
             for slug in names:
@@ -411,6 +438,47 @@ def expand(
                             bool(run.get("publish", False)),
                         )
                     )
+    return jobs
+
+
+def map_jobs(
+    pname: str, spec: Mapping[str, Any], defaults: Mapping[str, Any]
+) -> list[Job]:
+    """The jobs of a map product (``tool: map``): one ``gpsplot map KIND``
+    per run, each with its own ``name:`` (the file's basename) and
+    ``args:`` after the product's. ``stations:`` is a list (or none: every
+    station in the map's --region).
+
+    Raises:
+        ValueError: An unknown key or map kind, a run without a name, a
+            name used twice, or a runner-owned option in ``args:``.
+    """
+    unknown = set(spec) - set(MAP_KEYS)
+    if unknown:
+        raise ValueError(f"plots.yaml {pname}: unknown map key(s) {sorted(unknown)}")
+    kind = spec.get("map")
+    if kind not in MAP_KINDS:
+        raise ValueError(f"plots.yaml {pname}: map: one of {MAP_KINDS}, got {kind!r}")
+    stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
+    names: set[str] = set()
+    jobs = []
+    for run in spec.get("runs") or []:
+        bad = set(run) - set(MAP_RUN_KEYS)
+        if bad:
+            raise ValueError(f"plots.yaml {pname} run: unknown key(s) {sorted(bad)}")
+        name = str(run.get("name") or "")
+        if not name or name in names:
+            raise ValueError(f"plots.yaml {pname}: each run needs its own name:")
+        names.add(name)
+        argv = ["--save", str(defaults.get("save", "png"))]
+        for value in (defaults.get("map_args"), spec.get("args"), run.get("args")):
+            argv += extra_args(value, MAP_RESERVED_OPTIONS)
+        argv += ["--name", name]
+        jobs.append(Job(pname, None, str(spec["dir"]), stations, tuple(argv),
+                        bool(run.get("publish", False)), tool="map", group=name,
+                        kind=str(kind)))  # fmt: skip
+    if not jobs:
+        raise ValueError(f"plots.yaml {pname}: a map product needs runs:")
     return jobs
 
 
@@ -535,7 +603,8 @@ def select_stations(
                 keep += [m for m in got if m not in keep]
         if not keep:
             continue
-        out.append(job if job.tool == "stack" else replace(job, stations=tuple(keep)))
+        whole = job.tool in ("stack", "map")  # one figure: kept whole
+        out.append(job if whole else replace(job, stations=tuple(keep)))
     return out, [s for s in want if s not in used]
 
 
