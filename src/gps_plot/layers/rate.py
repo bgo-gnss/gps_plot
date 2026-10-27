@@ -49,8 +49,8 @@ def rate_settings(
         ValueError: a plot the product has no counterpart for (an ITRF
             series, other detrend terms, the detrended view of old).
     """
-    from geo_dataread.pos import pos_frame
-    from geo_dataread.velocity import DEFAULT_VIEW, VelocitySettings
+    from geo_dataread.pos import frame_name
+    from geo_dataread.products.velocity_core import DEFAULT_VIEW, VelocitySettings
 
     if ref == "plate":
         vref = "plate"
@@ -77,9 +77,13 @@ def rate_settings(
     # the product's view, not the plot's: the rate is the map's number
     # (declared epochs out, no detection) on a raw plot (the ts default) and
     # on a cleaned one; the raw-view rate is gps-velocities --view raw
+    # the frame by its full name and the session from the product: the same
+    # settings — and fingerprint — as gpsprod velocity and the map (gpsprod
+    # step 6)
+    session = "8h" if pos_id and ".08hr_" in pos_id else "24h"
     return VelocitySettings(
-        frame=pos_frame(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
-        pos_dir=Dir,
+        frame=frame_name(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
+        pos_dir=Dir, session=session,
     )  # fmt: skip
 
 
