@@ -1476,14 +1476,16 @@ def plotTime(
         from gps_plot.sources.gps import optional_record, seasonal_only
 
         if seasonal_only(optional_record(sta, request)):
+            # top right: the top left holds the --rate labels
             fig.axes[0].text(
-                0.01,
+                0.99,
                 0.97,
                 "seasonal only (regional record): no station rate removed",
                 transform=fig.axes[0].transAxes,
                 fontsize="small",
                 color="0.3",
                 va="top",
+                ha="right",
             )
 
     if sigma_note is not None:
@@ -1743,8 +1745,10 @@ def plotTime(
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
             records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+        # above the "network common mode removed" note when both are drawn
         fig.axes[2].text(
-            0.99, 0.02, rate_note(records, segments=rate_segments is not None),
+            0.99, 0.08 if cm_days else 0.02,
+            rate_note(records, segments=rate_segments is not None),
             transform=fig.axes[2].transAxes,
             fontsize="small", color="0.3", va="bottom", ha="right",
         )  # fmt: skip
