@@ -1396,9 +1396,15 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
     return 0
 
 
-def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any) -> int:
-    from gps_plot.sources import velocity as vsource
+@dataclasses.dataclass(frozen=True)
+class _Rate:
+    """N/E/U values and their 1-σ of one station, as :func:`_vector` draws."""
 
+    neu: Any
+    sigma: Any
+
+
+def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any) -> int:
     now = args.end or dt.datetime.now()
     windows = resolve_windows(args.window, args.last, now)
     comp = 2 if args.vertical else None
@@ -1469,15 +1475,22 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                          WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
                          vectors, dropped)  # fmt: skip
     else:
+        # the stored records' secular rates (geo_dataread.products.secular_rate)
+        from geo_dataread.products import secular_rate
+
+        from gps_plot.sources import gps as gps_source
+
         now_req = _request(args, parser, config, now - dt.timedelta(days=1), now)
         groups.append(("secular", "blue"))
         for c in stations:
             try:
-                r = vsource.record_velocity(c.marker, now_req)
+                sr = secular_rate(
+                    c.marker, gps_source.station_record(c.marker, now_req)
+                )
             except Exception as exc:
                 dropped.append(f"{c.marker}: {exc}")
                 continue
-            vectors.append(_vector(maps, c, r, comp, "secular"))
+            vectors.append(_vector(maps, c, _Rate(sr.rate, sr.sigma), comp, "secular"))
     kept = [v for v in vectors if snr(v) >= args.min_snr]
     notes += [f"{v.marker} {v.method}: |v|/|2σ| = {snr(v):.2f} < {args.min_snr:g}"
               for v in vectors if snr(v) < args.min_snr]  # fmt: skip
@@ -1545,11 +1558,14 @@ def _product_settings(args: Any, parser: Any, config: Any) -> Any:
             "windowed velocities come from the velocity product, which reads "
             "the .pos series: drop --tType (pick the frame with --frame)"
         )
-    if args.session != "24h":
-        parser.error("windowed velocities from 8 h sessions are not done yet")
+    from geo_dataread.pos import frame_name
+
     ref = "background" if args.ref == "detrend" else (args.ref or "plate-periodic")
     kw: dict[str, Any] = {
-        "frame": args.frame or common.DEFAULT_PLOT_FRAME,
+        # the full frame name: the settings (and fingerprint) of gpsprod
+        # velocity and ts --rate for the same window (gpsprod step 6)
+        "frame": frame_name(args.frame or common.DEFAULT_PLOT_FRAME),
+        "session": args.session or "24h",
         "ref": ref,
         "view": args.view or "declared",
         "uncert": float(args.uncert),
@@ -1576,6 +1592,32 @@ FALLBACK_SUFFIX = " (plate only)"
 #: reference: no stored seasonal removed (the record's seasonal:none)
 NO_SEASONAL_SUFFIX = " (no seasonal)"
 FALLBACK_TRANSPARENCY = 55
+
+
+def _displacement_settings(args: Any, parser: Any, config: Any) -> Any:
+    """The displacement product's settings from the map's series options."""
+    from geo_dataread.products import DisplacementSettings, Source
+
+    if args.tType not in (None, "POS"):
+        parser.error(
+            "deformation maps come from the displacement product, which reads "
+            "the .pos series: drop --tType (pick the frame with --frame)"
+        )
+    refs = {None: "background", "detrend": "background", "itrf2008": "itrf"}
+    try:
+        return DisplacementSettings(
+            source=Source(
+                frame=args.frame or common.DEFAULT_PLOT_FRAME,
+                session=args.session or "24h",
+                view=args.view or "declared",
+                ref=refs.get(args.ref, args.ref),
+                uncert=float(args.uncert),
+                pos_dir=args.Dir or common.config_dir(config, "pos_dir", None),
+            )
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+        raise  # pragma: no cover
 
 
 def _add_records(
@@ -1707,18 +1749,31 @@ def _region_of(stations: Any, margin: float | None, maps: Any) -> Any:
 def _run_deformation(
     args: Any, parser: Any, config: Any, maps: Any, stations: Any
 ) -> int:
-    from gps_plot.sources import velocity as vsource
+    from geo_dataread.products import estimate_displacements
+    from geo_dataread.products.velocity_core import window_bounds
 
     end = args.end or dt.datetime.now()
     if end <= args.start:
         parser.error(f"-e {end:%Y%m%d} is not after -s {args.start:%Y%m%d}")
-    req = _request(args, parser, config, args.start, end)
-    got, dropped = [], []
-    for c in stations:
-        try:
-            got.append((c, vsource.window_displacement(c.marker, req)))
-        except Exception as exc:
-            dropped.append(f"{c.marker}: {exc}")
+    # the displacement product (gpsprod displacement, method ends): the level
+    # of the 5 days at each end, honest σ (gpsprod step 6)
+    settings = _displacement_settings(args, parser, config)
+    by_marker = {c.marker: c for c in stations}
+    rs = estimate_displacements(
+        list(by_marker), window_bounds(args.start.date(), end.date()), settings
+    )
+    got: list[tuple[Any, Any]] = []
+    dropped: list[str] = []
+    for r in rs:
+        if r.accepted:
+            got.append(
+                (
+                    by_marker[r.station],
+                    _Rate(np.asarray(r.displacement), np.asarray(r.sigma)),
+                )
+            )
+        else:
+            dropped.append(f"{r.station}: {r.refused}")
     _report(dropped)
     if not got:
         print("nothing plotted", file=sys.stderr)

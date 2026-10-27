@@ -19,8 +19,6 @@ import pytest
 from gps_plot import map as gmap
 from gps_plot.cli.map import join_negative_values
 from gps_plot.maps import StationCoordinate, VelocityVector
-from gps_plot.series import Series
-from gps_plot.sources import velocity as vsource
 
 COORDS = {
     "SENG": (-22.43, 63.87),
@@ -175,9 +173,7 @@ def test_vector_horizontal_and_vertical_conventions():
     from gps_plot import maps
 
     c = StationCoordinate("SENG", -22.43, 63.87)
-    r = vsource.StationRate(
-        "SENG", np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3])
-    )
+    r = gmap._Rate(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
     h = gmap._vector(maps, c, r, None, "w")
     assert (h.east, h.north, h.sigma_east, h.sigma_north) == (2.0, 1.0, 0.2, 0.1)
     v = gmap._vector(maps, c, r, 2, "w")
@@ -193,79 +189,6 @@ def test_snr():
 # ---------------------------------------------------------------------------
 # sources
 # ---------------------------------------------------------------------------
-
-
-def _req(ref="detrend"):
-    from gps_plot.sources.gps import SeriesRequest
-
-    return SeriesRequest(fstart=2023.0, fend=2023.1, ref=ref, Dir=None,
-                         tType="POS", uncert=10, view="raw")  # fmt: skip
-
-
-def _line_series(rate, n=20, applied=True, noise=0.0):
-    t = 2023.0 + np.arange(n) / 365.25
-    y = np.vstack([r * (t - t[0]) for r in rate])
-    y += noise * np.random.default_rng(0).standard_normal(y.shape)
-    y[:, min(3, n - 1)] = np.nan  # a gap is skipped, not fatal
-    return Series("X", t, y, np.full((3, n), 2.0), detrend_applied=applied)
-
-
-def test_window_velocity_fits_the_line(monkeypatch):
-    monkeypatch.setattr(vsource.gps_source, "fetch",
-                        lambda sta, req: _line_series([100.0, -50.0, 10.0]))  # fmt: skip
-    r = vsource.window_velocity("X", _req())
-    np.testing.assert_allclose(r.neu, [100.0, -50.0, 10.0], atol=1e-6)
-    assert r.n == 19 and np.all(r.sigma > 0)
-
-
-def test_window_velocity_refuses_undetrended_and_short(monkeypatch):
-    monkeypatch.setattr(vsource.gps_source, "fetch",
-                        lambda sta, req: _line_series([1, 1, 1], applied=False))  # fmt: skip
-    with pytest.raises(ValueError, match="no stored detrend record"):
-        vsource.window_velocity("X", _req())
-    assert vsource.window_velocity("X", _req("plate")).n == 19  # plate: fine
-    monkeypatch.setattr(vsource.gps_source, "fetch",
-                        lambda sta, req: _line_series([1, 1, 1], n=3))  # fmt: skip
-    with pytest.raises(ValueError, match="epochs in the window"):
-        vsource.window_velocity("X", _req())
-
-
-def test_window_displacement_is_end_minus_start(monkeypatch):
-    t = 2023.0 + np.arange(30) / 365.25
-    y = np.zeros((3, 30))
-    y[:, 15:] = [[10.0], [-20.0], [5.0]]  # a step in the middle
-    s = Series("X", t, y, np.full((3, 30), 2.0), detrend_applied=True)
-    monkeypatch.setattr(vsource.gps_source, "fetch", lambda sta, req: s)
-    r = vsource.window_displacement("X", _req())
-    np.testing.assert_allclose(r.neu, [10.0, -20.0, 5.0])
-    # mean of 5 samples, σ 2 each: 2/√5 per end, in quadrature
-    np.testing.assert_allclose(r.sigma, np.hypot(2 / np.sqrt(5), 2 / np.sqrt(5)))
-
-
-def _record(rates, sigmas, borrowed=None):
-    comps = [
-        {"params": [0.0, r], "cov_upper": [1.0, 0.0, s**2], "component": c}
-        for r, s, c in zip(rates, sigmas, ("north", "east", "up"), strict=True)
-    ]
-    return {"record_version": 1, "model": "linear", "step_epochs": [],
-            "param_names": ["offset", "rate"], "components": comps[::-1],
-            "borrowed": borrowed, "n_epochs": 900}  # fmt: skip
-
-
-def test_record_velocity_reads_the_secular_rate(monkeypatch):
-    monkeypatch.setattr(vsource.gps_source, "station_record",
-                        lambda sta, req: _record([-2.4, 1.1, 3.0], [0.1, 0.2, 0.3]))  # fmt: skip
-    r = vsource.record_velocity("HOFN", _req())
-    np.testing.assert_allclose(r.neu, [-2.4, 1.1, 3.0])
-    np.testing.assert_allclose(r.sigma, [0.1, 0.2, 0.3])
-    assert r.n == 900
-
-
-def test_record_velocity_refuses_a_borrowed_secular(monkeypatch):
-    monkeypatch.setattr(vsource.gps_source, "station_record",
-                        lambda sta, req: _record([1, 1, 1], [1, 1, 1], "SKSH"))  # fmt: skip
-    with pytest.raises(ValueError, match="record borrowed from SKSH"):
-        vsource.record_velocity("ELDC", _req())
 
 
 # ---------------------------------------------------------------------------
@@ -448,11 +371,12 @@ def test_velocity_pre_onset_takes_its_reference_days(fake_maps, fake_product, tm
         _run(argv, tmp_path)
 
 
-def test_velocity_windows_refuse_tot_and_8h(fake_maps, fake_product, tmp_path):
+def test_velocity_windows_refuse_tot_take_8h(fake_maps, fake_product, tmp_path):
     with pytest.raises(SystemExit):
         _run(["velocity", "SENG", "--last", "14", "--tType", "TOT"], tmp_path)
-    with pytest.raises(SystemExit):
-        _run(["velocity", "SENG", "--last", "14", "--session", "8h"], tmp_path)
+    # 8 h sessions: the product has them since gpsprod step 3
+    assert _run(["velocity", "SENG", "--last", "14", "--session", "8h"], tmp_path) == 0
+    assert fake_product[-1][3].session == "8h"
 
 
 def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path, capsys):
@@ -478,7 +402,9 @@ def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, caps
     def fail(sta, req):
         raise ValueError("no stored detrend record to draw")
 
-    monkeypatch.setattr(vsource, "record_velocity", fail)
+    from gps_plot.sources import gps as gps_source
+
+    monkeypatch.setattr(gps_source, "station_record", fail)
     assert _run(["velocity", "HOFN"], tmp_path) == 1
     err = capsys.readouterr().err
     assert "nothing plotted" in err and "--ref plate" not in err
@@ -501,10 +427,19 @@ def test_velocity_from_geojson(fake_maps, tmp_path):
 def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
     from gps_plot import maps
 
-    monkeypatch.setattr(
-        vsource, "window_displacement",
-        lambda sta, req: vsource.StationRate(sta, np.array([1.0, 2.0, 0.0]), np.ones(3)),
-    )  # fmt: skip
+    import types
+
+    import geo_dataread.products as gprod
+
+    def displacements(stations, period, settings):
+        assert settings.method == "ends" and settings.source.ref == "background"
+        return [
+            types.SimpleNamespace(station=sta, accepted=True, refused=None,
+                                  displacement=(1.0, 2.0, 0.0), sigma=(1.0, 1.0, 1.0))
+            for sta in stations
+        ]  # fmt: skip
+
+    monkeypatch.setattr(gprod, "estimate_displacements", displacements)
     seen = {}
     monkeypatch.setattr(maps, "mogi_model_field",
                         lambda *a, **kw: seen.setdefault("mogi", (a, kw)))  # fmt: skip
