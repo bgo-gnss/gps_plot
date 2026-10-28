@@ -331,3 +331,38 @@ def test_a_layers_own_gmt_is_replaced_by_the_users_under_either_name():
     with gmt_overrides.overrides({"huts": {"t": "50"}}):
         kw = gmt_overrides.layer_kw("huts", data="x", transparency=20)
     assert kw == {"data": "x", "t": "50"}
+
+
+def test_missing_layer_files_are_skipped_and_listed(tmp_path, capsys):
+    (tmp_path / "vector/is50v").mkdir(parents=True)
+    (tmp_path / "vector/is50v/roads.geojson").write_text("{}")
+    (roads,) = gis_layers.overlays(["roads", "buildings"], str(tmp_path), strict=False)
+    assert roads.step == "roads"
+    assert "buildings" in capsys.readouterr().err  # said, not fatal
+    listing = gis_layers.describe(gis_layers.BUILTIN, str(tmp_path))
+    line = next(x for x in listing.splitlines() if x.strip().startswith("buildings"))
+    assert "[missing: vector/build_09_is50v.sh]" in line
+    assert "missing" not in next(
+        x for x in listing.splitlines() if x.strip().startswith("roads ")
+    )
+
+
+def test_earth_relief_fallback_fits_the_pixels_and_skips_srtm_in_the_north():
+    from gps_plot import maps
+
+    # Svínafellsheiði at 15.5 cm: finer than 15″ pixels, but no SRTM up there
+    assert maps.earth_relief_fallback((-17.06, -16.58, 63.9, 64.05), "M15.5c") == (
+        "@earth_relief_15s"
+    )
+    # the same small map at 45°N takes SRTM's finest (~1″ pixels)
+    assert maps.earth_relief_fallback((-17.06, -16.58, 45.0, 45.15), "M15.5c") == (
+        "@earth_relief_01s"
+    )
+    # all of Iceland (~24″ pixels): 15″
+    assert maps.earth_relief_fallback((-25.0, -13.0, 63.0, 67.0), "M15c") == (
+        "@earth_relief_15s"
+    )
+    # a 2° pixel world map: 1′
+    assert maps.earth_relief_fallback((-180.0, 180.0, -60.0, 60.0), "M3c") == (
+        "@earth_relief_01m"
+    )

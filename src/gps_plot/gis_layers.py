@@ -266,24 +266,44 @@ def expand(specs: Sequence[str], cat: Catalogue = BUILTIN) -> list[str]:
     return out
 
 
+def layer_file(layer: GisLayer, gis_dir: str) -> str:
+    """Where ``layer``'s file is on this host."""
+    return os.path.join(gis_dir, os.path.expanduser(layer.path))
+
+
 def overlays(
-    names: Sequence[str], gis_dir: str, cat: Catalogue = BUILTIN
+    names: Sequence[str],
+    gis_dir: str,
+    cat: Catalogue = BUILTIN,
+    *,
+    strict: bool = True,
+    quiet: bool = False,
 ) -> tuple[Any, ...]:
-    """The :class:`gps_plot.maps.MapOverlay` of each layer, in order.
+    """The :class:`gps_plot.maps.MapOverlay` of each layer, in order. With
+    ``strict`` False a layer whose file is not on this host is left out,
+    with a warning on stderr (``quiet``: without).
 
     Raises:
-        FileNotFoundError: a layer file not built, naming what builds it.
+        FileNotFoundError: ``strict`` and a layer file not built, naming
+            what builds it.
     """
+    import sys
+
     from gps_plot.maps import DEFAULT_PLACE_FONT, MapOverlay
 
     out = []
     for name in names:
         layer = cat.layers[name]
-        path = os.path.join(gis_dir, os.path.expanduser(layer.path))
+        path = layer_file(layer, gis_dir)
         if not os.path.isfile(path):
-            raise FileNotFoundError(
+            msg = (
                 f"--layers {name}: no {layer.path} in {gis_dir}; built by {layer.build}"
             )
+            if strict:
+                raise FileNotFoundError(msg)
+            if not quiet:
+                print(f"{msg}: drawn without it", file=sys.stderr)
+            continue
         out.append(
             MapOverlay(
                 path, pen=layer.pen, fill=layer.fill, label=layer.label,
@@ -294,10 +314,15 @@ def overlays(
     return tuple(out)
 
 
-def describe(cat: Catalogue = BUILTIN) -> str:
-    """``--layers list``: every layer and preset, and the catalogue's source."""
+def describe(cat: Catalogue = BUILTIN, gis_dir: str | None = None) -> str:
+    """``--layers list``: every layer and preset, and the catalogue's source;
+    with ``gis_dir`` the layers whose file is not on this host marked."""
     lines = [f"layers ({cat.source}):"]
-    lines += [f"  {n:<10} {layer.help}" for n, layer in cat.layers.items()]
+    for n, layer in cat.layers.items():
+        gone = gis_dir is not None and not os.path.isfile(layer_file(layer, gis_dir))
+        lines.append(
+            f"  {n:<10} {layer.help}" + (f"  [missing: {layer.build}]" if gone else "")
+        )
     lines.append("presets:")
     lines += [f"  {n:<14} {', '.join(m)}" for n, m in cat.presets.items()]
     return "\n".join(lines)

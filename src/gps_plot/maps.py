@@ -883,6 +883,32 @@ def output_pixel_deg(
     return (e - w) / (width / 2.54 * dpi)
 
 
+#: GMT's own relief grids (the GMT data server, cached in ~/.gmt) and their
+#: cells [deg]: the fallback when the Iceland DEM is not on this host
+EARTH_RELIEF: tuple[tuple[str, float], ...] = (
+    ("01s", 1 / 3600), ("03s", 3 / 3600), ("15s", 15 / 3600),
+    ("30s", 30 / 3600), ("01m", 1 / 60),
+)  # fmt: skip
+
+
+#: the latitude the SRTM-based 1″ and 3″ earth_relief grids end at
+SRTM_LAT = 60.0
+
+
+def earth_relief_fallback(
+    region: Sequence[float], projection: str, dpi: int = DEFAULT_RASTER_DPI
+) -> str:
+    """``@earth_relief_RES``: GMT's own relief, the coarsest whose cell is no
+    larger than one output pixel (as :func:`iceland_dem` picks its level).
+    The 1″ and 3″ grids are SRTM, which ends at 60°: further north or south
+    (all of Iceland) 15″ is the finest."""
+    pixel = output_pixel_deg(region, projection, dpi)
+    srtm = max(abs(region[2]), abs(region[3])) <= SRTM_LAT
+    grids = [g for g in EARTH_RELIEF if srtm or g[0] not in ("01s", "03s")]
+    fitting = [res for res, cell in grids if cell <= pixel]
+    return f"@earth_relief_{(fitting[-1] if fitting else grids[0][0])}"
+
+
 @dataclasses.dataclass(frozen=True)
 class DemChoice:
     """A DEM level and the vector layers to draw with it (None: absent)."""
