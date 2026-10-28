@@ -267,3 +267,67 @@ def test_overlay_points_and_labels_kept_apart():
               (-16.7, 63.95, "Hof")]  # fmt: skip
     kept = maps.apart(labels, "6p,Helvetica", region, projection)
     assert [t for *_, t in kept] == ["Svínafell", "Hof"]  # the first one wins
+
+
+def test_catalogue_file_adds_and_changes_layers(tmp_path):
+    from gps_plot import gmt_overrides
+
+    doc = {
+        "layers": {
+            "calderas": {"pen": "2p,red"},  # a built-in one, restyled
+            "huts": {"file": "vector/huts.geojson", "symbol": "t0.1c",
+                     "fill": "orange", "pen": "none", "gmt": {"transparency": 30}},
+        },
+        "presets": {"oraefi": ["volcanoes", "calderas", "huts"]},
+    }  # fmt: skip
+    cat = gis_layers.catalogue_from(doc, "test.yaml")
+    assert cat.layers["calderas"].pen == "2p,red"
+    assert cat.layers["calderas"].path == gis_layers.LAYERS["calderas"].path
+    huts = cat.layers["huts"]
+    assert (huts.pen, huts.symbol, huts.step) == (None, "t0.1c", "huts")
+    assert gis_layers.expand(["oraefi"], cat) == ["volcanoes", "calderas", "huts"]
+    assert gis_layers.LAYERS["calderas"].pen != "2p,red"  # the built-in kept
+    (tmp_path / "vector").mkdir()
+    (tmp_path / "vector/huts.geojson").write_text("{}")
+    (ov,) = gis_layers.overlays(["huts"], str(tmp_path), cat)
+    assert ov.gmt == {"transparency": 30} and ov.step == "huts"
+    gis_layers.register_steps(cat)
+    assert "huts" in gmt_overrides.LAYERS  # --gmt huts:pen=… is valid
+    # the dump reads back as the same catalogue
+    again = gis_layers.catalogue_from(gis_layers.dump(cat), "dump")
+    assert again.layers == cat.layers and again.presets == cat.presets
+
+
+@pytest.mark.parametrize(
+    ("doc", "match"),
+    [
+        ({"layers": {"x": {"pen": "1p"}}}, "needs file"),
+        ({"layers": {"roads": {"colour": "red"}}}, "unknown key"),
+        ({"presets": {"p": ["nope"]}}, "no layer nope"),
+        ({"styles": {}}, "unknown key"),
+    ],
+)
+def test_catalogue_file_refuses(doc, match):
+    with pytest.raises(ValueError, match=match):
+        gis_layers.catalogue_from(doc, "t.yaml")
+
+
+def test_load_catalogue_falls_back_to_the_builtin(tmp_path):
+    assert gis_layers.load_catalogue(None) is gis_layers.BUILTIN
+    assert gis_layers.load_catalogue(str(tmp_path / "none.yaml")) is gis_layers.BUILTIN
+    f = tmp_path / "map_layers.yaml"
+    f.write_text("presets:\n  mine: roads, farms\n")
+    cat = gis_layers.load_catalogue(str(f))
+    assert cat.presets["mine"] == ("roads", "farms") and cat.source == str(f)
+
+
+def test_a_layers_own_gmt_is_replaced_by_the_users_under_either_name():
+    from gps_plot import gmt_overrides
+
+    cat = gis_layers.catalogue_from(
+        {"layers": {"huts": {"file": "h.geojson", "gmt": {"transparency": 20}}}}
+    )
+    gis_layers.register_steps(cat)
+    with gmt_overrides.overrides({"huts": {"t": "50"}}):
+        kw = gmt_overrides.layer_kw("huts", data="x", transparency=20)
+    assert kw == {"data": "x", "t": "50"}

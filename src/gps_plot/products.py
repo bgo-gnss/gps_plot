@@ -51,8 +51,9 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 }
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
-MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations")
-MAP_RUN_KEYS = ("name", "args", "publish")
+MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations",
+            "layers", "gmt", "gmt_config")  # fmt: skip
+MAP_RUN_KEYS = ("name", "args", "publish", "layers", "gmt", "gmt_config")
 #: map kinds a product may draw (gpsplot map KIND)
 MAP_KINDS = ("velocity", "deformation", "station")
 
@@ -442,6 +443,48 @@ def expand(
     return jobs
 
 
+def map_option_args(
+    pname: str, where: Mapping[str, Any], prefix: str = ""
+) -> list[str]:
+    """The ``layers:``, ``gmt:`` and ``gmt_config:`` of a map product, a run
+    or ``defaults:`` (there ``map_layers:``, ``map_gmt:``, ``map_gmt_config:``)
+    as gpsplot map options: ``layers: [volcanic, rural]`` → ``--layers
+    volcanic,rural``; ``gmt: {calderas: {pen: 2p,red}}`` (or a list of
+    ``STEP:KEY=VALUE``) → ``--gmt calderas:pen=2p,red``; ``gmt_config:
+    {MAP_FRAME_TYPE: plain}`` → ``--gmt-config MAP_FRAME_TYPE=plain``. The
+    run's come after the product's, so a run adds layers and its GMT
+    arguments win.
+
+    Raises:
+        ValueError: a value of the wrong shape.
+    """
+    out: list[str] = []
+    layers = where.get(f"{prefix}layers")
+    if layers:
+        names = layers.split(",") if isinstance(layers, str) else layers
+        if not isinstance(names, list | tuple):
+            raise ValueError(f"plots.yaml {pname}: layers: a list of names")
+        out += ["--layers", ",".join(str(n).strip() for n in names)]
+    gmt = where.get(f"{prefix}gmt")
+    if isinstance(gmt, Mapping):
+        for step, kwargs in gmt.items():
+            if not isinstance(kwargs, Mapping):
+                raise ValueError(
+                    f"plots.yaml {pname}: gmt: {step}: a mapping KEY: VALUE"
+                )
+            for key, value in kwargs.items():
+                spec = f"{step}:{key}" if value is True else f"{step}:{key}={value}"
+                out += ["--gmt", spec]
+    elif gmt:
+        out += [tok for spec in _as_list(gmt) for tok in ("--gmt", str(spec))]
+    config = where.get(f"{prefix}gmt_config")
+    if config:
+        if not isinstance(config, Mapping):
+            raise ValueError(f"plots.yaml {pname}: gmt_config: a mapping KEY: VALUE")
+        out += [t for k, v in config.items() for t in ("--gmt-config", f"{k}={v}")]
+    return out
+
+
 def map_jobs(
     pname: str, spec: Mapping[str, Any], defaults: Mapping[str, Any]
 ) -> list[Job]:
@@ -475,6 +518,9 @@ def map_jobs(
         argv = ["--save", str(defaults.get("save", "png"))]
         for value in (defaults.get("map_args"), spec.get("args"), run.get("args")):
             argv += extra_args(value, MAP_RESERVED_OPTIONS)
+        # defaults:, the product's, then the run's
+        for where, prefix in ((defaults, "map_"), (spec, ""), (run, "")):
+            argv += map_option_args(pname, where, prefix)
         argv += ["--name", name]
         if checks and kind == "station":  # the track map draws them itself
             if "--track" not in argv:

@@ -82,6 +82,17 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "inset": ("Figure.inset", {}),
     "zoom-box": ("Figure.plot", {"pen": "W"}),
 }  # fmt: skip
+#: long name -> letter of every call of a kind, beside a step's own pairs:
+#: a layer's own ``gmt:`` (map_layers.yaml) may give any of them, and the
+#: user's ``--gmt`` replaces it under either name
+CALL_LETTERS: dict[str, dict[str, str]] = {
+    "Figure.plot": {"style": "S", "pen": "W", "fill": "G", "transparency": "t",
+                    "close": "L", "straight_line": "A", "intensity": "I",
+                    "connection": "F", "offset": "D", "cmap": "C"},
+    "Figure.text": {"font": "F", "justify": "F", "angle": "F",
+                    "transparency": "t", "offset": "D", "fill": "G", "pen": "W",
+                    "clearance": "C"},
+}  # fmt: skip
 #: keys gpsplot always sets itself
 OWNED = frozenset({
     "grid", "outgrid", "data", "x", "y", "text", "textfiles", "imagefile",
@@ -184,7 +195,8 @@ def layer_kw(
     user = {k: v for k, v in _CURRENT.get().get(layer, {}).items() if k not in exclude}
     if not user:
         return defaults
-    letters = LAYERS[layer][1]
+    call, own = LAYERS[layer]
+    letters = {**CALL_LETTERS.get(call, {}), **own}
     kept = {
         k: v
         for k, v in defaults.items()
