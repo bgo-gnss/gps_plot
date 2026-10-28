@@ -6,7 +6,9 @@ postprocess.cfg, default ``~/gps-data/gis``) with its own look and its own
 roads alone. ``--overlay FILE`` stays for anything ad hoc.
 
 The Reykjanes layers are built by ``vector/build_08_reykjanes.sh`` (lavas:
-the LMÍ/NÍ WFS, saved beside it; places: authored). A preset names
+the LMÍ/NÍ WFS, saved beside it; places: authored); the national IS 50V
+roads, buildings and farm names by ``vector/build_09_is50v.sh``; the
+volcanic systems and caldera rims (FutureVolc) by ``build_07_volcanic.sh``. A preset names
 several layers in drawing order, bottom first: roads under the lavas that
 cut them, the barriers over the lavas they hold back, names last.
 """
@@ -31,6 +33,7 @@ class GisLayer:
     fill: str | None = None
     label: str | None = None
     font: str | None = None
+    symbol: str | None = None  # points: a GMT style
     #: the script that builds the file, for the missing-file hint
     build: str = "vector/build_08_reykjanes.sh"
 
@@ -40,8 +43,41 @@ LAYERS: dict[str, GisLayer] = {
     layer.name: layer
     for layer in (
         GisLayer(
-            "roads", "vector/reykjanes/roads.geojson",
+            "volcanoes", "vector/futurevolc_central_volcanoes.geojson",
+            "central volcanoes, outlined and named (FutureVolc)",
+            pen="0.9p,110/60/20,6_3:0", label="system",
+            font="7p,Helvetica-BoldOblique,110/60/20=~0.75p,white",
+            build="vector/build_07_volcanic.sh",
+        ),
+        GisLayer(
+            "calderas", "vector/futurevolc_caldera_rims.geojson",
+            "caldera rims (FutureVolc)", pen="1.2p,110/60/20",
+            build="vector/build_07_volcanic.sh",
+        ),
+        GisLayer(
+            "swarms", "vector/futurevolc_fissure_swarms.geojson",
+            "fissure swarms, outlined (FutureVolc)", pen="0.6p,110/60/20,2_2:0",
+            build="vector/build_07_volcanic.sh",
+        ),
+        GisLayer(
+            "roads", "vector/is50v/roads.geojson",
             "main and connecting roads (IS 50V)", pen="0.6p,90/90/90",
+            build="vector/build_09_is50v.sh",
+        ),
+        GisLayer(
+            "localroads", "vector/is50v/localroads.geojson",
+            "local roads to the farms (IS 50V héraðsvegir)", pen="0.4p,110/110/110",
+            build="vector/build_09_is50v.sh",
+        ),
+        GisLayer(
+            "buildings", "vector/is50v/buildings.geojson",
+            "buildings: farms, houses, huts (IS 50V)", symbol="s0.07c",
+            fill="black", pen="0.15p,white", build="vector/build_09_is50v.sh",
+        ),
+        GisLayer(
+            "farms", "vector/is50v/farms.txt",
+            "farm names (IS 50V)", font="6p,Helvetica,gray10=~0.75p,white",
+            build="vector/build_09_is50v.sh",
         ),
         GisLayer(
             "towns", "vector/reykjanes/towns.geojson",
@@ -79,6 +115,9 @@ PRESETS: dict[str, tuple[str, ...]] = {
                   "places"),
     "infrastructure": ("roads", "towns", "barriers", "places"),
     "eruptions": ("lavas", "graben", "fissures"),
+    # any area: the volcanic system, roads and houses (BGÓ 2026-10-28)
+    "volcanic": ("swarms", "volcanoes", "calderas"),
+    "rural": ("localroads", "roads", "buildings", "farms"),
 }  # fmt: skip
 
 #: ``--layers list`` prints the layers and presets
@@ -126,8 +165,8 @@ def overlays(names: Sequence[str], gis_dir: str) -> tuple[Any, ...]:
         out.append(
             MapOverlay(
                 path, pen=layer.pen, fill=layer.fill, label=layer.label,
-                font=layer.font or DEFAULT_PLACE_FONT,
-                step=name if name != "places" else "place-labels",
+                font=layer.font or DEFAULT_PLACE_FONT, symbol=layer.symbol,
+                step="place-labels" if path.endswith(".txt") else name,
             )
         )  # fmt: skip
     return tuple(out)

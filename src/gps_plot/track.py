@@ -59,6 +59,12 @@ RECENT_COLOR = "red"
 LEGEND_FONT = "7p,Helvetica-Bold"
 LEGEND_SPACING = 0.04
 DEFAULT_CMAP = "turbo"
+#: the colour bar: a fifth of the map wide, inside its upper right
+CBAR_WIDTH = 0.2
+CBAR_FONT = "7p,Helvetica"
+CBAR_BOX = "+gwhite@15+p0.4p,gray40+c0.1c/0.1c"
+#: days before the onset a station's series (track_series) shows
+SERIES_BEFORE_DAYS = 90
 YEAR = 365.25
 
 
@@ -365,8 +371,15 @@ def draw_tracks(
         pygmt.makecpt(cmap=cmap, series=[lo, max(float(z.max()), lo + 1.0)])
         fig.plot(x=x[order], y=y[order], fill=z[order], cmap=True,
                  style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
-        fig.colorbar(frame=[f"xaf+ldays since the onset {onset:%d.%m.%Y}"],
-                     position=f"JBC+o0/1c+w{0.6 * width:.1f}c/0.3c+h")  # fmt: skip
+        # small, inside the upper right, on a white box (BGÓ 2026-10-28)
+        with pygmt.config(FONT_ANNOT_PRIMARY=CBAR_FONT, FONT_LABEL=CBAR_FONT,
+                          MAP_ANNOT_OFFSET_PRIMARY="1p", MAP_LABEL_OFFSET="2p",
+                          MAP_TICK_LENGTH_PRIMARY="2p"):  # fmt: skip
+            fig.colorbar(
+                frame=[f"xaf+ldays since {onset:%d.%m.%Y}"],
+                position=f"JTR+jTR+o0.45c/0.35c+w{CBAR_WIDTH * width:.1f}c/0.2c+h",
+                box=CBAR_BOX,
+            )
 
     moved = [tr for tr in tracks if tr.moved and tr.since is not None]
     speeds = [tr.since.speed for tr in moved if tr.since is not None]
@@ -452,3 +465,93 @@ def _draw_legend(
     x, y = at(dot_x, n + 0.8)
     fig.text(x=x, y=y, text=dot_text, font=f"{LEGEND_FONT},black", justify="LM")
     return (anchor[1] + (lines - 0.5) * sp) * height + pad
+
+
+def trimmed(tr: Track, before_days: int) -> Track:
+    """``tr`` with only the days from ``before_days`` before the onset (the
+    rates and the zero are the whole track's: they do not depend on it)."""
+    keep = tr.days >= -before_days
+    return dataclasses.replace(
+        tr, t=tr.t[keep], north=tr.north[keep], east=tr.east[keep],
+        days=tr.days[keep],
+    )  # fmt: skip
+
+
+def rate_line(
+    tr: Track, comp: int, rate: Rate, first_day: float
+) -> tuple[FloatArray, FloatArray]:
+    """(days, mm) of ``rate`` drawn over the days since ``first_day``: the
+    line through the window's mean, as :func:`line_rate` fitted it."""
+    y = (tr.north, tr.east)[comp]
+    k = tr.days >= first_day
+    slope = (rate.north, rate.east)[comp] / YEAR  # mm/day
+    d = tr.days[k]
+    mid = float(d.mean())
+    ends = np.array([float(d[0]), float(d[-1])])
+    return ends, float(y[k].mean()) + slope * (ends - mid)
+
+
+def series_figure(
+    tr: Track,
+    onset: dt.date,
+    *,
+    recent_days: int = RECENT_DAYS,
+    before_days: int = BEFORE_DAYS,
+    days_range: tuple[float, float] | None = None,
+    cmap: str = DEFAULT_CMAP,
+    common_mode: bool = True,
+) -> Any:
+    """A station's track as a time series: North and East (the trend and
+    seasonal before the onset removed, zero at the onset, as on the map),
+    with the rate since the onset (blue) and of the last ``recent_days``
+    (red) drawn on the data: the numbers of the map's legend. Days the map
+    shows as dots are coloured as there (``days_range`` = the map's colour
+    scale), earlier ones grey."""
+    import matplotlib.figure
+
+    fig = matplotlib.figure.Figure(figsize=(9, 6.5), layout="constrained")
+    axes = fig.subplots(2, 1, sharex=True)
+    t0 = dt.datetime.combine(onset, dt.time(12))
+    when = [t0 + dt.timedelta(days=float(d)) for d in tr.days]
+    lo, hi = days_range or (-float(before_days), float(max(tr.days.max(), 1.0)))
+    on_map = tr.days >= -before_days
+    rates = ((tr.since, SINCE_COLOR, 0.0, f"since {onset:%d.%m}"),
+             (tr.recent, RECENT_COLOR, float(tr.days[-1]) - recent_days,
+              f"last {recent_days} days"))  # fmt: skip
+    for comp, (ax, name) in enumerate(zip(axes, ("North", "East"), strict=True)):
+        y = (tr.north, tr.east)[comp]
+        ax.plot(when, y, color="0.6", lw=0.5, ls=":", zorder=1)
+        ax.scatter([w for w, m in zip(when, on_map, strict=True) if not m],
+                   y[~on_map], s=12, color="0.6", zorder=2)  # fmt: skip
+        dots = ax.scatter([w for w, m in zip(when, on_map, strict=True) if m],
+                          y[on_map], c=tr.days[on_map], cmap=cmap, vmin=lo, vmax=hi,
+                          s=18, edgecolors="black", linewidths=0.3, zorder=3)  # fmt: skip
+        ax.axvline(t0, color="0.3", lw=0.8, ls="--", zorder=0)
+        text = []
+        for rate, color, first, label in rates:
+            if rate is None:
+                continue
+            days, mm = rate_line(tr, comp, rate, first)
+            ax.plot([t0 + dt.timedelta(days=float(d)) for d in days], mm,
+                    color=color, lw=2, zorder=4)  # fmt: skip
+            v = (rate.north, rate.east)[comp]
+            sv = (rate.sigma_north, rate.sigma_east)[comp]
+            text.append((f"{label}: v = {v:.0f} ± {sv:.0f} mm/yr", color))
+        if tr.since is None:
+            text.append((f"{tr.n_after} days since {onset:%d.%m}: too few for a "
+                         "rate", "black"))  # fmt: skip
+        for i, (line, color) in enumerate(text):
+            ax.text(0.01, 0.95 - 0.09 * i, line, transform=ax.transAxes,
+                    color=color, va="top", fontsize=10)  # fmt: skip
+        ax.set_ylabel(f"{name} [mm]")
+        ax.grid(True, color="0.85", lw=0.5)
+    fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
+                 shrink=0.6, aspect=30)  # fmt: skip
+    fig.suptitle(f"{tr.marker}: horizontal motion, trend and seasonal before "
+                 "the onset removed", fontsize=12)  # fmt: skip
+    if common_mode:
+        axes[1].text(0.99, 0.02, "network common mode removed",
+                     transform=axes[1].transAxes, ha="right", va="bottom",
+                     fontsize=8, color="0.3")  # fmt: skip
+    fig.autofmt_xdate()
+    return fig
