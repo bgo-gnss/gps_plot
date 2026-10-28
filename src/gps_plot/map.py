@@ -719,6 +719,11 @@ def window_label(start: dt.datetime, end: dt.datetime) -> str:
     return f"{start:%Y/%m/%d} - {end:%Y/%m/%d}"
 
 
+def at_label(day: dt.datetime) -> str:
+    """The legend of a rate ON a date (a transient set's ``at``)."""
+    return f"rate on {day:%Y/%m/%d}"
+
+
 def _nice(x: float) -> float:
     """The 1-2-5 number at or below ``x`` (> 0)."""
     k = math.floor(math.log10(x))
@@ -1496,7 +1501,10 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
             records = vprod.read_velocity_records(args.velocities)
         except (OSError, ValueError) as exc:
             parser.error(f"--velocities: {exc}")
-        spans = sorted({r.window for r in records})
+        # a transient set (gpsprod transient) is one group per date the rate
+        # is FOR (``at``), not per fit window
+        spans = sorted({(r.window, getattr(r, "at", None)) for r in records},
+                       key=lambda k: (k[0], k[1] or 0.0))  # fmt: skip
         requested = {r.ref_requested for r in records}
         if len(requested) == 1 and args.ref is None:
             (args.ref,) = requested  # the title says what the set is
@@ -1525,13 +1533,21 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
             notes.append(
                 f"{len(in_file - set(by_marker))} stations of the set not selected"
             )
-        for k, span in enumerate(spans):
-            label = window_label(_date_of(span[0]), _last_day(span[1]))
-            chosen = [r for r in records if r.window == span and r.station in by_marker]
+        for k, (span, at) in enumerate(spans):
+            label = (
+                window_label(_date_of(span[0]), _last_day(span[1]))
+                if at is None
+                else at_label(_date_of(at))
+            )
+            chosen = [
+                r for r in records
+                if (r.window, getattr(r, "at", None)) == (span, at)
+                and r.station in by_marker
+            ]  # fmt: skip
             _add_records(maps, chosen, by_marker, label,
                          WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
                          vectors, dropped, args.min_fill)  # fmt: skip
-        windows = [(_date_of(span[0]), _last_day(span[1])) for span in spans]
+        windows = [(_date_of(span[0]), _last_day(span[1])) for span, _at in spans]
     elif windows:
         # the velocity product's own estimator: the numbers of gps-velocities
         from geo_dataread import velocity as vprod
@@ -1633,7 +1649,9 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         ),
         arrows=used_scale,
     )  # fmt: skip
-    span = "_".join(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows) or "secular"
+    # dict.fromkeys: a transient set's dates share one fit window
+    span = "_".join(dict.fromkeys(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows))
+    span = span or "secular"
     stem = _stem(args, "velocity", stations, span,
                  "vertical" if args.vertical else "horizontal")  # fmt: skip
     for p in _save(fig, args, config, stem):

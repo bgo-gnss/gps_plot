@@ -1001,3 +1001,11 @@ def test_vertical_windows_stand_side_by_side(monkeypatch):
         0.018
     )
     assert (a.lon, b.lon) == (-22.0, -22.0)  # the station symbol stays
+
+
+def test_at_label_names_the_date_of_a_transient_rate() -> None:
+    import datetime as dt
+
+    from gps_plot.map import at_label
+
+    assert at_label(dt.datetime(2026, 10, 25)) == "rate on 2026/10/25"
