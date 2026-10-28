@@ -147,6 +147,13 @@ DEFAULT_VECTOR_STATION_PEN = "0.6p,black"
 DEFAULT_SOURCE_STYLE = "a0.5c"  # star marker for model source positions
 DEFAULT_SOURCE_PEN = "0.6p,black"
 DEFAULT_LEGEND_FONT = "9p,Helvetica-Bold"
+#: the white box behind a vector legend block (as the station legends')
+LEGEND_BOX_FILL = "white@20"
+LEGEND_BOX_PEN = "0.4p,black"
+LEGEND_BOX_PAD_CM = 0.15
+#: the top-left corner the logo takes (gps_plot.map draws it there,
+#: 2.5 cm wide): place names under it are left out
+LOGO_KEEP_OUT_CM = (3.2, 1.4)
 #: Legend anchor as (east-fraction, north-fraction) of the region extent,
 #: measured from the south-west corner.
 DEFAULT_LEGEND_ANCHOR: tuple[float, float] = (0.03, 0.09)
@@ -729,15 +736,25 @@ def overlay_labels(
     return out
 
 
-def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
+def _draw_overlays(
+    fig: Any,
+    overlays: Sequence[MapOverlay],
+    frame: tuple[Sequence[float], str] | None = None,
+) -> None:
+    """The overlays; with ``frame`` = (region, projection) their names
+    cut by the map frame are left out (:func:`inside_frame`)."""
     import json
     import tempfile
+
+    def fit(labels: Sequence[tuple[float, float, str]], font: str) -> Any:
+        return labels if frame is None else inside_frame(labels, font, *frame)
 
     for ov in overlays:
         if str(ov.path).endswith(".txt"):
             _draw_labels(
-                fig, _outside(place_names(ov.path), ov.unlabelled_box), ov.font
-            )
+                fig, fit(_outside(place_names(ov.path), ov.unlabelled_box), ov.font),
+                ov.font,
+            )  # fmt: skip
             continue
         with open(ov.path, encoding="utf-8") as fh:
             geojson = json.load(fh)
@@ -758,7 +775,9 @@ def _draw_overlays(fig: Any, overlays: Sequence[MapOverlay]) -> None:
                     fig.plot(**layer_kw(ov.step, data=seg, **kw))
         if ov.label:
             labels = overlay_labels(geojson, ov.label)
-            _draw_labels(fig, _outside(labels, ov.unlabelled_box), ov.font)
+            _draw_labels(
+                fig, fit(_outside(labels, ov.unlabelled_box), ov.font), ov.font
+            )
 
 
 def overlay_label_points(
@@ -916,6 +935,7 @@ def _draw_basemap(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -959,6 +979,8 @@ def _draw_basemap(
     )
     if dem_grid is not None:
         subgrid = pygmt_mod.grdcut(dem_grid, region=region)
+        if sea_smooth > 0:
+            subgrid = smooth_sea(pygmt_mod, subgrid, sea_smooth)
         relief = subgrid
         if dem_smooth > 0:
             # km on a lon/lat grid, the x spacing scaled by cos(lat)
@@ -1048,7 +1070,7 @@ def _draw_basemap(
                 resolution=resolution,
             )
         )
-    _draw_overlays(fig, overlays)
+    _draw_overlays(fig, overlays, frame=(region, projection))
     if graticule:
         fig.basemap(**layer_kw("grid", frame=list(DEFAULT_GRID)))
     if isinstance(region, CornerRegion):
@@ -1065,7 +1087,8 @@ def _draw_basemap(
 BASE_KEYS = (
     "resolution", "land", "water", "shorelines", "dem_grid", "dem_cmap",
     "bathymetry_cmap", "glacier_cmap", "dem_shading_azimuth",
-    "dem_shading_normalize", "dem_smooth", "overlays", "coastline", "glaciers",
+    "dem_shading_normalize", "dem_smooth", "sea_smooth", "overlays", "coastline",
+    "glaciers",
     "zones", "lakes", "glacier_contours",
 )  # fmt: skip
 
@@ -1089,6 +1112,37 @@ def draw_base(
     _draw_basemap(
         pygmt_mod, fig, region=region, projection=projection, graticule=False, **kw
     )
+
+
+#: the shallowest depth a smoothed sea cell keeps [m]: still sea-coloured
+SEA_SMOOTH_SHALLOWEST = -0.5
+
+
+def smooth_sea(pygmt_mod: Any, grid: Any, km: float) -> Any:
+    """``grid`` with its sea floor (z < 0) smoothed by a Gaussian filter
+    ``km`` wide; land and NaN cells unchanged. Land counts as sea level in
+    the filter, so no land height spills offshore, and a smoothed sea cell
+    stays below :data:`SEA_SMOOTH_SHALLOWEST` (sea-coloured to the coast)."""
+    z = np.asarray(grid.values, dtype=np.float64)
+    flat = _as_grid_of(grid.copy(data=np.where(z > 0, 0.0, z)), grid)  # land at 0
+    smoothed = pygmt_mod.grdfilter(
+        **layer_kw("sea-smooth", grid=flat, filter=f"g{km:g}", distance=2)
+    )
+    sm = np.minimum(np.asarray(smoothed.values, dtype=np.float64),
+                    SEA_SMOOTH_SHALLOWEST)  # fmt: skip
+    if sm.shape != z.shape:  # the filter keeps the grid; refuse to guess
+        raise ValueError(f"sea smoothing changed the grid: {z.shape} -> {sm.shape}")
+    return _as_grid_of(grid.copy(data=np.where(z < 0, sm, z)), grid)
+
+
+def _as_grid_of(new: Any, like: Any) -> Any:
+    """``new`` with ``like``'s GMT grid type and registration (xarray
+    arithmetic drops them, and GMT then reads a lon/lat grid as Cartesian)."""
+    accessor = getattr(like, "gmt", None)
+    if accessor is not None:
+        new.gmt.registration = accessor.registration
+        new.gmt.gtype = accessor.gtype
+    return new
 
 
 def _dem_colours(
@@ -1332,6 +1386,8 @@ def _draw_vector_legend(
     font: str,
     anchor: tuple[float, float],
     line_spacing: float,
+    projection: str | None = None,
+    vertical: bool = False,
 ) -> None:
     """Scale-reference arrow + color-coded legend lines (SW corner block).
 
@@ -1339,15 +1395,58 @@ def _draw_vector_legend(
     ``anchor`` (region-fraction coordinates); the reference arrow of
     length ``scale_ref`` (data units) sits above them with its magnitude
     labelled. Positions are region fractions — no hardcoded degrees.
+    With ``projection`` the block sits in a white box
+    (:func:`vector_legend_box`), as the station legends do. ``vertical``:
+    the reference arrow points north (up, as the map's vertical rates),
+    its label beside it.
     """
 
     def at(line: float) -> tuple[float, float]:
         return region_point(region, anchor[0], anchor[1] + line * line_spacing)
 
+    boxed = projection is not None and not isinstance(region, CornerRegion)
+    vertical = vertical and boxed and scale_ref is not None
+    ref_text = f"{scale_ref:g} {scale_unit}"
+    arrow_cm = 0.0 if scale_ref is None else float(scale_ref) * scale
+    if boxed:
+        assert projection is not None
+        texts = [label for label, _ in entries]
+        lines = float(len(entries))
+        if vertical:
+            height = _map_size_cm(region, projection)[1]
+            texts.append(" " * 4 + ref_text)  # the label beside the arrow
+            lines += arrow_cm / (line_spacing * height) + 0.4
+            arrow_cm = 0.0
+        elif scale_ref is not None:
+            texts.append(ref_text)
+            lines += 1.8
+        box = vector_legend_box(region, projection, anchor, line_spacing,
+                                lines, texts, font, arrow_cm)  # fmt: skip
+        fig.plot(
+            **layer_kw("legend", x=box[0], y=box[1], fill=LEGEND_BOX_FILL,
+                       pen=LEGEND_BOX_PEN, close=True)
+        )  # fmt: skip
+
     for i, (label, color) in enumerate(entries):
         x, y = at(i)
         fig.text(x=x, y=y, text=label, font=f"{font},{color}", justify="LM")
-    if scale_ref is not None:
+    if vertical:
+        assert projection is not None and scale_ref is not None
+        width, height = _map_size_cm(region, projection)
+        x_arrow, y_arrow = at(len(entries) - 0.2)
+        _draw_vector_layer(
+            fig, np.array([x_arrow]), np.array([y_arrow]), np.array([0.0]),
+            np.array([float(scale_ref)]), color="black", scale=scale,
+            confidence=confidence, head=head, pen_width=pen_width,
+        )  # fmt: skip
+        up = float(scale_ref) * scale / 2 / height
+        x_label, y_label = region_point(
+            region, anchor[0] + 0.35 / width,
+            anchor[1] + (len(entries) - 0.2) * line_spacing + up,
+        )  # fmt: skip
+        fig.text(x=x_label, y=y_label, text=ref_text, font=f"{font},black",
+                 justify="LM")  # fmt: skip
+    elif scale_ref is not None:
         x_arrow, y_arrow = at(len(entries))
         _draw_vector_layer(
             fig,
@@ -1369,6 +1468,69 @@ def _draw_vector_legend(
             font=f"{font},black",
             justify="LM",
         )
+
+
+def text_width_cm(text: str, font: str) -> float:
+    """Rough width of ``text`` in ``font`` [cm] (Helvetica bold: ~0.5 em
+    a character), for keeping labels and boxes inside the map."""
+    return len(text) * font_size_pt(font) * 0.5 / 72 * 2.54
+
+
+def vector_legend_box(
+    region: Sequence[float],
+    projection: str,
+    anchor: tuple[float, float],
+    line_spacing: float,
+    lines: float,
+    texts: Sequence[str],
+    font: str,
+    arrow_cm: float = 0.0,
+) -> tuple[list[float], list[float]]:
+    """The white box behind a vector legend block: ``(lons, lats)`` of its
+    corners, around ``lines`` rows from ``anchor`` (region fractions) and
+    as wide as the longest of ``texts`` or the reference arrow."""
+    width, height = _map_size_cm(region, projection)
+    pad = LEGEND_BOX_PAD_CM
+    wide = max([arrow_cm + 0.3, *(text_width_cm(t, font) for t in texts)])
+    x0 = anchor[0] - pad / width
+    x1 = anchor[0] + (wide + pad) / width
+    y0 = anchor[1] - 0.5 * line_spacing - pad / height
+    y1 = anchor[1] + (lines - 0.5) * line_spacing + pad / height
+    corners = [region_point(region, x, y)
+               for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]  # fmt: skip
+    return [c[0] for c in corners], [c[1] for c in corners]
+
+
+def _map_size_cm(region: Sequence[float], projection: str) -> tuple[float, float]:
+    from gps_plot import insets
+
+    return insets.size_cm(region, projection)
+
+
+def inside_frame(
+    labels: Sequence[tuple[float, float, str]],
+    font: str,
+    region: Sequence[float],
+    projection: str,
+) -> list[tuple[float, float, str]]:
+    """The centred labels whose text fits inside the map frame: a place
+    name cut by the frame (Keilir at the east edge) or under the logo's
+    corner (:data:`LOGO_KEEP_OUT_CM`, top left) is left out."""
+    if isinstance(region, CornerRegion):
+        return list(labels)
+    width, height = _map_size_cm(region, projection)
+    w, e, s, n = region
+    half_h = font_size_pt(font) / 72 * 2.54 / 2 / height * (n - s)
+    logo_e = w + LOGO_KEEP_OUT_CM[0] / width * (e - w)
+    logo_s = n - LOGO_KEEP_OUT_CM[1] / height * (n - s)
+    out = []
+    for lon, lat, text in labels:
+        half_w = text_width_cm(text, font) / 2 / width * (e - w)
+        inside = w + half_w <= lon <= e - half_w and s + half_h <= lat <= n - half_h
+        under_logo = lon - half_w < logo_e and lat + half_h > logo_s
+        if inside and not under_logo:
+            out.append((lon, lat, text))
+    return out
 
 
 def draw_scale_arrow(
@@ -1613,6 +1775,7 @@ def station_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -1672,6 +1835,10 @@ def station_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -1726,6 +1893,7 @@ def station_map(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -1789,6 +1957,9 @@ class VelocityVector:
     sigma_north: float = 0.0
     correlation_en: float = 0.0
     method: str | None = None
+    #: the arrow's tail moved east of the station [degrees] (side-by-side
+    #: vertical arrows of several windows); the station symbol stays
+    arrow_dlon: float = 0.0
 
 
 def velocity_vectors(
@@ -1961,7 +2132,7 @@ def draw_velocity_vectors(
         layer_color = colors.get(method, color) if method else color
         _draw_vector_layer(
             fig,
-            lons[idx],
+            lons[idx] + np.array([vectors[i].arrow_dlon for i in idx]),
             lats[idx],
             np.array([vectors[i].east for i in idx], dtype=np.float64),
             np.array([vectors[i].north for i in idx], dtype=np.float64),
@@ -2030,6 +2201,7 @@ def velocity_map(
     legend_font: str = DEFAULT_LEGEND_FONT,
     legend_anchor: tuple[float, float] = DEFAULT_LEGEND_ANCHOR,
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
+    scale_vertical: bool = False,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
@@ -2037,6 +2209,7 @@ def velocity_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2097,6 +2270,8 @@ def velocity_map(
             region from the SW corner.
         legend_line_spacing: Legend line spacing as a fraction of the N-S
             extent.
+        scale_vertical: The vectors are vertical rates drawn north: the
+            legend's reference arrow points up too.
         dem_grid: Optional DEM grid for a hillshade background.
         dem_cmap: Land colours of the DEM (z >= 0): a CPT file, a
             name in the user's or gpsplot's CPT directory, a GMT CPT or a
@@ -2109,6 +2284,10 @@ def velocity_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2160,6 +2339,7 @@ def velocity_map(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2192,6 +2372,8 @@ def velocity_map(
             font=legend_font,
             anchor=_legend_anchor(legend_anchor, region),
             line_spacing=legend_line_spacing,
+            projection=projection,
+            vertical=scale_vertical,
         )
 
     _draw_frame(fig, _frame_args(frame, title))
@@ -2387,6 +2569,7 @@ def deformation_vectors(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2461,6 +2644,10 @@ def deformation_vectors(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2531,6 +2718,7 @@ def deformation_vectors(
         dem_shading_azimuth=dem_shading_azimuth,
         dem_shading_normalize=dem_shading_normalize,
         dem_smooth=dem_smooth,
+        sea_smooth=sea_smooth,
         overlays=overlays,
         coastline=coastline,
         glaciers=glaciers,
@@ -2612,6 +2800,7 @@ def deformation_vectors(
             font=legend_font,
             anchor=_legend_anchor(legend_anchor, region),
             line_spacing=legend_line_spacing,
+            projection=projection,
         )
 
     _draw_frame(fig, _frame_args(frame, title))
@@ -2809,6 +2998,7 @@ def slip_map(
     dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
+    sea_smooth: float = 0.0,
     overlays: Sequence[MapOverlay] = (),
     coastline: str | None = None,
     glaciers: str | None = None,
@@ -2889,6 +3079,10 @@ def slip_map(
         dem_shading_normalize: ``grdgradient`` normalization spec.
         dem_smooth: Smooth the hillshade (not the colours) with a
             Gaussian filter this wide [km]; 0 = off.
+        sea_smooth: Smooth the sea floor alone (colours and
+            hillshade) with a Gaussian filter this wide [km], so a coarse
+            bathymetry (EMODnet ~115 m) shows no cells; land and the coast
+            stay as they are; 0 = off.
         overlays: GeoJSON outline layers (:class:`MapOverlay`), drawn
             over the coast/DEM and under the symbols.
         coastline: A GMT/OGR line or polygon file drawn as the shoreline
@@ -2969,6 +3163,7 @@ def slip_map(
             dem_shading_azimuth=dem_shading_azimuth,
             dem_shading_normalize=dem_shading_normalize,
             dem_smooth=dem_smooth,
+            sea_smooth=sea_smooth,
             overlays=overlays,
             coastline=coastline,
             glaciers=glaciers,

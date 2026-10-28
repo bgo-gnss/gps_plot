@@ -238,3 +238,54 @@ chosen pairs — never every combination.
 - aflogun lists only `locations/volcanos/<cdn>/graphs/24h` today: the
   `graphs/baselines/` directories and the `voktun/` root need it to learn
   a second listing (follow-up).
+
+## Map products (2026-10-27)
+
+Velocity maps as plots.yaml products, first for Svartsengi (BGÓ: past
+year and past 3 months, set up as the Kárahnjúkar report map).
+
+- **`tool: map`** — a product drawn by `gpsplot map KIND`, `map:` velocity,
+  deformation or station. `stations:` a list, or none: every station in
+  the map's `--region`. One job per run, each with its own `name:` (the
+  file's basename, `--name`) and `args:` after the product's (and after
+  plots.yaml `defaults: map_args:`, when set). `publish:` per run as for ts.
+  Not allowed in `args:`: `-d`, `--figDir` (`dir:`), `--manifest` (the
+  runner), `--name` (`name:`), `--save` (`defaults: save:`).
+- An `--area` filter leaves map products out; `gpsplot run STA` keeps a
+  map with that station in its list whole and drops a `--region` map.
+- `gpsplot map --manifest FILE` lists the files, so maps reach
+  `publish.manifest`. `--region -22.7/…` works in `args:` (joined as on the
+  command line).
+- **Report look** (gps_plot, 2026-10-27): `--title=` (none: the caption is
+  in the document); the vector legend (window dates + reference arrow) in a
+  white box, its arrow pointing up on `--vertical` maps; the Iceland
+  locator placed clear of the arrows as well as the stations and the
+  legend; place names cut by the frame or under the logo left out.
+- **A year map** wants stations that cover the year. The product's cover
+  gate measures the span of the data, not the days in it (SAFH: 13 days
+  spread over the year pass), and a series that stops early is judged up
+  to its end (THNA, May 2026). `--min-fill 0.6` drops a window's rate when
+  fewer than 60 % of its days have a solution, per window, so the year
+  and the 3 months share one map (BGÓ 2026-10-27: both on one map). On a
+  `--vertical` map the windows' arrows stand side by side (0.18 cm apart).
+  The same `--scale`/`--scale-ref` across maps keeps them comparable.
+- **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
+  which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
+  smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the
+  filter, smoothed cells stay sea-coloured); land and the coast unchanged.
+
+```yaml
+  svartsengi_velocity:
+    tool: map
+    map: velocity
+    dir: maps/reykjanes/svartsengi
+    args:
+      - --region -22.72/-22.17/63.76/63.945
+      - --projection M15.5c --dem iceland --sea-smooth 0.5 --title=
+      - --layers roads,towns,lavas,graben,fissures,barriers
+      - --scale-ref 100
+      - --last 365 --last 91 --min-fill 0.6
+    runs:
+      - {name: svartsengi-ar-3man-larett, args: [--scale 0.015]}
+      - {name: svartsengi-ar-3man-lodrett, args: [--vertical --scale 0.008]}
+```

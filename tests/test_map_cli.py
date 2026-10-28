@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import types
@@ -919,9 +920,92 @@ def test_velocity_pre_onset_set_names_its_reference_days(fake_maps, tmp_path):
         pre_onset={"window": list(pre)},
     )
     paths = vprod.write_velocity_set([rec], tmp_path / "set", "s")
-    assert _run(["velocity", "SENG", "--velocities", str(paths["jsonl"])], tmp_path) == 0
+    assert (
+        _run(["velocity", "SENG", "--velocities", str(paths["jsonl"])], tmp_path) == 0
+    )
     _args, kw = fake_maps["velocity_map"]
     assert "(2023-08-06 to 2023-10-24)" in str(kw)
     with pytest.raises(SystemExit):  # the set's days, not the command line's
         _run(["velocity", "SENG", "--velocities", str(paths["jsonl"]),
               "--pre-window", "20230801:20231024"], tmp_path)  # fmt: skip
+
+
+def test_velocity_no_short_tier_and_manifest(fake_maps, fake_product, tmp_path):
+    man = tmp_path / "files.txt"
+    argv = ["velocity", "SENG", "--last", "365", "--no-short-tier",
+            "--manifest", str(man)]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    (settings,) = {c[3] for c in fake_product}
+    assert settings.short_tier is False
+    assert man.read_text().splitlines() == [
+        os.path.abspath(p) for p in fake_maps["fig"].saved
+    ]
+    # the vertical legend arrow is asked for on a --vertical map
+    assert _run(["velocity", "SENG", "--last", "14", "--vertical"], tmp_path) == 0
+    assert fake_maps["velocity_map"][1]["scale_vertical"] is True
+
+
+def test_arrow_points_follow_each_arrow_to_its_tip(monkeypatch):
+    from gps_plot import insets, maps
+
+    monkeypatch.setattr(insets, "size_cm", lambda region, projection: (10.0, 10.0))
+    v = maps.VelocityVector("SENG", -22.0, 64.0, 100.0, 0.0, 1.0, 1.0, 0.0)
+    lons, lats = gmap.arrow_points([v], 0.01, (-23.0, -21.0, 63.0, 65.0), "M10c")
+    # 100 mm/yr × 0.01 cm = 1 cm of a 10 cm, 2° wide map: the tip 0.2° east
+    assert lons[-1] == pytest.approx(-21.8) and set(lats) == {64.0}
+    assert len(lons) == 4
+
+
+def test_vector_legend_width_fits_the_longest_label():
+    from gps_plot import maps
+
+    short = gmap.vector_legend_width_cm(["100 mm/yr"], 1.5)
+    long = gmap.vector_legend_width_cm(["2025/10/28 - 2026/10/27", "100 mm/yr"], 1.5)
+    assert long > short >= 1.8 + 2 * maps.LEGEND_BOX_PAD_CM
+
+
+def test_min_fill_drops_a_window_with_too_few_days(fake_maps, monkeypatch, tmp_path):
+    import dataclasses
+
+    from geo_dataread import velocity as vprod
+
+    def estimate(stations, start, end, settings, progress=None):
+        days = (end - start).days + 1
+        n = 13 if days > 300 else 80  # SAFH-like in the year, full in 91 days
+        rec = _product_record("SENG", [10.0, 10.0, 50.0])
+        return [dataclasses.replace(rec, n_epochs=(n, n, n),
+                                    window=(2025.8, 2025.8 + days / 365.25))]  # fmt: skip
+
+    monkeypatch.setattr(vprod, "estimate_velocities", estimate)
+    argv = ["velocity", "SENG", "--last", "365", "--last", "91", "--min-fill", "0.6"]
+    assert _run(argv, tmp_path) == 0
+    (vectors,), _kw = fake_maps["velocity_map"]
+    assert len(vectors) == 1  # the 91-day window only
+    rec = _product_record("SENG", [0.0, 0.0, 0.0])
+    year = dataclasses.replace(rec, n_epochs=(191, 200, 191), window=(2025.8, 2026.8))
+    assert gmap.window_fill(year) == pytest.approx(191 / 365.25)
+
+
+def test_vertical_windows_stand_side_by_side(monkeypatch):
+    from gps_plot import insets
+
+    monkeypatch.setattr(insets, "size_cm", lambda region, projection: (10.0, 10.0))
+    groups = [("A", "red"), ("A (plate only)", "red@55"), ("B", "blue")]
+    index = gmap.window_index(groups)
+    assert index == {"A": 0, "A (plate only)": 0, "B": 1}
+    vs = [VelocityVector("SENG", -22.0, 64.0, 0.0, 50.0, method=m)
+          for m in ("A", "B")]  # fmt: skip
+    a, b = gmap.side_by_side(vs, index, (-23.0, -21.0, 63.0, 65.0), "M10c")
+    # 0.18 cm apart on a 2°/10 cm map, centred on the station
+    assert a.arrow_dlon == pytest.approx(-0.018) and b.arrow_dlon == pytest.approx(
+        0.018
+    )
+    assert (a.lon, b.lon) == (-22.0, -22.0)  # the station symbol stays
+
+
+def test_at_label_names_the_date_of_a_transient_rate() -> None:
+    import datetime as dt
+
+    from gps_plot.map import at_label
+
+    assert at_label(dt.datetime(2026, 10, 25)) == "rate on 2026/10/25"
