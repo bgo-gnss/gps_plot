@@ -269,6 +269,12 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   and the 3 months share one map (BGÓ 2026-10-27: both on one map). On a
   `--vertical` map the windows' arrows stand side by side (0.18 cm apart).
   The same `--scale`/`--scale-ref` across maps keeps them comparable.
+- **Moving windows** (2026-10-28, BGÓ: many flavours of map): `--last
+  DAYS` or `--last FROM:TO` days before the end (`--last 7` = `7:0`), so a
+  product never names a date and the daily run redraws it from the newest
+  solutions. Windows may follow each other (`--last 182:91 --last 91`, the
+  3 + 3 months: is the rate changing?) or overlap (`--last 365 --last 30`).
+  Whole days, both ends in: `182:91` ends the day before `91` starts.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
   which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
   smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the

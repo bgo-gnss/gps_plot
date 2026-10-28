@@ -103,6 +103,26 @@ def test_windows_and_last_days():
     assert gmap.window_label(*w[0]) == "2023/10/27 - 2023/11/09"
 
 
+def test_last_from_to_days():
+    """--last FROM:TO: windows that follow each other or overlap."""
+    now = dt.datetime(2026, 10, 28, 12)
+    day = dt.timedelta(days=1)
+    assert gmap._last("91") == (91, 0) and gmap._last("182:91") == (182, 91)
+    for bad in ("91:182", "91:91", "x", "10:-1"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            gmap._last(bad)
+    (a0, a1), (b0, b1), (c0, c1) = gmap.resolve_windows(
+        None, [(182, 91), (91, 0), (365, 0)], now
+    )
+    assert b1 == c1 == now and a1 + day == b0  # 3 + 3 months, no gap
+    assert (a1 - a0).days + 1 == (b1 - b0).days + 1 == 91
+    assert c0 < a0  # the year overlaps both
+    assert gmap.resolve_windows(None, [7], now) == [(now - 6 * day, now)]
+    p = gmap.build_parser(config=None)
+    args = p.parse_args(["velocity", "SENG", "--last", "182:91", "--last", "91"])
+    assert args.last == [(182, 91), (91, 0)]
+
+
 def test_auto_scale_and_scale_bar():
     assert gmap._nice(730) == 500 and gmap._nice(0.03) == 0.02
     scale, ref = gmap.auto_scale([1.0, 2.0, 1000.0, np.nan, 0.0])
