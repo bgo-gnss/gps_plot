@@ -269,6 +269,9 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   and the 3 months share one map (BGÓ 2026-10-27: both on one map). On a
   `--vertical` map the windows' arrows stand side by side (0.18 cm apart).
   The same `--scale`/`--scale-ref` across maps keeps them comparable.
+- **Where maps go** (2026-10-28, BGÓ): under their area,
+  `locations/<root>/<cdn>/maps/`, beside `graphs/`; aflogun's *Kort* tab
+  lists every PNG there, so a new map product needs no code change.
 - **Moving windows** (2026-10-28, BGÓ: many flavours of map): `--last
   DAYS` or `--last FROM:TO` days before the end (`--last 7` = `7:0`), so a
   product never names a date and the daily run redraws it from the newest
@@ -284,7 +287,7 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   svartsengi_velocity:
     tool: map
     map: velocity
-    dir: maps/reykjanes/svartsengi
+    dir: locations/volcanos/reykjanes/maps   # under its area: aflogun Kort
     args:
       - --region -22.72/-22.17/63.76/63.945
       - --projection M15.5c --dem iceland --sea-smooth 0.5 --title=
