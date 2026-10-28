@@ -115,6 +115,20 @@ def place(
     return None
 
 
+def corner_spot(
+    size: tuple[float, float], map_size: tuple[float, float], corner: str
+) -> Spot:
+    """A ``size`` box in ``corner`` (BL/BR/TL/TR) of the map, inside its
+    frame by the layout margin, whatever is under it; a bottom corner sits
+    above the band of the longitude annotations."""
+    from gps_plot.layout import BOTTOM_LABELS_CM, MARGIN_CM
+
+    w, h = size
+    x = map_size[0] - MARGIN_CM - w if corner[1] == "R" else MARGIN_CM
+    y = map_size[1] - MARGIN_CM - h if corner[0] == "T" else BOTTOM_LABELS_CM
+    return Spot(x, y, w, h)
+
+
 def beside(
     size: tuple[float, float],
     map_size: tuple[float, float],

@@ -130,8 +130,11 @@ def test_auto_scale_and_scale_bar():
     assert scale == pytest.approx(
         gmap.TARGET_ARROW_CM / np.percentile([1, 2, 1000], 90)
     )
-    assert gmap.scale_bar_km((-22.8, -21.9, 63.75, 64.1)) == 5.0
+    # the 1-2-5 number nearest a fifth of the width: 44 km wide -> 10, not 5
+    assert gmap.scale_bar_km((-22.8, -21.9, 63.75, 64.1)) == 10.0
     assert gmap.scale_bar_km((-24.6, -13.2, 63.2, 66.7)) == 100.0
+    assert gmap.scale_bar_km((-17.02, -16.6, 63.92, 64.045)) == 5.0  # 20.5 km
+    assert gmap.scale_bar_km((-22.72, -22.17, 63.76, 63.945)) == 5.0
 
 
 def test_parser_kinds_and_defaults():
@@ -1029,3 +1032,16 @@ def test_at_label_names_the_date_of_a_transient_rate() -> None:
     from gps_plot.map import at_label
 
     assert at_label(dt.datetime(2026, 10, 25)) == "rate on 2026/10/25"
+
+
+def test_locator_corner_is_exact():
+    from gps_plot import insets
+    from gps_plot.layout import BOTTOM_LABELS_CM, MARGIN_CM
+
+    bl = insets.corner_spot((4.0, 3.0), (15.5, 10.0), "BL")
+    tr = insets.corner_spot((4.0, 3.0), (15.5, 10.0), "TR")
+    assert (bl.x, bl.y) == (MARGIN_CM, BOTTOM_LABELS_CM)  # above the labels
+    assert (tr.x, tr.y) == (15.5 - MARGIN_CM - 4.0, 10.0 - MARGIN_CM - 3.0)
+    p = gmap.build_parser(config=None)
+    args = p.parse_args(["station", "SENG", "--locator-corner", "BL"])
+    assert args.locator_corner == "BL"
