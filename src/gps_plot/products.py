@@ -52,11 +52,14 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
 MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations",
-            "layers", "gmt", "gmt_config", "area")  # fmt: skip
+            "layers", "gmt", "gmt_config", "area", "label")  # fmt: skip
 #: keys of a plots.yaml ``map_categories:`` / ``map_areas:`` entry: the
 #: defaults of every map of that kind of area / of that area
 MAP_AREA_KEYS = ("layers", "gmt", "gmt_config", "args")
-MAP_RUN_KEYS = ("name", "args", "publish", "layers", "gmt", "gmt_config")
+MAP_RUN_KEYS = ("name", "args", "publish", "layers", "gmt", "gmt_config", "caption")
+#: where gpsplot run writes the captions of a map dir (aflogun Kort shows
+#: them under the images): {file stem: text}
+CAPTIONS_FILE = "captions.json"
 #: map kinds a product may draw (gpsplot map KIND)
 MAP_KINDS = ("velocity", "deformation", "station")
 
@@ -108,6 +111,8 @@ class Job:
     tool: str = "ts"  # "ts", "stack" (one figure of all) or "map"
     group: str | None = None  # the stacks: group of a stack
     kind: str | None = None  # a map's KIND (velocity, deformation, station)
+    #: (dir, file stem, text) of the captions of the files it writes
+    captions: tuple[tuple[str, str, str], ...] = ()
 
     def tool_argv(self, out_dir: str) -> list[str]:
         """The tool's whole argument list, writing to ``out_dir`` (a map's
@@ -157,6 +162,7 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 str(cdn),
                 {
                     "key": key,
+                    "name": str(spec.get("name_is") or spec.get("name") or key),
                     "category": category,
                     "root": roots.get(category, DEFAULT_ROOT),
                     "stations": [],
@@ -411,7 +417,7 @@ def expand(
         if spec.get("tool") == "map":
             # an --area filter keeps the maps of those areas (area:)
             if want_areas is None or spec.get("area") in want_areas:
-                jobs += map_jobs(pname, spec, defaults, areas, cfg)
+                jobs += map_jobs(pname, spec, defaults, areas, cfg, events)
             continue
         if kind in AREA_KINDS:
             names = [a for a in areas if a not in set(spec.get("exclude") or ())]
@@ -533,6 +539,7 @@ def map_jobs(
     defaults: Mapping[str, Any],
     areas: Mapping[str, Mapping[str, Any]] | None = None,
     cfg: Mapping[str, Any] | None = None,
+    events: Sequence[Mapping[str, Any]] = (),
 ) -> list[Job]:
     """The jobs of a map product (``tool: map``): one ``gpsplot map KIND``
     per run, each with its own ``name:`` (the file's basename) and
@@ -556,6 +563,8 @@ def map_jobs(
     if not out_dir:
         raise ValueError(f"plots.yaml {pname}: a map product needs dir: or area:")
     spec = {**spec, "dir": out_dir}
+    area = (areas or {}).get(str(spec.get("area") or ""), {})
+    label = str(spec.get("label") or area.get("name") or pname)
     stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
     checks = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
     names: set[str] = set()
@@ -578,13 +587,17 @@ def map_jobs(
         for where, prefix in levels:
             argv += map_option_args(pname, where, prefix)
         argv += ["--name", name]
+        caps = [(out_dir, name, str(run.get("caption") or
+                                     map_caption(str(kind), argv, label, events)))]  # fmt: skip
         if checks and kind == "station":  # the track map draws them itself
             if "--track" not in argv:
                 raise ValueError(f"plots.yaml {pname}: ts_stations: needs --track")
             argv += ["--track-series", ",".join(checks)]
-        jobs.append(Job(pname, None, str(spec["dir"]), stations, tuple(argv),
+            caps += [(f"{out_dir}/{CHECK_SUBDIR}", f"{name}-{sta}",
+                      track_series_caption(sta, argv, events)) for sta in checks]  # fmt: skip
+        jobs.append(Job(pname, None, out_dir, stations, tuple(argv),
                         bool(run.get("publish", False)), tool="map", group=name,
-                        kind=str(kind)))  # fmt: skip
+                        kind=str(kind), captions=tuple(caps)))  # fmt: skip
     if not jobs:
         raise ValueError(f"plots.yaml {pname}: a map product needs runs:")
     return jobs + map_ts_jobs(pname, spec, jobs, defaults)
@@ -653,7 +666,9 @@ def map_ts_jobs(
                             ("--save", str(defaults.get("save", "png")),
                              "-s", f"{start:%Y%m%d}", *argv,
                              "--name", f"{stem}-{sta}"),
-                            any(r.publish for r in runs), group=f"{stem}-{sta}"))  # fmt: skip
+                            any(r.publish for r in runs), group=f"{stem}-{sta}",
+                            captions=((f"{spec['dir']}/{CHECK_SUBDIR}", f"{stem}-{sta}",
+                                       check_caption(sta, opts)),)))  # fmt: skip
     return jobs
 
 
@@ -924,3 +939,112 @@ def stale_map_plots(
             if f.is_file() and f.suffix in (".png", ".pdf") and f.stem not in keep
         ]
     return stale
+
+
+def _ddmm(day: dt.date) -> str:
+    return f"{day:%d.%m.}"
+
+
+def _windows_text(argv: Sequence[str], today: dt.date | None = None) -> str:
+    """The windows of map options (``--last``, ``--window``, ``-e``) in
+    words: ``22.05.–28.10.2026 og 30.07.–28.10.2026``."""
+    end = today or dt.date.today()
+    tokens = list(argv)
+    for i, tok in enumerate(tokens[:-1]):
+        if tok in ("-e", "--end"):
+            end = dt.datetime.strptime(tokens[i + 1], "%Y%m%d").date()
+    spans = []
+    for i, tok in enumerate(tokens[:-1]):
+        value = tokens[i + 1]
+        if tok == "--last":
+            first, _, to = value.partition(":")
+            a = end - dt.timedelta(days=int(first) - 1)
+            spans.append((a, end - dt.timedelta(days=int(to or 0))))
+        elif tok == "--window":
+            a_s, _, b_s = value.partition(":")
+            a = dt.datetime.strptime(a_s, "%Y%m%d").date()
+            b = dt.datetime.strptime(b_s, "%Y%m%d").date() if b_s else end
+            spans.append((a, b))
+    words = [f"{_ddmm(a)}–{_ddmm(b)}{b:%Y}" for a, b in spans]
+    return " og ".join(words)
+
+
+def _option(argv: Sequence[str], name: str) -> str | None:
+    tokens = list(argv)
+    for i, tok in enumerate(tokens[:-1]):
+        if tok == name:
+            return tokens[i + 1]
+    return None
+
+
+def onset_text(spec: str | None, events: Sequence[Mapping[str, Any]] = ()) -> str:
+    """``--track``'s onset as a date (``23.09.2026``): a YYYYMMDD, or the
+    onset of the events.yaml event of that id (or the one id containing it);
+    the spec itself when neither."""
+    if not spec:
+        return ""
+    try:
+        return f"{dt.datetime.strptime(spec, '%Y%m%d'):%d.%m.%Y}"
+    except ValueError:
+        pass
+    hits = [e for e in events if str(e.get("id")) == spec] or [
+        e for e in events if spec in str(e.get("id"))
+    ]
+    if len(hits) == 1 and hits[0].get("onset") is not None:
+        onset = hits[0]["onset"]
+        day = onset if isinstance(onset, dt.date) else dt.date.fromisoformat(str(onset))
+        return f"{day:%d.%m.%Y}"
+    return spec
+
+
+def map_caption(
+    kind: str,
+    argv: Sequence[str],
+    label: str,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """A map's caption in Icelandic, from its options (first draft, BGÓ
+    2026-10-28; a run's ``caption:`` replaces it)."""
+    if kind == "velocity":
+        way = "lóðréttur" if "--vertical" in argv else "láréttur"
+        windows = _windows_text(argv)
+        return f"{label}: {way} hraði (mm/ár)" + (f", {windows}" if windows else "")
+    if kind == "station" and _option(argv, "--track"):
+        recent = _option(argv, "--track-recent") or "14"
+        onset = onset_text(_option(argv, "--track"), events)
+        return (f"{label}: daglegar stöður frá {onset}, litaðar eftir dögum; "
+                f"hraði frá {onset} (blátt) og síðustu {recent} daga (rautt)")  # fmt: skip
+    if kind == "deformation":
+        return f"{label}: færsla"
+    return f"{label}: stöðvakort"
+
+
+def check_caption(sta: str, opts: Sequence[str]) -> str:
+    """A velocity map's check series: the station and the map's windows."""
+    windows = _windows_text(opts)
+    return f"{sta}: tímaröð með hraða kortsins" + (f", {windows}" if windows else "")
+
+
+def track_series_caption(
+    sta: str, argv: Sequence[str], events: Sequence[Mapping[str, Any]] = ()
+) -> str:
+    """A track map's series of one station."""
+    recent = _option(argv, "--track-recent") or "14"
+    onset = onset_text(_option(argv, "--track"), events)
+    return (f"{sta}: norður og austur, leitni fyrir {onset} fjarlægð; hraði frá "
+            f"{onset} (blátt) og síðustu {recent} daga (rautt)")  # fmt: skip
+
+
+def map_captions(
+    jobs: Sequence[Job], configured: Sequence[Job]
+) -> dict[str, dict[str, str]]:
+    """{dir: {file stem: caption}} of the dirs the ``jobs`` write to, from
+    every ``configured`` job writing there (so a run of one product keeps
+    the others' captions)."""
+    dirs = {d for job in jobs for d, _stem, _text in job.captions}
+    out: dict[str, dict[str, str]] = {d: {} for d in dirs}
+    for job in configured:
+        for d, stem, text in job.captions:
+            if d in out:
+                out[d][stem] = text
+    return out

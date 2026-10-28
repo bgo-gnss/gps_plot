@@ -315,6 +315,12 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   → product → run. Layers add up; `-NAME` (a layer or preset) takes one
   out (`gis_layers.expand`; on the command line `--layers=-swarms`).
   `gpsplot run --area X` now also runs X's maps.
+- **Captions** (2026-10-28, first draft): `gpsplot run` writes
+  `captions.json` ({file stem: text}) in each map dir and its `ts/`, from
+  every configured run writing there; aflogun Kort shows them. Generated in
+  Icelandic from the options (`products.map_caption`: place = the
+  product's `label:` or the area's `name_is`, windows as dates, the track
+  onset from events.yaml); a run's `caption:` replaces it.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
   which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
   smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the

@@ -871,3 +871,28 @@ def test_map_area_gives_dir_and_defaults_in_order() -> None:
     with pytest.raises(ValueError, match="needs dir: or area:"):
         products.expand({"products": {"x": {"tool": "map", "map": "station",
                                             "runs": [{"name": "a"}]}}}, areas=areas)  # fmt: skip
+
+
+def test_map_captions_in_icelandic_from_the_options() -> None:
+    today = dt.date(2026, 10, 28)
+    assert products._windows_text(["--last", "160", "--last", "91"], today) == (
+        "22.05.–28.10.2026 og 30.07.–28.10.2026"
+    )
+    assert products._windows_text(["--last", "182:91"], today) == "30.04.–29.07.2026"
+    v = products.map_caption("velocity", ["--vertical", "--last", "7"], "Svartsengi")
+    assert v.startswith("Svartsengi: lóðréttur hraði (mm/ár), ")
+    events = [
+        {"id": "svinafellsheidi-2026-09-landslide", "onset": dt.date(2026, 9, 23)}
+    ]
+    assert products.onset_text("svinafellsheidi", events) == "23.09.2026"
+    assert products.onset_text("20260923") == "23.09.2026"
+    t = products.map_caption("station", ["--track", "svinafellsheidi"], "Svf", events)
+    assert t.startswith("Svf: daglegar stöður frá 23.09.2026")
+    # the runner's view: every configured job's caption of the dirs it writes
+    spec = {"tool": "map", "map": "station", "dir": "maps/x", "label": "X",
+            "ts_stations": ["SVIE"], "args": "--track 20260923",
+            "runs": [{"name": "a"}, {"name": "b", "caption": "Mín lýsing"}]}  # fmt: skip
+    jobs = products.expand({"products": {"x": spec}}, areas={})
+    caps = products.map_captions(jobs[:1], jobs)
+    assert caps["maps/x"]["b"] == "Mín lýsing" and caps["maps/x"]["a"].startswith("X:")
+    assert caps["maps/x/ts"]["a-SVIE"].startswith("SVIE: norður og austur")
