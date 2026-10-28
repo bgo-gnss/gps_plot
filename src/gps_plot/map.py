@@ -411,6 +411,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         + ", ".join(gmt_overrides.LAYERS) + ")",
     )  # fmt: skip
     g.add_argument(
+        "--strict-layers", action="store_true",
+        help="refuse a --layers layer whose file is not on this host "
+        "(default: draw the map without it, with a warning)",
+    )  # fmt: skip
+    g.add_argument(
         "--layers-file", default=None, metavar="FILE",
         help="the layer catalogue (layers, their look and GMT arguments, "
         "presets) over the built-in one (default: map_layers.yaml in the "
@@ -942,15 +947,20 @@ def _style(
         extent = region
         if extent is None and points:
             extent = _region_of(points, args.margin, maps)
-        choice = maps.iceland_dem(
-            gis_dir(config),
-            extent or maps.ICELAND_DEM_LEVELS[-1][2],
-            kw.get("projection", maps.DEFAULT_PROJECTION),
-        )
-        kw["dem_grid"] = choice.grid
-        for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
-            if getattr(choice, key) is not None:
-                kw[key] = getattr(choice, key)
+        extent = extent or maps.ICELAND_DEM_LEVELS[-1][2]
+        projection = kw.get("projection", maps.DEFAULT_PROJECTION)
+        try:
+            choice = maps.iceland_dem(gis_dir(config), extent, projection)
+        except FileNotFoundError as exc:
+            # not on this host (it is not in git): GMT's own relief and coast
+            kw["dem_grid"] = maps.earth_relief_fallback(extent, projection)
+            print(f"--dem iceland: {exc}; drawing {kw['dem_grid']} instead",
+                  file=sys.stderr)  # fmt: skip
+        else:
+            kw["dem_grid"] = choice.grid
+            for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
+                if getattr(choice, key) is not None:
+                    kw[key] = getattr(choice, key)
     if getattr(args, "dem_zone", None):
         kw["zones"] = tuple(args.dem_zone)
     for key in ("glaciers", "lakes"):
@@ -978,8 +988,9 @@ def _style(
 
         cat = getattr(args, "layer_catalogue", None) or gis_layers.BUILTIN
         kw["overlays"] = kw.get("overlays", ()) + gis_layers.overlays(
-            gis_layers.expand(args.layers, cat), gis_dir(config), cat
-        )
+            gis_layers.expand(args.layers, cat), gis_dir(config), cat,
+            strict=args.strict_layers,
+        )  # fmt: skip
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -1463,12 +1474,13 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
 
         cat = getattr(args, "layer_catalogue", None) or gis_layers.BUILTIN
         if any(spec.strip().lower() == gis_layers.LIST for spec in args.layers):
-            print(gis_layers.describe(cat))
+            print(gis_layers.describe(cat, gis_dir(config)))
             return 0
-        try:
+        try:  # names checked here; a missing file is skipped (--strict-layers)
             gis_layers.overlays(
-                gis_layers.expand(args.layers, cat), gis_dir(config), cat
-            )
+                gis_layers.expand(args.layers, cat), gis_dir(config), cat,
+                strict=args.strict_layers, quiet=True,
+            )  # fmt: skip
         except (ValueError, FileNotFoundError) as exc:
             parser.error(str(exc))
     if getattr(args, "fissure_swarms", False):

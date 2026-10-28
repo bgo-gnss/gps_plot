@@ -116,6 +116,10 @@ off the logo. The layer catalogue is config: `map_layers.yaml` (gpsconfig
 dir, or `--layers-file`) adds/restyles layers and presets over the built-in
 one (`gis_layers.load_catalogue`), each layer a `--gmt` step with its own
 `gmt:` args; plots.yaml map products take `layers:`, `gmt:`, `gmt_config:`.
+Fallbacks: a missing layer file is skipped with a warning (`--strict-layers`
+refuses), a missing Iceland DEM draws `@earth_relief_15s` (no SRTM north of
+60°); `--layers list` marks missing files. Guide outline:
+`docs/map-config-guide.md`.
 Planned: seismic panels (on ice) — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).
@@ -251,7 +255,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-28 — map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-28 — layer/DEM fallbacks, guide outline; map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
