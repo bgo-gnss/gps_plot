@@ -739,6 +739,7 @@ def test_ts_stations_draw_the_map_windows_once_per_window_set() -> None:
     ]  # fmt: skip
     six = checks[0]
     assert six.tool == "ts" and six.stations == ("SENG",) and not six.publish
+    assert six.out_dir == "maps/svartsengi/ts"
     assert six.argv == (
         "--save", "png", "-s", "20251212",  # twice the 160 days back
         "--ref", "detrend", "--detrend-terms", "periodic",  # the map's plate-periodic
@@ -779,12 +780,21 @@ def test_stale_map_plots_are_files_no_run_writes(tmp_path) -> None:
     jobs = products.expand({"products": {"sv": _check_spec()}}, areas={})
     folder = tmp_path / "maps/svartsengi"
     folder.mkdir(parents=True)
-    for stem in ("sv-6man-3man-larett", "sv-6man-3man-SENG", "sv-ar-3man-larett",
-                 "sv-6man-3man-HS02"):  # fmt: skip
+    (folder / "ts").mkdir()
+    for stem in ("sv-6man-3man-larett", "sv-ar-3man-larett", "sv-6man-3man-SENG"):
         (folder / f"{stem}.png").write_text("x")
+    for stem in ("sv-6man-3man-SENG", "sv-6man-3man-HS02"):
+        (folder / "ts" / f"{stem}.png").write_text("x")
     (folder / "notes.txt").write_text("x")
     stale = products.stale_map_plots(jobs, jobs, tmp_path)
-    assert [f.name for f in stale] == ["sv-6man-3man-HS02.png", "sv-ar-3man-larett.png"]
+    assert [f.relative_to(folder).as_posix() for f in stale] == [
+        "sv-6man-3man-SENG.png",  # a check series moved to ts/
+        "sv-ar-3man-larett.png",
+        "ts/sv-6man-3man-HS02.png",
+    ]
     # a dir a time-series product also writes to is left alone
     ts = products.Job("graphs", None, "maps/svartsengi", ("SENG",), (), False)
-    assert products.stale_map_plots(jobs, [*jobs, ts], tmp_path) == []
+    left = products.stale_map_plots(jobs, [*jobs, ts], tmp_path)
+    assert [f.relative_to(folder).as_posix() for f in left] == [
+        "ts/sv-6man-3man-HS02.png"
+    ]

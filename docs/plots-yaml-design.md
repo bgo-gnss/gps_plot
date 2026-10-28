@@ -286,10 +286,11 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   the numbers are the arrows' numbers (SENG 160 d: 33.7/27.9/175.0 mm/yr
   on both). One set per distinct set of windows (a horizontal and a
   vertical run share theirs), named `<the runs' common words>-<STA>`
-  (`svartsengi-6man-3man-SENG`), in the maps dir, so Kort shows them; the
-  plot starts twice the longest window back. Not for `--ref pre-onset`.
+  (`svartsengi-6man-3man-SENG`), in `<dir>/ts/`, which aflogun shows in a
+  tab of its own (Tímaraðir korta, BGÓ 2026-10-28); the plot starts twice
+  the longest window back. Not for `--ref pre-onset`.
 - **Stale map files:** `gpsplot run` deletes a PNG/PDF in a map product's
-  dir that no configured run or check series writes (a renamed run, a
+  dir (and its `ts/`) that no configured run or check series writes (a renamed run, a
   station taken out), unless another (ts) product shares the dir;
   `--keep-stale` keeps them.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),

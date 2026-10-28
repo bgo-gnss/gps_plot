@@ -483,6 +483,10 @@ def map_jobs(
     return jobs + map_ts_jobs(pname, spec, jobs, defaults)
 
 
+#: where a map product's check series go, under its dir (aflogun shows
+#: them in a tab of their own, BGÓ 2026-10-28)
+CHECK_SUBDIR = "ts"
+
 #: map options that set a velocity map's windows and reference: the ones the
 #: check time series (``ts_stations:``) must repeat
 _MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end")
@@ -511,7 +515,7 @@ def map_ts_jobs(
     One set per distinct set of windows (a horizontal and a vertical run of
     the same windows share it), named ``<the runs' common name>-<STA>``
     (``svartsengi-6man-3man-larett``/``-lodrett`` → ``svartsengi-6man-3man-
-    SENG``), next to the maps. The plot starts twice the longest window
+    SENG``), in ``<dir>/ts/``. The plot starts twice the longest window
     before the end.
 
     Raises:
@@ -535,7 +539,7 @@ def map_ts_jobs(
         argv, days = _ts_check_argv(pname, opts, today or dt.date.today())
         start = (today or dt.date.today()) - dt.timedelta(days=2 * days)
         for sta in wanted:
-            jobs.append(Job(pname, None, str(spec["dir"]), (sta,),
+            jobs.append(Job(pname, None, f"{spec['dir']}/{CHECK_SUBDIR}", (sta,),
                             ("--save", str(defaults.get("save", "png")),
                              "-s", f"{start:%Y%m%d}", *argv,
                              "--name", f"{stem}-{sta}"),
@@ -792,7 +796,9 @@ def stale_map_plots(
         else:
             shared.add(job.out_dir)
     stale: list[Path] = []
-    for out_dir in sorted({j.out_dir for j in jobs if j.tool == "map"}):
+    dirs = {j.out_dir for j in jobs if j.tool == "map"}
+    dirs |= {f"{d}/{CHECK_SUBDIR}" for d in dirs}
+    for out_dir in sorted(dirs):
         folder = root / out_dir
         if out_dir in shared or not folder.is_dir():
             continue
