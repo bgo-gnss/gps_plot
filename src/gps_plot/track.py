@@ -77,6 +77,11 @@ class Rate:
         return math.hypot(self.north, self.east)
 
     @property
+    def azimuth(self) -> float:
+        """Direction of motion [degrees clockwise from north]."""
+        return math.degrees(math.atan2(self.east, self.north)) % 360
+
+    @property
     def sigma_speed(self) -> float:
         """σ of :attr:`speed`, along the rate's direction."""
         s = self.speed
@@ -269,7 +274,8 @@ def legend_entries(
         if tr.since is not None:
             s = tr.since
             out.append((f"{tr.marker} {s.speed:.0f} {pm} {s.sigma_speed:.0f} mm/yr "
-                        f"since {onset:%d.%m.%Y}", SINCE_COLOR))  # fmt: skip
+                        f"toward {s.azimuth:.0f}{deg} since {onset:%d.%m.%Y}",
+                        SINCE_COLOR))  # fmt: skip
             if tr.recent is not None:
                 r = tr.recent
                 out.append((f"{tr.marker} {r.speed:.0f} {pm} {r.sigma_speed:.0f} "
