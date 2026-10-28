@@ -1,95 +1,178 @@
-# Map configuration guide — OUTLINE
+# Map configuration guide
 
-*Status: outline only (BGÓ 2026-10-28: "not overreach creating the
-documentation now"). Each bullet is a section to write; the facts it needs
-are named so the writing is collection, not research.*
+*Draft, 2026-10-28. The map tools are still growing; this says how they
+work today. Sections marked TODO wait for features.*
 
-## 1. What controls a map (one page, the map of the config)
+## 1. What controls a map
 
-- The three files and who reads them: `plots.yaml` (which maps exist and
-  what each draws), `map_layers.yaml` (what a layer is and how it looks),
-  `postprocess.cfg [PATHS] gis_dir` (where the files are). All in
-  gps-config-data → `~/.config/gpsconfig/`.
-- Precedence, one diagram: built-in catalogue → `map_layers.yaml` →
-  plots.yaml `defaults:` → `map_categories:` → `map_areas:` → product →
-  run → command line (`--gmt` wins); `-NAME` takes a layer out.
+Three files in gps-config-data (deployed to `~/.config/gpsconfig/`):
 
-## 2. Discovering what is available (the CLI)
+| File | Says |
+|---|---|
+| `plots.yaml` | which maps the daily run makes, and what each draws |
+| `map_layers.yaml` | what each layer is: its file, colour, label, symbol |
+| `postprocess.cfg` `[PATHS] gis_dir` | where the GIS files are (`~/gps-data/gis`) |
 
-- `gpsplot map station --layers list` — every layer and preset, the
-  catalogue it came from, `[missing: …]` for files not on this host.
-- `gpsplot map --help` — `--gmt` lists the drawing steps (the layers are
-  steps too); `--gmt-config` any GMT default.
-- `gpsplot map --dem-cmap list` (palettes), `gpsplot run --dry-run` (what
-  the daily run will draw, with every option spelled out).
-- `gpsplot map station --gmt list` — every drawing step (the layers
-  included), its PyGMT call, the long names gpsplot passes with their GMT
-  letters, and the call's other long names.
+A map's settings come in this order; a later one adds to or wins over an
+earlier one:
 
-## 3. Tutorial: a new area map, start to finish
+1. gps_plot's built-in layer catalogue
+2. `map_layers.yaml`
+3. `plots.yaml` `defaults:` (`map_args`, `map_layers`, `map_gmt`, `map_gmt_config`)
+4. `plots.yaml` `map_categories:` — the kind of area (volcanic, regional,
+   seismic, monitoring, infrastructure)
+5. `plots.yaml` `map_areas:` — the area
+6. the map product
+7. the run
+8. the command line
 
-- Pick region/projection by hand: `gpsplot map station … --region=W/E/S/N`.
-- Add layers one at a time (`--layers volcanic`, then `rural`), restyle
-  one (`--gmt calderas:pen=2p,red`), a GMT default (`--gmt-config
-  MAP_FRAME_TYPE=plain`).
-- Move it into plots.yaml: `tool: map`, `dir:` under the area,
-  `layers:`, `gmt:`, `runs:` with `name:`; `gpsplot run --dry-run
-  --product X`; deploy; it shows in aflogun Kort.
-- A velocity map with check series (`ts_stations:`), a track map
-  (`--track EVENT`, `--track-series`).
+Layers add up from level to level. `-NAME` takes a layer or a preset out
+again.
+
+## 2. Finding what is there
+
+```bash
+gpsplot map station --layers list      # layers and presets; [missing] = file not on this host
+gpsplot map station --gmt list         # drawing steps, their PyGMT call and options
+gpsplot map station --dem-cmap list    # colour palettes
+gpsplot run --dry-run                  # every job of the daily run, all options spelled out
+gpsplot run --dry-run --product svinafellsheidi_track
+gpsplot map --help                     # everything else
+```
+
+## 3. Tutorial: a new area map
+
+1. **Draw it by hand first.**
+   ```bash
+   gpsplot map station SVIE SKFC SLEC --region=-17.06/-16.58/63.905/64.05 \
+       --dem iceland --layers volcanic,rural --save png
+   ```
+   Use `--region=` with `=` (the west longitude is negative).
+2. **Try layers and looks.** Add or take out layers:
+   `--layers volcanic,rural --layers=-buildings`. Change one layer:
+   `--gmt calderas:pen=2p,red`. Change a GMT default for the whole map:
+   `--gmt-config MAP_FRAME_TYPE=plain`.
+3. **Put it in `plots.yaml`.**
+   ```yaml
+   products:
+     my_map:
+       tool: map
+       map: station                  # or velocity, deformation
+       area: svinafellsheidi         # station_areas.yaml cdn slug: dir + area defaults
+       stations: [SVIE, SKFC, SLEC]
+       layers: [-buildings]          # change the area's layers
+       gmt: {calderas: {pen: 2p,red}}
+       args:
+         - --region -17.06/-16.58/63.905/64.05
+       runs:
+         - name: svinafellsheidi-kort  # the file name
+   ```
+4. **Check it.** `gpsplot run --dry-run --product my_map`, then
+   `gpsplot run --product my_map`.
+5. **Deploy it.** Copy `plots.yaml` to `~/.config/gpsconfig/`. The map
+   shows in aflogun under Kort for that area, with its caption.
+
+**A velocity map** (`map: velocity`) takes windows counted back from
+today: `--last 160 --last 91`, or `--last 182:91 --last 91` for "the 3
+months before the last 3". `ts_stations: [SENG, ...]` adds a time series per
+station with each window's rate drawn on the data (Kort → Tímaraðir
+korta).
+
+**A track map** (`map: station` with `--track EVENT`) shows the daily
+positions since an event in events.yaml. `--track-ref STA` measures them
+against a reference station, and `ts_stations:` adds each station's series.
+
+**Captions** are made from the map's options (place, dates, horizontal or
+vertical). `label:` on the product names the place; `caption:` on a run
+replaces the text.
 
 ## 4. Tutorial: a new layer
 
-- Get the data (WFS/ArcGIS query or a file), WGS84 GeoJSON or a
-  `LON LAT NAME` text file, under `gis_dir`.
-- Add it to `map_layers.yaml` (`file`, `help`, `pen`/`fill`/`symbol`,
-  `label`/`font`, `gmt`); a preset if it belongs with others.
-- If it comes from a service: a `build_NN_*.sh` step and an entry in
-  `refresh_layers.sh` FILES/SCRIPT, so the production host refreshes it.
+1. **Get the data** as WGS84 GeoJSON (polygons, lines or points), or a text
+   file of `LON LAT NAME` lines for names. Put it under `gis_dir`, for
+   example `vector/mine/huts.geojson`.
+2. **Add it to `map_layers.yaml`:**
+   ```yaml
+   layers:
+     huts:
+       file: vector/mine/huts.geojson
+       help: mountain huts (FÍ)
+       symbol: t0.15c          # points: a GMT symbol
+       fill: orange
+       pen: 0.3p,black
+       gmt: {transparency: 20} # any PyGMT option of its drawing call
+   presets:
+     hiking: [roads, huts]
+   ```
+3. **Check it:** `gpsplot map station --layers list` shows it, and
+   `--layers huts` draws it. It is also a `--gmt` step: `--gmt huts:t=50`.
+4. **If it comes from a web service**, write a `build_NN_*.sh` that fetches
+   it, and add the step to `refresh_layers.sh` (`FILES` and `SCRIPT`), so
+   the production host keeps it fresh.
 
 ## 5. Reference
 
-- `map_layers.yaml` keys (the header of the file is the short form).
-- plots.yaml map product and run keys: `tool map dir stations args runs
-  ts_stations layers gmt gmt_config`; run: `name args publish layers gmt
-  gmt_config`; `defaults: save map_args map_layers map_gmt
-  map_gmt_config`.
-- Drawing steps and what each draws (gmt_overrides.LAYERS).
+**`map_layers.yaml`** — `layers:` NAME: `file`, `help`, `pen`, `fill`,
+`label` (a feature property to write), `font`, `symbol` (points), `build`
+(what makes the file), `gmt` (more PyGMT options). `presets:` NAME: a list
+of layers. `none` means no pen or no fill.
 
-## 6. Data on the host: what is fetched, shipped, built
+**`plots.yaml` map product** — `tool: map`, `map`, `area` or `dir`,
+`label`, `stations`, `ts_stations`, `layers`, `gmt`, `gmt_config`,
+`args`, `runs`.
+**Run** — `name`, `caption`, `publish`, `layers`, `gmt`, `gmt_config`,
+`args`.
+**`map_categories:` / `map_areas:`** — `layers`, `gmt`, `gmt_config`,
+`args`.
+**`defaults:`** — `save`, `map_args`, `map_layers`, `map_gmt`,
+`map_gmt_config`.
 
-- Fetched (refresh_layers.sh, monthly gps-gis-refresh.timer): FutureVolc
-  (07), Reykjanes LMÍ/NÍ/IMO (08), IS 50V (09); a failed or shrunken
-  fetch keeps the old files.
-- Built once (not fetched): coast/ice/water (05–06).
-- Shipped: the Iceland DEM + its coast/glaciers/lakes, a private generic
-  package `iceland-dem/<VERSION>` of gps-data on git.vedur.is (never
-  GitHub): `gis/dem/publish_dem.sh`, `fetch_dem.sh`, `iceland-dem.sha256`;
-  the DEM README's "Shipping" section.
-- aflogun's interactive map: its own catalogue (`gislayers.json`) + the
-  VÍ GIS registry (cached an hour, last good list on an outage).
+`gmt:` is `{STEP: {KEY: VALUE}}` or a list of `STEP:KEY=VALUE`;
+`gmt_config:` is `{KEY: VALUE}` (GMT defaults, `gmt defaults -D` lists them).
 
-## 7. When something is missing (fallbacks)
+**Drawing steps:** `gpsplot map station --gmt list`.
 
-- A layer file missing: drawn without it, a warning; `--strict-layers`
-  refuses instead.
-- The Iceland DEM missing: GMT's `@earth_relief_15s` (SRTM 1″/3″ end at
-  60°N), downloaded by GMT and cached in `~/.gmt` (needs the internet
-  once).
-- No IS 50V coast/lakes: GMT's own coast (GSHHG).
-- A registry/service down: aflogun keeps the last list; the refresh keeps
-  the old files.
+## 6. Where the data comes from
+
+| What | How it gets to a host |
+|---|---|
+| FutureVolc volcanoes, calderas, swarms | fetched: `build_07_volcanic.sh` |
+| Reykjanes lavas, fissures, graben, barriers | fetched: `build_08_reykjanes.sh` |
+| IS 50V roads, buildings, farm names | fetched: `build_09_is50v.sh` |
+| Iceland DEM + coast, glaciers, lakes | shipped: `gis/dem/fetch_dem.sh` (package `iceland-dem` on git.vedur.is, never GitHub) |
+
+`gis/vector/refresh_layers.sh` re-fetches the first three; the
+`gps-gis-refresh` timer runs it monthly (TODO: install on the production
+host). A failed or shrunken download keeps the old files.
+
+aflogun's interactive map has its own layers (`gislayers.json`) and the
+VÍ GIS list (api.vedur.is/gis/layers, kept an hour).
+
+## 7. When something is missing
+
+- **A layer file is missing:** the map is drawn without it, with a warning.
+  `--strict-layers` stops instead.
+- **The Iceland DEM is missing:** GMT's own `@earth_relief_15s` is drawn
+  (coarser, about 450 m). GMT downloads it once into `~/.gmt`.
+- **No IS 50V coast:** GMT's own coast.
+- **A web service is down:** the refresh keeps the old files; aflogun keeps
+  the last layer list.
 
 ## 8. Troubleshooting
 
-- `--gmt` refused (unknown step/key: the message names the closest);
-  the long-name/letter clash; a layer drawn but invisible (order:
-  later on top); labels gone (`maps.apart`, inside the frame, the logo).
+- **`--gmt` refused:** the message names the nearest step or option.
+  `--gmt list` shows them.
+- **"cannot be used with":** an option given twice, once as a long name
+  and once as a letter. Use one form.
+- **A layer is drawn but hidden:** layers are drawn in order, so a later one
+  covers an earlier one. Change the order in `layers:`.
+- **Names are missing:** names that would overlap are dropped (the first
+  one wins), and names under the logo or cut by the frame are left out.
+- **`--layers -x` fails:** write `--layers=-x` (the `=` is needed).
 
-## Inline help to add to the config files
+## TODO: inline help in the config files
 
-- `plots.yaml`: a header block on map products (the keys of §5, one line
-  each) next to the existing standard/area comments.
-- `map_layers.yaml`: done (header lists the keys); add one commented
-  example of a new layer and of `gmt:`.
-- `postprocess.cfg`: comment on `gis_dir`.
+- `plots.yaml`: a short key list on the map products (the `map_categories`
+  block has one).
+- `map_layers.yaml`: an example of a new layer and of `gmt:`.
+- `postprocess.cfg`: a comment on `gis_dir`.
