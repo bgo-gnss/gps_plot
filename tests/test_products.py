@@ -754,7 +754,8 @@ def test_ts_stations_draw_the_map_windows_once_per_window_set() -> None:
 @pytest.mark.parametrize(
     ("change", "match"),
     [
-        ({"map": "station"}, "needs map: velocity"),
+        ({"map": "deformation"}, "needs map: velocity"),
+        ({"map": "station"}, "needs --track"),
         ({"runs": [{"name": "a", "args": "--ref pre-onset --last 9"}]}, "pre-onset"),
         ({"runs": [{"name": "a", "args": "--vertical"}]}, "--last/--window"),
     ],
@@ -798,3 +799,16 @@ def test_stale_map_plots_are_files_no_run_writes(tmp_path) -> None:
     assert [f.relative_to(folder).as_posix() for f in left] == [
         "ts/sv-6man-3man-HS02.png"
     ]
+
+
+def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path) -> None:
+    spec = {"tool": "map", "map": "station", "dir": "maps/sv",
+            "stations": ["SVIE", "SKFC"], "ts_stations": ["svie", "SKFC"],
+            "args": "--track some-event", "runs": [{"name": "sv-track"}]}  # fmt: skip
+    (job,) = products.expand({"products": {"sv": spec}}, areas={})
+    assert job.argv[-2:] == ("--track-series", "SVIE,SKFC")
+    (tmp_path / "maps/sv/ts").mkdir(parents=True)
+    for stem in ("sv-track-SVIE", "sv-track-SVIN"):
+        (tmp_path / "maps/sv/ts" / f"{stem}.png").write_text("x")
+    stale = products.stale_map_plots([job], [job], tmp_path)
+    assert [f.name for f in stale] == ["sv-track-SVIN.png"]

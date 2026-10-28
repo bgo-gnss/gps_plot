@@ -461,6 +461,7 @@ def map_jobs(
     if kind not in MAP_KINDS:
         raise ValueError(f"plots.yaml {pname}: map: one of {MAP_KINDS}, got {kind!r}")
     stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
+    checks = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
     names: set[str] = set()
     jobs = []
     for run in spec.get("runs") or []:
@@ -475,6 +476,10 @@ def map_jobs(
         for value in (defaults.get("map_args"), spec.get("args"), run.get("args")):
             argv += extra_args(value, MAP_RESERVED_OPTIONS)
         argv += ["--name", name]
+        if checks and kind == "station":  # the track map draws them itself
+            if "--track" not in argv:
+                raise ValueError(f"plots.yaml {pname}: ts_stations: needs --track")
+            argv += ["--track-series", ",".join(checks)]
         jobs.append(Job(pname, None, str(spec["dir"]), stations, tuple(argv),
                         bool(run.get("publish", False)), tool="map", group=name,
                         kind=str(kind)))  # fmt: skip
@@ -507,7 +512,8 @@ def map_ts_jobs(
     defaults: Mapping[str, Any],
     today: dt.date | None = None,
 ) -> list[Job]:
-    """The check time series of a velocity map (``ts_stations:``): each
+    """The check time series of a velocity map (``ts_stations:``; a
+    ``station --track`` map draws its own, ``--track-series``): each
     listed station's series with the map's windows fitted on it (``gpsplot
     ts --rate-last``/``--rate-window``, in the map's reference, so the
     numbers are the arrows' numbers), to see whether a line fits.
@@ -523,10 +529,12 @@ def map_ts_jobs(
             whose windows or --ref the series cannot repeat.
     """
     wanted = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
-    if not wanted:
+    if not wanted or spec.get("map") == "station":  # a track map: --track-series
         return []
     if spec.get("map") != "velocity":
-        raise ValueError(f"plots.yaml {pname}: ts_stations: needs map: velocity")
+        raise ValueError(
+            f"plots.yaml {pname}: ts_stations: needs map: velocity or station --track"
+        )
     sets: dict[tuple[str, ...], list[Job]] = {}
     for job in maps:
         sets.setdefault(_window_options(pname, job.argv), []).append(job)
@@ -793,6 +801,11 @@ def stale_map_plots(
     for job in configured:
         if job.group and (job.tool == "map" or "--name" in job.argv):
             names.setdefault(job.out_dir, set()).add(job.group)
+            if "--track-series" in job.argv:  # the track map's own ts/<name>-<STA>
+                listed = job.argv[job.argv.index("--track-series") + 1]
+                names.setdefault(f"{job.out_dir}/{CHECK_SUBDIR}", set()).update(
+                    f"{job.group}-{sta}" for sta in listed.split(",")
+                )
         else:
             shared.add(job.out_dir)
     stale: list[Path] = []

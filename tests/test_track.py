@@ -149,3 +149,19 @@ def test_locator_sits_on_a_floor() -> None:
     assert spot.y > 3.2
     top = insets.corner_spot((4.0, 3.0), (15.5, 10.0), "TL", floor=3.2)
     assert top.y == pytest.approx(10.0 - 3.0 - 0.15)
+
+
+def test_trimmed_keeps_the_rates_and_the_series_lines_match_them() -> None:
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE, before_days=90)
+    short = track.trimmed(tr, 30)
+    assert (
+        short.days[0] >= -30 and short.since == tr.since and short.n_after == tr.n_after
+    )
+    assert tr.since is not None
+    days, mm = track.rate_line(tr, 0, tr.since, 0.0)
+    slope = (mm[1] - mm[0]) / (days[1] - days[0]) * track.YEAR
+    assert slope == pytest.approx(tr.since.north)
+    fig = track.series_figure(tr, ONSET, before_days=30)
+    texts = [t.get_text() for ax in fig.axes[:2] for t in ax.texts]
+    assert any(f"v = {tr.since.north:.0f} ±" in x for x in texts)

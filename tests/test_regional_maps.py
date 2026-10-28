@@ -231,3 +231,39 @@ def test_a_station_with_several_vectors_is_named_once():
            maps.StationCoordinate("SKSH", -22.5, 63.9)]  # fmt: skip
     maps._draw_station_labels(Fig(), pts, set(), "5p", "J0.2")
     assert calls[0]["text"] == ["SENG", "SKSH"]
+
+
+def test_area_layers_volcanic_and_rural(tmp_path):
+    from gps_plot import gmt_overrides
+
+    assert gis_layers.expand(["volcanic,rural"]) == [
+        "swarms", "volcanoes", "calderas", "localroads", "roads", "buildings", "farms",
+    ]  # fmt: skip
+    assert set(gis_layers.expand(["volcanic,rural"])) - {"farms"} <= set(
+        gmt_overrides.LAYERS
+    )
+    for name in ("buildings", "farms"):
+        path = tmp_path / gis_layers.LAYERS[name].path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    buildings, farms = gis_layers.overlays(["buildings", "farms"], str(tmp_path))
+    assert buildings.symbol == "s0.07c" and buildings.step == "buildings"
+    assert farms.step == "place-labels"
+    with pytest.raises(FileNotFoundError, match="build_09_is50v.sh"):
+        gis_layers.overlays(["localroads"], str(tmp_path))
+
+
+def test_overlay_points_and_labels_kept_apart():
+    from gps_plot import maps
+
+    doc = {"features": [
+        {"geometry": {"type": "Point", "coordinates": [-16.9, 64.0]}},
+        {"geometry": {"type": "MultiPoint", "coordinates": [[-16.8, 64.0], [-16.7, 64.0]]}},
+        {"geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}},
+    ]}  # fmt: skip
+    assert maps.overlay_points(doc) == [(-16.9, 64.0), (-16.8, 64.0), (-16.7, 64.0)]
+    region, projection = (-17.0, -16.6, 63.9, 64.05), "M10c"
+    labels = [(-16.85, 63.99, "Svínafell"), (-16.851, 63.991, "Nýjahús"),
+              (-16.7, 63.95, "Hof")]  # fmt: skip
+    kept = maps.apart(labels, "6p,Helvetica", region, projection)
+    assert [t for *_, t in kept] == ["Svínafell", "Hof"]  # the first one wins

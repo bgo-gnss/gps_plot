@@ -609,7 +609,9 @@ class MapOverlay:
     """A GeoJSON outline layer (WGS84 lon/lat) drawn on the base layer.
 
     Polygons are filled with ``fill`` (None: outline only) and outlined
-    with ``pen`` (None: no outline); lines get the pen; points are ignored.
+    with ``pen`` (None: no outline); lines get the pen; points are drawn as
+    ``symbol`` (a GMT style, e.g. ``s0.07c``, in ``fill`` and ``pen``) or,
+    with none, ignored.
     ``label`` names a feature property written at each feature in
     ``font`` (a polygon's at its largest ring's centre, a line's at its
     middle vertex). A ``.txt`` path is a place-name file instead,
@@ -625,6 +627,7 @@ class MapOverlay:
     label: str | None = None
     font: str = DEFAULT_PLACE_FONT
     step: str = "overlay"
+    symbol: str | None = None
     #: a lon/lat box (W, E, S, N) whose labels are left out: a zoom
     #: inset's, which names them itself
     unlabelled_box: tuple[float, float, float, float] | None = None
@@ -684,6 +687,19 @@ def overlay_segments(geojson: Mapping[str, Any]) -> tuple[str, str]:
             for r in [coords] if kind == "LineString" else coords:
                 ring(lines, ">", r)
     return "\n".join(polys), "\n".join(lines)
+
+
+def overlay_points(geojson: Mapping[str, Any]) -> list[tuple[float, float]]:
+    """``(lon, lat)`` of the Point and MultiPoint features of a GeoJSON."""
+    out: list[tuple[float, float]] = []
+    for feature in geojson.get("features") or ():
+        geom = feature.get("geometry") or {}
+        kind, coords = geom.get("type"), geom.get("coordinates")
+        if kind == "Point" and coords:
+            out.append((float(coords[0]), float(coords[1])))
+        elif kind == "MultiPoint" and coords:
+            out += [(float(c[0]), float(c[1])) for c in coords]
+    return out
 
 
 def place_names(path: str | os.PathLike[str]) -> list[tuple[float, float, str]]:
@@ -747,7 +763,9 @@ def _draw_overlays(
     import tempfile
 
     def fit(labels: Sequence[tuple[float, float, str]], font: str) -> Any:
-        return labels if frame is None else inside_frame(labels, font, *frame)
+        if frame is None:
+            return labels
+        return apart(inside_frame(labels, font, *frame), font, *frame)
 
     for ov in overlays:
         if str(ov.path).endswith(".txt"):
@@ -773,6 +791,13 @@ def _draw_overlays(
                     kw["fill"] = ov.fill
                 if kw:
                     fig.plot(**layer_kw(ov.step, data=seg, **kw))
+        points = overlay_points(geojson) if ov.symbol else []
+        if points:
+            lon, lat = zip(*points, strict=True)
+            kw = {"style": ov.symbol, "fill": ov.fill or "black"}
+            if ov.pen is not None:
+                kw["pen"] = ov.pen
+            fig.plot(**layer_kw(ov.step, x=list(lon), y=list(lat), **kw))
         if ov.label:
             labels = overlay_labels(geojson, ov.label)
             _draw_labels(
@@ -1533,6 +1558,35 @@ def inside_frame(
     return out
 
 
+def apart(
+    labels: Sequence[tuple[float, float, str]],
+    font: str,
+    region: Sequence[float],
+    projection: str,
+) -> list[tuple[float, float, str]]:
+    """The centred labels that overlap none kept before them, in order (so
+    the first ones win): the farm names round Svínafell would otherwise
+    print on top of each other."""
+    if isinstance(region, CornerRegion):
+        return list(labels)
+    width, height = _map_size_cm(region, projection)
+    w, e, s, n = region
+    tall = font_size_pt(font) / 72 * 2.54 * 1.2
+    kept: list[tuple[float, float, float, float]] = []
+    out = []
+    for lon, lat, text in labels:
+        x = (lon - w) / (e - w) * width
+        y = (lat - s) / (n - s) * height
+        half = text_width_cm(text, font) / 2 + 0.05
+        box = (x - half, x + half, y - tall / 2, y + tall / 2)
+        if any(box[0] < b[1] and b[0] < box[1] and box[2] < b[3] and b[2] < box[3]
+               for b in kept):  # fmt: skip
+            continue
+        kept.append(box)
+        out.append((lon, lat, text))
+    return out
+
+
 def draw_scale_arrow(
     fig: Any,
     region: Sequence[float],
@@ -1701,10 +1755,12 @@ def _draw_station_labels(
         else None
     )
     ((width, height, *_),) = _mapproject(f"{rj} -W")
-    fixed = []
+    # the logo's corner, top left (as inside_frame keeps place names off it)
+    fixed = [(0.0, LOGO_KEEP_OUT_CM[0], float(height) - LOGO_KEEP_OUT_CM[1],
+              float(height))]  # fmt: skip
     if avoid:
         pxy = _mapproject(rj, [a[0] for a in avoid], [a[1] for a in avoid])
-        fixed = [
+        fixed += [
             declutter.centred_box(float(x), float(y), a[2], font_size_pt(a[3]))
             for (x, y), a in zip(pxy[:, :2], avoid, strict=True)
         ]

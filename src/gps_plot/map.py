@@ -501,6 +501,12 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         help="dots only: no rate arrows (the numbers stay in the legend)",
     )  # fmt: skip
     g.add_argument(
+        "--track-series", default=None, metavar="STA[,STA...]",
+        help="also draw these stations' tracks as time series (North, East) "
+        "with the rate since the onset and the recent rate on the data, the "
+        "legend's numbers: <figDir>/ts/<name>-<STA>.<fmt>",
+    )  # fmt: skip
+    g.add_argument(
         "--track-cmap", default=track.DEFAULT_CMAP, metavar="CPT",
         help=f"colours of the days (default {track.DEFAULT_CMAP}: blue old, red new)",
     )  # fmt: skip
@@ -1549,10 +1555,13 @@ def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
 def _draw_tracks(
     fig: Any, args: Any, parser: Any, config: Any, style: dict[str, Any],
     stations: Sequence[Any], maps: Any,
-) -> float:  # fmt: skip
+) -> tuple[float, list[tuple[str, Any]]]:  # fmt: skip
     """``--track``: every station's track on ``fig``; the legend's top [cm]
-    (the locator sits on it)."""
+    (the locator sits on it) and the ``--track-series`` figures by station."""
     from gps_plot import track
+
+    series = {s.strip().upper() for s in (args.track_series or "").split(",")
+              if s.strip()}  # fmt: skip
 
     try:
         onset, label = track_onset(args.track, args.track_events)
@@ -1564,6 +1573,9 @@ def _draw_tracks(
     else:
         pre = track.pre_window(onset)
     pos_dir = common.config_dir(config, "pos_dir", None) if config else None
+    # the series show more days before the onset than the dots: load those,
+    # the map draws its own days (trimmed: same rates and zero)
+    before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
     tracks, dropped = [], []
     for c in stations:
         try:
@@ -1571,7 +1583,7 @@ def _draw_tracks(
                 c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
                 pos_dir=pos_dir, uncert=args.track_uncert,
                 common_mode=args.track_common_mode == "subtract",
-                before_days=args.track_before, recent_days=args.track_recent,
+                before_days=before, recent_days=args.track_recent,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -1584,13 +1596,26 @@ def _draw_tracks(
         args.locator_corner = "BL"  # on the legend
     from gps_plot.layout import BOTTOM_LABELS_CM
 
-    return track.draw_tracks(
-        fig, tracks, onset=onset, region=region, projection=projection,
+    shown = [track.trimmed(tr, args.track_before) for tr in tracks]
+    floor = track.draw_tracks(
+        fig, shown, onset=onset, region=region, projection=projection,
         recent_days=args.track_recent, m_per_mm=args.track_scale,
         arrows=args.track_arrows,
         arrow_scale=(args.track_arrow_scale / 100 if args.track_arrow_scale else None),
         cmap=args.track_cmap, legend_floor_cm=BOTTOM_LABELS_CM,
     )  # fmt: skip
+    # the map's colour scale (draw_tracks: from the first dot, at least a day)
+    days = np.concatenate([tr.days for tr in shown]) if shown else np.zeros(1)
+    lo = float(min(days.min(), -1.0))
+    span = (lo, max(float(days.max()), lo + 1.0))
+    picked = [tr for tr in tracks if tr.marker in series]
+    return floor, [
+        (tr.marker, track.series_figure(
+            tr, onset, recent_days=args.track_recent, before_days=args.track_before,
+            days_range=span, cmap=args.track_cmap,
+            common_mode=args.track_common_mode == "subtract"))
+        for tr in picked
+    ]  # fmt: skip
 
 
 def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
@@ -1642,8 +1667,11 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
                                   rj=rj, avoid=avoid)  # fmt: skip
 
     floor = None
+    series: list[tuple[str, Any]] = []
     if getattr(args, "track", None):  # the dots over the stations, as approved
-        floor = _draw_tracks(fig, args, parser, config, style, stations, maps)
+        floor, series = _draw_tracks(fig, args, parser, config, style, stations, maps)
+    elif getattr(args, "track_series", None):
+        parser.error("--track-series needs --track")
     _finish(fig, args)
     _insets(fig, args, config, style, stations, zoom_symbols, locator_floor=floor)
     stem = _stem(
@@ -1654,7 +1682,30 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
     )
     for p in _save(fig, args, config, stem):
         print(p)
+    for marker, sfig in series:
+        for p in _save_series(sfig, args, config, f"{args.name or stem}-{marker}"):
+            print(p)
     return 0
+
+
+def _save_series(fig: Any, args: Any, config: Any, base: str) -> list[str]:
+    """A ``--track-series`` figure (matplotlib) to ``<figDir>/ts/<base>``."""
+    if not args.save:
+        return []
+    fig_dir = args.figDir if args.figDir is not None else (
+        common.config_dir(config, "fig_dir", "") or ""
+    )  # fmt: skip
+    out = os.path.join(fig_dir, "ts")
+    os.makedirs(out, exist_ok=True)
+    paths = []
+    for fmt in args.save.split(","):
+        path = os.path.join(out, f"{base}.{fmt.strip()}")
+        fig.savefig(path, dpi=150)
+        paths.append(path)
+    if getattr(args, "manifest", None):
+        with open(args.manifest, "a") as fh:
+            fh.writelines(os.path.abspath(f) + "\n" for f in paths)
+    return paths
 
 
 @dataclasses.dataclass(frozen=True)
