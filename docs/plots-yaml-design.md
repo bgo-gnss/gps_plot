@@ -306,6 +306,15 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   `build`, `gmt` (its own PyGMT arguments), and `presets:`. Over the
   built-in catalogue (gps_plot `gis_layers`), so a missing file changes
   nothing; `gpsplot map --layers list` shows what a map sees.
+- **Map defaults by area** (2026-10-28, BGÓ: obvious ones, refined
+  later): a map product's `area: <cdn slug>` gives its `dir:`
+  (`locations/<root>/<slug>/maps`) and defaults from plots.yaml
+  `map_categories:` (the area's kind: volcanic, regional, seismic,
+  monitoring, infrastructure) then `map_areas:` (the area), each with
+  `layers`, `gmt`, `gmt_config`, `args`; order defaults → category → area
+  → product → run. Layers add up; `-NAME` (a layer or preset) takes one
+  out (`gis_layers.expand`; on the command line `--layers=-swarms`).
+  `gpsplot run --area X` now also runs X's maps.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
   which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
   smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the

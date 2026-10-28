@@ -11,7 +11,8 @@ are named so the writing is collection, not research.*
   `postprocess.cfg [PATHS] gis_dir` (where the files are). All in
   gps-config-data → `~/.config/gpsconfig/`.
 - Precedence, one diagram: built-in catalogue → `map_layers.yaml` →
-  plots.yaml `defaults:` → product → run → command line (`--gmt` wins).
+  plots.yaml `defaults:` → `map_categories:` → `map_areas:` → product →
+  run → command line (`--gmt` wins); `-NAME` takes a layer out.
 
 ## 2. Discovering what is available (the CLI)
 

@@ -359,10 +359,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
     g.add_argument(
         "--layers", action="append", default=[], metavar="NAME[,NAME…]",
-        help="named GIS layers, each with its own look and --gmt step: roads, "
-        "towns, lavas, graben, fissures, barriers, places, or a preset "
-        "(reykjanes = all of them; infrastructure; eruptions); 'list' prints "
-        "them. Built by the GIS directory's vector/build_08_reykjanes.sh",
+        help="named GIS layers or presets of the layer catalogue "
+        "(map_layers.yaml; 'list' prints them, marking files not on this "
+        "host), each with its own look and --gmt step; repeatable, in drawing "
+        "order. -NAME takes a layer or preset out again: --layers "
+        "volcanic,roads --layers=-swarms (the = is needed for a leading -)",
     )  # fmt: skip
     g.add_argument(
         "--inset", type=_region, default=None, metavar="W/E/S/N|AREA",

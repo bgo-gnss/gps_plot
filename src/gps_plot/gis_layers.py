@@ -246,22 +246,27 @@ LIST = "list"
 
 def expand(specs: Sequence[str], cat: Catalogue = BUILTIN) -> list[str]:
     """Layer names of ``--layers`` specs (comma lists, presets expanded,
-    repeats kept once, in drawing order as given).
+    repeats kept once, in drawing order as given). ``-NAME`` (a layer or a
+    preset) takes out what is in so far: ``volcanic,roads -volcanic`` is
+    roads, so an area's map can drop a layer its kind of area gives.
 
     Raises:
         ValueError: an unknown name, with the known ones.
     """
     out: list[str] = []
     for spec in specs:
-        for name in (n.strip().lower() for n in spec.split(",")):
+        for word in (n.strip().lower() for n in spec.split(",")):
+            drop = word.startswith("-")
+            name = word.lstrip("-").strip()
             if not name:
                 continue
-            names = cat.presets.get(name, (name,))
-            for n in names:
+            for n in cat.presets.get(name, (name,)):
                 if n not in cat.layers:
                     known = ", ".join([*cat.layers, *cat.presets])
                     raise ValueError(f"--layers {name!r}: not a layer ({known})")
-                if n not in out:
+                if drop:
+                    out = [m for m in out if m != n]
+                elif n not in out:
                     out.append(n)
     return out
 

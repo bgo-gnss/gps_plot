@@ -827,11 +827,47 @@ def test_map_layers_and_gmt_from_plots_yaml() -> None:
     }
     (job,) = products.expand(cfg, areas={})
     argv = list(job.argv)
-    assert argv[argv.index("--layers") + 1] == "towns"  # defaults first
-    layers = [argv[i + 1] for i, t in enumerate(argv) if t == "--layers"]
+    assert next(t for t in argv if t.startswith("--layers=")) == "--layers=towns"
+    layers = [t.removeprefix("--layers=") for t in argv if t.startswith("--layers=")]
     assert layers == ["towns", "volcanic,rural", "roads"]
     gmt = [argv[i + 1] for i, t in enumerate(argv) if t == "--gmt"]
     assert gmt == ["calderas:pen=2p,red", "coast:A=500/0/1", "calderas:pen=3p,blue"]
     assert "MAP_FRAME_TYPE=plain" in argv
     with pytest.raises(ValueError, match="gmt_config: a mapping"):
         products.expand({"products": {"x": {**spec, "gmt_config": ["X=1"]}}}, areas={})
+
+
+def test_map_area_gives_dir_and_defaults_in_order() -> None:
+    areas = products.area_table(
+        {"category_roots": {"monitoring": "skridurogflod"},
+         "monitoring_areas": {"svf": {"cdn": "svinafellsheidi", "stations": ["SVIE"]}},
+         "volcanic_areas": {"rn": {"cdn": "reykjanes", "stations": ["SENG"]}}}
+    )  # fmt: skip
+    cfg = {
+        "defaults": {"save": "png", "map_layers": ["roads"]},
+        "map_categories": {"monitoring": {"layers": ["volcanic", "rural"],
+                                          "gmt_config": {"MAP_FRAME_TYPE": "plain"}}},
+        "map_areas": {"svinafellsheidi": {"gmt": {"calderas": {"pen": "2p,red"}},
+                                          "args": "--dem iceland"}},
+        "products": {"svf": {"tool": "map", "map": "station", "area": "svinafellsheidi",
+                             "layers": ["places"], "runs": [{"name": "a"}]}},
+    }  # fmt: skip
+    (job,) = products.expand(cfg, areas=areas)
+    assert job.out_dir == "locations/skridurogflod/svinafellsheidi/maps"
+    argv = list(job.argv)
+    layers = [t.removeprefix("--layers=") for t in argv if t.startswith("--layers=")]
+    assert layers == ["roads", "volcanic,rural", "places"]  # defaults→category→product
+    assert "MAP_FRAME_TYPE=plain" in argv and "calderas:pen=2p,red" in argv
+    assert argv[argv.index("--dem") + 1] == "iceland"
+    # --area picks the area's maps
+    assert products.expand(cfg, areas=areas, area="svinafellsheidi") == [job]
+    assert products.expand(cfg, areas=areas, area="reykjanes") == []
+    with pytest.raises(ValueError, match="no cdn slug"):
+        products.expand({**cfg, "products": {"x": {**cfg["products"]["svf"],
+                                                  "area": "nowhere"}}}, areas=areas)  # fmt: skip
+    with pytest.raises(ValueError, match="unknown key"):
+        products.expand({**cfg, "map_areas": {"svinafellsheidi": {"dir": "x"}}},
+                        areas=areas)  # fmt: skip
+    with pytest.raises(ValueError, match="needs dir: or area:"):
+        products.expand({"products": {"x": {"tool": "map", "map": "station",
+                                            "runs": [{"name": "a"}]}}}, areas=areas)  # fmt: skip

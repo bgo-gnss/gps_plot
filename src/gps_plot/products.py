@@ -52,7 +52,10 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
 MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations",
-            "layers", "gmt", "gmt_config")  # fmt: skip
+            "layers", "gmt", "gmt_config", "area")  # fmt: skip
+#: keys of a plots.yaml ``map_categories:`` / ``map_areas:`` entry: the
+#: defaults of every map of that kind of area / of that area
+MAP_AREA_KEYS = ("layers", "gmt", "gmt_config", "args")
 MAP_RUN_KEYS = ("name", "args", "publish", "layers", "gmt", "gmt_config")
 #: map kinds a product may draw (gpsplot map KIND)
 MAP_KINDS = ("velocity", "deformation", "station")
@@ -406,8 +409,9 @@ def expand(
         runs = spec.get("runs") or []
         kind = spec.get("stations")
         if spec.get("tool") == "map":
-            if want_areas is None:
-                jobs += map_jobs(pname, spec, defaults)
+            # an --area filter keeps the maps of those areas (area:)
+            if want_areas is None or spec.get("area") in want_areas:
+                jobs += map_jobs(pname, spec, defaults, areas, cfg)
             continue
         if kind in AREA_KINDS:
             names = [a for a in areas if a not in set(spec.get("exclude") or ())]
@@ -464,7 +468,8 @@ def map_option_args(
         names = layers.split(",") if isinstance(layers, str) else layers
         if not isinstance(names, list | tuple):
             raise ValueError(f"plots.yaml {pname}: layers: a list of names")
-        out += ["--layers", ",".join(str(n).strip() for n in names)]
+        # --layers=…: a -NAME (take it out) would read as an option
+        out.append("--layers=" + ",".join(str(n).strip() for n in names))
     gmt = where.get(f"{prefix}gmt")
     if isinstance(gmt, Mapping):
         for step, kwargs in gmt.items():
@@ -485,13 +490,56 @@ def map_option_args(
     return out
 
 
+def map_area_defaults(
+    pname: str,
+    spec: Mapping[str, Any],
+    areas: Mapping[str, Mapping[str, Any]],
+    cfg: Mapping[str, Any],
+) -> tuple[str | None, list[Mapping[str, Any]]]:
+    """A map product's ``area:`` (a station_areas.yaml cdn slug): its plot
+    dir (``locations/<root>/<area>/maps``, used when the product gives no
+    ``dir:``) and its defaults, in order: plots.yaml ``map_categories:`` of
+    the area's category (``volcanic`` of ``volcanic_areas``), then
+    ``map_areas:`` of the area. No ``area:``: (None, []).
+
+    Raises:
+        ValueError: an area station_areas.yaml has not, or an entry key
+            not in :data:`MAP_AREA_KEYS`.
+    """
+    slug = spec.get("area")
+    if not slug:
+        return None, []
+    area = areas.get(str(slug))
+    if area is None:
+        raise ValueError(
+            f"plots.yaml {pname}: area: {slug!r} is no cdn slug of station_areas.yaml"
+        )
+    found = []
+    for table, key in (("map_categories", area["category"]), ("map_areas", slug)):
+        entry = (cfg.get(table) or {}).get(key) or {}
+        bad = set(entry) - set(MAP_AREA_KEYS)
+        if bad:
+            raise ValueError(
+                f"plots.yaml {table}.{key}: unknown key(s) {sorted(bad)} "
+                f"(keys: {', '.join(MAP_AREA_KEYS)})"
+            )
+        found.append(entry)
+    return f"locations/{area['root']}/{slug}/maps", found
+
+
 def map_jobs(
-    pname: str, spec: Mapping[str, Any], defaults: Mapping[str, Any]
+    pname: str,
+    spec: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    areas: Mapping[str, Mapping[str, Any]] | None = None,
+    cfg: Mapping[str, Any] | None = None,
 ) -> list[Job]:
     """The jobs of a map product (``tool: map``): one ``gpsplot map KIND``
     per run, each with its own ``name:`` (the file's basename) and
     ``args:`` after the product's. ``stations:`` is a list (or none: every
-    station in the map's --region).
+    station in the map's --region). With ``area:`` the area's defaults come
+    between plots.yaml ``defaults:`` and the product's
+    (:func:`map_area_defaults`), and ``dir:`` defaults to the area's maps.
 
     Raises:
         ValueError: An unknown key or map kind, a run without a name, a
@@ -503,6 +551,11 @@ def map_jobs(
     kind = spec.get("map")
     if kind not in MAP_KINDS:
         raise ValueError(f"plots.yaml {pname}: map: one of {MAP_KINDS}, got {kind!r}")
+    area_dir, area_defaults = map_area_defaults(pname, spec, areas or {}, cfg or {})
+    out_dir = str(spec.get("dir") or area_dir or "")
+    if not out_dir:
+        raise ValueError(f"plots.yaml {pname}: a map product needs dir: or area:")
+    spec = {**spec, "dir": out_dir}
     stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
     checks = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
     names: set[str] = set()
@@ -516,10 +569,13 @@ def map_jobs(
             raise ValueError(f"plots.yaml {pname}: each run needs its own name:")
         names.add(name)
         argv = ["--save", str(defaults.get("save", "png"))]
-        for value in (defaults.get("map_args"), spec.get("args"), run.get("args")):
+        args = [defaults.get("map_args"), *(e.get("args") for e in area_defaults)]
+        for value in (*args, spec.get("args"), run.get("args")):
             argv += extra_args(value, MAP_RESERVED_OPTIONS)
-        # defaults:, the product's, then the run's
-        for where, prefix in ((defaults, "map_"), (spec, ""), (run, "")):
+        # defaults:, the area's category and area, the product's, the run's
+        levels = [(defaults, "map_"), *((e, "") for e in area_defaults),
+                  (spec, ""), (run, "")]  # fmt: skip
+        for where, prefix in levels:
             argv += map_option_args(pname, where, prefix)
         argv += ["--name", name]
         if checks and kind == "station":  # the track map draws them itself

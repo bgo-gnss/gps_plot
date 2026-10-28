@@ -366,3 +366,16 @@ def test_earth_relief_fallback_fits_the_pixels_and_skips_srtm_in_the_north():
     assert maps.earth_relief_fallback((-180.0, 180.0, -60.0, 60.0), "M3c") == (
         "@earth_relief_01m"
     )
+
+
+def test_a_minus_name_takes_a_layer_or_preset_out():
+    assert gis_layers.expand(["volcanic,roads", "-volcanic,reykjanes", "-places"]) == [
+        "roads", "towns", "lavas", "graben", "fissures", "barriers",
+    ]  # fmt: skip
+    assert gis_layers.expand(["rural", "-buildings"]) == [
+        "localroads",
+        "roads",
+        "farms",
+    ]
+    with pytest.raises(ValueError, match="not a layer"):
+        gis_layers.expand(["-nope"])
