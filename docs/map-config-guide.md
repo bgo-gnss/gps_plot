@@ -22,8 +22,9 @@ are named so the writing is collection, not research.*
   steps too); `--gmt-config` any GMT default.
 - `gpsplot map --dem-cmap list` (palettes), `gpsplot run --dry-run` (what
   the daily run will draw, with every option spelled out).
-- TO DECIDE: a `--gmt list` printing the steps with their PyGMT call and
-  long-name/letter pairs (now only in `--help`).
+- `gpsplot map station --gmt list` — every drawing step (the layers
+  included), its PyGMT call, the long names gpsplot passes with their GMT
+  letters, and the call's other long names.
 
 ## 3. Tutorial: a new area map, start to finish
 

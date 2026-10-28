@@ -203,3 +203,30 @@ def layer_kw(
         if k not in user and letters.get(k) not in user
     }
     return {**kept, **user}
+
+
+#: ``--gmt list`` prints the drawing steps (:func:`describe`)
+LIST = "list"
+
+
+def describe(pygmt_mod: Any | None = None) -> str:
+    """``--gmt list``: every drawing step, the PyGMT call it makes, and the
+    long names gpsplot passes there with their GMT letters (any other long
+    name of that call, or any one GMT letter, is taken too: with
+    ``pygmt_mod`` the call's long names are listed as well)."""
+    lines = [
+        "drawing steps (--gmt STEP:KEY=VALUE; KEY a PyGMT long name or one GMT letter):"
+    ]
+    for step, (call, own) in LAYERS.items():
+        pairs = {**CALL_LETTERS.get(call, {}), **own}
+        names = ", ".join(f"{k}={v}" for k, v in sorted(pairs.items())) or "-"
+        lines.append(f"  {step:<17} {call:<16} {names}")
+        if pygmt_mod is not None:
+            owned = OWNED | OWNED_BY_LAYER.get(step, frozenset())
+            more = sorted(_signature_names(call, pygmt_mod) - set(pairs) - owned)
+            if more:
+                lines.append(f"  {'':<17} {'':<16} also: {', '.join(more)}")
+    lines.append("owned by gpsplot (refused): " + ", ".join(sorted(OWNED)))
+    lines.append("GMT defaults for the whole map: --gmt-config KEY=VALUE "
+                 "(the keys: `gmt defaults -D`)")  # fmt: skip
+    return "\n".join(lines)

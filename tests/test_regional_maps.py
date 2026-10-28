@@ -379,3 +379,13 @@ def test_a_minus_name_takes_a_layer_or_preset_out():
     ]
     with pytest.raises(ValueError, match="not a layer"):
         gis_layers.expand(["-nope"])
+
+
+def test_gmt_list_names_every_step_and_its_options():
+    from gps_plot import gmt_overrides
+
+    gis_layers.register_steps(gis_layers.BUILTIN)
+    text = gmt_overrides.describe()
+    for step in ("coast", "dem", "calderas", "buildings", "place-labels"):
+        assert f"\n  {step} " in text
+    assert "transparency=t" in text and "pen=W" in text

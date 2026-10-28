@@ -408,8 +408,9 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--gmt", action="append", default=[], metavar="STEP:KEY=VALUE",
         help="a GMT argument for one drawing step, replacing gpsplot's own: "
         "KEY is a PyGMT long name or one GMT letter, e.g. coast:A=500/0/1, "
-        "glaciers:pen=0.3p,blue, dem:t=20 (repeatable; steps: "
-        + ", ".join(gmt_overrides.LAYERS) + ")",
+        "glaciers:pen=0.3p,blue, dem:t=20, calderas:pen=2p,red (repeatable; "
+        "'--gmt list' prints every step, its PyGMT call and its options; "
+        "every --layers layer is a step of its own name)",
     )  # fmt: skip
     g.add_argument(
         "--strict-layers", action="store_true",
@@ -1408,6 +1409,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     try:
         # the layer catalogue first: its layers are --gmt steps too
         args.layer_catalogue = layer_catalogue(args, config)
+        if any(spec.strip().lower() == gmt_overrides.LIST for spec in args.gmt):
+            print(gmt_overrides.describe(pygmt))  # the catalogue's layers too
+            return 0
         layers = gmt_overrides.parse(args.gmt)
         gmt_overrides.check(layers, pygmt)
         defaults = gmt_config(args.gmt_config)
