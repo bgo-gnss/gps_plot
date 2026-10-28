@@ -60,8 +60,10 @@ are named so the writing is collection, not research.*
   (07), Reykjanes LMÍ/NÍ/IMO (08), IS 50V (09); a failed or shrunken
   fetch keeps the old files.
 - Built once (not fetched): coast/ice/water (05–06).
-- Shipped: the Iceland DEM (git.vedur.is only; see §7 of the DEM README —
-  TO WRITE once the shipping route is chosen).
+- Shipped: the Iceland DEM + its coast/glaciers/lakes, a private generic
+  package `iceland-dem/<VERSION>` of gps-data on git.vedur.is (never
+  GitHub): `gis/dem/publish_dem.sh`, `fetch_dem.sh`, `iceland-dem.sha256`;
+  the DEM README's "Shipping" section.
 - aflogun's interactive map: its own catalogue (`gislayers.json`) + the
   VÍ GIS registry (cached an hour, last good list on an outage).
 
