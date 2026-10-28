@@ -132,12 +132,16 @@ examples:
                         two windows, plate removed, one colour each
   gpsplot map velocity --region -22.8/-21.9/63.75/64.1 --last 7 --vertical --save png
                         vertical rate over the last 7 days (north arrow = uplift)
-  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 365 --last 91 \
-      --min-fill 0.6 --dem iceland --title= \
+  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 365 --last 91 \\
+      --min-fill 0.6 --dem iceland --title= \\
       --layers roads,towns,lavas,graben,fissures,barriers --scale-ref 100 --save pdf
                         Svartsengi, past year and past 3 months on one map,
                         report style: no title, only rates with data on 60%
                         of their window's days
+  gpsplot map velocity --region -22.72/-22.17/63.76/63.945 --last 182:91 \\
+      --last 91 --min-fill 0.6 --vertical --save pdf
+                        the last 3 months against the 3 months before them
+                        (windows can also overlap: --last 365 --last 30)
   gpsplot map velocity --region -24.6/-13.2/63.2/66.7 --save pdf
                         stored secular rates, Iceland
   gpsplot map deformation --region -22.8/-21.9/63.75/64.1 -s 20231101 -e 20231115 \\
@@ -239,6 +243,20 @@ def _window(value: str) -> tuple[dt.datetime, dt.datetime | None]:
     if e is not None and e <= s:
         raise argparse.ArgumentTypeError(f"{value!r}: END is not after START")
     return (s, e)
+
+
+def _last(value: str) -> tuple[int, int]:
+    """``DAYS`` or ``FROM:TO`` days before the end: ``--last 7`` = ``7:0``."""
+    first, sep, second = value.partition(":")
+    try:
+        span = (int(first), int(second) if sep else 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: use DAYS or FROM:TO (days before the end)"
+        ) from None
+    if not span[0] > span[1] >= 0:
+        raise argparse.ArgumentTypeError(f"{value!r}: need FROM > TO >= 0")
+    return span
 
 
 def _mogi(value: str) -> tuple[float, float, float, float]:
@@ -551,8 +569,11 @@ def build_parser(
         "YYYYMMDD:YYYYMMDD both included (e.g. 20230806:20231024)",
     )  # fmt: skip
     p.add_argument(
-        "--last", type=int, action="append", default=None, metavar="DAYS",
-        help="a window of the last DAYS days (repeatable)",
+        "--last", type=_last, action="append", default=None,
+        metavar="DAYS|FROM:TO",
+        help="a window of the last DAYS days, or from FROM to TO days before "
+        "the end (182:91 = the 3 months before the last 3); repeatable, "
+        "windows may overlap or follow each other",
     )  # fmt: skip
     p.add_argument(
         "-e", "--end", type=_date, default=None,
@@ -704,14 +725,17 @@ def select_stations(
 
 def resolve_windows(
     windows: Sequence[tuple[dt.datetime, dt.datetime | None]] | None,
-    last: Sequence[int] | None,
+    last: Sequence[int | tuple[int, int]] | None,
     now: dt.datetime,
 ) -> list[tuple[dt.datetime, dt.datetime]]:
     """``--window`` and ``--last`` as concrete (start, end) pairs, in order."""
     out = [(s, e or now) for s, e in windows or ()]
     # --last 7: seven whole days, today included (the product's windows
-    # are whole days, both ends in)
-    out += [(now - dt.timedelta(days=d - 1), now) for d in last or ()]
+    # are whole days, both ends in); --last 14:7 = the seven days before
+    # those, so --last 182:91 and --last 91 follow each other with no gap
+    for d in last or ():
+        first, to = (d, 0) if isinstance(d, int) else d
+        out.append((now - dt.timedelta(days=first - 1), now - dt.timedelta(days=to)))
     return out
 
 
