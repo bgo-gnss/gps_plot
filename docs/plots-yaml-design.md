@@ -278,6 +278,21 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   solutions. Windows may follow each other (`--last 182:91 --last 91`, the
   3 + 3 months: is the rate changing?) or overlap (`--last 365 --last 30`).
   Whole days, both ends in: `182:91` ends the day before `91` starts.
+- **Check series** (2026-10-28, BGÓ: "does a line fit the window?"):
+  `ts_stations: [SENG, …]` on a velocity map adds, per station, its time
+  series with each window's rate drawn on the data (`gpsplot ts
+  --rate-last`, the map's `--last` counted the same way, in the map's
+  `--ref`: plate-periodic → `--ref detrend --detrend-terms periodic`), so
+  the numbers are the arrows' numbers (SENG 160 d: 33.7/27.9/175.0 mm/yr
+  on both). One set per distinct set of windows (a horizontal and a
+  vertical run share theirs), named `<the runs' common words>-<STA>`
+  (`svartsengi-6man-3man-SENG`), in `<dir>/ts/`, which aflogun shows in a
+  tab of its own (Tímaraðir korta, BGÓ 2026-10-28); the plot starts twice
+  the longest window back. Not for `--ref pre-onset`.
+- **Stale map files:** `gpsplot run` deletes a PNG/PDF in a map product's
+  dir (and its `ts/`) that no configured run or check series writes (a renamed run, a
+  station taken out), unless another (ts) product shares the dir;
+  `--keep-stale` keeps them.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
   which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
   smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the
@@ -293,8 +308,9 @@ year and past 3 months, set up as the Kárahnjúkar report map).
       - --projection M15.5c --dem iceland --sea-smooth 0.5 --title=
       - --layers roads,towns,lavas,graben,fissures,barriers
       - --scale-ref 100
-      - --last 365 --last 91 --min-fill 0.6
+      - --min-fill 0.6
+    ts_stations: [SENG, SKSH, THOB, ELDC, GRIV]   # check series
     runs:
-      - {name: svartsengi-ar-3man-larett, args: [--scale 0.015]}
-      - {name: svartsengi-ar-3man-lodrett, args: [--vertical --scale 0.008]}
+      - {name: svartsengi-6man-3man-larett, args: [--last 160 --last 91, --scale 0.015]}
+      - {name: svartsengi-6man-3man-lodrett, args: [--last 160 --last 91, --vertical --scale 0.008]}
 ```

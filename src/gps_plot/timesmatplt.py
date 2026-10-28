@@ -170,6 +170,9 @@ def _reusable_figure() -> Figure:
         init_plot_style()  # Figure snapshots rcParams (dpi, subplotpars)
         _FRAME_FIG = matplotlib.figure.Figure(figsize=(13, 20))
         FigureCanvasAgg(_FRAME_FIG)
+    # the files of THIS plot only: a reused figure kept the earlier
+    # stations' files, so each --manifest listed every file before it too
+    _FRAME_FIG._gps_files = []  # type: ignore[attr-defined]
     return _FRAME_FIG
 
 

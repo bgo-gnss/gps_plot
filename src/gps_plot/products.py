@@ -11,6 +11,7 @@ runner (:mod:`gps_plot.cli.run`) executes the jobs.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import shlex
 from collections.abc import Collection, Mapping, Sequence
@@ -50,7 +51,7 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 }
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
-MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs")
+MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations")
 MAP_RUN_KEYS = ("name", "args", "publish")
 #: map kinds a product may draw (gpsplot map KIND)
 MAP_KINDS = ("velocity", "deformation", "station")
@@ -479,7 +480,119 @@ def map_jobs(
                         kind=str(kind)))  # fmt: skip
     if not jobs:
         raise ValueError(f"plots.yaml {pname}: a map product needs runs:")
+    return jobs + map_ts_jobs(pname, spec, jobs, defaults)
+
+
+#: where a map product's check series go, under its dir (aflogun shows
+#: them in a tab of their own, BGÓ 2026-10-28)
+CHECK_SUBDIR = "ts"
+
+#: map options that set a velocity map's windows and reference: the ones the
+#: check time series (``ts_stations:``) must repeat
+_MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end")
+
+#: a velocity map's --ref as the ts options that give the same rates
+_TS_REF: Mapping[str, tuple[str, ...]] = {
+    "plate-periodic": ("--ref", "detrend", "--detrend-terms", "periodic"),
+    "background": ("--ref", "detrend"),
+    "detrend": ("--ref", "detrend"),
+    "plate": ("--ref", "plate"),
+}
+
+
+def map_ts_jobs(
+    pname: str,
+    spec: Mapping[str, Any],
+    maps: Sequence[Job],
+    defaults: Mapping[str, Any],
+    today: dt.date | None = None,
+) -> list[Job]:
+    """The check time series of a velocity map (``ts_stations:``): each
+    listed station's series with the map's windows fitted on it (``gpsplot
+    ts --rate-last``/``--rate-window``, in the map's reference, so the
+    numbers are the arrows' numbers), to see whether a line fits.
+
+    One set per distinct set of windows (a horizontal and a vertical run of
+    the same windows share it), named ``<the runs' common name>-<STA>``
+    (``svartsengi-6man-3man-larett``/``-lodrett`` → ``svartsengi-6man-3man-
+    SENG``), in ``<dir>/ts/``. The plot starts twice the longest window
+    before the end.
+
+    Raises:
+        ValueError: ``ts_stations:`` on a map other than velocity, or a run
+            whose windows or --ref the series cannot repeat.
+    """
+    wanted = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
+    if not wanted:
+        return []
+    if spec.get("map") != "velocity":
+        raise ValueError(f"plots.yaml {pname}: ts_stations: needs map: velocity")
+    sets: dict[tuple[str, ...], list[Job]] = {}
+    for job in maps:
+        sets.setdefault(_window_options(pname, job.argv), []).append(job)
+    jobs = []
+    for opts, runs in sets.items():
+        names = [str(r.group) for r in runs]
+        # the common whole words: -larett/-lodrett share "l", not a word
+        words = os.path.commonprefix([n.split("-") for n in names])
+        stem = "-".join(words) or names[0]
+        argv, days = _ts_check_argv(pname, opts, today or dt.date.today())
+        start = (today or dt.date.today()) - dt.timedelta(days=2 * days)
+        for sta in wanted:
+            jobs.append(Job(pname, None, f"{spec['dir']}/{CHECK_SUBDIR}", (sta,),
+                            ("--save", str(defaults.get("save", "png")),
+                             "-s", f"{start:%Y%m%d}", *argv,
+                             "--name", f"{stem}-{sta}"),
+                            any(r.publish for r in runs), group=f"{stem}-{sta}"))  # fmt: skip
     return jobs
+
+
+def _window_options(pname: str, argv: Sequence[str]) -> tuple[str, ...]:
+    """A map run's window and reference options, in order (``--opt value``)."""
+    out: list[str] = []
+    it = iter(argv)
+    for tok in it:
+        opt, eq, value = tok.partition("=")
+        if opt in _MAP_WINDOW_OPTIONS:
+            out += [opt, value if eq else next(it, "")]
+    if "--last" not in out and "--window" not in out:
+        raise ValueError(
+            f"plots.yaml {pname}: ts_stations: the runs need --last/--window"
+        )
+    return tuple(out)
+
+
+def _ts_check_argv(
+    pname: str, opts: Sequence[str], today: dt.date
+) -> tuple[list[str], int]:
+    """The ts options of a map's windows, and the longest window [days]."""
+    argv: list[str] = []
+    ref = "plate-periodic"
+    end = today
+    days = 0
+    pairs = list(zip(opts[::2], opts[1::2], strict=True))
+    for opt, value in pairs:
+        if opt in ("-e", "--end"):
+            end = dt.datetime.strptime(value, "%Y%m%d").date()
+            argv += ["-e", value]
+        elif opt == "--ref":
+            ref = value
+    for opt, value in pairs:
+        if opt == "--last":
+            argv += ["--rate-last", value]
+            days = max(days, int(value.partition(":")[0]))
+        elif opt == "--window":
+            a, _, b = value.partition(":")
+            b = b or f"{end:%Y%m%d}"
+            argv += ["--rate-window", f"{a}:{b}"]
+            first = dt.datetime.strptime(a, "%Y%m%d").date()
+            days = max(days, (end - first).days + 1)
+    if ref not in _TS_REF:
+        raise ValueError(
+            f"plots.yaml {pname}: ts_stations: --ref {ref} has no time series "
+            f"(one of {sorted(_TS_REF)})"
+        )
+    return [*_TS_REF[ref], *argv], days
 
 
 def _picked(
@@ -660,4 +773,39 @@ def stale_baseline_plots(
             elif _STACK_FILE.fullmatch(f.name):
                 if not any(f.name.startswith(f"stack_{g}-") for g in kept_groups):
                     stale.append(f)
+    return stale
+
+
+def stale_map_plots(
+    jobs: Sequence[Job], configured: Sequence[Job], root: Path
+) -> list[Path]:
+    """Plots in a map product's directory that no configured job writes.
+
+    A map product's files have fixed names (a run's ``name:``, a check
+    series' ``<name>-<STA>``), so a renamed or dropped run, or a station
+    taken out of ``ts_stations:``, leaves its old file behind. Only the
+    directories of the selected map jobs are looked at, against the names
+    of every configured job writing there (``configured`` is unfiltered).
+    A directory other (time-series) products also write to is left alone.
+    """
+    names: dict[str, set[str]] = {}
+    shared: set[str] = set()  # a dir other products write to: left alone
+    for job in configured:
+        if job.group and (job.tool == "map" or "--name" in job.argv):
+            names.setdefault(job.out_dir, set()).add(job.group)
+        else:
+            shared.add(job.out_dir)
+    stale: list[Path] = []
+    dirs = {j.out_dir for j in jobs if j.tool == "map"}
+    dirs |= {f"{d}/{CHECK_SUBDIR}" for d in dirs}
+    for out_dir in sorted(dirs):
+        folder = root / out_dir
+        if out_dir in shared or not folder.is_dir():
+            continue
+        keep = names.get(out_dir, set())
+        stale += [
+            f
+            for f in sorted(folder.iterdir())
+            if f.is_file() and f.suffix in (".png", ".pdf") and f.stem not in keep
+        ]
     return stale
