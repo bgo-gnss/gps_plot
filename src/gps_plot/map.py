@@ -380,6 +380,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         help="no Iceland locator map",
     )  # fmt: skip
     g.add_argument(
+        "--locator-corner", choices=("BL", "BR", "TL", "TR"), default=None,
+        help="put the Iceland locator in this corner of the map, whatever it "
+        "covers (default: the free spot nearest the bottom left)",
+    )  # fmt: skip
+    g.add_argument(
         "--scale-style", choices=SCALE_STYLES, default=None,
         help="scale bar: fancy (checkered, 'km' above; default) or plain "
         "(default on a full-Iceland overview)",
@@ -1016,11 +1021,16 @@ def gis_dir(config: Any) -> str:
 
 
 def scale_bar_km(region: Sequence[float]) -> float:
-    """A round scale-bar length: about a fifth of the map width [km]."""
+    """A round scale-bar length: the 1-2-5 number nearest (in ratio) a fifth
+    of the map width [km], so a 23 km map gets 5 km, not 2."""
     w, e, south, north = region
     lat = math.radians((south + north) / 2.0)
     width = (e - w) * 111.32 * max(math.cos(lat), 0.01)
-    return _nice(max(width / 5.0, 0.1))
+    target = max(width / 5.0, 0.1)
+    low = _nice(target)
+    # the next 1-2-5 step up: 1 -> 2, 2 -> 5, 5 -> 10
+    high = low * (2.5 if round(low / 10 ** math.floor(math.log10(low))) == 2 else 2)
+    return high if high / target < target / low else low
 
 
 def _unlabel_inset(style: dict[str, Any], args: Any) -> dict[str, Any]:
@@ -1154,7 +1164,11 @@ def _insets(
         sea.block_points([a[0] for a in names], [a[1] for a in names],
                          radius=LOCATOR_NAME_CM)  # fmt: skip
         size = insets.locator_size()
-        spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
+        corner = getattr(args, "locator_corner", None)
+        if corner is not None:
+            spot = insets.corner_spot(size, (width, height), corner)
+        else:
+            spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
         if spot is None:  # beside the map: under a zoom inset there, else top
             spot = insets.beside(size, (width, height), below=zoom_spot)
         insets.draw_locator(fig, region, spot, gis_dir(config))
