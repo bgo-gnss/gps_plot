@@ -605,6 +605,13 @@ def _normalize_kinds(raw: Sequence[str]) -> list[str] | None:
     return kinds
 
 
+def _rate_last(value: str) -> tuple[int, int]:
+    """``DAYS`` or ``FROM:TO`` days before the end, as map --last."""
+    from gps_plot.map import _last
+
+    return _last(value)
+
+
 def _rate_window(value: str) -> tuple[float, float]:
     """``START:END`` (YYYYMMDD) as a velocity-product window [yr], whole days."""
     import datetime as _dt
@@ -809,6 +816,17 @@ def build_parser(
         help="a window of its own for --rate (YYYYMMDD:YYYYMMDD, both days "
         "in; repeatable, one colour each), e.g. the quiet stretch between two "
         "episodes; implies --rate",
+    )
+    parser.add_argument(
+        "--rate-last",
+        action="append",
+        default=None,
+        type=_rate_last,
+        metavar="DAYS|FROM:TO",
+        help="a --rate window of the last DAYS days, or from FROM to TO days "
+        "before the end (-e, default today), counted as gpsplot map velocity "
+        "--last counts them, so a map's windows can be checked on the series "
+        "(182:91 = the 3 months before the last 3); repeatable, implies --rate",
     )
     parser.add_argument(
         "--rate-segments",
@@ -1319,6 +1337,20 @@ def run(
     except ValueError as exc:
         parser.error(str(exc))
     kwargs["rate_windows"] = kwargs.pop("rate_window")
+    rate_last = kwargs.pop("rate_last")
+    if rate_last:
+        # the map's windows (map.resolve_windows: the same end, whole days)
+        import datetime as dt
+
+        from geo_dataread.velocity import window_bounds
+
+        from gps_plot.map import resolve_windows
+
+        spans = resolve_windows(None, rate_last, end or dt.datetime.now())
+        kwargs["rate_windows"] = [
+            *(kwargs["rate_windows"] or []),
+            *(window_bounds(a.date(), b.date()) for a, b in spans),
+        ]
     if kwargs["rate_segments"] is not None:
         if kwargs["rate_windows"]:
             parser.error("--rate-segments and --rate-window: give one")

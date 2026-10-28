@@ -14,7 +14,8 @@ them (a quick re-run of one area); a failed step ends the run.
 
 Stale plots: after the jobs, baseline and stack plots in their directories
 that the config no longer has (a pair dropped from ``baselines:``, a group
-from ``stacks:``) are deleted (:func:`products.stale_baseline_plots`);
+from ``stacks:``), and map-product plots no run or check series writes
+any more (a renamed run, :func:`products.stale_map_plots`) are deleted;
 ``--dry-run`` lists them, ``--keep-stale`` keeps them.
 
 Stations: ``gpsplot run [plots.yaml] [STA ...]`` plots only those stations
@@ -144,7 +145,7 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     p.add_argument(
         "--keep-stale",
         action="store_true",
-        help="keep baseline/stack plots the config no longer has (default: delete)",
+        help="keep baseline/stack/map plots the config no longer has (default: delete)",
     )
     p.add_argument(
         "--no-prepare",
@@ -227,7 +228,7 @@ def run(prog: str, argv: list[str]) -> int:
                 f"\n    {job.tool} {' '.join([*([job.kind] if job.kind else []), *job.argv])}"
             )
         if not args.keep_stale and str(root):
-            for f in products.stale_baseline_plots(jobs, configured, root):
+            for f in _stale(jobs, configured, root):
                 print(f"stale (would delete): {f}")
         return 0
     if not str(root):
@@ -282,7 +283,7 @@ def run(prog: str, argv: list[str]) -> int:
         )
     _prune(root / "_runs", int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)))
     if not args.keep_stale:
-        stale = products.stale_baseline_plots(jobs, configured, root)
+        stale = _stale(jobs, configured, root)
         for f in stale:
             f.unlink(missing_ok=True)
         if stale:
@@ -290,6 +291,16 @@ def run(prog: str, argv: list[str]) -> int:
             print("".join(f"  {f}\n" for f in stale), end="")
     print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
     return status
+
+
+def _stale(
+    jobs: list[products.Job], configured: list[products.Job], root: Path
+) -> list[Path]:
+    """Baseline, stack and map-product plots the config no longer has."""
+    return [
+        *products.stale_baseline_plots(jobs, configured, root),
+        *products.stale_map_plots(jobs, configured, root),
+    ]
 
 
 def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:

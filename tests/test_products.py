@@ -712,3 +712,79 @@ def test_dry_run_checks_map_options_with_the_map_parser(
     plots.write_text(yaml.safe_dump(MAP_CFG_BAD))
     assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 2
     assert "--bogus" in capsys.readouterr().out
+
+
+def _check_spec(**change: object) -> dict:
+    spec = {
+        "tool": "map", "map": "velocity", "dir": "maps/svartsengi",
+        "ts_stations": ["seng", "THOB"],
+        "runs": [
+            {"name": "sv-6man-3man-larett", "args": "--last 160 --last 91"},
+            {"name": "sv-6man-3man-lodrett", "args": "--last 160 --last 91 --vertical"},
+            {"name": "sv-3man-3man-larett", "args": "--last 182:91 --last 91",
+             "publish": True},
+        ],
+    }  # fmt: skip
+    return {**spec, **change}
+
+
+def test_ts_stations_draw_the_map_windows_once_per_window_set() -> None:
+    today = dt.date(2026, 10, 28)
+    spec = _check_spec()
+    maps = products.map_jobs("sv", {**spec, "ts_stations": []}, {"save": "png"})
+    checks = products.map_ts_jobs("sv", spec, maps, {"save": "png"}, today=today)
+    assert [j.group for j in checks] == [
+        "sv-6man-3man-SENG", "sv-6man-3man-THOB",
+        "sv-3man-3man-larett-SENG", "sv-3man-3man-larett-THOB",
+    ]  # fmt: skip
+    six = checks[0]
+    assert six.tool == "ts" and six.stations == ("SENG",) and not six.publish
+    assert six.argv == (
+        "--save", "png", "-s", "20251212",  # twice the 160 days back
+        "--ref", "detrend", "--detrend-terms", "periodic",  # the map's plate-periodic
+        "--rate-last", "160", "--rate-last", "91", "--name", "sv-6man-3man-SENG",
+    )  # fmt: skip
+    assert checks[2].publish
+    assert "--rate-last" in checks[2].argv and "182:91" in checks[2].argv
+    # expand adds them after the maps
+    assert len(products.expand({"products": {"sv": spec}}, areas={})) == 3 + 4
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"map": "station"}, "needs map: velocity"),
+        ({"runs": [{"name": "a", "args": "--ref pre-onset --last 9"}]}, "pre-onset"),
+        ({"runs": [{"name": "a", "args": "--vertical"}]}, "--last/--window"),
+    ],
+)
+def test_ts_stations_refuse_what_a_series_cannot_repeat(
+    change: dict, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        products.expand({"products": {"m": _check_spec(**change)}}, areas={})
+
+
+def test_ts_check_argv_closes_an_open_window_and_keeps_the_end() -> None:
+    argv, days = products._ts_check_argv(
+        "m", ("--window", "20260101:", "--ref", "plate", "-e", "20260131"),
+        dt.date(2026, 10, 28),
+    )  # fmt: skip
+    assert argv == ["--ref", "plate", "-e", "20260131",
+                    "--rate-window", "20260101:20260131"]  # fmt: skip
+    assert days == 31
+
+
+def test_stale_map_plots_are_files_no_run_writes(tmp_path) -> None:
+    jobs = products.expand({"products": {"sv": _check_spec()}}, areas={})
+    folder = tmp_path / "maps/svartsengi"
+    folder.mkdir(parents=True)
+    for stem in ("sv-6man-3man-larett", "sv-6man-3man-SENG", "sv-ar-3man-larett",
+                 "sv-6man-3man-HS02"):  # fmt: skip
+        (folder / f"{stem}.png").write_text("x")
+    (folder / "notes.txt").write_text("x")
+    stale = products.stale_map_plots(jobs, jobs, tmp_path)
+    assert [f.name for f in stale] == ["sv-6man-3man-HS02.png", "sv-ar-3man-larett.png"]
+    # a dir a time-series product also writes to is left alone
+    ts = products.Job("graphs", None, "maps/svartsengi", ("SENG",), (), False)
+    assert products.stale_map_plots(jobs, [*jobs, ts], tmp_path) == []
