@@ -273,8 +273,10 @@ def legend_entries(
             continue
         if tr.since is not None:
             s = tr.since
+            moved_mm = math.hypot(*tr.end)
             out.append((f"{tr.marker} {s.speed:.0f} {pm} {s.sigma_speed:.0f} mm/yr "
-                        f"toward {s.azimuth:.0f}{deg} since {onset:%d.%m.%Y}",
+                        f"toward {s.azimuth:.0f}{deg} since {onset:%d.%m.%Y}, "
+                        f"moved {moved_mm:.0f} {pm} {tr.end_sigma:.0f} mm",
                         SINCE_COLOR))  # fmt: skip
             if tr.recent is not None:
                 r = tr.recent

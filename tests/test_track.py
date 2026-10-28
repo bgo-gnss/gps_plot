@@ -90,6 +90,7 @@ def test_legend_lines_per_station() -> None:
     assert "since 23.09.2026" in lines[0][0] and "last 14 days" in lines[1][0]
     # 200 N, -120 E mm/yr: toward 329° (north-west)
     assert re.search(r"toward 3[23]\d° since", lines[0][0])
+    assert re.search(r", moved \d+ ± \d mm$", lines[0][0])  # the total so far
 
 
 def test_no_data_after_the_onset_is_refused() -> None:
