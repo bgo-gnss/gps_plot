@@ -503,6 +503,35 @@ numbers (BGÓ 2026-10-16; design in memory `velocity-product`).
   product reads the 24 h `.pos`; 8 h is deferred). The secular map (no
   window) still reads the detrend records (phase 2 of the product).
 
+## Station tracks since an event: `map station --track` (2026-10-28)
+
+BGÓ's design for the Svínafellsheiði landslide (after the time-coloured
+GNSS dots of Sigmundsson et al. 2015). `gpsplot map station ... --track
+EVENT|DATE` (`track.py`, numbers apart from drawing):
+
+- **Dots:** each station's daily horizontal position (cleaned view, plate
+  removed, network common mode off, screened on the horizontal σ only) with
+  the line + annual + semiannual of a window before the event removed
+  (`--track-pre`, default 3 years up to 7 days before the onset), zeroed on
+  the 14 days before the onset; from `--track-before` (30) days before it.
+  Coloured by days since the onset (`--track-cmap`, turbo: blue old, red
+  newest), joined by a fine dotted path in time order. Before the onset the
+  dots sit on the station; after it they walk away.
+- **Arrows** (a station that moved: rate since the onset > 3σ): the rate
+  since the onset (blue) and of the last `--track-recent` days (red, default
+  14) with 1-σ ellipses; σ = white noise floored at the pre-onset daily
+  scatter (a few days fit a line too well). `--no-track-arrows`.
+- **Too few days for a rate** (< 5 after the onset, SVIN): its displacement
+  (the mean of its two newest days) in the legend, black, no arrow.
+- **Legend** lower left, just above the longitude labels: the arrow
+  reference and the dot scale on top, a line per number in the arrow's
+  colour; the Iceland locator sits on it (`--locator-corner BL` implied).
+- The onset is an `events.yaml` id (or a unique part of it), so a
+  plots.yaml product redraws itself with every new solution.
+- 7 days was tried and dropped (2026-10-28): all of SE Iceland moved
+  together over 21-27 Oct 2026 (~600 mm/yr at SKFC/SLEC, not in the
+  network common mode), so a 7-day rate showed that, not the slope.
+
 ## Installing the lane
 
 The `maps` extra is `pygmt>=0.19` (PyPI) on top of a **system GMT ≥ 6** C

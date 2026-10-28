@@ -452,6 +452,89 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
 
 
+def _add_track_options(p: argparse.ArgumentParser) -> None:
+    """``map station --track``: daily positions since an event (track.py)."""
+    from gps_plot import track
+
+    g = p.add_argument_group(
+        "tracks",
+        "each station's daily horizontal positions since an event as dots, "
+        "its trend before the event removed, coloured by days since the "
+        "onset (newest red) and joined by a dotted path; a station that moved "
+        "gets its rate since the onset (blue) and of the last days (red) as "
+        "arrows with 1-sigma ellipses and in the legend",
+    )
+    g.add_argument(
+        "--track", default=None, metavar="EVENT|DATE",
+        help="the onset: an events.yaml event (its id, or a unique part of "
+        "it) or YYYYMMDD; turns the tracks on",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-events", default=None, metavar="FILE",
+        help="events.yaml to look EVENT up in (default: the gpsconfig one)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-pre", type=_window, default=None, metavar="START:END",
+        help=f"the trend window before the event (default: {track.PRE_DAYS} "
+        f"days up to {track.PRE_GAP_DAYS} days before the onset)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-before", type=int, default=track.BEFORE_DAYS, metavar="DAYS",
+        help=f"dots from DAYS before the onset (default {track.BEFORE_DAYS})",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-recent", type=int, default=track.RECENT_DAYS, metavar="DAYS",
+        help=f"the recent rate's window (default {track.RECENT_DAYS} days)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-scale", type=float, default=None, metavar="M_PER_MM",
+        help="metres on the map per mm of displacement (default: the "
+        f"farthest track {track.TRACK_CM} cm long)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-arrow-scale", type=float, default=None, metavar="CM",
+        help="arrow length per 100 mm/yr [cm] (default: the fastest station "
+        f"{track.ARROW_CM} cm)",
+    )  # fmt: skip
+    g.add_argument(
+        "--no-track-arrows", dest="track_arrows", action="store_false",
+        help="dots only: no rate arrows (the numbers stay in the legend)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-cmap", default=track.DEFAULT_CMAP, metavar="CPT",
+        help=f"colours of the days (default {track.DEFAULT_CMAP}: blue old, red new)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-common-mode", choices=("subtract", "off"), default="subtract",
+        help="the daily network common mode (default subtract)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-frame", default="itrf14", metavar="FRAME",
+        help="the .pos series read (default itrf14)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-uncert", type=float, default=track.TRACK_UNCERT, metavar="MM",
+        help="drop days with a horizontal formal sigma above MM (default "
+        f"{track.TRACK_UNCERT:g}; the Up sigma does not count)",
+    )  # fmt: skip
+
+
+def track_onset(spec: str, events_file: str | None = None) -> tuple[dt.date, str]:
+    """``--track``: a date, or an events.yaml event's onset; and its label."""
+    from geo_dataread.products.period import find_event, parse_date
+
+    try:
+        day = parse_date(spec)
+    except ValueError:
+        pass  # an event name
+    else:
+        return day, f"{day:%Y-%m-%d}"
+    from geo_dataread.events import read_events
+
+    ev = find_event(spec, read_events(events_file))
+    return ev.onset, ev.id
+
+
 def _add_station_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "Stations", nargs="*",
@@ -553,6 +636,7 @@ def build_parser(
         "Alone they are the whole map; with stations, --tos or --tos-search "
         "they are drawn beside them",
     )  # fmt: skip
+    _add_track_options(p)
     _add_map_options(p, config)
 
     p = sub.add_parser(
@@ -1116,12 +1200,14 @@ def _insets(
     legend_lines: int = 0,
     legend_width_cm: float = LEGEND_WIDTH_CM,
     arrows: float | None = None,
+    locator_floor: float | None = None,
 ) -> None:
     """The zoom inset (--inset) and the Iceland locator, where they fit
     (:func:`gps_plot.insets.place`): clear of the logo, the scale bar,
     a vector legend of ``legend_lines`` rows ``legend_width_cm`` wide, the
     station symbols and, with ``arrows`` (the vectors' scale [cm per
-    unit]; ``points`` are then the vectors), the arrows."""
+    unit]; ``points`` are then the vectors), the arrows. ``locator_floor``
+    [cm]: a bottom ``--locator-corner`` locator sits on it (a legend's top)."""
     from gps_plot import insets, layout, maps
 
     region = style.get("region") or tuple(fig.region)
@@ -1166,7 +1252,9 @@ def _insets(
         size = insets.locator_size()
         corner = getattr(args, "locator_corner", None)
         if corner is not None:
-            spot = insets.corner_spot(size, (width, height), corner)
+            spot = insets.corner_spot(
+                size, (width, height), corner, floor=locator_floor
+            )
         else:
             spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
         if spot is None:  # beside the map: under a zoom inset there, else top
@@ -1458,6 +1546,53 @@ def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
     return fleet, args.group_by or tos.default_group(fleet)
 
 
+def _draw_tracks(
+    fig: Any, args: Any, parser: Any, config: Any, style: dict[str, Any],
+    stations: Sequence[Any], maps: Any,
+) -> float:  # fmt: skip
+    """``--track``: every station's track on ``fig``; the legend's top [cm]
+    (the locator sits on it)."""
+    from gps_plot import track
+
+    try:
+        onset, label = track_onset(args.track, args.track_events)
+    except (ValueError, OSError) as exc:
+        parser.error(f"--track: {exc}")
+    if args.track_pre is not None:
+        start, end = args.track_pre
+        pre = (start.date(), (end or dt.datetime.combine(onset, dt.time())).date())
+    else:
+        pre = track.pre_window(onset)
+    pos_dir = common.config_dir(config, "pos_dir", None) if config else None
+    tracks, dropped = [], []
+    for c in stations:
+        try:
+            tracks.append(track.load_track(
+                c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
+                pos_dir=pos_dir, uncert=args.track_uncert,
+                common_mode=args.track_common_mode == "subtract",
+                before_days=args.track_before, recent_days=args.track_recent,
+            ))  # fmt: skip
+        except (ValueError, OSError) as exc:
+            dropped.append(f"{c.marker}: {exc}")
+    _report(dropped)
+    print(f"tracks since {onset:%Y-%m-%d} ({label}), trend {pre[0]:%Y-%m-%d} - "
+          f"{pre[1]:%Y-%m-%d}: {len(tracks)} stations", file=sys.stderr)  # fmt: skip
+    region = style.get("region") or tuple(fig.region)
+    projection = style.get("projection", maps.DEFAULT_PROJECTION)
+    if args.locator_corner is None:
+        args.locator_corner = "BL"  # on the legend
+    from gps_plot.layout import BOTTOM_LABELS_CM
+
+    return track.draw_tracks(
+        fig, tracks, onset=onset, region=region, projection=projection,
+        recent_days=args.track_recent, m_per_mm=args.track_scale,
+        arrows=args.track_arrows,
+        arrow_scale=(args.track_arrow_scale / 100 if args.track_arrow_scale else None),
+        cmap=args.track_cmap, legend_floor_cm=BOTTOM_LABELS_CM,
+    )  # fmt: skip
+
+
 def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
     if args.kind == BASE:
         args.markers = False
@@ -1506,9 +1641,17 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
                                   labels=args.markers, status_legend=None,
                                   rj=rj, avoid=avoid)  # fmt: skip
 
+    floor = None
+    if getattr(args, "track", None):  # the dots over the stations, as approved
+        floor = _draw_tracks(fig, args, parser, config, style, stations, maps)
     _finish(fig, args)
-    _insets(fig, args, config, style, stations, zoom_symbols)
-    stem = _stem(args, "station" if stations and args.markers else BASE, stations)
+    _insets(fig, args, config, style, stations, zoom_symbols, locator_floor=floor)
+    stem = _stem(
+        args,
+        "station" if stations and args.markers else BASE,
+        stations,
+        *(["track"] if floor is not None else []),
+    )
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
