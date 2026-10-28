@@ -107,7 +107,10 @@ deleted; design doc "Map products"). `map station --track EVENT`
 = daily positions since an event as time-coloured dots + rate arrows
 (`track.py`; map-lane doc); colour bar small in the upper right;
 `--track-series STA,…` (plots.yaml `ts_stations:` on a track map) draws each
-track as a N/E series with the legend's rates on the data, `<dir>/ts/`.
+track as a N/E series with the legend's rates on the data, `<dir>/ts/`;
+`--track-ref STA` = every track relative to STA (a baseline: shared motion
+drops out); the dotted path follows a 5-day running median
+(`--track-path-days`).
 Area layers for any map: `--layers volcanic` (FutureVolc swarms, central
 volcanoes named, caldera rims) and `rural` (IS 50V main + local roads,
 building points, farm names; `vector/build_09_is50v.sh`); overlapping

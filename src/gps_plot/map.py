@@ -532,6 +532,18 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         help="the .pos series read (default itrf14)",
     )  # fmt: skip
     g.add_argument(
+        "--track-ref", default=None, metavar="STA",
+        help="every track relative to this station (STA - REF on common "
+        "days, a baseline): motion they share, the network's or a region's, "
+        "drops out; REF itself is not drawn as a track",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
+        metavar="N",
+        help="the dotted path follows the running median of N days "
+        f"(default {track.PATH_MEDIAN_DAYS}; 1 = the daily positions)",
+    )  # fmt: skip
+    g.add_argument(
         "--track-uncert", type=float, default=track.TRACK_UNCERT, metavar="MM",
         help="drop days with a horizontal formal sigma above MM (default "
         f"{track.TRACK_UNCERT:g}; the Up sigma does not count)",
@@ -1624,14 +1636,27 @@ def _draw_tracks(
     # the series show more days before the onset than the dots: load those,
     # the map draws its own days (trimmed: same rates and zero)
     before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
+    common_mode = args.track_common_mode == "subtract"
+    ref_name = (args.track_ref or "").upper() or None
+    reference = None
+    if ref_name:
+        try:
+            reference = track.load_series(
+                ref_name, pre, frame=args.track_frame, pos_dir=pos_dir,
+                uncert=args.track_uncert, common_mode=common_mode,
+            )  # fmt: skip
+        except (ValueError, OSError) as exc:
+            parser.error(f"--track-ref {ref_name}: {exc}")
     tracks, dropped = [], []
     for c in stations:
+        if c.marker == ref_name:
+            continue  # zero by construction
         try:
             tracks.append(track.load_track(
                 c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
-                pos_dir=pos_dir, uncert=args.track_uncert,
-                common_mode=args.track_common_mode == "subtract",
+                pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
+                reference=reference,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -1651,6 +1676,8 @@ def _draw_tracks(
         arrows=args.track_arrows,
         arrow_scale=(args.track_arrow_scale / 100 if args.track_arrow_scale else None),
         cmap=args.track_cmap, legend_floor_cm=BOTTOM_LABELS_CM,
+        path_days=args.track_path_days,
+        note=f"motion relative to {ref_name}" if ref_name else None,
     )  # fmt: skip
     # the map's colour scale (draw_tracks: from the first dot, at least a day)
     days = np.concatenate([tr.days for tr in shown]) if shown else np.zeros(1)
@@ -1660,8 +1687,8 @@ def _draw_tracks(
     return floor, [
         (tr.marker, track.series_figure(
             tr, onset, recent_days=args.track_recent, before_days=args.track_before,
-            days_range=span, cmap=args.track_cmap,
-            common_mode=args.track_common_mode == "subtract"))
+            days_range=span, cmap=args.track_cmap, common_mode=common_mode,
+            reference=ref_name))
         for tr in picked
     ]  # fmt: skip
 
