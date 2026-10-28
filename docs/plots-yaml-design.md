@@ -293,6 +293,19 @@ year and past 3 months, set up as the Kárahnjúkar report map).
   dir (and its `ts/`) that no configured run or check series writes (a renamed run, a
   station taken out), unless another (ts) product shares the dir;
   `--keep-stale` keeps them.
+- **Layers and GMT arguments from the config** (2026-10-28, BGÓ: "make this
+  general"): a map product or run takes `layers: [volcanic, rural]`
+  (`--layers`), `gmt: {STEP: {KEY: VALUE}}` or a list of `STEP:KEY=VALUE`
+  (`--gmt`, any drawing step, a layer's name among them) and `gmt_config:
+  {KEY: VALUE}` (`--gmt-config`, GMT defaults); `defaults:` takes
+  `map_layers:`, `map_gmt:`, `map_gmt_config:` for every map. Order:
+  defaults, product, run: a run adds layers and its GMT arguments win.
+  The layers themselves are `map_layers.yaml` in gps-config-data (deployed
+  to the gpsconfig dir; `gpsplot map --layers-file` for another): per layer
+  `file`, `help`, `pen`, `fill`, `label`, `font`, `symbol` (points),
+  `build`, `gmt` (its own PyGMT arguments), and `presets:`. Over the
+  built-in catalogue (gps_plot `gis_layers`), so a missing file changes
+  nothing; `gpsplot map --layers list` shows what a map sees.
 - **Sea floor:** off Reykjanes the DEM's sea is EMODnet (~115 m cells),
   which the hillshade shows as blocks on a local map. `--sea-smooth 0.5`
   smooths the sea alone (Gaussian, 0.5 km; land counts as sea level in the
@@ -303,10 +316,11 @@ year and past 3 months, set up as the Kárahnjúkar report map).
     tool: map
     map: velocity
     dir: locations/volcanos/reykjanes/maps   # under its area: aflogun Kort
+    layers: [roads, towns, lavas, graben, fissures, barriers]
+    gmt: {roads: {pen: "0.8p,gray40"}}         # any --gmt STEP:KEY=VALUE
     args:
       - --region -22.72/-22.17/63.76/63.945
       - --projection M15.5c --dem iceland --sea-smooth 0.5 --title=
-      - --layers roads,towns,lavas,graben,fissures,barriers
       - --scale-ref 100
       - --min-fill 0.6
     ts_stations: [SENG, SKSH, THOB, ELDC, GRIV]   # check series

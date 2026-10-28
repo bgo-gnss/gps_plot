@@ -812,3 +812,26 @@ def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path) -> None:
         (tmp_path / "maps/sv/ts" / f"{stem}.png").write_text("x")
     stale = products.stale_map_plots([job], [job], tmp_path)
     assert [f.name for f in stale] == ["sv-track-SVIN.png"]
+
+
+def test_map_layers_and_gmt_from_plots_yaml() -> None:
+    spec = {"tool": "map", "map": "station", "dir": "maps/x",
+            "layers": ["volcanic", "rural"],
+            "gmt": {"calderas": {"pen": "2p,red"}, "coast": {"A": "500/0/1"}},
+            "gmt_config": {"MAP_FRAME_TYPE": "plain"},
+            "runs": [{"name": "a", "layers": "roads",
+                      "gmt": ["calderas:pen=3p,blue"]}]}  # fmt: skip
+    cfg = {
+        "defaults": {"save": "png", "map_layers": ["towns"]},
+        "products": {"x": spec},
+    }
+    (job,) = products.expand(cfg, areas={})
+    argv = list(job.argv)
+    assert argv[argv.index("--layers") + 1] == "towns"  # defaults first
+    layers = [argv[i + 1] for i, t in enumerate(argv) if t == "--layers"]
+    assert layers == ["towns", "volcanic,rural", "roads"]
+    gmt = [argv[i + 1] for i, t in enumerate(argv) if t == "--gmt"]
+    assert gmt == ["calderas:pen=2p,red", "coast:A=500/0/1", "calderas:pen=3p,blue"]
+    assert "MAP_FRAME_TYPE=plain" in argv
+    with pytest.raises(ValueError, match="gmt_config: a mapping"):
+        products.expand({"products": {"x": {**spec, "gmt_config": ["X=1"]}}}, areas={})

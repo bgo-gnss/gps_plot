@@ -411,6 +411,12 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         + ", ".join(gmt_overrides.LAYERS) + ")",
     )  # fmt: skip
     g.add_argument(
+        "--layers-file", default=None, metavar="FILE",
+        help="the layer catalogue (layers, their look and GMT arguments, "
+        "presets) over the built-in one (default: map_layers.yaml in the "
+        "gpsconfig directory, when there)",
+    )  # fmt: skip
+    g.add_argument(
         "--gmt-config", action="append", default=[], metavar="KEY=VALUE",
         help="a GMT default for the whole map, e.g. MAP_FRAME_TYPE=plain, "
         "FONT_ANNOT_PRIMARY=8p (repeatable)",
@@ -970,8 +976,9 @@ def _style(
     if getattr(args, "layers", None):
         from gps_plot import gis_layers
 
+        cat = getattr(args, "layer_catalogue", None) or gis_layers.BUILTIN
         kw["overlays"] = kw.get("overlays", ()) + gis_layers.overlays(
-            gis_layers.expand(args.layers), gis_dir(config)
+            gis_layers.expand(args.layers, cat), gis_dir(config), cat
         )
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
@@ -1387,6 +1394,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     from gps_plot import maps
 
     try:
+        # the layer catalogue first: its layers are --gmt steps too
+        args.layer_catalogue = layer_catalogue(args, config)
         layers = gmt_overrides.parse(args.gmt)
         gmt_overrides.check(layers, pygmt)
         defaults = gmt_config(args.gmt_config)
@@ -1411,6 +1420,25 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         return _run(args, parser, config, maps)
 
 
+def layer_catalogue(args: Any, config: Any) -> Any:
+    """``--layers-file``, or map_layers.yaml of the gpsconfig directory, or
+    the built-in catalogue; its layers made ``--gmt`` steps.
+
+    Raises:
+        ValueError: a missing --layers-file, or an invalid catalogue.
+    """
+    from gps_plot import gis_layers
+
+    path = getattr(args, "layers_file", None)
+    if path and not os.path.isfile(path):
+        raise ValueError(f"--layers-file {path}: no such file")
+    if not path and config is not None and getattr(config, "config_path", None):
+        path = os.path.join(config.config_path, gis_layers.CATALOGUE_FILE)
+    cat = gis_layers.load_catalogue(path)
+    gis_layers.register_steps(cat)
+    return cat
+
+
 def gmt_config(specs: Sequence[str]) -> dict[str, str]:
     """``KEY=VALUE`` specs (``--gmt-config``) as GMT defaults.
 
@@ -1433,11 +1461,14 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     if args.layers:
         from gps_plot import gis_layers
 
+        cat = getattr(args, "layer_catalogue", None) or gis_layers.BUILTIN
         if any(spec.strip().lower() == gis_layers.LIST for spec in args.layers):
-            print(gis_layers.describe())
+            print(gis_layers.describe(cat))
             return 0
         try:
-            gis_layers.overlays(gis_layers.expand(args.layers), gis_dir(config))
+            gis_layers.overlays(
+                gis_layers.expand(args.layers, cat), gis_dir(config), cat
+            )
         except (ValueError, FileNotFoundError) as exc:
             parser.error(str(exc))
     if getattr(args, "fissure_swarms", False):

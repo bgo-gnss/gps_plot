@@ -5,7 +5,13 @@ postprocess.cfg, default ``~/gps-data/gis``) with its own look and its own
 ``--gmt`` drawing step, so ``--gmt roads:pen=0.8p,black`` restyles the
 roads alone. ``--overlay FILE`` stays for anything ad hoc.
 
-The Reykjanes layers are built by ``vector/build_08_reykjanes.sh`` (lavas:
+The catalogue is configuration: ``map_layers.yaml`` in the gpsconfig
+directory (or ``gpsplot map --layers-file``) adds layers and presets and
+changes the built-in ones below (:func:`load_catalogue`), so a new layer or
+a new look needs no code. Each layer is also a ``--gmt`` drawing step of
+its own, and may carry GMT arguments of its own (``gmt:``).
+
+The built-in Reykjanes layers are built by ``vector/build_08_reykjanes.sh`` (lavas:
 the LMÍ/NÍ WFS, saved beside it; places: authored); the national IS 50V
 roads, buildings and farm names by ``vector/build_09_is50v.sh``; the
 volcanic systems and caldera rims (FutureVolc) by ``build_07_volcanic.sh``. A preset names
@@ -17,7 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -36,6 +42,15 @@ class GisLayer:
     symbol: str | None = None  # points: a GMT style
     #: the script that builds the file, for the missing-file hint
     build: str = "vector/build_08_reykjanes.sh"
+    #: further PyGMT arguments of its drawing call (``transparency``, a
+    #: GMT letter, …); ``--gmt NAME:KEY=VALUE`` still wins
+    gmt: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+    @property
+    def step(self) -> str:
+        """Its ``--gmt`` drawing step: its name (a name file: the shared
+        ``place-labels``)."""
+        return "place-labels" if self.path.endswith(".txt") else self.name
 
 
 #: drawing order is the order of a preset, not of this table
@@ -120,11 +135,116 @@ PRESETS: dict[str, tuple[str, ...]] = {
     "rural": ("localroads", "roads", "buildings", "farms"),
 }  # fmt: skip
 
+#: ``map_layers.yaml`` keys of a layer (``file`` is its path under the GIS
+#: directory, or an absolute one)
+LAYER_KEYS = ("file", "help", "pen", "fill", "label", "font", "symbol", "build",
+              "gmt")  # fmt: skip
+#: the catalogue file in the gpsconfig directory
+CATALOGUE_FILE = "map_layers.yaml"
+
+
+@dataclasses.dataclass(frozen=True)
+class Catalogue:
+    """The layers and presets a map can name, and where they came from."""
+
+    layers: Mapping[str, GisLayer]
+    presets: Mapping[str, tuple[str, ...]]
+    source: str = "built-in"
+
+
+BUILTIN = Catalogue(LAYERS, PRESETS)
+
+
+def _none(value: Any) -> Any:
+    """``none``/``null`` in the file: no pen, no fill."""
+    return None if value is None or str(value).lower() == "none" else str(value)
+
+
+def catalogue_from(doc: Mapping[str, Any], source: str = "") -> Catalogue:
+    """The built-in catalogue with ``doc`` (``layers:``, ``presets:``) over
+    it: a layer named there replaces the keys it gives of a built-in one, or
+    is new (then ``file:`` is needed); a preset replaces one of its name.
+
+    Raises:
+        ValueError: an unknown key, a new layer without a file, or a preset
+            naming no layer.
+    """
+    unknown = set(doc) - {"layers", "presets"}
+    if unknown:
+        raise ValueError(f"{source}: unknown key(s) {sorted(unknown)}")
+    layers = dict(LAYERS)
+    for name, spec in (doc.get("layers") or {}).items():
+        name = str(name).lower()
+        spec = dict(spec or {})
+        bad = set(spec) - set(LAYER_KEYS)
+        if bad:
+            raise ValueError(
+                f"{source}: layer {name}: unknown key(s) {sorted(bad)} "
+                f"(keys: {', '.join(LAYER_KEYS)})"
+            )
+        base = layers.get(name)
+        if base is None and not spec.get("file"):
+            raise ValueError(f"{source}: layer {name}: a new layer needs file:")
+        change: dict[str, Any] = {}
+        for key, value in spec.items():
+            if key == "file":
+                change["path"] = str(value)
+            elif key == "gmt":
+                change["gmt"] = dict(value or {})
+            elif key in ("pen", "fill", "symbol", "label", "font"):
+                change[key] = _none(value)
+            else:
+                change[key] = str(value)
+        if base is None:
+            change.setdefault("help", change["path"])
+            change.setdefault("build", "(see map_layers.yaml)")
+            layers[name] = GisLayer(name, **change)
+        else:
+            layers[name] = dataclasses.replace(base, **change)
+    presets = dict(PRESETS)
+    for name, members in (doc.get("presets") or {}).items():
+        listed = members.split(",") if isinstance(members, str) else members
+        names = tuple(str(m).strip().lower() for m in listed or () if str(m).strip())
+        missing = [m for m in names if m not in layers]
+        if missing:
+            raise ValueError(f"{source}: preset {name}: no layer {', '.join(missing)}")
+        presets[str(name).lower()] = names
+    return Catalogue(layers, presets, source or "built-in")
+
+
+def load_catalogue(path: str | None) -> Catalogue:
+    """The catalogue of ``path`` (a ``map_layers.yaml``); the built-in one
+    when ``path`` is None or not a file.
+
+    Raises:
+        ValueError: the file is not a valid catalogue (:func:`catalogue_from`).
+    """
+    if not path or not os.path.isfile(path):
+        return BUILTIN
+    import yaml
+
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    return catalogue_from(doc, path)
+
+
+def register_steps(cat: Catalogue) -> None:
+    """Make each layer of ``cat`` a ``--gmt`` drawing step (a new one of
+    the file draws with ``Figure.plot`` like the built-in ones)."""
+    from gps_plot import gmt_overrides
+
+    for layer in cat.layers.values():
+        gmt_overrides.LAYERS.setdefault(
+            layer.step,
+            ("Figure.plot", {"style": "S", "pen": "W", "fill": "G"}),
+        )
+
+
 #: ``--layers list`` prints the layers and presets
 LIST = "list"
 
 
-def expand(specs: Sequence[str]) -> list[str]:
+def expand(specs: Sequence[str], cat: Catalogue = BUILTIN) -> list[str]:
     """Layer names of ``--layers`` specs (comma lists, presets expanded,
     repeats kept once, in drawing order as given).
 
@@ -136,17 +256,19 @@ def expand(specs: Sequence[str]) -> list[str]:
         for name in (n.strip().lower() for n in spec.split(",")):
             if not name:
                 continue
-            names = PRESETS.get(name, (name,))
+            names = cat.presets.get(name, (name,))
             for n in names:
-                if n not in LAYERS:
-                    known = ", ".join([*LAYERS, *PRESETS])
+                if n not in cat.layers:
+                    known = ", ".join([*cat.layers, *cat.presets])
                     raise ValueError(f"--layers {name!r}: not a layer ({known})")
                 if n not in out:
                     out.append(n)
     return out
 
 
-def overlays(names: Sequence[str], gis_dir: str) -> tuple[Any, ...]:
+def overlays(
+    names: Sequence[str], gis_dir: str, cat: Catalogue = BUILTIN
+) -> tuple[Any, ...]:
     """The :class:`gps_plot.maps.MapOverlay` of each layer, in order.
 
     Raises:
@@ -156,8 +278,8 @@ def overlays(names: Sequence[str], gis_dir: str) -> tuple[Any, ...]:
 
     out = []
     for name in names:
-        layer = LAYERS[name]
-        path = os.path.join(gis_dir, layer.path)
+        layer = cat.layers[name]
+        path = os.path.join(gis_dir, os.path.expanduser(layer.path))
         if not os.path.isfile(path):
             raise FileNotFoundError(
                 f"--layers {name}: no {layer.path} in {gis_dir}; built by {layer.build}"
@@ -166,16 +288,31 @@ def overlays(names: Sequence[str], gis_dir: str) -> tuple[Any, ...]:
             MapOverlay(
                 path, pen=layer.pen, fill=layer.fill, label=layer.label,
                 font=layer.font or DEFAULT_PLACE_FONT, symbol=layer.symbol,
-                step="place-labels" if path.endswith(".txt") else name,
+                step=layer.step, gmt=dict(layer.gmt),
             )
         )  # fmt: skip
     return tuple(out)
 
 
-def describe() -> str:
-    """``--layers list``: every layer and preset."""
-    lines = ["layers:"]
-    lines += [f"  {n:<10} {layer.help}" for n, layer in LAYERS.items()]
+def describe(cat: Catalogue = BUILTIN) -> str:
+    """``--layers list``: every layer and preset, and the catalogue's source."""
+    lines = [f"layers ({cat.source}):"]
+    lines += [f"  {n:<10} {layer.help}" for n, layer in cat.layers.items()]
     lines.append("presets:")
-    lines += [f"  {n:<14} {', '.join(v)}" for n, v in PRESETS.items()]
+    lines += [f"  {n:<14} {', '.join(m)}" for n, m in cat.presets.items()]
     return "\n".join(lines)
+
+
+def dump(cat: Catalogue = BUILTIN) -> dict[str, Any]:
+    """``cat`` as a ``map_layers.yaml`` document (every key written)."""
+    layers = {}
+    for name, layer in cat.layers.items():
+        entry: dict[str, Any] = {"file": layer.path, "help": layer.help}
+        for key in ("pen", "fill", "label", "font", "symbol"):
+            if getattr(layer, key) is not None:
+                entry[key] = getattr(layer, key)
+        entry["build"] = layer.build
+        if layer.gmt:
+            entry["gmt"] = dict(layer.gmt)
+        layers[name] = entry
+    return {"layers": layers, "presets": {n: list(m) for n, m in cat.presets.items()}}

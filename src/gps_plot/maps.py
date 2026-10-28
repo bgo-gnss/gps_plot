@@ -628,6 +628,8 @@ class MapOverlay:
     font: str = DEFAULT_PLACE_FONT
     step: str = "overlay"
     symbol: str | None = None
+    #: further PyGMT arguments of its drawing calls (a layer's ``gmt:``)
+    gmt: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     #: a lon/lat box (W, E, S, N) whose labels are left out: a zoom
     #: inset's, which names them itself
     unlabelled_box: tuple[float, float, float, float] | None = None
@@ -790,14 +792,14 @@ def _draw_overlays(
                 if closed and ov.fill:
                     kw["fill"] = ov.fill
                 if kw:
-                    fig.plot(**layer_kw(ov.step, data=seg, **kw))
+                    fig.plot(**layer_kw(ov.step, data=seg, **{**kw, **ov.gmt}))
         points = overlay_points(geojson) if ov.symbol else []
         if points:
             lon, lat = zip(*points, strict=True)
             kw = {"style": ov.symbol, "fill": ov.fill or "black"}
             if ov.pen is not None:
                 kw["pen"] = ov.pen
-            fig.plot(**layer_kw(ov.step, x=list(lon), y=list(lat), **kw))
+            fig.plot(**layer_kw(ov.step, x=list(lon), y=list(lat), **{**kw, **ov.gmt}))
         if ov.label:
             labels = overlay_labels(geojson, ov.label)
             _draw_labels(
