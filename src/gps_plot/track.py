@@ -629,7 +629,7 @@ def newest_text(day: dt.date, today: dt.date | None = None) -> tuple[str, str]:
     else red (stale)."""
     today = today or dt.date.today()
     fresh = day >= today - dt.timedelta(days=1)
-    return f"newest {day:%d.%m.%Y}", (FRESH_COLOR if fresh else STALE_COLOR)
+    return f"last datapoint: {day:%d.%m.%Y}", (FRESH_COLOR if fresh else STALE_COLOR)
 
 
 def draw_dot_pair(fig: Any, x: float, y: float, length_deg: float, *,

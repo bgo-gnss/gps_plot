@@ -91,7 +91,7 @@ the event shows. The rates' σ include how much the daily noise wanders
 than 5 days since the event gets a black arrow to its newest position (at
 the dots' scale) and a dashed 1-σ ellipse; with no days just before the
 event its zero is the trend carried across the gap, and that σ is in the
-ellipse. The legend gives the newest day (green through yesterday, else
+ellipse. The legend gives the last datapoint (green through yesterday, else
 red). `--inset W/E/S/N` adds a
 zoom inset with the tracks inside it drawn at its own scale (its DEM
 resampled and smoothed); `--inset-corner BL` puts it inside the map on the
