@@ -26,7 +26,7 @@ AREAS = {
 
 
 def test_plan_takes_the_rtk_pairs_of_baselines_and_stacks_once():
-    jobs = rtk_run.plan({}, AREAS, DIRS)
+    jobs = [j for j in rtk_run.plan({}, AREAS, DIRS) if j.run == "14d"]
     assert [(j.area, j.pair) for j in jobs] == [
         ("seydisfjordur", "SEY1-SEYD"),
         ("seydisfjordur", "SEY2-SEYD"),  # SEY3-SEYD is no RTK baseline
@@ -72,6 +72,7 @@ def test_plan_refuses(cfg, area, msg):
 
 def test_stale_only_touches_rtk_plots_no_job_writes(tmp_path):
     jobs = rtk_run.plan({}, AREAS, DIRS, area=["seydisfjordur"])
+    assert sorted({j.run for j in jobs}) == ["14d", "3d", "7d"]
     d = tmp_path / jobs[0].out_dir
     d.mkdir(parents=True)
     for name in ["SEY1_SEYD-rtk-14d.png", "SEY4_SEYD-rtk-14d.png",

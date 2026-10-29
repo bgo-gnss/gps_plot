@@ -7,6 +7,8 @@ plots.yaml ``rtk:`` section says where and what::
     rtk:
       dir: locations/{root}/{cdn}/graphs/rtk
       runs:
+        - { name: 3d, args: [--longterm 3d, --rtk-overlap 1] }
+        - { name: 7d, args: [--longterm week, --rtk-overlap 2] }
         - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
       overrides:                    # per area slug: args appended to each run
         svinafellsheidi: { args: [--rtk-span week] }
@@ -39,6 +41,8 @@ from typing import Any
 
 DEFAULT_DIR = "locations/{root}/{cdn}/graphs/rtk"
 DEFAULT_RUNS: tuple[Mapping[str, Any], ...] = (
+    {"name": "3d", "args": ["--longterm 3d", "--rtk-overlap 1"]},
+    {"name": "7d", "args": ["--longterm week", "--rtk-overlap 2"]},
     {"name": "14d", "args": ["--longterm 14d", "--rtk-overlap 2"]},
 )
 LOCK_NAME = ".rtk-run.lock"
