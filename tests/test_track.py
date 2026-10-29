@@ -184,3 +184,34 @@ def test_relative_to_takes_the_shared_motion_out_on_common_days() -> None:
     a = track.station_track("SVIE", -16.8, 64.0, t2, d, ONSET, PRE)
     assert a.since is not None
     assert a.since.north == pytest.approx(200, abs=4 * a.since.sigma_north)
+
+
+def test_reference_mean_shares_out_one_stations_wander() -> None:
+    pre = (dt.date(2024, 1, 1), dt.date(2025, 1, 1))
+    days = np.arange(0, 600)
+    t = 2024.0 + (days + 0.5) / track.YEAR
+    rng = np.random.default_rng(0)
+    after = t >= 2025.0
+    quiet = [(t, rng.normal(0, 1.0, (2, t.size)) + 5.0 * (t - 2024)) for _ in range(3)]
+    moving = (t, quiet[0][1] + np.where(after, 30.0 * (t - 2025.0), 0.0))
+    tm, ym = track.reference_mean([*quiet[1:], moving], pre)
+    assert tm.size == t.size
+    # the trend before is gone; a third of the mover's 30 mm/yr is left
+    late = tm >= 2025.0
+    slope = np.polyfit(tm[late], ym[0, late], 1)[0]
+    assert slope == pytest.approx(10.0, abs=1.5)
+    # a day only one of three has is left out (fewer than half)
+    lone = (np.array([2030.0]), np.zeros((2, 1)))
+    tm2, _ = track.reference_mean([*quiet[1:], (np.concatenate([t, lone[0]]),
+                                                np.hstack([moving[1], lone[1]]))], pre)  # fmt: skip
+    assert tm2.size == t.size
+    with pytest.raises(ValueError):
+        track.reference_mean([], pre)
+
+
+def test_day_key_is_one_per_calendar_day_in_leap_years() -> None:
+    days = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(800)]
+    t = np.array([track.yearf(d) for d in days])
+    key = track.day_key(t)
+    assert np.array_equal(key, [d.toordinal() for d in days])
+    np.testing.assert_allclose(track.from_day_key(key), t)

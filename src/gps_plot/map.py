@@ -532,10 +532,13 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         help="the .pos series read (default itrf14)",
     )  # fmt: skip
     g.add_argument(
-        "--track-ref", default=None, metavar="STA",
+        "--track-ref", default=None, metavar="STA[,STA...]",
         help="every track relative to this station (STA - REF on common "
         "days, a baseline): motion they share, the network's or a region's, "
-        "drops out; REF itself is not drawn as a track",
+        "drops out; REF itself is not drawn as a track. Several stations: "
+        "relative to their weighted mean (each one's trend and seasonal "
+        "removed first; days at least half of them have), so one station's "
+        "own wander moves the reference by its share only; they are drawn",
     )  # fmt: skip
     g.add_argument(
         "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
@@ -1637,19 +1640,39 @@ def _draw_tracks(
     # the map draws its own days (trimmed: same rates and zero)
     before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
     common_mode = args.track_common_mode == "subtract"
-    ref_name = (args.track_ref or "").upper() or None
+    refs = [r.strip().upper() for r in (args.track_ref or "").split(",") if r.strip()]
+    ref_name = (
+        None if not refs else refs[0] if len(refs) == 1
+        else "the mean of " + ", ".join(refs)
+    )  # fmt: skip
     reference = None
-    if ref_name:
+    if refs:
+        loaded, used = [], []
+        for r in refs:
+            try:
+                loaded.append(track.load_series(
+                    r, pre, frame=args.track_frame, pos_dir=pos_dir,
+                    uncert=args.track_uncert, common_mode=common_mode,
+                ))  # fmt: skip
+                used.append(r)
+            except (ValueError, OSError) as exc:
+                if len(refs) == 1:
+                    parser.error(f"--track-ref {r}: {exc}")
+                # one of several: the mean of the others
+                print(f"--track-ref: {r} left out: {exc}", file=sys.stderr)
+        if not used:
+            parser.error("--track-ref: none of the stations has data")
+        if len(refs) > 1:
+            ref_name = "the mean of " + ", ".join(used)
         try:
-            reference = track.load_series(
-                ref_name, pre, frame=args.track_frame, pos_dir=pos_dir,
-                uncert=args.track_uncert, common_mode=common_mode,
-            )  # fmt: skip
-        except (ValueError, OSError) as exc:
-            parser.error(f"--track-ref {ref_name}: {exc}")
+            reference = (
+                loaded[0] if len(loaded) == 1 else track.reference_mean(loaded, pre)
+            )
+        except ValueError as exc:
+            parser.error(f"--track-ref: {exc}")
     tracks, dropped = [], []
     for c in stations:
-        if c.marker == ref_name:
+        if len(refs) == 1 and c.marker == refs[0]:
             continue  # zero by construction
         try:
             tracks.append(track.load_track(
