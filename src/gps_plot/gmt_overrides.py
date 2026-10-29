@@ -41,6 +41,7 @@ from typing import Any
 LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "coast": ("Figure.coast", {"land": "G", "water": "S", "shorelines": "W",
                                "resolution": "D", "frame": "B"}),
+    "resample": ("grdsample", {"spacing": "I", "interpolation": "n"}),
     "smooth": ("grdfilter", {"filter": "F", "distance": "D"}),
     "sea-smooth": ("grdfilter", {"filter": "F", "distance": "D"}),
     "gradient": ("grdgradient", {"azimuth": "A", "normalize": "N"}),

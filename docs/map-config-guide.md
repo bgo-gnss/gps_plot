@@ -91,8 +91,12 @@ the event shows. The rates' σ include how much the daily noise wanders
 than 5 days since the event gets a black arrow to its newest position (at
 the dots' scale) and a dashed 1-σ ellipse; with no days just before the
 event its zero is the trend carried across the gap, and that σ is in the
-ellipse. `--inset W/E/S/N` adds a
-zoom inset with the tracks inside it drawn at its own scale.
+ellipse. The legend gives the newest day (green through yesterday, else
+red). `--inset W/E/S/N` adds a
+zoom inset with the tracks inside it drawn at its own scale (its DEM
+resampled and smoothed); `--inset-corner BL` puts it inside the map on the
+legend, `--inset-width` sizes it, `--locator-corner BR` moves the Iceland
+map.
 
 **Captions** are made from the map's options (place, dates, horizontal or
 vertical). `label:` on the product names the place; `caption:` on a run

@@ -78,7 +78,7 @@ def test_too_few_days_gives_a_displacement() -> None:
     tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
     assert tr.n_after == 2 and tr.since is None and tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
-    assert colour == "black" and "(2 days)" in text
+    assert colour == track.DISPLACEMENT_COLOR and "(2 days)" in text
     assert re.search(r"SVIN moved 1[789] ± \d mm toward 29\d°", text)
 
 
@@ -345,3 +345,33 @@ def test_a_few_days_station_is_listed_even_if_not_beyond_three_sigma() -> None:
     assert not tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
     assert colour == track.DISPLACEMENT_COLOR and "(1 day)" in text
+
+
+def test_newest_day_text_green_through_yesterday_else_red() -> None:
+    today = dt.date(2026, 10, 29)
+    assert track.newest_text(dt.date(2026, 10, 28), today) == (
+        "newest 28.10.2026",
+        track.FRESH_COLOR,
+    )
+    assert track.newest_text(dt.date(2026, 10, 27), today)[1] == track.STALE_COLOR
+    t, y = _series()
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    assert track.newest_day([tr]) == dt.date.fromordinal(
+        int(track.day_key(np.array([t[-1]]))[0])
+    )
+    assert track.newest_day([]) is None
+
+
+def test_recent_line_has_the_14_day_movement() -> None:
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    lines = track.legend_entries([tr], ONSET, 14)
+    assert re.search(r"last 14 days, moved \d+ ± \d+ mm$", lines[1][0])
+
+
+def test_zoom_dem_resamples_finer_and_smooths() -> None:
+    from gps_plot import insets
+
+    kw = insets.zoom_dem((-16.84, -16.785, 63.998, 64.022), "M6c", 0.0)
+    assert 0 < kw["dem_resample"] < 1 / 3600
+    assert kw["dem_smooth"] == insets.ZOOM_DEM_SMOOTH_KM

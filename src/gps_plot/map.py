@@ -371,6 +371,16 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "there and not on the map; the box is outlined on the map",
     )  # fmt: skip
     g.add_argument(
+        "--inset-corner", choices=("BL", "BR", "TL", "TR"), default=None,
+        help="put the zoom inset in this corner inside the map, whatever it "
+        "covers; a bottom corner sits on the legend of a track map "
+        "(default: a free spot, else beside the map)",
+    )  # fmt: skip
+    g.add_argument(
+        "--inset-width", type=float, default=None, metavar="CM",
+        help="the zoom inset's width [cm] (default 6)",
+    )  # fmt: skip
+    g.add_argument(
         "--locator", dest="locator", action="store_const", const=True,
         default=None,
         help="a small Iceland map with the map's box in red (default: on, "
@@ -1289,10 +1299,18 @@ def _insets(
     zoom_spot = None
     if zoom:
         box = args.inset
-        size = insets.size_cm(box, insets.zoom_projection())
+        zoom_width = getattr(args, "inset_width", None) or insets.ZOOM_WIDTH_CM
+        size = insets.size_cm(box, insets.zoom_projection(zoom_width))
         sea.block_points(*_box_edge(box))
-        spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
-                            map_size=(width, height))  # fmt: skip
+        zoom_corner = getattr(args, "inset_corner", None)
+        spot: insets.Spot | None
+        if zoom_corner is not None:
+            spot = insets.corner_spot(size, (width, height), zoom_corner,
+                                      floor=locator_floor)  # fmt: skip
+            sea.reserve((spot.x, spot.x + spot.width, spot.y, spot.y + spot.height))
+        else:
+            spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
+                                map_size=(width, height))  # fmt: skip
         assert spot is not None  # outside=True always finds a spot
         zoom_spot = spot
         insets.draw_zoom_box(fig, box)

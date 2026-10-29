@@ -996,6 +996,7 @@ def _draw_basemap(
     lakes: str | None = None,
     glacier_contours: float | None = None,
     graticule: bool = True,
+    dem_resample: float = 0.0,
 ) -> None:
     """Draw the shared coast/DEM base layer (slice-3 seam, now live).
 
@@ -1032,6 +1033,15 @@ def _draw_basemap(
     )
     if dem_grid is not None:
         subgrid = pygmt_mod.grdcut(dem_grid, region=region)
+        cells = _grid_cells(subgrid)
+        if dem_resample > 0 and cells is not None and dem_resample < min(cells):
+            # a zoom finer than the grid: bicubic onto cells a whole fraction
+            # of the grid's, so they do not show as blocks (BGÓ 2026-10-29)
+            k = math.ceil(max(cells) / dem_resample)
+            subgrid = pygmt_mod.grdsample(
+                **layer_kw("resample", grid=subgrid,
+                           spacing=[cells[0] / k, cells[1] / k], interpolation="c")
+            )  # fmt: skip
         if sea_smooth > 0:
             subgrid = smooth_sea(pygmt_mod, subgrid, sea_smooth)
         relief = subgrid
@@ -1141,6 +1151,7 @@ BASE_KEYS = (
     "resolution", "land", "water", "shorelines", "dem_grid", "dem_cmap",
     "bathymetry_cmap", "glacier_cmap", "dem_shading_azimuth",
     "dem_shading_normalize", "dem_smooth", "sea_smooth", "overlays", "coastline",
+    "dem_resample",
     "glaciers",
     "zones", "lakes", "glacier_contours",
 )  # fmt: skip
@@ -1169,6 +1180,18 @@ def draw_base(
 
 #: the shallowest depth a smoothed sea cell keeps [m]: still sea-coloured
 SEA_SMOOTH_SHALLOWEST = -0.5
+
+
+def _grid_cells(grid: Any) -> tuple[float, float] | None:
+    """The (x, y) cell size of an in-memory grid [its units], or None."""
+    try:
+        x = np.asarray(grid.coords[grid.dims[1]], dtype=np.float64)
+        y = np.asarray(grid.coords[grid.dims[0]], dtype=np.float64)
+    except (AttributeError, IndexError, KeyError):
+        return None
+    if x.size < 2 or y.size < 2:
+        return None
+    return float(abs(x[1] - x[0])), float(abs(y[1] - y[0]))
 
 
 def smooth_sea(pygmt_mod: Any, grid: Any, km: float) -> Any:

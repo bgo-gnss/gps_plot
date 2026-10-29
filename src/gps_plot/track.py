@@ -44,8 +44,8 @@ MIN_RATE_DAYS = 5
 #: the newest (two at most), not of two days a week apart
 END_SPAN_DAYS = 3
 #: the few-days station's displacement arrow and its 1-σ ellipse (dashed)
-DISPLACEMENT_COLOR = "black"
-DISPLACEMENT_ELLIPSE_PEN = "0.6p,black,4_2:0"
+DISPLACEMENT_COLOR = "red"
+DISPLACEMENT_ELLIPSE_PEN = "0.6p,red,4_2:0"
 #: moved = the newest position off the station by more than this × its scatter
 MOVED_SIGMA = 3.0
 #: largest horizontal formal σ kept [mm]
@@ -68,7 +68,16 @@ ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
 SINCE_COLOR = "blue"
 BEFORE_COLOR = "80/80/80"
-RECENT_COLOR = "red"
+RECENT_COLOR = "black"
+#: the newest day in the legend: through yesterday green, else red (as the
+#: time series' "Last datapoint"; a darker green, readable on white)
+FRESH_COLOR = "0/160/0"
+STALE_COLOR = "red"
+#: the dots' scale: two dots joined by a line
+DOT_PAIR_PEN = "0.8p,black"
+DOT_PAIR_FILL = "gray70"
+#: the track legend's box: a little less see-through than the vector maps'
+TRACK_LEGEND_FILL = "white@8"
 LEGEND_FONT = "7p,Helvetica-Bold"
 #: the legend's line spacing [cm] (0.04 of the first 8.25 cm high map):
 #: the same on a tall map as on a wide one
@@ -587,9 +596,11 @@ def legend_entries(
                         f"moved {moved_mm:.0f} {pm} {tr.end_sigma:.0f} mm",
                         SINCE_COLOR))  # fmt: skip
             if tr.recent is not None:
-                r = tr.recent
+                r, f = tr.recent, recent_days / YEAR
                 out.append((f"{tr.marker} {r.speed:.0f} {pm} {r.sigma_speed:.0f} "
-                            f"mm/yr last {recent_days} days", RECENT_COLOR))  # fmt: skip
+                            f"mm/yr last {recent_days} days, moved "
+                            f"{r.speed * f:.0f} {pm} {r.sigma_speed * f:.0f} mm",
+                            RECENT_COLOR))  # fmt: skip
             if tr.before is not None:
                 out.append((before_text(tr.marker, tr.before), BEFORE_COLOR))
         else:
@@ -602,6 +613,32 @@ def legend_entries(
                         f"{gap})",
                         DISPLACEMENT_COLOR))  # fmt: skip
     return out
+
+
+def newest_day(tracks: Sequence[Track]) -> dt.date | None:
+    """The day of the newest position of any of ``tracks``."""
+    ends = [float(tr.t[-1]) for tr in tracks if tr.t.size]
+    if not ends:
+        return None
+    return dt.date.fromordinal(int(day_key(np.array([max(ends)]))[0]))
+
+
+def newest_text(day: dt.date, today: dt.date | None = None) -> tuple[str, str]:
+    """The legend's newest-day text and its colour: green when the newest
+    day is yesterday or today (the time series' "Last datapoint" rule),
+    else red (stale)."""
+    today = today or dt.date.today()
+    fresh = day >= today - dt.timedelta(days=1)
+    return f"newest {day:%d.%m.%Y}", (FRESH_COLOR if fresh else STALE_COLOR)
+
+
+def draw_dot_pair(fig: Any, x: float, y: float, length_deg: float, *,
+                  style: str = DOT_STYLE) -> None:  # fmt: skip
+    """The dots' scale: two dots ``length_deg`` apart (a reference length
+    in mm at the dots' scale), joined by a line."""
+    fig.plot(x=[x, x + length_deg], y=[y, y], pen=DOT_PAIR_PEN)
+    fig.plot(x=[x, x + length_deg], y=[y, y], style=style, fill=DOT_PAIR_FILL,
+             pen=DOT_PEN)  # fmt: skip
 
 
 def before_text(marker: str, rate: Rate) -> str:
@@ -822,7 +859,7 @@ def draw_tracks(
         fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
-        floor_cm=legend_floor_cm,
+        floor_cm=legend_floor_cm, newest=newest_day(tracks),
     )  # fmt: skip
     boxes.append((0.0, right, 0.0, top))
     return Drawn(top, tuple(boxes), lons, lats, cpt)
@@ -861,7 +898,7 @@ def draw_inset_scales(
     font = f"{INSET_FONT},black"
     x, y = maps.region_point(box, 0.04, 0.07)
     bar = dot_ref * m_per_mm / 1000.0 / (111.195 * math.cos(math.radians(y)))
-    fig.plot(x=[x, x + bar], y=[y, y], pen="1.5p,black")
+    draw_dot_pair(fig, x, y, bar, style="c0.1c")
     xl, yl = maps.region_point(box, 0.04, 0.13)
     fig.text(x=xl, y=yl, text=f"{dot_ref:g} mm (dots)", font=font, justify="LM",
              fill="white")  # fmt: skip
@@ -917,10 +954,12 @@ def _draw_legend(
     dot_ref: float,
     m_per_mm: float,
     floor_cm: float,
+    newest: dt.date | None = None,
 ) -> tuple[float, float]:
     """The lower-left legend box: on top the arrow reference (when arrows are
-    drawn) and the dot scale side by side, under them ``entries`` (top
-    down). Returns its top and right edge [cm from the map's lower left]."""
+    drawn), the dot scale and the ``newest`` day side by side, under them
+    ``entries`` (top down). Returns its top and right edge [cm from the
+    map's lower left]."""
     from gps_plot import maps
 
     width, height = maps._map_size_cm(region, projection)
@@ -936,13 +975,17 @@ def _draw_legend(
     arrow_cm = arrow_ref * arrow_scale if arrow_ref is not None else 0.0
     dot_x = (max(arrow_cm, maps.text_width_cm(ref_text, LEGEND_FONT)) + 1.0
              if arrow_ref is not None else 0.0)  # fmt: skip
-    top_wide = dot_x + maps.text_width_cm(dot_text, LEGEND_FONT)
+    bar_cm = dot_ref * m_per_mm / (km_per_cm(region, width) * 1000.0)
+    new_x = dot_x + max(bar_cm, maps.text_width_cm(dot_text, LEGEND_FONT)) + 1.0
+    new = newest_text(newest) if newest is not None else None
+    top_wide = (new_x + maps.text_width_cm(new[0], LEGEND_FONT) if new
+                else dot_x + maps.text_width_cm(dot_text, LEGEND_FONT))  # fmt: skip
     lines = n + 1.8
     box = maps.vector_legend_box(
         region, projection, anchor, sp, lines,
         [label for label, _ in entries] + [" " * 2], LEGEND_FONT, top_wide,
     )  # fmt: skip
-    fig.plot(x=box[0], y=box[1], fill=maps.LEGEND_BOX_FILL, pen=maps.LEGEND_BOX_PEN,
+    fig.plot(x=box[0], y=box[1], fill=TRACK_LEGEND_FILL, pen=maps.LEGEND_BOX_PEN,
              close=True)  # fmt: skip
     for i, (label, color) in enumerate(reversed(entries)):  # bottom up
         x, y = at(0.0, i)
@@ -958,9 +1001,12 @@ def _draw_legend(
         fig.text(x=x, y=y, text=ref_text, font=f"{LEGEND_FONT},black", justify="LM")
     x0, y0 = at(dot_x, n)
     bar_deg = dot_ref * m_per_mm / 1000.0 / (111.195 * math.cos(math.radians(y0)))
-    fig.plot(x=[x0, x0 + bar_deg], y=[y0, y0], pen="2p,black")
+    draw_dot_pair(fig, x0, y0, bar_deg)
     x, y = at(dot_x, n + 0.8)
     fig.text(x=x, y=y, text=dot_text, font=f"{LEGEND_FONT},black", justify="LM")
+    if new is not None:
+        x, y = at(new_x, n + 0.4)
+        fig.text(x=x, y=y, text=new[0], font=f"{LEGEND_FONT},{new[1]}", justify="LM")
     w = region[0]
     right = (max(box[0]) - w) / (region[1] - w) * width
     return (anchor[1] + (lines - 0.5) * sp) * height + pad, right
