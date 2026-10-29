@@ -55,6 +55,28 @@ def offset_label(label: str, k: int, offset: float) -> str:
     return f"{label} ({k * offset:+g} mm)"
 
 
+#: a line is broken where its epochs are further apart than this many
+#: median spacings (an RTK outage must not be drawn as motion)
+GAP_FACTOR = 5.0
+
+
+def break_gaps(x: Sequence[Any], y: Any) -> tuple[list[Any], Any]:
+    """``(x, y)`` with a NaN point in each gap wider than :data:`GAP_FACTOR`
+    median spacings, so a plotted line stops there instead of bridging it."""
+    y = np.asarray(y, dtype=float)
+    if len(x) < 3:
+        return list(x), y
+    t = np.array(x, dtype="datetime64[ns]").astype(np.int64).astype(float)
+    step = np.diff(t)
+    gaps = np.flatnonzero(step > GAP_FACTOR * np.median(step)) + 1
+    if gaps.size == 0:
+        return list(x), y
+    xs = list(x)
+    for k in gaps[::-1]:
+        xs.insert(int(k), xs[int(k) - 1])
+    return xs, np.insert(y, gaps, np.nan, axis=1)
+
+
 def stack_figure(
     series: Sequence[Series],
     *,
@@ -68,6 +90,7 @@ def stack_figure(
     styles: Sequence[str] | None = None,
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
+    robust_lines: bool = False,
 ) -> Figure:
     """Overlay ``series`` on the N/E/U frame; series ``k`` is moved by k·offset.
 
@@ -87,6 +110,10 @@ def stack_figure(
             over lines) or ``"line"`` (a thin line, no error bars: dense
             series such as 1-minute RTK medians). Lines are drawn first.
         colors: Per series colours (default: :func:`series_colors`).
+        robust_lines: ``"line"`` series set the y range by their
+            2–98 percentiles, not their extremes: the spikes of a dense
+            RTK line run off the axis instead of squashing the points
+            (takes effect where ``ylim`` sets the range: one number).
     """
     from gps_plot import timesmatplt as tplt
 
@@ -117,8 +144,19 @@ def stack_figure(
             oy = np.asarray(oy, dtype=float) + k * float(offset)
             if np.isfinite(oy).any():
                 flagged[k] = (oy, ody)
-    ymin = [min(float(np.nanmin(y[i])) for y in shifted) for i in range(3)]
-    ymax = [max(float(np.nanmax(y[i])) for y in shifted) for i in range(3)]
+
+    def low(k: int, i: int) -> float:
+        if robust_lines and styles[k] == "line":
+            return float(np.nanpercentile(shifted[k][i], 2.0))
+        return float(np.nanmin(shifted[k][i]))
+
+    def high(k: int, i: int) -> float:
+        if robust_lines and styles[k] == "line":
+            return float(np.nanpercentile(shifted[k][i], 98.0))
+        return float(np.nanmax(shifted[k][i]))
+
+    ymin = [min(low(k, i) for k in range(len(series))) for i in range(3)]
+    ymax = [max(high(k, i) for k in range(len(series))) for i in range(3)]
     for f in flagged:
         if f is not None:
             ymin = [min(v, float(np.nanmin(f[0][i]))) for i, v in enumerate(ymin)]
@@ -135,9 +173,10 @@ def stack_figure(
         s, x, y, color, style = series[k], xs[k], shifted[k], colors[k], styles[k]
         label = offset_label(labels[k], k, offset)
         if style == "line":
+            xl, yl = break_gaps(x, y)
             for i, ax in enumerate(axes[:3]):
                 ax.plot(
-                    x, y[i], color=color, linewidth=1.0,
+                    xl, yl[i], color=color, linewidth=1.0,
                     label=label if i == 0 else None,
                 )  # fmt: skip
             continue
