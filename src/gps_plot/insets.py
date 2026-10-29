@@ -46,6 +46,10 @@ LOCATOR_CORNERS_PREF = ("BL", "TR", "BR", "TL")
 ZOOM_WIDTH_CM = 6.0
 ZOOM_CORNERS_PREF = ("BR", "TR", "BL", "TL")
 ZOOM_BOX_PEN = "0.9p,black"
+#: a zoom inset's DEM: resampled to this many output pixels a cell, its
+#: hillshade smoothed at least this much [km]
+ZOOM_DEM_PIXELS = 2
+ZOOM_DEM_SMOOTH_KM = 0.06
 ZOOM_FRAME_PEN = "1p,black"
 #: the gap between the map and a zoom inset set beside it [cm]
 BESIDE_GAP_CM = 0.4
@@ -209,6 +213,19 @@ def draw_zoom_box(fig: Any, box: Sequence[float]) -> None:
                         pen=ZOOM_BOX_PEN))  # fmt: skip
 
 
+def zoom_dem(box: Sequence[float], projection: str, smooth_km: float
+             ) -> dict[str, float]:  # fmt: skip
+    """The DEM keywords of a zoom inset: the grid resampled (bicubic) to
+    ``ZOOM_DEM_PIXELS`` output pixels a cell and its hillshade smoothed at
+    least ``ZOOM_DEM_SMOOTH_KM``: a zoom shows the grid's cells as blocks
+    otherwise."""
+    from gps_plot import maps
+
+    pixel = maps.output_pixel_deg(box, projection)
+    return {"dem_resample": ZOOM_DEM_PIXELS * pixel,
+            "dem_smooth": max(smooth_km, ZOOM_DEM_SMOOTH_KM)}  # fmt: skip
+
+
 def draw_zoom(
     fig: Any,
     box: Sequence[float],
@@ -236,6 +253,8 @@ def draw_zoom(
         )
     ):
         style = {k: v for k, v in base.items() if k in maps.BASE_KEYS}
+        if style.get("dem_grid") is not None:
+            style.update(zoom_dem(box, projection, style.get("dem_smooth") or 0.0))
         maps.draw_base(pygmt, fig, region=(w, e, s, n), projection=projection, **style)
         draw(fig, f"-R{w}/{e}/{s}/{n} -J{projection}")
         # the frame over the background (the inset box lies under it)

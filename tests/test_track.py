@@ -78,7 +78,7 @@ def test_too_few_days_gives_a_displacement() -> None:
     tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
     assert tr.n_after == 2 and tr.since is None and tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
-    assert colour == "black" and "2 days of data" in text
+    assert colour == track.DISPLACEMENT_COLOR and "(2 days)" in text
     assert re.search(r"SVIN moved 1[789] ± \d mm toward 29\d°", text)
 
 
@@ -244,3 +244,134 @@ def test_screen_references_leaves_out_the_one_that_moves() -> None:
     )
     two = {k: series[k] for k in ("Q0", "MOVE")}
     assert track.screen_references(two, pre, onset) == (["Q0", "MOVE"], [])
+
+
+def test_keep_trend_keeps_and_measures_the_motion_before() -> None:
+    # creep of (-8, 3) mm/yr before the onset: removed by default, kept and
+    # measured with keep_trend (the seasonal removed either way)
+    t, y = _series(move=(200.0, -120.0), seed=4)
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE, keep_trend=True)
+    assert tr.before is not None
+    assert tr.before.north == pytest.approx(-8.0, abs=4 * tr.before.sigma_north)
+    assert tr.before.east == pytest.approx(3.0, abs=4 * tr.before.sigma_east)
+    old = tr.days < -2
+    slope = np.polyfit(tr.days[old] / 365.25, tr.north[old], 1)[0]
+    assert slope == pytest.approx(-8.0, abs=8.0)  # walks, not flat
+    assert any(text.startswith("SVIE before: N -8")
+               for text, _ in track.legend_entries([tr], ONSET, 14))  # fmt: skip
+    assert track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE).before is None
+
+
+def test_detrend_keep_line_removes_only_the_seasonal() -> None:
+    t, y = _series(noise=0.0)
+    pre = t < track.yearf(PRE[1])
+    r, rms = track.detrend(t, y, pre, keep_line=True)
+    assert np.allclose(np.diff(r[0]) * 365.25, -8.0, atol=1e-6)
+    assert np.allclose(rms, 0.0, atol=1e-9)
+
+
+def test_reference_mean_keep_trend_carries_the_common_motion() -> None:
+    a, b = _series(seed=5), _series(seed=6)
+    t, mean = track.reference_mean([a, b], PRE, keep_trend=True)
+    assert np.polyfit(t, mean[0], 1)[0] == pytest.approx(-8.0, abs=0.5)
+    t, mean = track.reference_mean([a, b], PRE)
+    assert abs(np.polyfit(t, mean[0], 1)[0]) < 0.5
+
+
+def test_wander_scale_white_noise_near_one_random_walk_above() -> None:
+    rng = np.random.default_rng(7)
+    t = 2024 + np.arange(900) / 365.25
+    pre = np.ones(t.size, dtype=bool)
+    white = rng.normal(0, 1, (2, t.size))
+    walk = np.cumsum(rng.normal(0, 0.3, (2, t.size)), axis=1)
+    walk -= np.polyval(np.polyfit(t, walk[0], 1), t)
+    assert np.all(track.wander_scale(t, white, pre, 35) < 1.5)
+    assert track.wander_scale(t, walk + white, pre, 35)[0] > 1.5
+
+
+def test_scaled_rate_and_none() -> None:
+    r = track.Rate(10.0, -5.0, 1.0, 2.0)
+    s = track.scaled(r, np.array([2.0, 3.0]))
+    assert s is not None and (s.sigma_north, s.sigma_east) == (2.0, 6.0)
+    assert (s.north, s.east) == (10.0, -5.0)
+    assert track.scaled(None, np.ones(2)) is None
+
+
+def test_inset_helpers() -> None:
+    assert gmap._projection_width_cm("-R-16.8/-16.7/64/64.1 -JM6c") == 6.0
+    assert gmap._projection_width_cm("-R0/1/0/1 -JM5.5c") == 5.5
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    lo, hi = track.colour_range([tr])
+    assert lo == pytest.approx(-track.BEFORE_DAYS, abs=1) and hi > 30
+    scale, ref = track.arrow_scale_of([tr], 1.5)
+    assert tr.since is not None
+    assert scale * tr.since.speed == pytest.approx(1.5)
+    assert ref == track.nice(tr.since.speed / 2)
+    still = track.station_track("SKFC", -17.0, 64.0, *_series(seed=3), ONSET, PRE)
+    assert track.arrow_scale_of([still]) == (0.01, 100.0)
+
+
+def test_few_days_zero_extrapolated_gets_a_wider_sigma() -> None:
+    """No days just before the onset: the zero is the trend carried across
+    the gap, and its σ (fit prediction + 14-day wander) widens the
+    displacement's; the newest position is not a mean of days a week apart."""
+    t, y = _series(days_after=40)
+    keep = t < track.yearf(ONSET) - 120 / 365.25  # a 4-month gap before
+    keep[[-12, -5]] = True
+    y = y.copy()
+    y[:, -12:] += np.array([[7.0], [-17.0]])
+    tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
+    assert tr.zero_extrapolated and tr.end_count == 1
+    assert all(z > 0 for z in tr.zero_sigma)
+    assert tr.end_sigmas[0] > tr.scatter_ne[0]
+    ((text, _),) = track.legend_entries([tr], ONSET, 14)
+    assert ", none just before)" in text
+
+
+def test_extrapolation_sigma_grows_with_the_gap() -> None:
+    t, y = _series()
+    pre = (t >= track.yearf(PRE[0])) & (t < track.yearf(PRE[1]))
+    near = track.extrapolation_sigma(t, y, pre, track.yearf(PRE[1]))
+    far = track.extrapolation_sigma(t, y, pre, track.yearf(PRE[1]) + 1.0)
+    assert np.all(far > near) and np.all(near > 0)
+
+
+def test_a_few_days_station_is_listed_even_if_not_beyond_three_sigma() -> None:
+    t, y = _series(days_after=40)
+    keep = t < track.yearf(ONSET)
+    keep[[-5]] = True  # one day after, on the station
+    tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
+    assert not tr.moved
+    ((text, colour),) = track.legend_entries([tr], ONSET, 14)
+    assert colour == track.DISPLACEMENT_COLOR and "(1 day)" in text
+
+
+def test_newest_day_text_green_through_yesterday_else_red() -> None:
+    today = dt.date(2026, 10, 29)
+    assert track.newest_text(dt.date(2026, 10, 28), today) == (
+        "last datapoint: 28.10.2026",
+        track.FRESH_COLOR,
+    )
+    assert track.newest_text(dt.date(2026, 10, 27), today)[1] == track.STALE_COLOR
+    t, y = _series()
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    assert track.newest_day([tr]) == dt.date.fromordinal(
+        int(track.day_key(np.array([t[-1]]))[0])
+    )
+    assert track.newest_day([]) is None
+
+
+def test_recent_line_has_the_14_day_movement() -> None:
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    lines = track.legend_entries([tr], ONSET, 14)
+    assert re.search(r"last 14 days, moved \d+ ± \d+ mm$", lines[1][0])
+
+
+def test_zoom_dem_resamples_finer_and_smooths() -> None:
+    from gps_plot import insets
+
+    kw = insets.zoom_dem((-16.84, -16.785, 63.998, 64.022), "M6c", 0.0)
+    assert 0 < kw["dem_resample"] < 1 / 3600
+    assert kw["dem_smooth"] == insets.ZOOM_DEM_SMOOTH_KM

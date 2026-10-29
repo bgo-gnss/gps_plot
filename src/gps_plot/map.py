@@ -371,6 +371,16 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "there and not on the map; the box is outlined on the map",
     )  # fmt: skip
     g.add_argument(
+        "--inset-corner", choices=("BL", "BR", "TL", "TR"), default=None,
+        help="put the zoom inset in this corner inside the map, whatever it "
+        "covers; a bottom corner sits on the legend of a track map "
+        "(default: a free spot, else beside the map)",
+    )  # fmt: skip
+    g.add_argument(
+        "--inset-width", type=float, default=None, metavar="CM",
+        help="the zoom inset's width [cm] (default 6)",
+    )  # fmt: skip
+    g.add_argument(
         "--locator", dest="locator", action="store_const", const=True,
         default=None,
         help="a small Iceland map with the map's box in red (default: on, "
@@ -539,6 +549,13 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         "relative to their weighted mean (each one's trend and seasonal "
         "removed first; days at least half of them have), so one station's "
         "own wander moves the reference by its share only; they are drawn",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-trend", choices=("remove", "keep"), default="remove",
+        help="the trend before the onset: remove it (default; each station's "
+        "own line, so only a change at the onset shows) or keep it (only the "
+        "seasonal removed, on the reference stations too: motion before the "
+        "onset, creep, shows, its rate in the legend)",
     )  # fmt: skip
     g.add_argument(
         "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
@@ -1242,13 +1259,18 @@ def _insets(
     legend_width_cm: float = LEGEND_WIDTH_CM,
     arrows: float | None = None,
     locator_floor: float | None = None,
+    reserve: Sequence[tuple[float, float, float, float]] = (),
+    block: tuple[Any, Any] | None = None,
 ) -> None:
     """The zoom inset (--inset) and the Iceland locator, where they fit
     (:func:`gps_plot.insets.place`): clear of the logo, the scale bar,
     a vector legend of ``legend_lines`` rows ``legend_width_cm`` wide, the
     station symbols and, with ``arrows`` (the vectors' scale [cm per
     unit]; ``points`` are then the vectors), the arrows. ``locator_floor``
-    [cm]: a bottom ``--locator-corner`` locator sits on it (a legend's top)."""
+    [cm]: a bottom ``--locator-corner`` locator sits on it (a legend's top).
+    ``reserve``: more boxes (x0, x1, y0, y1) [cm] to keep free and
+    ``block``: more points (lons, lats) to keep off (a track map's legend,
+    colour bar and dots)."""
     from gps_plot import insets, layout, maps
 
     region = style.get("region") or tuple(fig.region)
@@ -1266,6 +1288,10 @@ def _insets(
     if legend_lines:
         box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
         sea.reserve(box)  # type: ignore[arg-type]
+    for b in reserve:
+        sea.reserve(b)
+    if block is not None:
+        sea.block_points(list(block[0]), list(block[1]))
     if args.markers:
         sea.block_points([p.lon for p in points], [p.lat for p in points])
     if arrows is not None and not isinstance(region, maps.CornerRegion):
@@ -1273,10 +1299,18 @@ def _insets(
     zoom_spot = None
     if zoom:
         box = args.inset
-        size = insets.size_cm(box, insets.zoom_projection())
+        zoom_width = getattr(args, "inset_width", None) or insets.ZOOM_WIDTH_CM
+        size = insets.size_cm(box, insets.zoom_projection(zoom_width))
         sea.block_points(*_box_edge(box))
-        spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
-                            map_size=(width, height))  # fmt: skip
+        zoom_corner = getattr(args, "inset_corner", None)
+        spot: insets.Spot | None
+        if zoom_corner is not None:
+            spot = insets.corner_spot(size, (width, height), zoom_corner,
+                                      floor=locator_floor)  # fmt: skip
+            sea.reserve((spot.x, spot.x + spot.width, spot.y, spot.y + spot.height))
+        else:
+            spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
+                                map_size=(width, height))  # fmt: skip
         assert spot is not None  # outside=True always finds a spot
         zoom_spot = spot
         insets.draw_zoom_box(fig, box)
@@ -1301,6 +1335,16 @@ def _insets(
         if spot is None:  # beside the map: under a zoom inset there, else top
             spot = insets.beside(size, (width, height), below=zoom_spot)
         insets.draw_locator(fig, region, spot, gis_dir(config))
+
+
+def _projection_width_cm(rj: str) -> float:
+    """The width [cm] in a GMT ``-R… -J…`` string (an inset's: ``-JM6c``)."""
+    import re
+
+    got = re.search(r"-J[A-Za-z]+(?:\S*/)?([\d.]+)c", rj)
+    if got is None:
+        raise ValueError(f"no width in {rj!r}")
+    return float(got.group(1))
 
 
 def _box_edge(box: Sequence[float], n: int = 12) -> tuple[list[float], list[float]]:
@@ -1618,9 +1662,11 @@ def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
 def _draw_tracks(
     fig: Any, args: Any, parser: Any, config: Any, style: dict[str, Any],
     stations: Sequence[Any], maps: Any,
-) -> tuple[float, list[tuple[str, Any]]]:  # fmt: skip
-    """``--track``: every station's track on ``fig``; the legend's top [cm]
-    (the locator sits on it) and the ``--track-series`` figures by station."""
+) -> tuple[Any, list[tuple[str, Any]], Any]:  # fmt: skip
+    """``--track``: every station's track on ``fig``; what was drawn
+    (:class:`gps_plot.track.Drawn`: the locator sits on the legend, the
+    insets keep off it), the ``--track-series`` figures by station and the
+    zoom inset's drawing (``draw(fig, width_cm)``: the tracks inside it)."""
     from gps_plot import track
 
     series = {s.strip().upper() for s in (args.track_series or "").split(",")
@@ -1640,6 +1686,7 @@ def _draw_tracks(
     # the map draws its own days (trimmed: same rates and zero)
     before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
     common_mode = args.track_common_mode == "subtract"
+    keep_trend = args.track_trend == "keep"
     refs = [r.strip().upper() for r in (args.track_ref or "").split(",") if r.strip()]
     ref_name = (
         None if not refs else refs[0] if len(refs) == 1
@@ -1678,7 +1725,9 @@ def _draw_tracks(
             ref_name = "the mean of " + ", ".join(used)
         try:
             reference = (
-                loaded[0] if len(loaded) == 1 else track.reference_mean(loaded, pre)
+                loaded[0]
+                if len(loaded) == 1 and not keep_trend
+                else track.reference_mean(loaded, pre, keep_trend=keep_trend)
             )
         except ValueError as exc:
             parser.error(f"--track-ref: {exc}")
@@ -1691,7 +1740,7 @@ def _draw_tracks(
                 c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
                 pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
-                reference=reference,
+                reference=reference, keep_trend=keep_trend,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -1705,7 +1754,7 @@ def _draw_tracks(
     from gps_plot.layout import BOTTOM_LABELS_CM
 
     shown = [track.trimmed(tr, args.track_before) for tr in tracks]
-    floor = track.draw_tracks(
+    drawn = track.draw_tracks(
         fig, shown, onset=onset, region=region, projection=projection,
         recent_days=args.track_recent, m_per_mm=args.track_scale,
         arrows=args.track_arrows,
@@ -1714,18 +1763,22 @@ def _draw_tracks(
         path_days=args.track_path_days,
         note=f"motion relative to {ref_name}" if ref_name else None,
     )  # fmt: skip
-    # the map's colour scale (draw_tracks: from the first dot, at least a day)
-    days = np.concatenate([tr.days for tr in shown]) if shown else np.zeros(1)
-    lo = float(min(days.min(), -1.0))
-    span = (lo, max(float(days.max()), lo + 1.0))
+    span = track.colour_range(shown)  # the map's colour scale
+
+    def zoom(f: Any, width_cm: float) -> None:
+        track.draw_zoom_tracks(f, shown, args.inset, width_cm,
+                               arrows=args.track_arrows,
+                               path_days=args.track_path_days,
+                               cpt=drawn.cpt)  # fmt: skip
+
     picked = [tr for tr in tracks if tr.marker in series]
-    return floor, [
+    return drawn, [
         (tr.marker, track.series_figure(
             tr, onset, recent_days=args.track_recent, before_days=args.track_before,
             days_range=span, cmap=args.track_cmap, common_mode=common_mode,
-            reference=ref_name))
+            reference=ref_name, keep_trend=keep_trend))
         for tr in picked
-    ]  # fmt: skip
+    ], zoom  # fmt: skip
 
 
 def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
@@ -1776,19 +1829,32 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
                                   labels=args.markers, status_legend=None,
                                   rj=rj, avoid=avoid)  # fmt: skip
 
-    floor = None
+    drawn = None
     series: list[tuple[str, Any]] = []
     if getattr(args, "track", None):  # the dots over the stations, as approved
-        floor, series = _draw_tracks(fig, args, parser, config, style, stations, maps)
+        drawn, series, zoom_tracks = _draw_tracks(
+            fig, args, parser, config, style, stations, maps
+        )
+
+        def zoom_draw(f: Any, rj: str) -> None:  # the stations, then tracks
+            zoom_symbols(f, rj)
+            zoom_tracks(f, _projection_width_cm(rj))
+
     elif getattr(args, "track_series", None):
         parser.error("--track-series needs --track")
     _finish(fig, args)
-    _insets(fig, args, config, style, stations, zoom_symbols, locator_floor=floor)
+    _insets(
+        fig, args, config, style, stations,
+        zoom_draw if drawn is not None else zoom_symbols,
+        locator_floor=drawn.legend_top if drawn else None,
+        reserve=drawn.boxes if drawn else (),
+        block=(drawn.lons, drawn.lats) if drawn else None,
+    )  # fmt: skip
     stem = _stem(
         args,
         "station" if stations and args.markers else BASE,
         stations,
-        *(["track"] if floor is not None else []),
+        *(["track"] if drawn is not None else []),
     )
     for p in _save(fig, args, config, stem):
         print(p)

@@ -11,6 +11,10 @@ Run order: the ``prepare:`` steps of plots.yaml run first, in their order
 (``network_days`` = ``gps-network-days``: the network-day and common-mode
 lists the cleaned view reads), then the products. ``--no-prepare`` skips
 them (a quick re-run of one area); a failed step ends the run.
+``--update-pos [SCRIPT]`` first brings the .pos series up to date (the
+laptop's ``update_pos.sh``: new days from okada; plots.yaml
+``update_pos:`` names it); when it fails or is missing, the run goes on
+with the series as they are, with a warning.
 
 Stale plots: after the jobs, baseline and stack plots in their directories
 that the config no longer has (a pair dropped from ``baselines:``, a group
@@ -29,6 +33,7 @@ import argparse
 import datetime as dt
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -48,6 +53,36 @@ def _network_days(workers: int | None) -> int:
 
 #: plots.yaml ``prepare:`` step -> what it runs (exit status)
 PREPARE_STEPS = {"network_days": _network_days}
+
+
+def update_script(arg: str | None, cfg: dict[str, Any]) -> Path | None:
+    """``--update-pos [SCRIPT]``: the script to run, SCRIPT or plots.yaml
+    ``update_pos:``; None when the flag is not given."""
+    if arg is None:
+        return None
+    named = arg or cfg.get("update_pos") or ""
+    return Path(str(named)).expanduser() if named else Path()
+
+
+def update_pos(script: Path, prog: str) -> bool:
+    """Run the .pos update ``script`` (its output shown); False, with a
+    warning, when it is missing or fails: the plots then use the series
+    as they are."""
+    if not str(script) or str(script) == ".":
+        print(f"{prog}: --update-pos: no script (give one, or plots.yaml "
+              "update_pos:); plotting the series as they are")  # fmt: skip
+        return False
+    if not script.is_file():
+        print(f"{prog}: --update-pos: {script} not found; plotting the series "
+              "as they are")  # fmt: skip
+        return False
+    print(f"== update: {script}", flush=True)
+    status = subprocess.run([str(script)], check=False).returncode
+    if status:
+        print(f"{prog}: --update-pos: {script} failed (exit {status}); "
+              "plotting the series as they are")  # fmt: skip
+        return False
+    return True
 
 
 DESCRIPTION = """\
@@ -153,6 +188,16 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         help="keep baseline/stack/map plots the config no longer has (default: delete)",
     )
     p.add_argument(
+        "--update-pos",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="SCRIPT",
+        help="first bring the .pos series up to date: run SCRIPT (default: "
+        "plots.yaml update_pos:, e.g. update_pos.sh); if it fails, plot the "
+        "series as they are",
+    )
+    p.add_argument(
         "--no-prepare",
         action="store_true",
         help="skip the plots.yaml prepare: steps (e.g. gps-network-days)",
@@ -219,7 +264,10 @@ def run(prog: str, argv: list[str]) -> int:
             f"{prog}: unknown prepare step(s) {unknown} (known: {sorted(PREPARE_STEPS)})"
         )
         return 2
+    update = update_script(args.update_pos, cfg)
     if args.dry_run:
+        if update is not None:
+            print(f"update: {update}")
         for step in steps:
             print(f"prepare: {step}")
         for job in jobs:
@@ -242,6 +290,8 @@ def run(prog: str, argv: list[str]) -> int:
         print(f"{prog}: no plots_dir (plots.yaml plots_dir or --plots-dir)")
         return 2
 
+    if update is not None:
+        update_pos(update, prog)
     for step in steps:
         print(f"== prepare: {step}")
         if PREPARE_STEPS[step](args.workers):
