@@ -905,3 +905,13 @@ def test_track_captions_name_the_reference() -> None:
     one = products.track_series_caption("SVIE", ["--track", "x", "--track-ref", "skfc"])
     assert one.startswith("SVIE: norður og austur miðað við SKFC, leitni")
     assert "miðað" not in products.track_series_caption("SVIE", ["--track", "x"])
+
+
+def test_run_product_and_area_take_lists_and_repeats() -> None:
+    from gps_plot.cli import run as runcli
+
+    p = runcli.build_parser("gpsplot run")
+    a = p.parse_args(["--product", "a,b", "--product", "c", "--area", "x"])
+    assert runcli._names(a.product) == ["a", "b", "c"]
+    assert runcli._names(a.area) == ["x"]
+    assert runcli._names(p.parse_args([]).product) is None
