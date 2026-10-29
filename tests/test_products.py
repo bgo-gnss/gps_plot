@@ -905,6 +905,12 @@ def test_track_captions_name_the_reference() -> None:
     one = products.track_series_caption("SVIE", ["--track", "x", "--track-ref", "skfc"])
     assert one.startswith("SVIE: norður og austur miðað við SKFC, leitni")
     assert "miðað" not in products.track_series_caption("SVIE", ["--track", "x"])
+    keep = [*argv, "--track-trend", "keep"]
+    assert "leitni fyrir atburðinn haldið" in products.map_caption(
+        "station", keep, "Svf"
+    )
+    ts = products.track_series_caption("SVIE", keep)
+    assert "árstíðasveifla fyrir x fjarlægð, leitni haldið" in ts
 
 
 def test_run_product_and_area_take_lists_and_repeats() -> None:

@@ -541,6 +541,13 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         "own wander moves the reference by its share only; they are drawn",
     )  # fmt: skip
     g.add_argument(
+        "--track-trend", choices=("remove", "keep"), default="remove",
+        help="the trend before the onset: remove it (default; each station's "
+        "own line, so only a change at the onset shows) or keep it (only the "
+        "seasonal removed, on the reference stations too: motion before the "
+        "onset, creep, shows, its rate in the legend)",
+    )  # fmt: skip
+    g.add_argument(
         "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
         metavar="N",
         help="the dotted path follows the running median of N days "
@@ -1661,6 +1668,7 @@ def _draw_tracks(
     # the map draws its own days (trimmed: same rates and zero)
     before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
     common_mode = args.track_common_mode == "subtract"
+    keep_trend = args.track_trend == "keep"
     refs = [r.strip().upper() for r in (args.track_ref or "").split(",") if r.strip()]
     ref_name = (
         None if not refs else refs[0] if len(refs) == 1
@@ -1699,7 +1707,9 @@ def _draw_tracks(
             ref_name = "the mean of " + ", ".join(used)
         try:
             reference = (
-                loaded[0] if len(loaded) == 1 else track.reference_mean(loaded, pre)
+                loaded[0]
+                if len(loaded) == 1 and not keep_trend
+                else track.reference_mean(loaded, pre, keep_trend=keep_trend)
             )
         except ValueError as exc:
             parser.error(f"--track-ref: {exc}")
@@ -1712,7 +1722,7 @@ def _draw_tracks(
                 c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
                 pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
-                reference=reference,
+                reference=reference, keep_trend=keep_trend,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -1748,7 +1758,7 @@ def _draw_tracks(
         (tr.marker, track.series_figure(
             tr, onset, recent_days=args.track_recent, before_days=args.track_before,
             days_range=span, cmap=args.track_cmap, common_mode=common_mode,
-            reference=ref_name))
+            reference=ref_name, keep_trend=keep_trend))
         for tr in picked
     ], zoom  # fmt: skip
 

@@ -244,3 +244,69 @@ def test_screen_references_leaves_out_the_one_that_moves() -> None:
     )
     two = {k: series[k] for k in ("Q0", "MOVE")}
     assert track.screen_references(two, pre, onset) == (["Q0", "MOVE"], [])
+
+
+def test_keep_trend_keeps_and_measures_the_motion_before() -> None:
+    # creep of (-8, 3) mm/yr before the onset: removed by default, kept and
+    # measured with keep_trend (the seasonal removed either way)
+    t, y = _series(move=(200.0, -120.0), seed=4)
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE, keep_trend=True)
+    assert tr.before is not None
+    assert tr.before.north == pytest.approx(-8.0, abs=4 * tr.before.sigma_north)
+    assert tr.before.east == pytest.approx(3.0, abs=4 * tr.before.sigma_east)
+    old = tr.days < -2
+    slope = np.polyfit(tr.days[old] / 365.25, tr.north[old], 1)[0]
+    assert slope == pytest.approx(-8.0, abs=8.0)  # walks, not flat
+    assert any(text.startswith("SVIE before: N -8")
+               for text, _ in track.legend_entries([tr], ONSET, 14))  # fmt: skip
+    assert track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE).before is None
+
+
+def test_detrend_keep_line_removes_only_the_seasonal() -> None:
+    t, y = _series(noise=0.0)
+    pre = t < track.yearf(PRE[1])
+    r, rms = track.detrend(t, y, pre, keep_line=True)
+    assert np.allclose(np.diff(r[0]) * 365.25, -8.0, atol=1e-6)
+    assert np.allclose(rms, 0.0, atol=1e-9)
+
+
+def test_reference_mean_keep_trend_carries_the_common_motion() -> None:
+    a, b = _series(seed=5), _series(seed=6)
+    t, mean = track.reference_mean([a, b], PRE, keep_trend=True)
+    assert np.polyfit(t, mean[0], 1)[0] == pytest.approx(-8.0, abs=0.5)
+    t, mean = track.reference_mean([a, b], PRE)
+    assert abs(np.polyfit(t, mean[0], 1)[0]) < 0.5
+
+
+def test_wander_scale_white_noise_near_one_random_walk_above() -> None:
+    rng = np.random.default_rng(7)
+    t = 2024 + np.arange(900) / 365.25
+    pre = np.ones(t.size, dtype=bool)
+    white = rng.normal(0, 1, (2, t.size))
+    walk = np.cumsum(rng.normal(0, 0.3, (2, t.size)), axis=1)
+    walk -= np.polyval(np.polyfit(t, walk[0], 1), t)
+    assert np.all(track.wander_scale(t, white, pre, 35) < 1.5)
+    assert track.wander_scale(t, walk + white, pre, 35)[0] > 1.5
+
+
+def test_scaled_rate_and_none() -> None:
+    r = track.Rate(10.0, -5.0, 1.0, 2.0)
+    s = track.scaled(r, np.array([2.0, 3.0]))
+    assert s is not None and (s.sigma_north, s.sigma_east) == (2.0, 6.0)
+    assert (s.north, s.east) == (10.0, -5.0)
+    assert track.scaled(None, np.ones(2)) is None
+
+
+def test_inset_helpers() -> None:
+    assert gmap._projection_width_cm("-R-16.8/-16.7/64/64.1 -JM6c") == 6.0
+    assert gmap._projection_width_cm("-R0/1/0/1 -JM5.5c") == 5.5
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    lo, hi = track.colour_range([tr])
+    assert lo == pytest.approx(-track.BEFORE_DAYS, abs=1) and hi > 30
+    scale, ref = track.arrow_scale_of([tr], 1.5)
+    assert tr.since is not None
+    assert scale * tr.since.speed == pytest.approx(1.5)
+    assert ref == track.nice(tr.since.speed / 2)
+    still = track.station_track("SKFC", -17.0, 64.0, *_series(seed=3), ONSET, PRE)
+    assert track.arrow_scale_of([still]) == (0.01, 100.0)

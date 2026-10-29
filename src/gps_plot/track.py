@@ -61,6 +61,7 @@ ARROW_HEAD = "0.25c"
 ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
 SINCE_COLOR = "blue"
+BEFORE_COLOR = "80/80/80"
 RECENT_COLOR = "red"
 LEGEND_FONT = "7p,Helvetica-Bold"
 #: the legend's line spacing [cm] (0.04 of the first 8.25 cm high map):
@@ -124,6 +125,9 @@ class Track:
     since: Rate | None
     recent: Rate | None
     n_after: int  # days of data since the onset
+    #: the trend kept (``keep_trend``): the rate in the window before the
+    #: onset, relative to the reference (creep before the event)
+    before: Rate | None = None
 
     @property
     def end(self) -> tuple[float, float]:
@@ -189,10 +193,17 @@ def _design(t: FloatArray, t_ref: float) -> FloatArray:
 
 
 def detrend(
-    t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]
+    t: FloatArray,
+    y: FloatArray,
+    pre: npt.NDArray[np.bool_],
+    *,
+    keep_line: bool = False,
 ) -> tuple[FloatArray, FloatArray]:
     """``y`` (2, N) minus the line + annual + semiannual fitted on ``pre``;
-    and the per-component scatter of the fit [same unit]."""
+    and the per-component scatter of the fit [same unit]. ``keep_line``:
+    the line is fitted with the seasonal (a seasonal fitted without it
+    would be biased) but only the seasonal and the offset are removed, so
+    the motion before the onset stays in."""
     if int(pre.sum()) < MIN_PRE_DAYS:
         raise ValueError(
             f"{int(pre.sum())} days in the trend window (< {MIN_PRE_DAYS})"
@@ -202,9 +213,33 @@ def detrend(
     rms = np.empty(y.shape[0])
     for c in range(y.shape[0]):
         m, *_ = np.linalg.lstsq(g[pre], y[c, pre], rcond=None)
+        rms[c] = float(np.std(y[c, pre] - g[pre] @ m))
+        if keep_line:
+            m = m.copy()
+            m[1] = 0.0
         r[c] = y[c] - g @ m
-        rms[c] = float(np.std(r[c, pre]))
     return r, rms
+
+
+def pre_rate(t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]) -> Rate:
+    """The N/E rate of the line + seasonal fit on ``pre`` [mm/yr]: a
+    station's motion before the onset. Its σ is the fit's white-noise σ
+    times the block-mean scale of the residuals
+    (:func:`gps_analysis.shared_tau.block_mean_scale`), as the transient
+    product's: daily noise wanders, and three years of it are not
+    independent days."""
+    from gps_analysis.shared_tau import block_mean_scale
+
+    tp = t[pre]
+    g = _design(tp, float(tp.mean()))
+    out = []
+    for c in (0, 1):
+        m, *_ = np.linalg.lstsq(g, y[c, pre], rcond=None)
+        res = y[c, pre] - g @ m
+        cov = np.linalg.inv(g.T @ g) * float(np.var(res, ddof=g.shape[1]))
+        k = block_mean_scale(tp, res, step=1.0 / YEAR).k
+        out.append((float(m[1]), k * math.sqrt(float(cov[1, 1]))))
+    return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
 
 
 def line_rate(
@@ -225,6 +260,30 @@ def line_rate(
         noise = max(float(np.std(res, ddof=2)), float(floor[c]))
         out.append((float(p[0]), noise / math.sqrt(sxx)))
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
+
+
+def wander_scale(
+    t: FloatArray, r: FloatArray, pre: npt.NDArray[np.bool_], days: float
+) -> FloatArray:
+    """How much more a rate over ``days`` days scatters than white daily
+    noise allows, per component (N, E), at least 1: the block-mean scale
+    (:func:`gps_analysis.shared_tau.block_mean_scale`) of the residuals
+    ``r`` before the onset, blocks of ``days``/8 days (eight blocks to a
+    window, the transient product's rule). Noise that wanders over days
+    makes a short window's line steeper than white noise would."""
+    from gps_analysis.shared_tau import BLOCK_MIN_BLOCKS, block_mean_scale
+
+    n = max(2, round(days / BLOCK_MIN_BLOCKS))
+    return np.array([block_mean_scale(t[pre], r[c, pre], step=1.0 / YEAR, n=n).k
+                     for c in (0, 1)])  # fmt: skip
+
+
+def scaled(rate: Rate | None, k: FloatArray) -> Rate | None:
+    """``rate`` with its σ times ``k`` (N, E)."""
+    if rate is None:
+        return None
+    return dataclasses.replace(rate, sigma_north=rate.sigma_north * float(k[0]),
+                               sigma_east=rate.sigma_east * float(k[1]))  # fmt: skip
 
 
 def running_median(y: FloatArray, n: int) -> FloatArray:
@@ -252,19 +311,23 @@ def relative_to(
 def reference_mean(
     series: Sequence[tuple[FloatArray, FloatArray]],
     pre: tuple[dt.date, dt.date],
+    *,
+    keep_trend: bool = False,
 ) -> tuple[FloatArray, FloatArray]:
     """One reference from several stations: each one's trend and seasonal
     (fitted on ``pre``) removed, then their weighted mean per day (weights
     1/scatter², the fit's per component), on the days at least half of
     them have. Like GLOBK's frame realisation by many reference stations,
     translation only: one station's own wander (a bad day, a local
-    motion) moves the reference by its share, not wholly."""
+    motion) moves the reference by its share, not wholly. ``keep_trend``:
+    only the seasonal removed (:func:`detrend` ``keep_line``), so the
+    mean carries the stations' common motion, the local frame."""
     if not series:
         raise ValueError("no reference stations")
     a, b = yearf(pre[0]), yearf(pre[1])
     days, values, weights = [], [], []
     for t, y in series:
-        r, rms = detrend(t, y, (t >= a) & (t < b))
+        r, rms = detrend(t, y, (t >= a) & (t < b), keep_line=keep_trend)
         days.append(day_key(t))
         values.append(r)
         weights.append(1.0 / np.maximum(rms, 1e-3) ** 2)
@@ -341,24 +404,35 @@ def station_track(
     *,
     before_days: int = BEFORE_DAYS,
     recent_days: int = RECENT_DAYS,
+    keep_trend: bool = False,
 ) -> Track:
     """A station's :class:`Track` from its horizontal series ``y`` (N, E)
-    [mm] at epochs ``t`` [fractional years, finite]."""
+    [mm] at epochs ``t`` [fractional years, finite]. ``keep_trend``: only
+    the seasonal before the onset removed, its trend kept and measured
+    (:attr:`Track.before`)."""
     t_on = yearf(onset)
     in_pre = (t >= yearf(pre[0])) & (t < yearf(pre[1]))
-    r, rms = detrend(t, y, in_pre)
+    r, rms = detrend(t, y, in_pre, keep_line=keep_trend)
+    before = pre_rate(t, y, in_pre) if keep_trend else None
     near = (t >= t_on - ZERO_DAYS / YEAR) & (t < t_on)
     zero = np.median(r[:, near], axis=1) if int(near.sum()) >= 3 else np.zeros(2)
     r = r - zero[:, None]
     shown = t >= t_on - before_days / YEAR
     if not shown.any() or t[-1] < t_on:
         raise ValueError(f"no data since {onset:%Y-%m-%d}")
-    since = line_rate(t, r, t_on, float(t[-1]), rms)
-    recent = line_rate(t, r, float(t[-1]) - recent_days / YEAR, float(t[-1]), rms)
+    resid = detrend(t, y, in_pre)[0] if keep_trend else r
+    since = scaled(
+        line_rate(t, r, t_on, float(t[-1]), rms),
+        wander_scale(t, resid, in_pre, (float(t[-1]) - t_on) * YEAR),
+    )
+    recent = scaled(
+        line_rate(t, r, float(t[-1]) - recent_days / YEAR, float(t[-1]), rms),
+        wander_scale(t, resid, in_pre, recent_days),
+    )  # fmt: skip
     return Track(
         marker, lon, lat, t[shown], r[0, shown], r[1, shown],
         (t[shown] - t_on) * YEAR, float(math.hypot(*rms)), since, recent,
-        int((t >= t_on).sum()),
+        int((t >= t_on).sum()), before,
     )  # fmt: skip
 
 
@@ -409,6 +483,7 @@ def load_track(
     recent_days: int = RECENT_DAYS,
     end: dt.date | None = None,
     reference: tuple[FloatArray, FloatArray] | None = None,
+    keep_trend: bool = False,
 ) -> Track:
     """Read a station (:func:`load_series`) and make its track; with
     ``reference`` (another station's ``load_series``) relative to it."""
@@ -417,7 +492,8 @@ def load_track(
     if reference is not None:
         t, y = relative_to(t, y, *reference)
     return station_track(marker, lon, lat, t, y, onset, pre,
-                         before_days=before_days, recent_days=recent_days)  # fmt: skip
+                         before_days=before_days, recent_days=recent_days,
+                         keep_trend=keep_trend)  # fmt: skip
 
 
 def legend_entries(
@@ -425,7 +501,8 @@ def legend_entries(
 ) -> list[tuple[str, str]]:
     """``(text, colour)`` per legend line, top down: per moved station its
     rate since the onset (blue) and recent rate (red), or its displacement
-    (black) when it has too few days for a rate."""
+    (black) when it has too few days for a rate; with the trend kept, its
+    rate before the onset (grey)."""
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
     for tr in tracks:
@@ -442,6 +519,8 @@ def legend_entries(
                 r = tr.recent
                 out.append((f"{tr.marker} {r.speed:.0f} {pm} {r.sigma_speed:.0f} "
                             f"mm/yr last {recent_days} days", RECENT_COLOR))  # fmt: skip
+            if tr.before is not None:
+                out.append((before_text(tr.marker, tr.before), BEFORE_COLOR))
         else:
             n, e = tr.end
             az = math.degrees(math.atan2(e, n)) % 360
@@ -449,6 +528,14 @@ def legend_entries(
                         f"{tr.end_sigma:.0f} mm toward {az:.0f}{deg} since "
                         f"{onset:%d.%m} ({tr.n_after} days of data)", "black"))  # fmt: skip
     return out
+
+
+def before_text(marker: str, rate: Rate) -> str:
+    """The legend's line for a rate before the onset: north and east, not
+    a speed (a small speed is biased by its noise)."""
+    pm = "±"
+    return (f"{marker} before: N {rate.north:.1f} {pm} {rate.sigma_north:.1f}, "
+            f"E {rate.east:.1f} {pm} {rate.sigma_east:.1f} mm/yr")  # fmt: skip
 
 
 def nice(x: float) -> float:
@@ -658,7 +745,12 @@ def _cpt_file() -> str:
 
     fd, path = tempfile.mkstemp(prefix="gpsplot-track-", suffix=".cpt")
     os.close(fd)
-    atexit.register(lambda: os.path.exists(path) and os.remove(path))
+
+    def remove() -> None:
+        if os.path.exists(path):
+            os.remove(path)
+
+    atexit.register(remove)
     return path
 
 
@@ -816,6 +908,7 @@ def series_figure(
     cmap: str = DEFAULT_CMAP,
     common_mode: bool = True,
     reference: str | None = None,
+    keep_trend: bool = False,
 ) -> Any:
     """A station's track as a time series: North and East (the trend and
     seasonal before the onset removed, zero at the onset, as on the map),
@@ -856,6 +949,10 @@ def series_figure(
         if tr.since is None:
             text.append((f"{tr.n_after} days since {onset:%d.%m}: too few for a "
                          "rate", "black"))  # fmt: skip
+        if tr.before is not None:
+            v = (tr.before.north, tr.before.east)[comp]
+            sv = (tr.before.sigma_north, tr.before.sigma_east)[comp]
+            text.append((f"before the onset: v = {v:.1f} ± {sv:.1f} mm/yr", "0.3"))
         for i, (line, color) in enumerate(text):
             ax.text(0.01, 0.95 - 0.09 * i, line, transform=ax.transAxes,
                     color=color, va="top", fontsize=10)  # fmt: skip
@@ -864,8 +961,10 @@ def series_figure(
     fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
                  shrink=0.6, aspect=30)  # fmt: skip
     rel = f" relative to {reference}" if reference else ""
-    fig.suptitle(f"{tr.marker}: horizontal motion{rel}, trend and seasonal before "
-                 "the onset removed", fontsize=12)  # fmt: skip
+    removed = ("seasonal before the onset removed, its trend kept" if keep_trend
+               else "trend and seasonal before the onset removed")  # fmt: skip
+    # two lines: a long reference name must not run off the figure
+    fig.suptitle(f"{tr.marker}: horizontal motion{rel}\n{removed}", fontsize=12)
     if common_mode:
         axes[1].text(0.99, 0.02, "network common mode removed",
                      transform=axes[1].transAxes, ha="right", va="bottom",

@@ -82,7 +82,13 @@ korta).
 positions since an event in events.yaml. `--track-ref STA` measures them
 against a reference station; `--track-ref A,B,C` against the mean of several
 (a station of them that moves is left out, with a message), and
-`ts_stations:` adds each station's series.
+`ts_stations:` adds each station's series. Each station's trend before the
+event is removed, so only a change at the onset shows; `--track-trend keep`
+removes only the seasonal (on the reference stations too) and writes each
+moving station's rate before the event in the legend (grey): creep before
+the event shows. The rates' σ include how much the daily noise wanders
+(block means of the residuals before the event). `--inset W/E/S/N` adds a
+zoom inset with the tracks inside it drawn at its own scale.
 
 **Captions** are made from the map's options (place, dates, horizontal or
 vertical). `label:` on the product names the place; `caption:` on a run

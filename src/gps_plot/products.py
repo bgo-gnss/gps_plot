@@ -1012,9 +1012,11 @@ def map_caption(
     if kind == "station" and _option(argv, "--track"):
         recent = _option(argv, "--track-recent") or "14"
         onset = onset_text(_option(argv, "--track"), events)
+        kept = ("; leitni fyrir atburðinn haldið (hraði fyrir hann grár)"
+                if _option(argv, "--track-trend") == "keep" else "")  # fmt: skip
         return (f"{label}: daglegar stöður frá {onset}{_ref_text(argv)}, litaðar "
                 f"eftir dögum; hraði frá {onset} (blátt) og síðustu {recent} daga "
-                "(rautt)")  # fmt: skip
+                f"(rautt){kept}")  # fmt: skip
     if kind == "deformation":
         return f"{label}: færsla"
     return f"{label}: stöðvakort"
@@ -1044,9 +1046,11 @@ def track_series_caption(
     """A track map's series of one station."""
     recent = _option(argv, "--track-recent") or "14"
     onset = onset_text(_option(argv, "--track"), events)
-    return (f"{sta}: norður og austur{_ref_text(argv)}, leitni fyrir {onset} "
-            f"fjarlægð; hraði frá {onset} (blátt) og síðustu {recent} daga "
-            "(rautt)")  # fmt: skip
+    trend = ("árstíðasveifla fyrir {0} fjarlægð, leitni haldið"
+             if _option(argv, "--track-trend") == "keep"
+             else "leitni fyrir {0} fjarlægð").format(onset)  # fmt: skip
+    return (f"{sta}: norður og austur{_ref_text(argv)}, {trend}; hraði frá "
+            f"{onset} (blátt) og síðustu {recent} daga (rautt)")  # fmt: skip
 
 
 def map_captions(
