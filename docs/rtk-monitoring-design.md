@@ -19,25 +19,52 @@ point: `--longterm 14d --rtk-overlap 2`. Two products per pair: LONG = the
 existing daily baseline plot (gpsplot run), SHORT = RTK + daily, 14 d. The
 `--longterm 90d|year|full` CLI stays for occasional use.
 
-## 2. The runner (next)
+## 2. The runner: `gpsplot rtk-run` (2026-10-29)
 
-Separate from `gpsplot run` (daily cadence, stale pruning) because RTK
-plots go stale in minutes:
+Separate from `gpsplot run` (daily cadence, prepare steps, stale pruning)
+because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
 
-- **Command:** `gpsplot run --only rtk` or its own `gpsplot rtk-run`, reading
-  an `rtk:` product in plots.yaml. Pairs come from station_areas.yaml
-  (`baselines:`/`stacks:`) that exist on rtk.vedur.is in either direction.
-- **Host:** the same host as `gpsplot run` (BGÓ). It needs the read-only use
-  of `/mnt_data/rtgpsdata` (never written), `pos_dir`, and the CDN push.
-- **Cadence:** every 5–10 min from a systemd timer or cron, with `flock` so
-  runs never overlap. Cost is small: finished days come from the
-  `rtk_read` cache, only today's file is re-read.
-- **Files:** `<area>/graphs/rtk/A_B-rtk-<span>.png`. These are stable names
-  with no tuning parameters (plot-filenames rule). They are kept out of the
-  `A_B-baseline-*` pattern so `gpsplot run`'s stale pruning never deletes
-  them. Write to a temp file, then rename, so the CDN never serves half a PNG.
-- **Publish:** its own rsync to the CDN after each run; the daily push is
-  too slow.
+- **Config:** an optional top-level `rtk:` section in plots.yaml (`gpsplot
+  run` ignores it); without one the default is a single run `14d` =
+  `--longterm 14d --rtk-overlap 2` into `locations/{root}/{cdn}/graphs/rtk`:
+
+  ```yaml
+  rtk:
+    dir: locations/{root}/{cdn}/graphs/rtk
+    runs:
+      - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
+    overrides:
+      svinafellsheidi: { args: [--rtk-span week] }
+  ```
+- **Pairs:** each area's `baselines:` + `stacks:` pairs (station_areas.yaml)
+  that rtk.vedur.is processes either way round: 54 today.
+- **Files:** `<dir>/A_B-rtk-<run>.png`. Names are stable and kept out of the
+  `A_B-baseline-*` pattern that `gpsplot run` prunes. Each file is written in a
+  temp dir beside its target and renamed over it. Stale `*-rtk-*` files in
+  the rtk dirs are deleted (`--keep-stale` keeps them).
+- **Lock:** `<plots_dir>/.rtk-run.lock` (flock). A run still going makes the
+  next one exit 0.
+- **Exit:** a pair with nothing to plot (stations down) is skipped and its
+  old plot is kept. Exit 1 only when a plot raised.
+- **Cost:** 54 plots take 144 s on a cold cache and ~40 s warm (only
+  today's 1 Hz files are re-read), so a 5-min timer is fine.
+- **Host:** the same host as `gpsplot run` (BGÓ). There is no CDN push yet:
+  aflogun is tested locally against `plots_dir` while the server is awaited.
+
+Timer (user systemd, 5 min):
+
+```ini
+# ~/.config/systemd/user/gpsplot-rtk.service
+[Service]
+Type=oneshot
+ExecStart=%h/.miniforge/envs/gpslibrary/bin/gpsplot rtk-run
+# ~/.config/systemd/user/gpsplot-rtk.timer
+[Timer]
+OnCalendar=*:0/5
+Persistent=false
+[Install]
+WantedBy=timers.target
+```
 
 ## 3. aflogun: click a baseline to show its plot
 
@@ -54,9 +81,9 @@ baseline/stack plots, hover-labelled `A-B`, not clickable. Plan, stacked on
   `ctx.triggered_id` and ignores `n_clicks == 0`, because the layer is rebuilt
   from five inputs.
 - The picked line is redrawn in a highlight colour. The static panel
-  shows that pair's plots first, or only those: the baseline plot, the RTK
-  long-term plot (§2 files, a new `rtk` frame matched by its own regex) and
-  the RTK short plot.
+  shows that pair's plots first, or only those: the daily baseline plots
+  (long) and the RTK plot (short, §2 `A_B-rtk-<run>.png`, a new `rtk` frame
+  matched by its own regex).
 - The lines are drawn whenever the area has baselines, not only when a
   baseline frame is chosen, so they can be clicked.
 - Clicking the same line again, or a station, clears the pick.

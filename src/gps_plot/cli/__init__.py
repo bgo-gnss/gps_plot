@@ -61,6 +61,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.rtk:run",
     ),
     Command(
+        "rtk-run",
+        "the RTK monitoring plots of plots.yaml rtk: (every few minutes)",
+        "gps_plot.rtk_run:run",
+    ),
+    Command(
         "run",
         "every standard-plot product of plots.yaml (or one product/area)",
         "gps_plot.cli.run:run",
