@@ -921,3 +921,27 @@ def test_run_product_and_area_take_lists_and_repeats() -> None:
     assert runcli._names(a.product) == ["a", "b", "c"]
     assert runcli._names(a.area) == ["x"]
     assert runcli._names(p.parse_args([]).product) is None
+
+
+def test_update_pos_script_from_flag_or_plots_yaml(tmp_path, capsys) -> None:
+    from gps_plot.cli import run as run_cli
+
+    cfg = {"update_pos": "~/x/update_pos.sh"}
+    assert run_cli.update_script(None, cfg) is None
+    assert (
+        run_cli.update_script("", cfg) == run_cli.Path("~/x/update_pos.sh").expanduser()
+    )
+    assert run_cli.update_script("/a/b.sh", cfg) == run_cli.Path("/a/b.sh")
+    # missing or failing: a warning, the run goes on
+    assert not run_cli.update_pos(tmp_path / "none.sh", "gpsplot run")
+    assert "not found" in capsys.readouterr().out
+    bad = tmp_path / "bad.sh"
+    bad.write_text("#!/bin/sh\nexit 3\n")
+    bad.chmod(0o755)
+    assert not run_cli.update_pos(bad, "gpsplot run")
+    assert "exit 3" in capsys.readouterr().out
+    good = tmp_path / "good.sh"
+    good.write_text("#!/bin/sh\nexit 0\n")
+    good.chmod(0o755)
+    assert run_cli.update_pos(good, "gpsplot run")
+    assert not run_cli.update_pos(run_cli.Path(), "gpsplot run")
