@@ -123,13 +123,17 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--product",
+        action="append",
         default=None,
-        help="only these products, comma separated (e.g. standard, baselines,stacks)",
+        help="only these products, comma separated or repeated "
+        "(e.g. standard, baselines,stacks, --product a --product b)",
     )
     p.add_argument(
         "--area",
+        action="append",
         default=None,
-        help="only these areas, comma separated (cdn slug, e.g. reykjanes, askja,tjornes)",
+        help="only these areas, comma separated or repeated (cdn slug, e.g. "
+        "reykjanes, askja,tjornes)",
     )
     p.add_argument(
         "--dry-run",
@@ -156,11 +160,13 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     return p
 
 
-def _names(arg: str | None) -> list[str] | None:
-    """``--product a,b`` / ``--area a,b`` → ``["a", "b"]`` (None = all)."""
+def _names(arg: str | list[str] | None) -> list[str] | None:
+    """``--product a,b`` / ``--area a,b`` (each may be repeated) →
+    ``["a", "b"]`` (None = all)."""
     if arg is None:
         return None
-    return [p for p in (s.strip() for s in arg.split(",")) if p]
+    parts = [arg] if isinstance(arg, str) else arg
+    return [p for part in parts for p in (s.strip() for s in part.split(",")) if p]
 
 
 def run(prog: str, argv: list[str]) -> int:
@@ -201,7 +207,7 @@ def run(prog: str, argv: list[str]) -> int:
             print(f"{prog}: not in the selected jobs, left out: {' '.join(unused)}")
     if not jobs:
         print(
-            f"{prog}: no jobs (product={args.product}, area={args.area}"
+            f"{prog}: no jobs (product={_names(args.product)}, area={_names(args.area)}"
             + (f", stations={' '.join(wanted)})" if wanted else ")")
         )
         return 1
