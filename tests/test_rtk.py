@@ -267,3 +267,43 @@ def test_a_line_breaks_at_gaps():
     assert len(xs) == 7 and xs[4] == x[3]
     assert np.isnan(ys[:, 4]).all() and ys[0, 5] == 4.0
     assert break_gaps(x[:4], y[:, :4])[0] == x[:4]  # no gap, unchanged
+
+
+def test_classic_title_labels_and_status():
+    from gps_plot import rtk_classic
+
+    now = dt.datetime(2026, 10, 29, 21, 30)
+    assert rtk_classic.classic_title(["SENG-ELDC", "SKSH-ELDC"], "6h") == "SENG-ELDC 6h"
+    assert rtk_classic.line_labels(["SENG-ELDC", "SKSH-ELDC"]) == ["SENG", "SKSH"]
+    assert rtk_classic.line_labels(["SENG-ELDC", "SENG-SUDV"]) == [
+        "SENG-ELDC",
+        "SENG-SUDV",
+    ]
+    assert rtk_classic.status_color(now - dt.timedelta(minutes=5), now) == "green"
+    assert rtk_classic.status_color(now - dt.timedelta(hours=3), now) == (
+        rtk_classic.STALE_COLOR
+    )
+
+
+def test_classic_figure_draws_the_status_line_without_pyplot():
+    from gps_plot import rtk_classic
+
+    t = _minutes(120, "2026-10-29T18:00")
+    s = Series("SENG-ELDC", t, np.ones((3, 120)), np.ones((3, 120)))
+    now = dt.datetime(2026, 10, 29, 23, 0)
+    last = dt.datetime(2026, 10, 29, 19, 59)
+    fig = rtk_classic.classic_figure(
+        [s], title="SENG-ELDC 6h", start=now - dt.timedelta(hours=6), end=now,
+        now=now, last=last,
+    )  # fmt: skip
+    texts = [t.get_text() for t in fig.axes[0].texts]
+    assert any("síðast 2026-10-29 19:59" in t for t in texts)  # stopped: red
+    assert fig.axes[0].lines[-1].get_color() == rtk_classic.STALE_COLOR
+    assert fig.axes[0].get_ylabel() == "Norður [cm]"
+
+
+def test_classic_refuses_the_joined_plots():
+    parser = rtk.build_parser(config=_Config())
+    args = parser.parse_args(["SEY1-SEYD", "--classic", "--daily"])
+    with pytest.raises(SystemExit):
+        rtk.run(args, parser, _Config())

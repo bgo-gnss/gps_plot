@@ -151,6 +151,13 @@ def build_parser(
         help="frame of the daily series (--daily; default itrf2014)",
     )
     parser.add_argument(
+        "--classic",
+        action="store_true",
+        help="the rtk_gps look (title 'A-B 6h', cm, Norður/Austur/Upp, the "
+        "plot-time line green while the stream updates, red when it stopped); "
+        "RTK alone: not with --daily/--longterm/--offset",
+    )
+    parser.add_argument(
         "--max-sigma", type=float, default=0.1, metavar="M",
         help="drop RTK epochs with sdn/sde/sdu above this [m] (default 0.1, 0 = keep)",
     )  # fmt: skip
@@ -336,6 +343,71 @@ def _longterm_pair(
     return got, out
 
 
+def _stack(
+    args: argparse.Namespace,
+    series: list[Any],
+    styles: list[str],
+    colors: list[str],
+    notes: list[str],
+    events: Any,
+    now: dt.datetime,
+    last: dt.datetime,
+    plot_start: dt.datetime,
+    end: dt.datetime,
+) -> Any:
+    """The gpsplot figure (stack frame, mm, English) of the plotted series."""
+    from gps_plot import compose
+    from gps_plot import timesmatplt as tplt
+
+    if args.longterm == "full":  # the axis starts with the record
+        plot_start = min(as_datetime(s.t[0]) for s in series)
+    bases = {s.meta.get("pair", s.label)[5:] for s in series}
+    index = baseline_index(series)
+    # --offset moves each BASELINE: its RTK line and its daily points together
+    moved = [
+        dataclasses.replace(s, y=np.asarray(s.y) + k * args.offset)
+        for k, s in zip(index, series, strict=True)
+    ]
+    labels = [
+        compose.offset_label(s.label, k, args.offset)
+        for k, s in zip(index, series, strict=True)
+    ]
+    fig = compose.stack_figure(
+        moved,
+        title=_title(
+            len({s.meta.get("pair", s.label) for s in series}),
+            bases,
+            last,
+            now,
+            args.longterm,
+        ),
+        labels=labels,
+        start=plot_start,
+        end=end,
+        # --longterm: a margin around the robust range, so RTK spikes clip
+        ylim=args.ylim or ([LONGTERM_YMARGIN] if args.longterm else []),
+        styles=styles,
+        colors=colors,
+        fig=tplt._reusable_figure() if args.save else None,
+        robust_lines=bool(args.longterm),
+    )
+    if notes:
+        what = (
+            "RTK placed on daily, N/E/U mm (median over the overlap): "
+            if args.longterm
+            else "daily placed on RTK, N/E/U mm (median over days): "
+        )
+        fig.axes[2].text(
+            0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
+            fontsize="x-small", color="0.3", va="bottom",
+        )  # fmt: skip
+    if events:
+        tplt.addEvent(events, fig)
+    tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
+
+    return fig
+
+
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
     try:  # bad --events fail before the data are read
         events = common.resolve_events(args)
@@ -359,6 +431,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         parser.error(f"start {start} is not before end {end}")
     if args.longterm and args.daily:
         parser.error("--longterm already draws the daily baseline; drop --daily")
+    if args.classic and (args.longterm or args.daily or args.offset):
+        parser.error("--classic draws RTK alone: no --daily, --longterm or --offset")
     interval = args.interval or (LONGTERM_INTERVAL if args.longterm else "60s")
     dirs = list_baselines(root)
 
@@ -418,55 +492,21 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         print("nothing plotted", file=sys.stderr)
         return 1
 
-    if args.longterm == "full":  # the axis starts with the record
-        plot_start = min(as_datetime(s.t[0]) for s in series)
     if not args.save:
         mpl.use("WebAgg")
     rtk_only = [s for s in series if s.meta.get("source") == "rtk"]
     last = max((as_datetime(s.t[-1]) for s in rtk_only), default=start)
-    bases = {s.meta.get("pair", s.label)[5:] for s in series}
-    index = baseline_index(series)
-    # --offset moves each BASELINE: its RTK line and its daily points together
-    moved = [
-        dataclasses.replace(s, y=np.asarray(s.y) + k * args.offset)
-        for k, s in zip(index, series, strict=True)
-    ]
-    labels = [
-        compose.offset_label(s.label, k, args.offset)
-        for k, s in zip(index, series, strict=True)
-    ]
-    fig = compose.stack_figure(
-        moved,
-        title=_title(
-            len({s.meta.get("pair", s.label) for s in series}),
-            bases,
-            last,
-            now,
-            args.longterm,
-        ),
-        labels=labels,
-        start=plot_start,
-        end=end,
-        # --longterm: a margin around the robust range, so RTK spikes clip
-        ylim=args.ylim or ([LONGTERM_YMARGIN] if args.longterm else []),
-        styles=styles,
-        colors=colors,
-        fig=tplt._reusable_figure() if args.save else None,
-        robust_lines=bool(args.longterm),
-    )
-    if notes:
-        what = (
-            "RTK placed on daily, N/E/U mm (median over the overlap): "
-            if args.longterm
-            else "daily placed on RTK, N/E/U mm (median over days): "
-        )
-        fig.axes[2].text(
-            0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
-            fontsize="x-small", color="0.3", va="bottom",
+    if args.classic:
+        from gps_plot import rtk_classic
+
+        fig = rtk_classic.classic_figure(
+            series,
+            title=rtk_classic.classic_title([s.label for s in series], special),
+            start=start, end=end, now=now, last=last, interactive=not args.save,
         )  # fmt: skip
-    if events:
-        tplt.addEvent(events, fig)
-    tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
+    else:
+        fig = _stack(args, series, styles, colors, notes, events, now, last,
+                     plot_start, end)  # fmt: skip
 
     if not args.save:
         import matplotlib.pyplot as plt

@@ -26,7 +26,9 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
 
 - **Config:** an optional top-level `rtk:` section in plots.yaml (`gpsplot
   run` ignores it); without one the default is six runs (BGÓ): RTK alone over
-  `6h`, `12h` and `2d` (`--special 6h|12h|twodays`, the rtk_gps spans), and
+  `6h`, `12h` and `2d` (`--special 6h|12h|twodays --classic`: the rtk_gps
+  spans and look, cm, Norður/Austur/Upp, the plot-time line green while the
+  stream updates and red when it stopped), and
   `4d` (`--longterm 4d --rtk-overlap 1`), `7d` (`--longterm week
   --rtk-overlap 2`) and `14d` (`--longterm 14d --rtk-overlap 2`), into
   `locations/{root}/{cdn}/graphs/rtk`:
@@ -35,9 +37,9 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
   rtk:
     dir: locations/{root}/{cdn}/graphs/rtk
     runs:
-      - { name: 6h, args: [--special 6h] }
-      - { name: 12h, args: [--special 12h] }
-      - { name: 2d, args: [--special twodays] }
+      - { name: 6h, args: [--special 6h, --classic] }
+      - { name: 12h, args: [--special 12h, --classic] }
+      - { name: 2d, args: [--special twodays, --classic] }
       - { name: 4d, args: [--longterm 4d, --rtk-overlap 1] }
       - { name: 7d, args: [--longterm week, --rtk-overlap 2] }
       - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
