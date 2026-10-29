@@ -93,8 +93,10 @@ the dots' scale) and a dashed 1-σ ellipse; with no days just before the
 event its zero is the trend carried across the gap, and that σ is in the
 ellipse. The legend gives the last datapoint (green through yesterday, else
 red). `--inset W/E/S/N` adds a
-zoom inset with the tracks inside it drawn at its own scale (its DEM
-resampled and smoothed); `--inset-corner BL` puts it inside the map on the
+zoom inset with the tracks inside it drawn at its own scale. The vertical
+is drawn too (an arrow from each station, up north and down south, in the
+colour, units and scale of its horizontal arrow, 1-σ in black; a third Up panel in the series); `--no-track-up` leaves it
+out. The inset's DEM is resampled and smoothed; `--inset-corner BL` puts it inside the map on the
 legend, `--inset-width` sizes it, `--locator-corner BR` moves the Iceland
 map.
 

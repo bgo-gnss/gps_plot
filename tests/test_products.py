@@ -895,7 +895,7 @@ def test_map_captions_in_icelandic_from_the_options() -> None:
     jobs = products.expand({"products": {"x": spec}}, areas={})
     caps = products.map_captions(jobs[:1], jobs)
     assert caps["maps/x"]["b"] == "Mín lýsing" and caps["maps/x"]["a"].startswith("X:")
-    assert caps["maps/x/ts"]["a-SVIE"].startswith("SVIE: norður og austur")
+    assert caps["maps/x/ts"]["a-SVIE"].startswith("SVIE: norður, austur og upp")
 
 
 def test_track_captions_name_the_reference() -> None:
@@ -903,7 +903,7 @@ def test_track_captions_name_the_reference() -> None:
     text = products.map_caption("station", argv, "Svf")
     assert " miðað við meðaltal SKFC, SLEC og FAGC," in text
     one = products.track_series_caption("SVIE", ["--track", "x", "--track-ref", "skfc"])
-    assert one.startswith("SVIE: norður og austur miðað við SKFC, leitni")
+    assert one.startswith("SVIE: norður, austur og upp miðað við SKFC, leitni")
     assert "miðað" not in products.track_series_caption("SVIE", ["--track", "x"])
     keep = [*argv, "--track-trend", "keep"]
     assert "leitni fyrir atburðinn haldið" in products.map_caption(

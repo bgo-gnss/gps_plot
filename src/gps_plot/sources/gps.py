@@ -123,10 +123,11 @@ def fetch(
 ) -> Series:
     """A station (``HOFN``) or a baseline (``VFLN-VFLS``) as a Series.
 
-    A baseline's ``outliers`` are the baseline on the days the cleaned view
-    set aside at either end (:func:`_baseline_outliers`), so
-    ``--show-outliers`` draws them grey as on a station; the other overlays
-    (provisional, icing, snow, network days) are not carried. A component
+    A baseline's ``outliers``, ``iced``, ``buried`` and ``netday`` are the
+    baseline on the days the cleaned view set aside at either end, each
+    under the most serious reason either end had (:func:`_baseline_overlays`),
+    so ``--show-outliers``/``--show-obstruction``/``--show-network`` draw
+    them as on a station; the provisional overlay is not carried. A component
     is ``aborted`` if it aborted at either end. ``ends`` holds both stations zeroed at the
     baseline's first common epoch. ``meta`` holds the ``rho`` and
     ``sigma_scale`` the baseline σ was formed with (None = formal
@@ -161,7 +162,7 @@ def fetch(
         sigma_scale=sigma_scale,
         **tol_kw,
     )
-    outliers = _baseline_outliers(
+    overlays = _baseline_overlays(
         ends, bl, pair=pair, rho=rho, sigma_scale=sigma_scale, tol_kw=tol_kw
     )
     aborts = [e.aborted for e in ends if e.aborted is not None]
@@ -174,7 +175,10 @@ def fetch(
         t=bl.yearf,
         y=bl.data,
         sigma=bl.sigma,
-        outliers=outliers,
+        outliers=overlays["outliers"],
+        iced=overlays["iced"],
+        buried=overlays["buried"],
+        netday=overlays["netday"],
         aborted=[any(c) for c in zip(*aborts, strict=True)] if aborts else None,
         detrend_applied=all(e.detrend_applied for e in ends),
         ends=(zeroed[0], zeroed[1]),
@@ -182,7 +186,24 @@ def fetch(
     )
 
 
-def _baseline_outliers(
+#: a baseline day set aside at either end is drawn under the most serious
+#: reason either end had (BGÓ 2026-10-29: every day shown, colour-coded): a
+#: network day, icing, snow burial, then a plain outlier
+OVERLAY_PRIORITY = ("netday", "iced", "buried", "outliers")
+
+
+def _end_index(t_end: Any, t_bl: Any, tol: float) -> Any:
+    """For each baseline epoch, the index of the end's epoch within ``tol``
+    (-1 for none)."""
+    t_end = np.asarray(t_end, dtype=float)
+    t_bl = np.asarray(t_bl, dtype=float)
+    i = np.clip(np.searchsorted(t_end, t_bl), 1, max(t_end.size - 1, 1))
+    left = np.abs(t_bl - t_end[i - 1]) <= np.abs(t_bl - t_end[i])
+    j = np.where(left, i - 1, i)
+    return np.where(np.abs(t_end[j] - t_bl) <= tol, j, -1)
+
+
+def _baseline_overlays(
     ends: Sequence[Series],
     bl: Any,
     *,
@@ -190,51 +211,69 @@ def _baseline_outliers(
     rho: Any,
     sigma_scale: Any,
     tol_kw: dict[str, Any],
-) -> tuple[Any, Any] | None:
-    """The baseline on the days the cleaned view set aside at either end.
+) -> dict[str, tuple[Any, Any] | None]:
+    """The baseline on the days the cleaned view set aside at either end,
+    by reason (``OVERLAY_PRIORITY``: network day, icing, snow, outlier).
 
-    Each end's flagged values are put back (``outliers`` holds them, the
+    Each end's set-aside values are put back (every overlay holds them, the
     series has NaN there), the baseline is formed again from those full
-    ends, and its values are kept where the cleaned baseline is NaN because
-    of an outlier. The full baseline is shifted onto the cleaned one's zero
-    (they differ when the first common day was an outlier). Days removed
-    for icing, snow or a network day stay out: only outliers are put back.
+    ends, and its values are kept where the cleaned baseline is NaN, each
+    component of a day under the most serious reason either end had for
+    it. The full baseline is shifted onto the cleaned one's zero (they
+    differ when the first common day was set aside).
 
     Returns:
-        ``(values, sigma)`` like a station's ``outliers`` (NaN elsewhere),
-        or None when neither end flagged anything.
+        ``{"outliers"|"iced"|"buried"|"netday": (values, sigma) or None}``,
+        each like a station's overlay (NaN elsewhere).
     """
+    from geo_dataread.baseline import BASELINE_EPOCH_TOLERANCE_YEARS
     from geo_dataread.baseline import baseline as compute_baseline
 
-    if all(e.outliers is None for e in ends):
-        return None
-    full = []
+    none: dict[str, tuple[Any, Any] | None] = dict.fromkeys(OVERLAY_PRIORITY)
+    if all(getattr(e, k) is None for e in ends for k in OVERLAY_PRIORITY):
+        return none
+    full, reasons = [], []
     for e in ends:
         y, sig = np.array(e.y, dtype=float), np.array(e.sigma, dtype=float)
-        if e.outliers is not None:
-            oy, ody = (np.asarray(v, dtype=float) for v in e.outliers)
+        why = np.full(y.shape, len(OVERLAY_PRIORITY))  # none
+        for rank, key in reversed(list(enumerate(OVERLAY_PRIORITY))):
+            ov = getattr(e, key)
+            if ov is None:
+                continue
+            oy, ody = (np.asarray(v, dtype=float) for v in ov)
             put = np.isfinite(oy)
             y[put], sig[put] = oy[put], ody[put]
+            why[put] = rank  # the more serious reason last: it wins
         full.append((e.t, y, sig))
+        reasons.append(why)
     fb = compute_baseline(
         full[0], full[1], stations=pair, rho=rho, sigma_scale=sigma_scale, **tol_kw
     )
     clean = np.asarray(bl.data, dtype=float)
     values = np.asarray(fb.data, dtype=float)
     if values.shape != clean.shape:  # different common days: nothing to add
-        return None
+        return none
     both = np.isfinite(clean) & np.isfinite(values)
     for c in range(values.shape[0]):  # onto the cleaned baseline's zero
         if both[c].any():
             values[c] += np.median(clean[c, both[c]] - values[c, both[c]])
     extra = ~np.isfinite(clean) & np.isfinite(values)
     if not extra.any():
-        return None
+        return none
+    tol = tol_kw.get("tol", BASELINE_EPOCH_TOLERANCE_YEARS)
+    worst = np.full(values.shape, len(OVERLAY_PRIORITY))
+    for e, why in zip(ends, reasons, strict=True):
+        j = _end_index(e.t, fb.yearf, tol)
+        got = np.where(j >= 0, why[:, np.maximum(j, 0)], len(OVERLAY_PRIORITY))
+        worst = np.minimum(worst, got)
+    sigma = np.asarray(fb.sigma, dtype=float)
     nan = np.full_like(values, np.nan)
-    return (
-        np.where(extra, values, nan),
-        np.where(extra, np.asarray(fb.sigma, dtype=float), nan),
-    )
+    out = dict(none)
+    for r, key in enumerate(OVERLAY_PRIORITY):
+        k = extra & (worst == r)
+        if k.any():
+            out[key] = (np.where(k, values, nan), np.where(k, sigma, nan))
+    return out
 
 
 def station_record(sta: str, req: SeriesRequest) -> Any:

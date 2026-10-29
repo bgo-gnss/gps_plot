@@ -558,6 +558,15 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         "onset, creep, shows, its rate in the legend)",
     )  # fmt: skip
     g.add_argument(
+        "--track-up", action=argparse.BooleanOptionalAction, default=True,
+        help="the vertical too (default; --no-track-up: horizontal only): "
+        "each station's vertical as an arrow from it (up drawn north, down "
+        "south; the colour, units and scale of its horizontal arrow: a rate, "
+        "or with few days its displacement; 1-σ in black), in the legend and "
+        "as a "
+        "third panel of the --track-series figures",
+    )  # fmt: skip
+    g.add_argument(
         "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
         metavar="N",
         help="the dotted path follows the running median of N days "
@@ -1692,14 +1701,14 @@ def _draw_tracks(
         None if not refs else refs[0] if len(refs) == 1
         else "the mean of " + ", ".join(refs)
     )  # fmt: skip
-    reference = None
+    reference = up_reference = None
     if refs:
         loaded, used = [], []
         for r in refs:
             try:
                 loaded.append(track.load_series(
                     r, pre, frame=args.track_frame, pos_dir=pos_dir,
-                    uncert=args.track_uncert, common_mode=common_mode,
+                    uncert=args.track_uncert, common_mode=common_mode, up=True,
                 ))  # fmt: skip
                 used.append(r)
             except (ValueError, OSError) as exc:
@@ -1712,8 +1721,9 @@ def _draw_tracks(
         if len(used) >= 3:
             try:
                 kept, moved = track.screen_references(
-                    dict(zip(used, loaded, strict=True)), pre, onset
-                )
+                    {u: (t, y[:2]) for u, (t, y) in zip(used, loaded, strict=True)},
+                    pre, onset,
+                )  # fmt: skip
             except ValueError as exc:
                 parser.error(f"--track-ref: {exc}")
             for name, speed in moved:
@@ -1723,14 +1733,26 @@ def _draw_tracks(
             used = kept
         if len(refs) > 1:
             ref_name = "the mean of " + ", ".join(used)
+        horizontal = [(t, y[:2]) for t, y in loaded]
         try:
             reference = (
-                loaded[0]
-                if len(loaded) == 1 and not keep_trend
-                else track.reference_mean(loaded, pre, keep_trend=keep_trend)
+                horizontal[0]
+                if len(horizontal) == 1 and not keep_trend
+                else track.reference_mean(horizontal, pre, keep_trend=keep_trend)
             )
         except ValueError as exc:
             parser.error(f"--track-ref: {exc}")
+        # the vertical's reference alike, from the days with an Up
+        ups = [track.up_series(t, y) for t, y in loaded]
+        try:
+            up_reference = (
+                ups[0] if len(ups) == 1 and not keep_trend
+                else track.reference_mean(ups, pre, keep_trend=keep_trend)
+            )  # fmt: skip
+        except ValueError as exc:
+            print(f"--track-ref: no vertical reference ({exc}): no vertical",
+                  file=sys.stderr)  # fmt: skip
+            up_reference = None
     tracks, dropped = [], []
     for c in stations:
         if len(refs) == 1 and c.marker == refs[0]:
@@ -1741,27 +1763,35 @@ def _draw_tracks(
                 pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
                 reference=reference, keep_trend=keep_trend,
+                up_reference=up_reference,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
     _report(dropped)
+    tracks = track.with_colours(tracks)  # SVIE blue, SVIN red, …
     print(f"tracks since {onset:%Y-%m-%d} ({label}), trend {pre[0]:%Y-%m-%d} - "
           f"{pre[1]:%Y-%m-%d}: {len(tracks)} stations", file=sys.stderr)  # fmt: skip
     region = style.get("region") or tuple(fig.region)
     projection = style.get("projection", maps.DEFAULT_PROJECTION)
     if args.locator_corner is None:
         args.locator_corner = "BL"  # on the legend
-    from gps_plot.layout import BOTTOM_LABELS_CM
+    from gps_plot.layout import BOTTOM_LABELS_CM, BOX_BOTTOM_LABELS_CM
 
+    # a plain W/E/S/N map (Mercator) has a narrow band of longitude
+    # annotations at the bottom: the legend sits just above it (BGÓ
+    # 2026-10-29), the inset and the locator on the legend
+    floor = (BOTTOM_LABELS_CM if isinstance(region, maps.CornerRegion)
+             else BOX_BOTTOM_LABELS_CM)  # fmt: skip
     shown = [track.trimmed(tr, args.track_before) for tr in tracks]
     drawn = track.draw_tracks(
         fig, shown, onset=onset, region=region, projection=projection,
         recent_days=args.track_recent, m_per_mm=args.track_scale,
         arrows=args.track_arrows,
         arrow_scale=(args.track_arrow_scale / 100 if args.track_arrow_scale else None),
-        cmap=args.track_cmap, legend_floor_cm=BOTTOM_LABELS_CM,
+        cmap=args.track_cmap, legend_floor_cm=floor,
         path_days=args.track_path_days,
         note=f"motion relative to {ref_name}" if ref_name else None,
+        up=args.track_up,
     )  # fmt: skip
     span = track.colour_range(shown)  # the map's colour scale
 
@@ -1769,7 +1799,7 @@ def _draw_tracks(
         track.draw_zoom_tracks(f, shown, args.inset, width_cm,
                                arrows=args.track_arrows,
                                path_days=args.track_path_days,
-                               cpt=drawn.cpt)  # fmt: skip
+                               cpt=drawn.cpt, up=args.track_up)  # fmt: skip
 
     picked = [tr for tr in tracks if tr.marker in series]
     return drawn, [

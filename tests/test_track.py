@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import math
 import re
@@ -78,7 +79,7 @@ def test_too_few_days_gives_a_displacement() -> None:
     tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
     assert tr.n_after == 2 and tr.since is None and tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
-    assert colour == track.DISPLACEMENT_COLOR and "(2 days)" in text
+    assert colour == track.SINCE_COLOR and "(2 days)" in text
     assert re.search(r"SVIN moved 1[789] ± \d mm toward 29\d°", text)
 
 
@@ -86,8 +87,8 @@ def test_legend_lines_per_station() -> None:
     t, y = _series(move=(200.0, -120.0))
     tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
     lines = track.legend_entries([tr], ONSET, 14)
-    assert [c for _, c in lines] == [track.SINCE_COLOR, track.RECENT_COLOR]
-    assert "since 23.09.2026" in lines[0][0] and "last 14 days" in lines[1][0]
+    assert [c for _, c in lines] == [track.SINCE_COLOR]
+    assert "since 23.09.2026" in lines[0][0]
     # 200 N, -120 E mm/yr: toward 329° (north-west)
     assert re.search(r"toward 3[23]\d° since", lines[0][0])
     assert re.search(r", moved \d+ ± \d mm$", lines[0][0])  # the total so far
@@ -344,7 +345,7 @@ def test_a_few_days_station_is_listed_even_if_not_beyond_three_sigma() -> None:
     tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
     assert not tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
-    assert colour == track.DISPLACEMENT_COLOR and "(1 day)" in text
+    assert colour == track.SINCE_COLOR and "(1 day)" in text
 
 
 def test_newest_day_text_green_through_yesterday_else_red() -> None:
@@ -362,11 +363,13 @@ def test_newest_day_text_green_through_yesterday_else_red() -> None:
     assert track.newest_day([]) is None
 
 
-def test_recent_line_has_the_14_day_movement() -> None:
+def test_the_recent_rate_has_no_legend_line() -> None:
     t, y = _series(move=(200.0, -120.0))
     tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
-    lines = track.legend_entries([tr], ONSET, 14)
-    assert re.search(r"last 14 days, moved \d+ ± \d+ mm$", lines[1][0])
+    assert tr.recent is not None
+    assert not any(
+        "last 14 days" in t for t, _ in track.legend_entries([tr], ONSET, 14)
+    )
 
 
 def test_zoom_dem_resamples_finer_and_smooths() -> None:
@@ -375,3 +378,47 @@ def test_zoom_dem_resamples_finer_and_smooths() -> None:
     kw = insets.zoom_dem((-16.84, -16.785, 63.998, 64.022), "M6c", 0.0)
     assert 0 < kw["dem_resample"] < 1 / 3600
     assert kw["dem_smooth"] == insets.ZOOM_DEM_SMOOTH_KM
+
+
+def test_vertical_track_measures_a_drop_since_the_onset() -> None:
+    t, y = _series(days_after=40)
+    rng = np.random.default_rng(7)
+    u = (2.0 * np.sin(2 * np.pi * t) + rng.normal(0.0, 3.0, t.size))[None, :]
+    u = u + np.where(t >= track.yearf(ONSET), -20.0, 0.0)  # a 20 mm drop
+    vt = track.vertical_track(t, u, ONSET, PRE)
+    assert vt.n_after > 30 and vt.since is not None and vt.moved
+    assert vt.end == pytest.approx(-20.0, abs=4 * vt.end_sigma)
+    assert track.up_text("SVIN", vt, ONSET).startswith("SVIN vertical -")
+
+
+def test_legend_lists_a_station_that_moved_only_vertically() -> None:
+    t, y = _series(seed=3)
+    tr = track.station_track("SKFC", -17.0, 64.0, t, y, ONSET, PRE)
+    rng = np.random.default_rng(2)
+    u = rng.normal(0.0, 2.0, t.size)[None, :] + np.where(
+        t >= track.yearf(ONSET), -30.0, 0.0
+    )
+    tr = dataclasses.replace(tr, vertical=track.vertical_track(t, u, ONSET, PRE))
+    assert not tr.moved
+    ((text, colour),) = track.legend_entries([tr], ONSET, 14)
+    assert colour == track.SINCE_COLOR and "vertical" in text
+    assert track.legend_entries([tr], ONSET, 14, up=False) == []
+
+
+def test_up_series_keeps_the_days_with_an_up() -> None:
+    t = np.arange(5.0)
+    y = np.array([[1.0] * 5, [2.0] * 5, [3.0, np.nan, 4.0, np.nan, 5.0]])
+    tu, u = track.up_series(t, y)
+    assert tu.tolist() == [0.0, 2.0, 4.0] and u.shape == (1, 3)
+
+
+def test_with_colours_one_per_listed_station_in_order() -> None:
+    t, y = _series(move=(200.0, -120.0))
+    a = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    t2, y2 = _series(seed=3)
+    still = track.station_track("SKFC", -17.0, 64.0, t2, y2, ONSET, PRE)
+    b = dataclasses.replace(a, marker="SVIN")
+    got = track.with_colours([a, still, b])
+    assert [tr.colour for tr in got] == ["blue", track.SINCE_COLOR, "red"]
+    lines = track.legend_entries(got, ONSET, 14)
+    assert [c for _, c in lines] == ["blue", "red"]

@@ -162,3 +162,42 @@ def test_start_zero_leaves_an_outlier_among_the_first_samples_out():
     # no outlier: the plain first samples
     y[0] = -140.0
     assert list(source.first_clean(y, sigma, np.isfinite(y))) == [0, 1, 2, 3, 4]
+
+
+def test_baseline_carries_icing_and_network_days_by_the_worst_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Days set aside for icing (AAAA) or a network day (both ends) are on
+    the baseline under that reason; a day iced at one end and a network
+    day at the other is a network day (BGÓ 2026-10-29: every day shown,
+    colour-coded)."""
+    t = np.linspace(2025.0, 2025.1, 10)
+    ramp = np.vstack([np.arange(10.0)] * 3)
+
+    def fake(sta: str, **kw: Any) -> tplt.StationSeries:
+        y = (ramp * (2.0 if sta == "AAAA" else 1.0)).copy()
+        iced = np.full((3, 10), np.nan)
+        net = np.full((3, 10), np.nan)
+        if sta == "AAAA":
+            for day in (3, 6):  # 3: iced here only; 6: iced here, network at BBBB
+                iced[:, day] = y[:, day]
+                y[:, day] = np.nan
+        net_days = (5, 6) if sta == "BBBB" else (5,)
+        for day in net_days:
+            net[:, day] = y[:, day]
+            y[:, day] = np.nan
+        sig = np.ones((3, 10))
+
+        def pair(v: Any) -> Any:
+            return (v, np.where(np.isfinite(v), 1.0, np.nan))
+
+        return tplt.StationSeries(t, y, sig, None, None, None, False,
+                                  pair(iced), None, pair(net))  # fmt: skip
+
+    monkeypatch.setattr(tplt, "station_series", fake)
+    s = gps.fetch("AAAA-BBBB", REQ)
+    assert s.outliers is None and s.buried is None
+    assert s.iced is not None and s.netday is not None
+    assert list(np.flatnonzero(np.isfinite(s.iced[0][0]))) == [3]
+    assert list(np.flatnonzero(np.isfinite(s.netday[0][0]))) == [5, 6]
+    assert s.iced[0][0, 3] == pytest.approx(s.y[0, 2] + 1.0)  # on the ramp

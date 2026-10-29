@@ -43,13 +43,18 @@ MIN_RATE_DAYS = 5
 #: the newest position: the mean of the days at most this many days before
 #: the newest (two at most), not of two days a week apart
 END_SPAN_DAYS = 3
-#: the few-days station's displacement arrow and its 1-σ ellipse (dashed)
-DISPLACEMENT_COLOR = "red"
-DISPLACEMENT_ELLIPSE_PEN = "0.6p,red,4_2:0"
 #: moved = the newest position off the station by more than this × its scatter
 MOVED_SIGMA = 3.0
 #: largest horizontal formal σ kept [mm]
 TRACK_UNCERT = 10.0
+#: largest Up formal σ kept [mm] (the vertical, a day of its own)
+UP_UNCERT = 25.0
+#: the vertical: an arrow at each station, up drawn north and down south,
+#: in the colour and at the scale of the station's horizontal arrow (blue
+#: rate, or red displacement with too few days for a rate), its 1-σ in
+#: black (BGÓ 2026-10-29)
+UP_PEN = "1.2p"
+UP_ERROR_PEN = "0.8p,black"
 #: the farthest track drawn this long on the map [cm] (automatic dot scale)
 TRACK_CM = 1.2
 #: the longest arrow [cm] (automatic arrow scale)
@@ -67,6 +72,9 @@ ARROW_HEAD = "0.25c"
 ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
 SINCE_COLOR = "blue"
+#: one colour per station that moved, in the map's station order (BGÓ
+#: 2026-10-29: SVIE blue, SVIN red): its arrows, legend lines and series
+STATION_COLORS = ("blue", "red", "darkgreen", "darkorange", "purple", "brown")
 BEFORE_COLOR = "80/80/80"
 RECENT_COLOR = "black"
 #: the newest day in the legend: through yesterday green, else red (as the
@@ -125,6 +133,50 @@ class Rate:
 
 
 @dataclasses.dataclass(frozen=True)
+class Vertical:
+    """A station's Up since ``BEFORE_DAYS`` before the onset [mm, trend
+    removed, zero at the onset, relative to the same reference as the
+    horizontal]: the rates are ``(mm/yr, σ)``."""
+
+    t: FloatArray
+    up: FloatArray
+    days: FloatArray  # since the onset
+    scatter: float  # Up daily scatter before the onset [mm]
+    zero_sigma: float
+    zero_extrapolated: bool
+    since: tuple[float, float] | None
+    recent: tuple[float, float] | None
+    n_after: int
+
+    @property
+    def end_count(self) -> int:
+        """Days averaged for :attr:`end` (as :attr:`Track.end_count`)."""
+        if self.n_after == 0:
+            return 0
+        if self.n_after >= 2 and self.days[-1] - self.days[-2] <= END_SPAN_DAYS:
+            return 2
+        return 1
+
+    @property
+    def end(self) -> float:
+        """The newest Up [mm]: the mean of the newest days."""
+        m = self.end_count
+        return float(np.mean(self.up[-m:])) if m else 0.0
+
+    @property
+    def end_sigma(self) -> float:
+        """σ of :attr:`end`: the daily scatter over the days averaged and
+        the zero's σ, in quadrature."""
+        return math.hypot(self.scatter / math.sqrt(max(1, self.end_count)),
+                          self.zero_sigma)  # fmt: skip
+
+    @property
+    def moved(self) -> bool:
+        """Its newest Up more than ``MOVED_SIGMA`` σ off zero."""
+        return self.n_after > 0 and abs(self.end) > MOVED_SIGMA * self.end_sigma
+
+
+@dataclasses.dataclass(frozen=True)
 class Track:
     """One station's horizontal positions since ``BEFORE_DAYS`` before the
     onset [mm, trend removed, zero at the onset]."""
@@ -150,6 +202,10 @@ class Track:
     zero_sigma: tuple[float, float] = (0.0, 0.0)
     #: no days just before the onset: the zero is the extrapolated trend
     zero_extrapolated: bool = False
+    #: the vertical, when its series has enough days
+    vertical: Vertical | None = None
+    #: its arrows', legend lines' and series' colour (:func:`with_colours`)
+    colour: str = SINCE_COLOR
 
     @property
     def end_count(self) -> int:
@@ -292,7 +348,7 @@ def pre_rate(t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]) -> Rate:
 def extrapolation_sigma(
     t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_], t_at: float
 ) -> FloatArray:
-    """σ (N, E) of the line + seasonal fitted on ``pre`` as the position at
+    """σ per component (N, E; or Up) of the line + seasonal fitted on ``pre`` as the position at
     ``t_at``, the zero of a station with no days just before the onset: the
     fit's prediction σ there and how far a ``ZERO_DAYS`` mean of the days
     strays from the fit (the residuals' block means before the onset), in
@@ -303,8 +359,8 @@ def extrapolation_sigma(
     g = _design(tp, t_ref)
     g0 = _design(np.array([t_at]), t_ref)[0]
     block = np.floor((tp - tp[0]) * YEAR / ZERO_DAYS)
-    out = np.empty(2)
-    for c in (0, 1):
+    out = np.empty(y.shape[0])
+    for c in range(y.shape[0]):
         m, *_ = np.linalg.lstsq(g, y[c, pre], rcond=None)
         res = y[c, pre] - g @ m
         cov = np.linalg.inv(g.T @ g) * float(np.var(res, ddof=g.shape[1]))
@@ -315,23 +371,34 @@ def extrapolation_sigma(
     return out
 
 
-def line_rate(
+def line_fit(
     t: FloatArray, r: FloatArray, a: float, b: float, floor: FloatArray
-) -> Rate | None:
-    """The N/E line rate over ``[a, b]`` [mm/yr]; None with fewer than
-    ``MIN_RATE_DAYS`` days. Its σ uses the larger of the fit's scatter and
-    ``floor`` (the pre-onset scatter): a few days can fit a line too well."""
+) -> list[tuple[float, float]] | None:
+    """Per component of ``r``, the line rate over ``[a, b]`` and its σ
+    [mm/yr]; None with fewer than ``MIN_RATE_DAYS`` days. The σ uses the
+    larger of the fit's scatter and ``floor`` (the pre-onset scatter): a
+    few days can fit a line too well."""
     k = (t >= a) & (t <= b)
     if int(k.sum()) < MIN_RATE_DAYS:
         return None
     tm = t[k] - t[k].mean()
     sxx = float(np.sum(tm**2))
     out = []
-    for c in (0, 1):
+    for c in range(r.shape[0]):
         p = np.polyfit(tm, r[c, k], 1)
         res = r[c, k] - np.polyval(p, tm)
         noise = max(float(np.std(res, ddof=2)), float(floor[c]))
         out.append((float(p[0]), noise / math.sqrt(sxx)))
+    return out
+
+
+def line_rate(
+    t: FloatArray, r: FloatArray, a: float, b: float, floor: FloatArray
+) -> Rate | None:
+    """The N/E line rate over ``[a, b]`` [mm/yr] (:func:`line_fit`)."""
+    out = line_fit(t, r[:2], a, b, floor)
+    if out is None:
+        return None
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
 
 
@@ -348,7 +415,7 @@ def wander_scale(
 
     n = max(2, round(days / BLOCK_MIN_BLOCKS))
     return np.array([block_mean_scale(t[pre], r[c, pre], step=1.0 / YEAR, n=n).k
-                     for c in (0, 1)])  # fmt: skip
+                     for c in range(r.shape[0])])  # fmt: skip
 
 
 def scaled(rate: Rate | None, k: FloatArray) -> Rate | None:
@@ -405,8 +472,9 @@ def reference_mean(
         values.append(r)
         weights.append(1.0 / np.maximum(rms, 1e-3) ** 2)
     grid = np.unique(np.concatenate(days))
-    total = np.zeros((2, grid.size))
-    wsum = np.zeros((2, grid.size))
+    rows = series[0][1].shape[0]  # N, E; or Up alone
+    total = np.zeros((rows, grid.size))
+    wsum = np.zeros((rows, grid.size))
     count = np.zeros(grid.size)
     for d, r, w in zip(days, values, weights, strict=True):
         i = np.searchsorted(grid, d)
@@ -516,6 +584,60 @@ def station_track(
     )  # fmt: skip
 
 
+def vertical_track(
+    t: FloatArray,
+    u: FloatArray,
+    onset: dt.date,
+    pre: tuple[dt.date, dt.date],
+    *,
+    before_days: int = BEFORE_DAYS,
+    recent_days: int = RECENT_DAYS,
+    keep_trend: bool = False,
+) -> Vertical:
+    """A station's :class:`Vertical` from its Up ``u`` (1, N) [mm] at epochs
+    ``t``: as :func:`station_track` does the horizontal (trend and seasonal
+    before the onset removed, zero the median of the days just before or
+    the trend carried across a gap, rates with the noise wander)."""
+    t_on = yearf(onset)
+    in_pre = (t >= yearf(pre[0])) & (t < yearf(pre[1]))
+    r, rms = detrend(t, u, in_pre, keep_line=keep_trend)
+    near = (t >= t_on - ZERO_DAYS / YEAR) & (t < t_on)
+    n_near = int(near.sum())
+    if n_near >= 3:
+        zero = float(np.median(r[0, near]))
+        zero_sigma = 1.25 * float(rms[0]) / math.sqrt(n_near)
+    else:
+        zero = 0.0
+        zero_sigma = float(extrapolation_sigma(t, u, in_pre, t_on)[0])
+    r = r - zero
+    shown = t >= t_on - before_days / YEAR
+    if not shown.any() or t[-1] < t_on:
+        raise ValueError(f"no Up since {onset:%Y-%m-%d}")
+    resid = detrend(t, u, in_pre)[0] if keep_trend else r
+
+    def rate(a: float, days: float) -> tuple[float, float] | None:
+        got = line_fit(t, r, a, float(t[-1]), rms)
+        if got is None:
+            return None
+        k = float(wander_scale(t, resid, in_pre, days)[0])
+        return got[0][0], got[0][1] * k
+
+    return Vertical(
+        t[shown], r[0, shown], (t[shown] - t_on) * YEAR, float(rms[0]),
+        zero_sigma, n_near < 3,
+        rate(t_on, (float(t[-1]) - t_on) * YEAR),
+        rate(float(t[-1]) - recent_days / YEAR, recent_days),
+        int((t >= t_on).sum()),
+    )  # fmt: skip
+
+
+def up_series(t: FloatArray, y: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """The Up row of a :func:`load_series` ``up=True`` series, its days
+    with an Up only: ``(t, u)``, ``u`` (1, N)."""
+    k = np.isfinite(y[2])
+    return t[k], y[2:3, k]
+
+
 def load_series(
     marker: str,
     pre: tuple[dt.date, dt.date],
@@ -525,13 +647,15 @@ def load_series(
     uncert: float = TRACK_UNCERT,
     common_mode: bool = True,
     end: dt.date | None = None,
+    up: bool = False,
 ) -> tuple[FloatArray, FloatArray]:
     """A station's daily horizontal series (cleaned view, plate removed)
-    from the trend window on: ``(t, y)``, ``y`` (N, E) [mm].
+    from the trend window on: ``(t, y)``, ``y`` (N, E) [mm]; with ``up``
+    (N, E, U), the Up NaN on days its σ is above ``UP_UNCERT``.
 
-    Screened on the horizontal formal σ only (a map of horizontal motion
-    keeps a day whose Up σ is large); the daily network common mode is
-    subtracted where it was estimated."""
+    Screened on the horizontal formal σ (a day whose Up σ is large keeps
+    its horizontal); the daily network common mode is subtracted where it
+    was estimated."""
     from geo_dataread.gps_views import resolve_common_mode, subtract_common_mode
     from geo_dataread.products.loader import Source, load
     from geo_dataread.products.velocity_core import window_bounds
@@ -540,11 +664,14 @@ def load_series(
     v = load(marker, t0, t1, Source(frame=frame, view="cleaned", ref="plate",
                                     uncert=1e9, pos_dir=pos_dir))  # fmt: skip
     ok = np.all(np.isfinite(v.y[:2]), axis=0) & (np.max(v.sigma[:2], axis=0) <= uncert)
-    t, y = v.t[ok], v.y[:2, ok]
+    rows = 3 if up else 2
+    t, y = v.t[ok], v.y[:rows, ok].astype(np.float64)
+    if up:
+        y[2, ~(v.sigma[2, ok] <= UP_UNCERT)] = np.nan
     if common_mode:
         epochs, values, _src = resolve_common_mode(pos_dir if pos_dir else None)
         if epochs.size:
-            y, _n = subtract_common_mode(t, y, epochs, values[:2])
+            y, _n = subtract_common_mode(t, y, epochs, values[:rows])
     return t, y
 
 
@@ -564,29 +691,86 @@ def load_track(
     end: dt.date | None = None,
     reference: tuple[FloatArray, FloatArray] | None = None,
     keep_trend: bool = False,
+    up_reference: tuple[FloatArray, FloatArray] | None = None,
+    vertical: bool = True,
 ) -> Track:
     """Read a station (:func:`load_series`) and make its track; with
-    ``reference`` (another station's ``load_series``) relative to it."""
+    ``reference`` (another station's ``load_series``) relative to it. With
+    ``vertical`` its Up too (:attr:`Track.vertical`; relative to
+    ``up_reference`` when there is a ``reference``, none without one: a
+    vertical not in the horizontal's frame would mislead; None also when
+    the Up has too few days)."""
     t, y = load_series(marker, pre, frame=frame, pos_dir=pos_dir, uncert=uncert,
-                       common_mode=common_mode, end=end)  # fmt: skip
-    if reference is not None:
-        t, y = relative_to(t, y, *reference)
-    return station_track(marker, lon, lat, t, y, onset, pre,
-                         before_days=before_days, recent_days=recent_days,
-                         keep_trend=keep_trend)  # fmt: skip
+                       common_mode=common_mode, end=end, up=vertical)  # fmt: skip
+    th, yh = (relative_to(t, y[:2], *reference) if reference is not None
+              else (t, y[:2]))  # fmt: skip
+    tr = station_track(marker, lon, lat, th, yh, onset, pre,
+                       before_days=before_days, recent_days=recent_days,
+                       keep_trend=keep_trend)  # fmt: skip
+    if not vertical or (reference is not None and up_reference is None):
+        return tr
+    tu, u = up_series(t, y)
+    if up_reference is not None:
+        tu, u = relative_to(tu, u, *up_reference)
+    try:
+        vt = vertical_track(tu, u, onset, pre, before_days=before_days,
+                            recent_days=recent_days, keep_trend=keep_trend)  # fmt: skip
+    except ValueError:
+        return tr
+    return dataclasses.replace(tr, vertical=vt)
+
+
+def listed(tr: Track) -> bool:
+    """A station the legend lists: it moved (horizontally, or up or down),
+    or has too few days since the onset for a rate."""
+    if tr.n_after == 0:
+        return False
+    vt = tr.vertical
+    return tr.since is None or tr.moved or (vt is not None and vt.moved)
+
+
+def with_colours(tracks: Sequence[Track]) -> list[Track]:
+    """``tracks`` with a colour each from ``STATION_COLORS``, in order, for
+    the stations the legend lists (:func:`listed`); the others keep the
+    default."""
+    out, i = [], 0
+    for tr in tracks:
+        if listed(tr):
+            tr = dataclasses.replace(tr, colour=STATION_COLORS[i % len(STATION_COLORS)])
+            i += 1
+        out.append(tr)
+    return out
+
+
+def up_text(marker: str, vt: Vertical, onset: dt.date) -> str:
+    """The legend's line for a station's vertical: its Up since the onset
+    and, with days enough, its rate."""
+    pm = "±"
+    n = vt.n_after
+    if vt.since is None:
+        gap = ", none just before" if vt.zero_extrapolated else ""
+        return (f"{marker} vertical {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm since "
+                f"{onset:%d.%m} ({n} day{'s' if n != 1 else ''}{gap})")  # fmt: skip
+    v, sv = vt.since
+    return (f"{marker} vertical {v:+.0f} {pm} {sv:.0f} mm/yr since {onset:%d.%m}, "
+            f"moved {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm")  # fmt: skip
 
 
 def legend_entries(
-    tracks: Sequence[Track], onset: dt.date, recent_days: int
+    tracks: Sequence[Track], onset: dt.date, recent_days: int, *, up: bool = True
 ) -> list[tuple[str, str]]:
     """``(text, colour)`` per legend line, top down: per moved station its
-    rate since the onset (blue) and recent rate (red), or its displacement
-    (black) when it has too few days for a rate; with the trend kept, its
-    rate before the onset (grey)."""
+    rate since the onset (blue; the recent rate is its arrow only), or its displacement
+    (red) when it has too few days for a rate; with the trend kept, its
+    rate before the onset (grey); with ``up``, its vertical (its colour), also
+    for a station that moved only up or down."""
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
     for tr in tracks:
+        vt = tr.vertical if up else None
         if tr.n_after == 0 or (tr.since is not None and not tr.moved):
+            if vt is not None and vt.moved:
+                out.append((up_text(tr.marker, vt, onset), tr.colour))
             continue
         if tr.since is not None:
             s = tr.since
@@ -594,13 +778,9 @@ def legend_entries(
             out.append((f"{tr.marker} {s.speed:.0f} {pm} {s.sigma_speed:.0f} mm/yr "
                         f"toward {s.azimuth:.0f}{deg} since {onset:%d.%m.%Y}, "
                         f"moved {moved_mm:.0f} {pm} {tr.end_sigma:.0f} mm",
-                        SINCE_COLOR))  # fmt: skip
-            if tr.recent is not None:
-                r, f = tr.recent, recent_days / YEAR
-                out.append((f"{tr.marker} {r.speed:.0f} {pm} {r.sigma_speed:.0f} "
-                            f"mm/yr last {recent_days} days, moved "
-                            f"{r.speed * f:.0f} {pm} {r.sigma_speed * f:.0f} mm",
-                            RECENT_COLOR))  # fmt: skip
+                        tr.colour))  # fmt: skip
+            # the recent rate: its arrow only, no legend line (BGÓ
+            # 2026-10-29); its numbers are on the station's series
             if tr.before is not None:
                 out.append((before_text(tr.marker, tr.before), BEFORE_COLOR))
         else:
@@ -611,7 +791,9 @@ def legend_entries(
                         f"{tr.end_sigma:.0f} mm toward {az:.0f}{deg} since "
                         f"{onset:%d.%m} ({tr.n_after} day{'s' if tr.n_after != 1 else ''}"
                         f"{gap})",
-                        DISPLACEMENT_COLOR))  # fmt: skip
+                        tr.colour))  # fmt: skip
+        if vt is not None and vt.n_after:
+            out.append((up_text(tr.marker, vt, onset), tr.colour))
     return out
 
 
@@ -706,6 +888,61 @@ def arrow_scale_of(tracks: Sequence[Track], length_cm: float = ARROW_CM
     return length_cm / max(speeds), nice(max(speeds) / 2)
 
 
+def up_vector(tr: Track) -> tuple[float, float, bool] | None:
+    """A station's vertical arrow: ``(north, σ, is_rate)``, in the units and
+    so at the scale of its horizontal arrow: the Up rate since the onset
+    [mm/yr] beside a rate arrow, its Up since the onset [mm] beside a
+    displacement arrow (too few days); None when no arrow is drawn (no Up,
+    or a station that moved neither way)."""
+    vt = tr.vertical
+    if vt is None or vt.n_after == 0:
+        return None
+    if tr.since is not None:
+        if not (tr.moved or vt.moved) or vt.since is None:
+            return None
+        return vt.since[0], vt.since[1], True
+    return vt.end, vt.end_sigma, False
+
+
+def draw_up_arrows(
+    fig: Any,
+    tracks: Sequence[Track],
+    *,
+    arrow_scale: float,
+    cm_per_mm: float,
+    deg_per_cm: float,
+) -> tuple[list[float], list[float]]:
+    """Each station's vertical (:func:`up_vector`) as an arrow from the
+    station, up drawn north and down south, at its horizontal arrow's scale
+    (``arrow_scale`` cm per mm/yr, ``cm_per_mm`` cm per mm) and colour
+    (:attr:`Track.colour`), its 1-σ as a black bar at the tip; returns the
+    tips (lon, lat)."""
+    from gps_plot import maps
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for rate in (True, False):
+        vecs = []
+        for tr in tracks:
+            got = up_vector(tr)
+            if got is None or got[2] is not rate:
+                continue
+            vecs.append(maps.VelocityVector(
+                tr.marker, tr.lon, tr.lat, east=0.0, north=got[0], sigma_east=0.0,
+                sigma_north=got[1], method=tr.colour))  # fmt: skip
+        if not vecs:
+            continue
+        scale = arrow_scale if rate else cm_per_mm
+        maps.draw_velocity_vectors(
+            fig, vecs, colors={tr.colour: tr.colour for tr in tracks},
+            scale=scale, confidence=0.39, vector_head="0.2c", pen_width=UP_PEN,
+            ellipse_pen=UP_ERROR_PEN, markers=False, labels=False,
+        )  # fmt: skip
+        xs += [v.lon for v in vecs]
+        ys += [v.lat + v.north * scale * deg_per_cm for v in vecs]
+    return xs, ys
+
+
 def draw_track_marks(
     fig: Any,
     tracks: Sequence[Track],
@@ -718,14 +955,18 @@ def draw_track_marks(
     width_cm: float | None = None,
     cpt: str | None = None,
     cm_per_mm: float | None = None,
+    up: bool = False,
+    deg_per_cm: float | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """The dotted paths, the dots (coloured by ``cpt``, else the current
     CPT) and the
     arrows of ``tracks``; on the map or in a zoom inset at its own scale.
     A station with too few days for a rate gets a displacement arrow to
     its newest position, at the dots' scale (``cm_per_mm``), with a dashed
-    1-σ ellipse. Returns the dots' and (with ``region`` and ``width_cm``)
-    the arrow tips' positions (lon, lat)."""
+    1-σ ellipse. With ``up`` (and the map's ``deg_per_cm``) the vertical as
+    arrows from the stations at the same scales (:func:`draw_up_arrows`).
+    Returns the dots' and (with ``region`` and ``width_cm``) the arrow
+    tips' positions (lon, lat)."""
     from gps_plot import maps
 
     lons, lats, days = [], [], []
@@ -749,14 +990,15 @@ def draw_track_marks(
     if arrows and moved:
         vecs = []
         for tr in moved:
-            for tag, rt in (("since", tr.since), ("recent", tr.recent)):
+            for tag, rt in ((tr.colour, tr.since), ("recent", tr.recent)):
                 if rt is not None:
                     vecs.append(maps.VelocityVector(
                         tr.marker, tr.lon, tr.lat, east=rt.east, north=rt.north,
                         sigma_east=rt.sigma_east, sigma_north=rt.sigma_north,
                         method=tag))  # fmt: skip
         maps.draw_velocity_vectors(
-            fig, vecs, colors={"since": SINCE_COLOR, "recent": RECENT_COLOR},
+            fig, vecs,
+            colors={"recent": RECENT_COLOR, **{tr.colour: tr.colour for tr in moved}},
             scale=arrow_scale, confidence=0.39, vector_head=ARROW_HEAD,
             pen_width=ARROW_PEN, ellipse_pen=ELLIPSE_PEN, markers=False,
             labels=False,
@@ -775,12 +1017,18 @@ def draw_track_marks(
             (n, e), (sn, se) = tr.end, tr.end_sigmas
             disp.append(maps.VelocityVector(
                 tr.marker, tr.lon, tr.lat, east=e, north=n, sigma_east=se,
-                sigma_north=sn, method="moved"))  # fmt: skip
-        maps.draw_velocity_vectors(
-            fig, disp, colors={"moved": DISPLACEMENT_COLOR}, scale=cm_per_mm,
-            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
-            ellipse_pen=DISPLACEMENT_ELLIPSE_PEN, markers=False, labels=False,
-        )  # fmt: skip
+                sigma_north=sn, method=tr.colour))  # fmt: skip
+        for v in disp:  # each its own colour, its dashed ellipse alike
+            maps.draw_velocity_vectors(
+                fig, [v], colors={str(v.method): str(v.method)}, scale=cm_per_mm,
+                confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+                ellipse_pen=f"0.6p,{v.method},4_2:0", markers=False, labels=False,
+            )  # fmt: skip
+    if arrows and up and deg_per_cm and cm_per_mm:
+        ux, uy = draw_up_arrows(fig, tracks, arrow_scale=arrow_scale,
+                                cm_per_mm=cm_per_mm, deg_per_cm=deg_per_cm)  # fmt: skip
+        tips_x += ux
+        tips_y += uy
     return np.concatenate([x, tips_x]), np.concatenate([y, tips_y])
 
 
@@ -807,6 +1055,7 @@ def draw_tracks(
     legend_floor_cm: float = 1.0,
     path_days: int = PATH_MEDIAN_DAYS,
     note: str | None = None,
+    up: bool = True,
 ) -> Drawn:
     """Draw the tracks, arrows, legend and colour bar on ``fig``.
 
@@ -836,6 +1085,7 @@ def draw_tracks(
         fig, tracks, m_per_mm=m_per_mm, arrow_scale=scale, arrows=arrows,
         path_days=path_days, region=region, width_cm=width, cpt=cpt,
         cm_per_mm=m_per_mm / (km_per_cm(region, width) * 1000.0),
+        up=up, deg_per_cm=(region[1] - region[0]) / width,
     )  # fmt: skip
     if tracks:
         # small, inside the upper right, on a white box (BGÓ 2026-10-28)
@@ -852,7 +1102,7 @@ def draw_tracks(
                       height - CBAR_BOX_HEIGHT_CM, height))  # fmt: skip
 
     moved = any(tr.moved and tr.since is not None for tr in tracks)
-    entries = legend_entries(tracks, onset, recent_days)
+    entries = legend_entries(tracks, onset, recent_days, up=up)
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
     top, right = _draw_legend(
@@ -892,7 +1142,7 @@ def draw_inset_scales(
     arrow_scale: float,
 ) -> None:
     """A zoom inset's own scales, lower left: the dot bar and, when arrows
-    are drawn, the reference arrow."""
+    are drawn, the reference arrow (the vertical arrows share them)."""
     from gps_plot import maps
 
     font = f"{INSET_FONT},black"
@@ -924,6 +1174,7 @@ def draw_zoom_tracks(
     arrows: bool = True,
     path_days: int = PATH_MEDIAN_DAYS,
     cpt: str | None = None,
+    up: bool = True,
 ) -> None:
     """The tracks inside a zoom inset's ``box`` (``width_cm`` wide), at
     the inset's own dot and arrow scales, with those scales drawn; the
@@ -936,7 +1187,8 @@ def draw_zoom_tracks(
     scale, ref = arrow_scale_of(inside, ZOOM_ARROW_CM)
     draw_track_marks(fig, inside, m_per_mm=m_per_mm, arrow_scale=scale,
                      arrows=arrows, path_days=path_days, cpt=cpt,
-                     cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0))  # fmt: skip
+                     cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0),
+                     up=up, deg_per_cm=(box[1] - box[0]) / width_cm)  # fmt: skip
     moved = any(tr.moved and tr.since is not None for tr in inside)
     draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
                       arrow_ref=ref if arrows and moved else None,
@@ -1016,9 +1268,13 @@ def trimmed(tr: Track, before_days: int) -> Track:
     """``tr`` with only the days from ``before_days`` before the onset (the
     rates and the zero are the whole track's: they do not depend on it)."""
     keep = tr.days >= -before_days
+    vt = tr.vertical
+    if vt is not None:
+        k = vt.days >= -before_days
+        vt = dataclasses.replace(vt, t=vt.t[k], up=vt.up[k], days=vt.days[k])
     return dataclasses.replace(
         tr, t=tr.t[keep], north=tr.north[keep], east=tr.east[keep],
-        days=tr.days[keep],
+        days=tr.days[keep], vertical=vt,
     )  # fmt: skip
 
 
@@ -1036,6 +1292,45 @@ def rate_line(
     return ends, float(y[k].mean()) + slope * (ends - mid)
 
 
+def _up_panel(ax: Any, vt: Vertical, onset: dt.date, t0: dt.datetime, lo: float,
+              hi: float, before_days: int, recent_days: int, cmap: str,
+              colour: str = SINCE_COLOR) -> None:  # fmt: skip
+    """The Up panel of :func:`series_figure`: the days as there, the rates
+    since the onset and of the last days drawn on them (the numbers of the
+    map's legend line)."""
+    when = [t0 + dt.timedelta(days=float(d)) for d in vt.days]
+    on_map = vt.days >= -before_days
+    ax.plot(when, vt.up, color="0.6", lw=0.5, ls=":", zorder=1)
+    ax.scatter([w for w, m in zip(when, on_map, strict=True) if not m],
+               vt.up[~on_map], s=12, color="0.6", zorder=2)  # fmt: skip
+    ax.scatter([w for w, m in zip(when, on_map, strict=True) if m], vt.up[on_map],
+               c=vt.days[on_map], cmap=cmap, vmin=lo, vmax=hi, s=18,
+               edgecolors="black", linewidths=0.3, zorder=3)  # fmt: skip
+    ax.axvline(t0, color="0.3", lw=0.8, ls="--", zorder=0)
+    text = []
+    for rate, color, first, label in (
+        (vt.since, colour, 0.0, f"since {onset:%d.%m}"),
+        (vt.recent, RECENT_COLOR, float(vt.days[-1]) - recent_days,
+         f"last {recent_days} days"),
+    ):  # fmt: skip
+        if rate is None:
+            continue
+        k = vt.days >= first
+        d = vt.days[k]
+        ends = np.array([float(d[0]), float(d[-1])])
+        mm = float(vt.up[k].mean()) + rate[0] / YEAR * (ends - float(d.mean()))
+        ax.plot([t0 + dt.timedelta(days=float(e)) for e in ends], mm, color=color,
+                lw=2, zorder=4)  # fmt: skip
+        text.append((f"{label}: v = {rate[0]:.0f} ± {rate[1]:.0f} mm/yr", color))
+    text.append((f"vertical {vt.end:+.0f} ± {vt.end_sigma:.0f} mm since "
+                 f"{onset:%d.%m}", "black"))  # fmt: skip
+    for i, (line, color) in enumerate(text):
+        ax.text(0.01, 0.95 - 0.09 * i, line, transform=ax.transAxes, color=color,
+                va="top", fontsize=10)  # fmt: skip
+    ax.set_ylabel("Up [mm]")
+    ax.grid(True, color="0.85", lw=0.5)
+
+
 def series_figure(
     tr: Track,
     onset: dt.date,
@@ -1051,21 +1346,23 @@ def series_figure(
     """A station's track as a time series: North and East (the trend and
     seasonal before the onset removed, zero at the onset, as on the map),
     with the rate since the onset (blue) and of the last ``recent_days``
-    (red) drawn on the data: the numbers of the map's legend. Days the map
+    (black) drawn on the data; and Up when the track has its vertical: the numbers of the map's legend. Days the map
     shows as dots are coloured as there (``days_range`` = the map's colour
     scale), earlier ones grey."""
     import matplotlib.figure
 
-    fig = matplotlib.figure.Figure(figsize=(9, 6.5), layout="constrained")
-    axes = fig.subplots(2, 1, sharex=True)
+    vt = tr.vertical
+    fig = matplotlib.figure.Figure(figsize=(9, 9.5 if vt else 6.5),
+                                   layout="constrained")  # fmt: skip
+    axes = fig.subplots(3 if vt else 2, 1, sharex=True)
     t0 = dt.datetime.combine(onset, dt.time(12))
     when = [t0 + dt.timedelta(days=float(d)) for d in tr.days]
     lo, hi = days_range or (-float(before_days), float(max(tr.days.max(), 1.0)))
     on_map = tr.days >= -before_days
-    rates = ((tr.since, SINCE_COLOR, 0.0, f"since {onset:%d.%m}"),
+    rates = ((tr.since, tr.colour, 0.0, f"since {onset:%d.%m}"),
              (tr.recent, RECENT_COLOR, float(tr.days[-1]) - recent_days,
               f"last {recent_days} days"))  # fmt: skip
-    for comp, (ax, name) in enumerate(zip(axes, ("North", "East"), strict=True)):
+    for comp, (ax, name) in enumerate(zip(axes[:2], ("North", "East"), strict=True)):
         y = (tr.north, tr.east)[comp]
         ax.plot(when, y, color="0.6", lw=0.5, ls=":", zorder=1)
         ax.scatter([w for w, m in zip(when, on_map, strict=True) if not m],
@@ -1096,16 +1393,20 @@ def series_figure(
                     color=color, va="top", fontsize=10)  # fmt: skip
         ax.set_ylabel(f"{name} [mm]")
         ax.grid(True, color="0.85", lw=0.5)
+    if vt is not None:
+        _up_panel(axes[2], vt, onset, t0, lo, hi, before_days, recent_days, cmap,
+                  tr.colour)  # fmt: skip
     fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
                  shrink=0.6, aspect=30)  # fmt: skip
     rel = f" relative to {reference}" if reference else ""
     removed = ("seasonal before the onset removed, its trend kept" if keep_trend
                else "trend and seasonal before the onset removed")  # fmt: skip
     # two lines: a long reference name must not run off the figure
-    fig.suptitle(f"{tr.marker}: horizontal motion{rel}\n{removed}", fontsize=12)
+    what = "motion" if vt is not None else "horizontal motion"
+    fig.suptitle(f"{tr.marker}: {what}{rel}\n{removed}", fontsize=12)
     if common_mode:
-        axes[1].text(0.99, 0.02, "network common mode removed",
-                     transform=axes[1].transAxes, ha="right", va="bottom",
+        axes[-1].text(0.99, 0.02, "network common mode removed",
+                     transform=axes[-1].transAxes, ha="right", va="bottom",
                      fontsize=8, color="0.3")  # fmt: skip
     fig.autofmt_xdate()
     return fig
