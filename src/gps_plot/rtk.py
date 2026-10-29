@@ -41,6 +41,9 @@ SPECIALS: dict[str, dt.timedelta] = {
 DEFAULT_SPECIAL = "twodays"
 #: --longterm spans of the daily record (full = the whole series)
 LONGTERM: dict[str, dt.timedelta | None] = {
+    "week": dt.timedelta(days=7),
+    "14d": dt.timedelta(days=14),
+    "30d": dt.timedelta(days=30),
     "90d": dt.timedelta(days=90),
     "year": dt.timedelta(days=365),
     "full": None,
@@ -60,9 +63,9 @@ examples:
                                           a month of 10-min medians + the daily
                                           GLOBK baselines on top
   gpsplot rtk SENG-SUDV -s 20261001 -e 20261005-12:00 --save pdf
-  gpsplot rtk SVIN-SKFC --longterm year --save pdf
-                                          a year of daily GLOBK + the last week
-                                          of RTK (10-min medians) on top
+  gpsplot rtk SVIN-SKFC --longterm 14d --rtk-overlap 2 --save pdf
+                                          two weeks of daily GLOBK, RTK from 2
+                                          days before the last daily point on
 Times are UTC. Patterns match the RTK baseline directories; quote them. A
 plain pair processed the other way round (B-A) is read negated, as A-B."""
 
@@ -114,6 +117,16 @@ def build_parser(
         choices=list(SPECIALS),
         default=None,
         help=f"--longterm: the RTK tail ending at -e (default {LONGTERM_RTK_SPAN})",
+    )
+    parser.add_argument(
+        "--rtk-overlap",
+        type=float,
+        default=None,
+        metavar="DAYS",
+        help="--longterm: start the RTK tail this many days before the last "
+        "daily solution, so it just overlaps the daily points (instead of "
+        "--rtk-span); the short monitoring plot, e.g. --longterm 14d "
+        "--rtk-overlap 2",
     )
     parser.add_argument(
         "--interval",
@@ -245,6 +258,24 @@ def _daily(
     return dataclasses.replace(s, t=t, label=f"{pair} daily")
 
 
+def rtk_start(
+    start: dt.datetime,
+    plot_start: dt.datetime,
+    daily: Any,
+    overlap: float | None,
+) -> dt.datetime:
+    """Start of a ``--longterm`` RTK tail.
+
+    ``overlap`` days before the last daily epoch (not before the plot),
+    so RTK only just overlaps the daily points; ``start`` (``--rtk-span``)
+    when no overlap is asked or there is no daily series.
+    """
+    if overlap is None or daily is None or len(daily.t) == 0:
+        return start
+    last = as_datetime(np.asarray(daily.t)[-1])
+    return max(plot_start, last - dt.timedelta(days=overlap))
+
+
 def _longterm_pair(
     name: str,
     plot_start: dt.datetime,
@@ -275,6 +306,7 @@ def _longterm_pair(
         got.append((daily, "marked"))
     except Exception as exc:
         out["dropped"].append(f"{name} daily: {exc}")
+    start = rtk_start(start, plot_start, daily, getattr(args, "rtk_overlap", None))
     try:
         directory, flipped = rtk_source.rtk_direction(name, dirs)
         s = rtk_source.fetch_rtk(
@@ -447,7 +479,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         n = len({s.meta.get("pair", s.label) for s in series})
         span = special if special else f"{start:%Y%m%d%H%M}-{end:%Y%m%d%H%M}"
         if args.longterm:
-            span = f"long{args.longterm}-{span}"
+            tail = special
+            if args.rtk_overlap is not None:
+                tail = f"overlap{args.rtk_overlap:g}d"
+            span = f"long{args.longterm}-{tail}"
         stem = f"rtk_{first}_{n}-{span}"
         if args.interval:
             stem += f"-{args.interval}"

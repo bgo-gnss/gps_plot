@@ -13,9 +13,11 @@ the figure says "NOT aligned" (BGÓ chose this over pinning or leaving RTK
 out). Float solutions are in by default (BGÓ); `--fixed-only` drops them.
 A pair processed only as B-A on rtk.vedur.is is read negated.
 
-Open: a year axis squeezes a week of RTK into a few pixels. Next step is a
-right-hand zoom column (last `--rtk-span`, RTK + daily) beside the long axis,
-or two products per pair (long + short) shown side by side in aflogun.
+BGÓ 2026-10-29: RTK on a long axis makes no sense; the joined plot is for
+intermediate spans (2–14 days), with RTK starting just before the last daily
+point: `--longterm 14d --rtk-overlap 2`. Two products per pair: LONG = the
+existing daily baseline plot (gpsplot run), SHORT = RTK + daily, 14 d. The
+`--longterm 90d|year|full` CLI stays for occasional use.
 
 ## 2. The runner (next)
 

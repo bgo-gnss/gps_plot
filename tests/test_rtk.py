@@ -113,7 +113,8 @@ def test_align_moves_an_rtk_tail_onto_daily_points():
 
 def _args(**kw):
     base = dict(start=None, end=None, special=None, keep_single=False,
-                fixed_only=False, longterm=None, rtk_span=None)  # fmt: skip
+                fixed_only=False, longterm=None, rtk_span=None,
+                rtk_overlap=None)  # fmt: skip
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -143,6 +144,16 @@ def test_longterm_spans():
     )
     assert rtk.longterm_start("year", now) == now - dt.timedelta(days=365)
     assert rtk.longterm_start("full", now) == rtk.FULL_START
+
+
+def test_rtk_tail_just_overlaps_the_daily():
+    start, plot_start = dt.datetime(2026, 10, 22), dt.datetime(2026, 10, 15)
+    daily = Series("d", np.array(["2026-10-27T12:00"], dtype="datetime64[ns]"),
+                   np.zeros((3, 1)), np.ones((3, 1)))  # fmt: skip
+    assert rtk.rtk_start(start, plot_start, daily, 2) == dt.datetime(2026, 10, 25, 12)
+    assert rtk.rtk_start(start, plot_start, daily, 30) == plot_start
+    assert rtk.rtk_start(start, plot_start, daily, None) == start
+    assert rtk.rtk_start(start, plot_start, None, 2) == start
 
 
 def test_quality_flags():
