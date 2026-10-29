@@ -63,12 +63,19 @@ ELLIPSE_PEN = "0.6p,black"
 SINCE_COLOR = "blue"
 RECENT_COLOR = "red"
 LEGEND_FONT = "7p,Helvetica-Bold"
-LEGEND_SPACING = 0.04
+#: the legend's line spacing [cm] (0.04 of the first 8.25 cm high map):
+#: the same on a tall map as on a wide one
+LEGEND_LINE_CM = 0.33
 DEFAULT_CMAP = "turbo"
 #: the colour bar: a fifth of the map wide, inside its upper right
 CBAR_WIDTH = 0.2
 CBAR_FONT = "7p,Helvetica"
 CBAR_BOX = "+gwhite@15+p0.4p,gray40+c0.1c/0.1c"
+#: the colour bar's box with its label, from the map's top [cm]
+CBAR_BOX_HEIGHT_CM = 1.4
+#: a zoom inset's longest arrow [cm] and the font of its scales
+ZOOM_ARROW_CM = 1.5
+INSET_FONT = "6p,Helvetica-Bold"
 #: days before the onset a station's series (track_series) shows
 SERIES_BEFORE_DAYS = 90
 YEAR = 365.25
@@ -472,6 +479,105 @@ def offset_lonlat(lon: float, lat: float, north_mm: Any, east_mm: Any,
     return lon + e * k / max(math.cos(math.radians(lat)), 0.01), lat + n * k
 
 
+@dataclasses.dataclass(frozen=True)
+class Drawn:
+    """What :func:`draw_tracks` put on the map, for the insets to keep off:
+    the legend's top [cm above the bottom edge], the legend and colour bar
+    boxes (x0, x1, y0, y1) [cm] and the dots' and arrow tips' positions."""
+
+    legend_top: float
+    boxes: tuple[tuple[float, float, float, float], ...]
+    lons: FloatArray
+    lats: FloatArray
+    cpt: str | None = None  # the dots' colour scale, for a zoom inset
+
+
+def km_per_cm(region: Sequence[float], width_cm: float) -> float:
+    """The map's horizontal scale [km per cm] at its middle latitude."""
+    w, e, s, n = region[:4]
+    return (e - w) * 111.32 * math.cos(math.radians((s + n) / 2)) / width_cm
+
+
+def arrow_scale_of(tracks: Sequence[Track], length_cm: float = ARROW_CM
+                   ) -> tuple[float, float]:  # fmt: skip
+    """``(cm per mm/yr, round reference [mm/yr])``: the fastest moved
+    station's rate since the onset drawn ``length_cm`` long."""
+    speeds = [tr.since.speed for tr in tracks if tr.moved and tr.since is not None]
+    if not speeds:
+        return 0.01, 100.0
+    return length_cm / max(speeds), nice(max(speeds) / 2)
+
+
+def draw_track_marks(
+    fig: Any,
+    tracks: Sequence[Track],
+    *,
+    m_per_mm: float,
+    arrow_scale: float,
+    arrows: bool = True,
+    path_days: int = PATH_MEDIAN_DAYS,
+    region: Sequence[float] | None = None,
+    width_cm: float | None = None,
+    cpt: str | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """The dotted paths, the dots (coloured by ``cpt``, else the current
+    CPT) and the
+    arrows of ``tracks``; on the map or in a zoom inset at its own scale.
+    Returns the dots' and (with ``region`` and ``width_cm``) the arrow
+    tips' positions (lon, lat)."""
+    from gps_plot import maps
+
+    lons, lats, days = [], [], []
+    for tr in tracks:
+        x, y = offset_lonlat(tr.lon, tr.lat, tr.north, tr.east, m_per_mm)
+        lons.append(x)
+        lats.append(y)
+        days.append(tr.days)
+        pn, pe = running_median(tr.north, path_days), running_median(tr.east, path_days)
+        px, py = offset_lonlat(tr.lon, tr.lat, pn, pe, m_per_mm)
+        fig.plot(x=px, y=py, pen=PATH_PEN)
+    x = np.concatenate(lons) if lons else np.zeros(0)
+    y = np.concatenate(lats) if lats else np.zeros(0)
+    z = np.concatenate(days) if days else np.zeros(0)
+    if z.size:
+        order = np.argsort(z, kind="stable")  # newest on top
+        fig.plot(x=x[order], y=y[order], fill=z[order], cmap=cpt or True,
+                 style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
+    moved = [tr for tr in tracks if tr.moved and tr.since is not None]
+    tips_x, tips_y = [], []
+    if arrows and moved:
+        vecs = []
+        for tr in moved:
+            for tag, rt in (("since", tr.since), ("recent", tr.recent)):
+                if rt is not None:
+                    vecs.append(maps.VelocityVector(
+                        tr.marker, tr.lon, tr.lat, east=rt.east, north=rt.north,
+                        sigma_east=rt.sigma_east, sigma_north=rt.sigma_north,
+                        method=tag))  # fmt: skip
+        maps.draw_velocity_vectors(
+            fig, vecs, colors={"since": SINCE_COLOR, "recent": RECENT_COLOR},
+            scale=arrow_scale, confidence=0.39, vector_head=ARROW_HEAD,
+            pen_width=ARROW_PEN, ellipse_pen=ELLIPSE_PEN, markers=False,
+            labels=False,
+        )  # fmt: skip
+        if region is not None and width_cm:
+            deg_per_cm = (region[1] - region[0]) / width_cm
+            for v in vecs:
+                for f in (0.5, 1.0):
+                    tips_x.append(v.lon + f * v.east * arrow_scale * deg_per_cm)
+                    tips_y.append(v.lat + f * v.north * arrow_scale * deg_per_cm
+                                  * math.cos(math.radians(v.lat)))  # fmt: skip
+    return np.concatenate([x, tips_x]), np.concatenate([y, tips_y])
+
+
+def colour_range(tracks: Sequence[Track]) -> tuple[float, float]:
+    """The dots' colour scale [days since the onset]: from the first dot
+    (at least a day before), at least a day long."""
+    z = np.concatenate([tr.days for tr in tracks]) if tracks else np.zeros(1)
+    lo = float(min(z.min(), -1.0)) if z.size else -1.0
+    return lo, max(float(z.max()) if z.size else 0.0, lo + 1.0)
+
+
 def draw_tracks(
     fig: Any,
     tracks: Sequence[Track],
@@ -487,80 +593,133 @@ def draw_tracks(
     legend_floor_cm: float = 1.0,
     path_days: int = PATH_MEDIAN_DAYS,
     note: str | None = None,
-) -> float:
+) -> Drawn:
     """Draw the tracks, arrows, legend and colour bar on ``fig``.
 
     The legend sits in the lower left, its foot ``legend_floor_cm`` above the
-    map's bottom edge (clear of the longitude annotations). Returns the
-    legend's top [cm above the bottom edge], for the locator to sit on.
+    map's bottom edge (clear of the longitude annotations). The colour scale
+    is kept in a file (:attr:`Drawn.cpt`): a GMT inset does not see the
+    figure's current CPT, and the zoom inset colours its dots alike.
     """
     from gps_plot import maps
 
     pygmt = maps._import_pygmt()
     width, height = maps._map_size_cm(region, projection)
-    w, e, s, n = region[:4]
-    km_per_cm = (e - w) * 111.32 * math.cos(math.radians((s + n) / 2)) / width
-    auto_m, dot_ref = dot_scale(tracks, km_per_cm)
+    auto_m, dot_ref = dot_scale(tracks, km_per_cm(region, width))
     m_per_mm = m_per_mm or auto_m
     if m_per_mm != auto_m:
-        far = TRACK_CM * km_per_cm * 1000.0 / m_per_mm
+        far = TRACK_CM * km_per_cm(region, width) * 1000.0 / m_per_mm
         dot_ref = nice(max(far / 2, 0.5))
+    auto_scale, ref = arrow_scale_of(tracks)
+    scale = arrow_scale or auto_scale
 
-    paths = []
-    for tr in tracks:
-        x, y = offset_lonlat(tr.lon, tr.lat, tr.north, tr.east, m_per_mm)
-        paths.append((x, y, tr.days))
-        pn, pe = running_median(tr.north, path_days), running_median(tr.east, path_days)
-        px, py = offset_lonlat(tr.lon, tr.lat, pn, pe, m_per_mm)
-        fig.plot(x=px, y=py, pen=PATH_PEN)
-    x = np.concatenate([p[0] for p in paths]) if paths else np.zeros(0)
-    y = np.concatenate([p[1] for p in paths]) if paths else np.zeros(0)
-    z = np.concatenate([p[2] for p in paths]) if paths else np.zeros(0)
-    if z.size:
-        order = np.argsort(z, kind="stable")  # newest on top
-        lo = float(min(z.min(), -1.0))
-        pygmt.makecpt(cmap=cmap, series=[lo, max(float(z.max()), lo + 1.0)])
-        fig.plot(x=x[order], y=y[order], fill=z[order], cmap=True,
-                 style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
+    boxes: list[tuple[float, float, float, float]] = []
+    cpt = None
+    if tracks:
+        cpt = _cpt_file()
+        pygmt.makecpt(cmap=cmap, series=list(colour_range(tracks)), output=cpt)
+    lons, lats = draw_track_marks(
+        fig, tracks, m_per_mm=m_per_mm, arrow_scale=scale, arrows=arrows,
+        path_days=path_days, region=region, width_cm=width, cpt=cpt,
+    )  # fmt: skip
+    if tracks:
         # small, inside the upper right, on a white box (BGÓ 2026-10-28)
         with pygmt.config(FONT_ANNOT_PRIMARY=CBAR_FONT, FONT_LABEL=CBAR_FONT,
                           MAP_ANNOT_OFFSET_PRIMARY="1p", MAP_LABEL_OFFSET="2p",
                           MAP_TICK_LENGTH_PRIMARY="2p"):  # fmt: skip
             fig.colorbar(
+                cmap=cpt,
                 frame=[f"xaf+ldays since {onset:%d.%m.%Y}"],
                 position=f"JTR+jTR+o0.45c/0.35c+w{CBAR_WIDTH * width:.1f}c/0.2c+h",
                 box=CBAR_BOX,
             )
+        boxes.append((width - 0.45 - CBAR_WIDTH * width - 0.4, width,
+                      height - CBAR_BOX_HEIGHT_CM, height))  # fmt: skip
 
-    moved = [tr for tr in tracks if tr.moved and tr.since is not None]
-    speeds = [tr.since.speed for tr in moved if tr.since is not None]
-    scale = arrow_scale or (ARROW_CM / max(speeds) if speeds else 0.01)
-    ref = nice(max(speeds) / 2) if speeds else 100.0
-    if arrows and moved:
-        vecs = []
-        for tr in moved:
-            for tag, rt in (("since", tr.since), ("recent", tr.recent)):
-                if rt is not None:
-                    vecs.append(maps.VelocityVector(
-                        tr.marker, tr.lon, tr.lat, east=rt.east, north=rt.north,
-                        sigma_east=rt.sigma_east, sigma_north=rt.sigma_north,
-                        method=tag))  # fmt: skip
-        maps.draw_velocity_vectors(
-            fig, vecs, colors={"since": SINCE_COLOR, "recent": RECENT_COLOR},
-            scale=scale, confidence=0.39, vector_head=ARROW_HEAD,
-            pen_width=ARROW_PEN, ellipse_pen=ELLIPSE_PEN, markers=False,
-            labels=False,
-        )  # fmt: skip
-
+    moved = any(tr.moved and tr.since is not None for tr in tracks)
     entries = legend_entries(tracks, onset, recent_days)
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
-    return _draw_legend(
+    top, right = _draw_legend(
         fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
         floor_cm=legend_floor_cm,
     )  # fmt: skip
+    boxes.append((0.0, right, 0.0, top))
+    return Drawn(top, tuple(boxes), lons, lats, cpt)
+
+
+def _cpt_file() -> str:
+    """A temporary .cpt file, removed when the program ends."""
+    import atexit
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="gpsplot-track-", suffix=".cpt")
+    os.close(fd)
+    atexit.register(lambda: os.path.exists(path) and os.remove(path))
+    return path
+
+
+def draw_inset_scales(
+    fig: Any,
+    box: Sequence[float],
+    *,
+    dot_ref: float,
+    m_per_mm: float,
+    arrow_ref: float | None,
+    arrow_scale: float,
+) -> None:
+    """A zoom inset's own scales, lower left: the dot bar and, when arrows
+    are drawn, the reference arrow."""
+    from gps_plot import maps
+
+    font = f"{INSET_FONT},black"
+    x, y = maps.region_point(box, 0.04, 0.07)
+    bar = dot_ref * m_per_mm / 1000.0 / (111.195 * math.cos(math.radians(y)))
+    fig.plot(x=[x, x + bar], y=[y, y], pen="1.5p,black")
+    xl, yl = maps.region_point(box, 0.04, 0.13)
+    fig.text(x=xl, y=yl, text=f"{dot_ref:g} mm (dots)", font=font, justify="LM",
+             fill="white")  # fmt: skip
+    if arrow_ref is None:
+        return
+    x, y = maps.region_point(box, 0.04, 0.22)
+    maps._draw_vector_layer(
+        fig, np.array([x]), np.array([y]), np.array([float(arrow_ref)]),
+        np.array([0.0]), color="black", scale=arrow_scale, confidence=0.39,
+        head=ARROW_HEAD, pen_width=ARROW_PEN,
+    )  # fmt: skip
+    xl, yl = maps.region_point(box, 0.04, 0.28)
+    fig.text(x=xl, y=yl, text=f"{arrow_ref:g} mm/yr", font=font, justify="LM",
+             fill="white")  # fmt: skip
+
+
+def draw_zoom_tracks(
+    fig: Any,
+    tracks: Sequence[Track],
+    box: Sequence[float],
+    width_cm: float,
+    *,
+    arrows: bool = True,
+    path_days: int = PATH_MEDIAN_DAYS,
+    cpt: str | None = None,
+) -> None:
+    """The tracks inside a zoom inset's ``box`` (``width_cm`` wide), at
+    the inset's own dot and arrow scales, with those scales drawn; the
+    dots coloured by the map's ``cpt``."""
+    w, e, s, n = box[:4]
+    inside = [tr for tr in tracks if w <= tr.lon <= e and s <= tr.lat <= n]
+    if not inside:
+        return
+    m_per_mm, dot_ref = dot_scale(inside, km_per_cm(box, width_cm))
+    scale, ref = arrow_scale_of(inside, ZOOM_ARROW_CM)
+    draw_track_marks(fig, inside, m_per_mm=m_per_mm, arrow_scale=scale,
+                     arrows=arrows, path_days=path_days, cpt=cpt)  # fmt: skip
+    moved = any(tr.moved and tr.since is not None for tr in inside)
+    draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
+                      arrow_ref=ref if arrows and moved else None,
+                      arrow_scale=scale)  # fmt: skip
 
 
 def _draw_legend(
@@ -574,14 +733,14 @@ def _draw_legend(
     dot_ref: float,
     m_per_mm: float,
     floor_cm: float,
-) -> float:
+) -> tuple[float, float]:
     """The lower-left legend box: on top the arrow reference (when arrows are
     drawn) and the dot scale side by side, under them ``entries`` (top
-    down). Returns its top [cm above the map's bottom edge]."""
+    down). Returns its top and right edge [cm from the map's lower left]."""
     from gps_plot import maps
 
     width, height = maps._map_size_cm(region, projection)
-    pad, sp = maps.LEGEND_BOX_PAD_CM, LEGEND_SPACING
+    pad, sp = maps.LEGEND_BOX_PAD_CM, LEGEND_LINE_CM / height
     anchor = (0.02, 0.5 * sp + (pad + floor_cm) / height)
     n = len(entries)
 
@@ -618,7 +777,9 @@ def _draw_legend(
     fig.plot(x=[x0, x0 + bar_deg], y=[y0, y0], pen="2p,black")
     x, y = at(dot_x, n + 0.8)
     fig.text(x=x, y=y, text=dot_text, font=f"{LEGEND_FONT},black", justify="LM")
-    return (anchor[1] + (lines - 0.5) * sp) * height + pad
+    w = region[0]
+    right = (max(box[0]) - w) / (region[1] - w) * width
+    return (anchor[1] + (lines - 0.5) * sp) * height + pad, right
 
 
 def trimmed(tr: Track, before_days: int) -> Track:
