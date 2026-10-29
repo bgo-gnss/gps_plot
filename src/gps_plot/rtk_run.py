@@ -19,8 +19,12 @@ plots.yaml ``rtk:`` section says where and what::
 The pairs are each area's ``baselines:`` and ``stacks:`` pairs
 (station_areas.yaml) that rtk.vedur.is processes, either way round
 (``sources.rtk.rtk_direction``). One plot per pair and run:
-``<dir>/A_B-rtk-<name>.png`` — stable names, outside the ``A_B-baseline-*``
-pattern ``gpsplot run`` prunes. Each file is written beside its target and
+``<dir>/A_B-rtk-<name>.png``, and per ``stacks:`` group with two or more RTK
+pairs one figure of them all, as rtk_gps draws its multi-baseline plots:
+``<dir>/stack_<group>-rtk-<name>.png`` (``stack_args:`` adds options to
+every group figure, ``overrides: {<area>/<group>: {args: …}}`` to one) —
+stable names, outside the ``A_B-baseline-*`` / ``stack_<g>-<frame>`` names
+``gpsplot run`` prunes. Each file is written beside its target and
 renamed over it, so a reader never sees half a PNG. A lock file keeps two
 runs from overlapping (a run still going makes the next one exit 0). A pair
 with nothing to plot (its stations down) is skipped, not an error; exit 1
@@ -54,25 +58,34 @@ DEFAULT_RUNS: tuple[Mapping[str, Any], ...] = (
     {"name": "14d", "args": ["--longterm 14d", "--rtk-overlap 2"]},
 )
 LOCK_NAME = ".rtk-run.lock"
-#: plot files this runner owns in an rtk dir
-_RTK_PNG = re.compile(r"[A-Z0-9]{4}_[A-Z0-9]{4}-rtk-.+\.png")
+#: plot files this runner owns in an rtk dir: pairs and groups
+_RTK_PNG = re.compile(r"([A-Z0-9]{4}_[A-Z0-9]{4}|stack_[A-Za-z0-9_]+)-rtk-.+\.png")
 #: rtk options a run may not set: the runner does, per plot
 RESERVED = ("--save", "--name", "-d", "--figDir")
 
 
 @dataclass(frozen=True)
 class RtkJob:
-    """One plot: a pair of an area, one run."""
+    """One plot of an area and run: a pair, or a group's pairs in one figure."""
 
     area: str
     pair: str
     run: str
     out_dir: str
     argv: tuple[str, ...]
+    #: a group figure: the station_areas.yaml ``stacks:`` name and its pairs
+    group: str | None = None
+    members: tuple[str, ...] = ()
 
     @property
     def stem(self) -> str:
+        if self.group:
+            return f"stack_{self.group}-rtk-{self.run}"
         return f"{self.pair.replace('-', '_')}-rtk-{self.run}"
+
+    @property
+    def baselines(self) -> tuple[str, ...]:
+        return self.members or (self.pair,)
 
 
 def _args(value: Any) -> list[str]:
@@ -114,23 +127,40 @@ def plan(
     for slug, entry in areas.items():
         if area and slug not in area:
             continue
-        groups = {"": entry.get("baselines") or [], **(entry.get("stacks") or {})}
-        pairs = []
-        for pair in area_pairs(groups):
-            try:
-                rtk_direction(pair, rtk_dirs)
-            except ValueError:
-                continue  # not an RTK baseline
-            pairs.append(pair)
+        stacks: Mapping[str, Sequence[str]] = entry.get("stacks") or {}
+        groups = {"": entry.get("baselines") or [], **stacks}
+
+        def on_rtk(pairs: Sequence[str]) -> list[str]:
+            out = []
+            for pair in pairs:
+                try:
+                    rtk_direction(pair, rtk_dirs)
+                except ValueError:
+                    continue  # not an RTK baseline
+                out.append(pair)
+            return out
+
+        pairs = on_rtk(area_pairs(groups))
+        # a group figure needs two RTK pairs (rtk_gps's multi-baseline plots)
+        figures = {g: m for g, ps in stacks.items() if len(m := on_rtk(ps)) >= 2}
         out_dir = str(spec.get("dir") or DEFAULT_DIR).format(
             cdn=slug, root=entry.get("root", "volcanos")
         )
         extra = _args((overrides.get(slug) or {}).get("args"))
+        stack_args = _args(spec.get("stack_args"))
         for r in runs:
             argv = (*_args(r.get("args")), *extra)
             jobs.extend(
                 RtkJob(slug, pair, str(r["name"]), out_dir, argv) for pair in pairs
             )
+            for g, members in figures.items():
+                own = _args((overrides.get(f"{slug}/{g}") or {}).get("args"))
+                jobs.append(
+                    RtkJob(
+                        slug, " ".join(members), str(r["name"]), out_dir,
+                        (*argv, *stack_args, *own), group=g, members=tuple(members),
+                    )
+                )  # fmt: skip
     return jobs
 
 
@@ -162,7 +192,16 @@ def plot(job: RtkJob, root: Path, config: Any) -> bool:
         parser = rtk.build_parser(
             argparse.ArgumentParser(prog=f"rtk-run {job.stem}"), config=config
         )
-        argv = [job.pair, *job.argv, "--save", "png", "-d", tmp, "--name", job.stem]
+        argv = [
+            *job.baselines,
+            *job.argv,
+            "--save",
+            "png",
+            "-d",
+            tmp,
+            "--name",
+            job.stem,
+        ]
         rtk.run(parser.parse_args(argv), parser, config)
         made = Path(tmp) / f"{job.stem}.png"
         if made.is_file():

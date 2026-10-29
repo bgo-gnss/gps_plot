@@ -26,7 +26,7 @@ AREAS = {
 
 
 def test_plan_takes_the_rtk_pairs_of_baselines_and_stacks_once():
-    jobs = [j for j in rtk_run.plan({}, AREAS, DIRS) if j.run == "14d"]
+    jobs = [j for j in rtk_run.plan({}, AREAS, DIRS) if j.run == "14d" and not j.group]
     assert [(j.area, j.pair) for j in jobs] == [
         ("seydisfjordur", "SEY1-SEYD"),
         ("seydisfjordur", "SEY2-SEYD"),  # SEY3-SEYD is no RTK baseline
@@ -37,6 +37,20 @@ def test_plan_takes_the_rtk_pairs_of_baselines_and_stacks_once():
     assert j.out_dir == "locations/skridurogflod/svinafellsheidi/graphs/rtk"
     assert j.stem == "SVIN_SKFC-rtk-14d"
     assert j.argv == ("--longterm", "14d", "--rtk-overlap", "2")
+
+
+def test_a_group_with_two_rtk_pairs_is_one_figure():
+    cfg = {"rtk": {"runs": [{"name": "6h", "args": "--special 6h"}],
+                   "stack_args": "--offset 10",
+                   "overrides": {"seydisfjordur/seyd": {"args": ["--fixed-only"]}}}}  # fmt: skip
+    groups = [j for j in rtk_run.plan(cfg, AREAS, DIRS) if j.group]
+    assert len(groups) == 1
+    g = groups[0]
+    assert g.stem == "stack_seyd-rtk-6h"
+    assert g.baselines == ("SEY1-SEYD", "SEY2-SEYD")  # SEY3-SEYD is no RTK pair
+    assert g.argv == ("--special", "6h", "--offset", "10", "--fixed-only")
+    one = AREAS | {"x": {"stacks": {"g": ["SEY1-SEYD", "SEY4-SEYD"]}, "baselines": []}}
+    assert not [j for j in rtk_run.plan(cfg, one, DIRS, area=["x"]) if j.group]
 
 
 def test_plan_runs_overrides_and_area_filter():
@@ -76,10 +90,12 @@ def test_stale_only_touches_rtk_plots_no_job_writes(tmp_path):
     d = tmp_path / jobs[0].out_dir
     d.mkdir(parents=True)
     for name in ["SEY1_SEYD-rtk-14d.png", "SEY4_SEYD-rtk-14d.png",
-                 "SEY1_SEYD-rtk-old.png", "SEY1_SEYD-baseline-plate-90d.png"]:  # fmt: skip
+                 "SEY1_SEYD-rtk-old.png", "SEY1_SEYD-baseline-plate-90d.png",
+                 "stack_seyd-rtk-14d.png", "stack_gone-rtk-14d.png",
+                 "stack_seyd-plate-90d.png"]:  # fmt: skip
         (d / name).touch()
     assert [f.name for f in rtk_run.stale(jobs, tmp_path)] == [
-        "SEY1_SEYD-rtk-old.png", "SEY4_SEYD-rtk-14d.png",
+        "SEY1_SEYD-rtk-old.png", "SEY4_SEYD-rtk-14d.png", "stack_gone-rtk-14d.png",
     ]  # fmt: skip
 
 

@@ -46,6 +46,11 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
   ```
 - **Pairs:** each area's `baselines:` + `stacks:` pairs (station_areas.yaml)
   that rtk.vedur.is processes either way round: 54 today (×6 runs).
+- **Group figures:** each `stacks:` group with two or more RTK pairs is
+  also drawn as one figure per run, as rtk_gps's multi-baseline plots:
+  `<dir>/stack_<group>-rtk-<run>.png` (`stack_args:` / `overrides:
+  {<area>/<group>: …}` add options). aflogun shows them under the
+  *Grunnlínuhópar* button of Rauntímaplot.
 - **Files:** `<dir>/A_B-rtk-<run>.png`. Names are stable and kept out of the
   `A_B-baseline-*` pattern that `gpsplot run` prunes. Each file is written in a
   temp dir beside its target and renamed over it. Stale `*-rtk-*` files in
