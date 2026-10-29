@@ -1012,8 +1012,9 @@ def map_caption(
     if kind == "station" and _option(argv, "--track"):
         recent = _option(argv, "--track-recent") or "14"
         onset = onset_text(_option(argv, "--track"), events)
-        return (f"{label}: daglegar stöður frá {onset}, litaðar eftir dögum; "
-                f"hraði frá {onset} (blátt) og síðustu {recent} daga (rautt)")  # fmt: skip
+        return (f"{label}: daglegar stöður frá {onset}{_ref_text(argv)}, litaðar "
+                f"eftir dögum; hraði frá {onset} (blátt) og síðustu {recent} daga "
+                "(rautt)")  # fmt: skip
     if kind == "deformation":
         return f"{label}: færsla"
     return f"{label}: stöðvakort"
@@ -1025,14 +1026,27 @@ def check_caption(sta: str, opts: Sequence[str]) -> str:
     return f"{sta}: tímaröð með hraða kortsins" + (f", {windows}" if windows else "")
 
 
+def _ref_text(argv: Sequence[str]) -> str:
+    """`` miðað við SKFC`` / `` miðað við meðaltal SKFC, SLEC og FAGC`` of a
+    track map's ``--track-ref``; empty without one."""
+    refs = [r.strip().upper() for r in (_option(argv, "--track-ref") or "").split(",")]
+    refs = [r for r in refs if r]
+    if not refs:
+        return ""
+    if len(refs) == 1:
+        return f" miðað við {refs[0]}"
+    return f" miðað við meðaltal {', '.join(refs[:-1])} og {refs[-1]}"
+
+
 def track_series_caption(
     sta: str, argv: Sequence[str], events: Sequence[Mapping[str, Any]] = ()
 ) -> str:
     """A track map's series of one station."""
     recent = _option(argv, "--track-recent") or "14"
     onset = onset_text(_option(argv, "--track"), events)
-    return (f"{sta}: norður og austur, leitni fyrir {onset} fjarlægð; hraði frá "
-            f"{onset} (blátt) og síðustu {recent} daga (rautt)")  # fmt: skip
+    return (f"{sta}: norður og austur{_ref_text(argv)}, leitni fyrir {onset} "
+            f"fjarlægð; hraði frá {onset} (blátt) og síðustu {recent} daga "
+            "(rautt)")  # fmt: skip
 
 
 def map_captions(
