@@ -25,7 +25,8 @@ Separate from `gpsplot run` (daily cadence, prepare steps, stale pruning)
 because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
 
 - **Config:** an optional top-level `rtk:` section in plots.yaml (`gpsplot
-  run` ignores it); without one the default is three runs (BGÓ):
+  run` ignores it); without one the default is six runs (BGÓ): RTK alone over
+  `6h`, `12h` and `2d` (`--special 6h|12h|twodays`, the rtk_gps spans), and
   `3d` (`--longterm 3d --rtk-overlap 1`), `7d` (`--longterm week
   --rtk-overlap 2`) and `14d` (`--longterm 14d --rtk-overlap 2`), into
   `locations/{root}/{cdn}/graphs/rtk`:
@@ -34,6 +35,9 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
   rtk:
     dir: locations/{root}/{cdn}/graphs/rtk
     runs:
+      - { name: 6h, args: [--special 6h] }
+      - { name: 12h, args: [--special 12h] }
+      - { name: 2d, args: [--special twodays] }
       - { name: 3d, args: [--longterm 3d, --rtk-overlap 1] }
       - { name: 7d, args: [--longterm week, --rtk-overlap 2] }
       - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
@@ -41,7 +45,7 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
       svinafellsheidi: { args: [--rtk-span week] }
   ```
 - **Pairs:** each area's `baselines:` + `stacks:` pairs (station_areas.yaml)
-  that rtk.vedur.is processes either way round: 54 today (×3 runs).
+  that rtk.vedur.is processes either way round: 54 today (×6 runs).
 - **Files:** `<dir>/A_B-rtk-<run>.png`. Names are stable and kept out of the
   `A_B-baseline-*` pattern that `gpsplot run` prunes. Each file is written in a
   temp dir beside its target and renamed over it. Stale `*-rtk-*` files in

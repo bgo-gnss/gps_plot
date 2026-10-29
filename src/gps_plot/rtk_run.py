@@ -7,6 +7,9 @@ plots.yaml ``rtk:`` section says where and what::
     rtk:
       dir: locations/{root}/{cdn}/graphs/rtk
       runs:
+        - { name: 6h, args: [--special 6h] }          # RTK alone
+        - { name: 12h, args: [--special 12h] }
+        - { name: 2d, args: [--special twodays] }
         - { name: 3d, args: [--longterm 3d, --rtk-overlap 1] }
         - { name: 7d, args: [--longterm week, --rtk-overlap 2] }
         - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
@@ -41,6 +44,11 @@ from typing import Any
 
 DEFAULT_DIR = "locations/{root}/{cdn}/graphs/rtk"
 DEFAULT_RUNS: tuple[Mapping[str, Any], ...] = (
+    # RTK alone, the rtk_gps standard spans (BGÓ 2026-10-29)
+    {"name": "6h", "args": ["--special 6h"]},
+    {"name": "12h", "args": ["--special 12h"]},
+    {"name": "2d", "args": ["--special twodays"]},
+    # RTK just overlapping the daily solutions
     {"name": "3d", "args": ["--longterm 3d", "--rtk-overlap 1"]},
     {"name": "7d", "args": ["--longterm week", "--rtk-overlap 2"]},
     {"name": "14d", "args": ["--longterm 14d", "--rtk-overlap 2"]},
@@ -70,7 +78,7 @@ class RtkJob:
 def _args(value: Any) -> list[str]:
     from gps_plot.products import extra_args
 
-    return extra_args(value)
+    return extra_args(value, reserved={})  # rtk's own RESERVED, checked in plan()
 
 
 def plan(
