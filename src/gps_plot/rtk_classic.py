@@ -55,9 +55,13 @@ def classic_figure(
     now: dt.datetime,
     last: dt.datetime,
     interactive: bool = False,
+    names: Sequence[str] | None = None,
 ) -> Any:
     """The rtk_gps figure of RTK ``series`` (y in mm, zeroed; drawn in cm).
 
+    ``names``: every baseline asked for, in order. A baseline without data
+    keeps its legend entry ("engin gögn": a silent station is visible) and
+    its colour slot, so colours stay put when a station drops out.
     A plain ``Figure`` (no pyplot, no GUI backend) unless ``interactive``.
     """
     from matplotlib import image
@@ -73,12 +77,18 @@ def classic_figure(
     else:
         fig = Figure(figsize=(13, 20))
     axs = fig.subplots(nrows=3, ncols=1)
-    labels = line_labels([s.label for s in series])
-    for s, label in zip(series, labels, strict=True):
+    names = list(names or [s.label for s in series])
+    by_name = {s.label: s for s in series}
+    for name, label in zip(names, line_labels(names), strict=True):
+        s = by_name.get(name)
+        if s is None:  # its colour slot and legend entry, no line
+            for i, ax in enumerate(axs):
+                ax.plot([], [], label=f"{label} (engin gögn)" if i == 0 else None)
+            continue
         x = list(np.asarray(s.t, dtype="datetime64[us]").astype(dt.datetime))
         xs, ys = break_gaps(x, np.asarray(s.y, dtype=float) / 10.0)  # mm -> cm
         for i, ax in enumerate(axs):
-            ax.plot(xs, ys[i], label=label)
+            ax.plot(xs, ys[i], label=label if i == 0 else None)
     color = status_color(last, now)
     # a little room right of the plot-time line, so the frame does not hide it
     right = max(end, now) + (max(end, now) - start) * 0.015

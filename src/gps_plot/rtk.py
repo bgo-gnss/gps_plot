@@ -503,6 +503,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             series,
             title=rtk_classic.classic_title([s.label for s in series], special),
             start=start, end=end, now=now, last=last, interactive=not args.save,
+            names=baselines,
         )  # fmt: skip
     else:
         fig = _stack(args, series, styles, colors, notes, events, now, last,

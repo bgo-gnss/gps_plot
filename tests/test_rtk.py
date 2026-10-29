@@ -307,3 +307,19 @@ def test_classic_refuses_the_joined_plots():
     args = parser.parse_args(["SEY1-SEYD", "--classic", "--daily"])
     with pytest.raises(SystemExit):
         rtk.run(args, parser, _Config())
+
+
+def test_classic_keeps_a_silent_station_in_the_legend():
+    from gps_plot import rtk_classic
+
+    t = _minutes(60, "2026-10-29T21:00")
+    s = Series("SENG-ELDC", t, np.ones((3, 60)), np.ones((3, 60)))
+    now = dt.datetime(2026, 10, 29, 22, 0)
+    fig = rtk_classic.classic_figure(
+        [s], title="t", start=now - dt.timedelta(hours=6), end=now, now=now,
+        last=now, names=["ASVE-ELDC", "SENG-ELDC"],
+    )  # fmt: skip
+    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert legend == ["ASVE (engin gögn)", "SENG"]
+    # SENG keeps the second colour of the cycle, as with ASVE reporting
+    assert fig.axes[0].lines[1].get_color() == "#ff7f0e"
