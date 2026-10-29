@@ -5,8 +5,13 @@ RTK baselines ``ROVER-BASE`` are the 1 Hz RTKLIB solutions of
 drawn as lines in mm, each zeroed on its first hour: the plots ``rtk_gps``
 makes, on the ``gpsplot`` frame. ``--daily`` adds the daily GLOBK baseline
 of the same pair (``sources.gps``, the ``ts`` baseline) as points, moved
-onto the RTK line by the median over their overlap. RTK and daily stay
-independent sources; only that placement joins them.
+onto the RTK line by the median over their overlap. ``--longterm`` turns it
+round for monitoring against the long record: the daily points over 90 days,
+a year or the whole series, with the RTK tail of the last ``--rtk-span``
+moved onto them (left on its own zero, and said so, when they do not
+overlap). RTK and daily stay independent sources; only that placement joins
+them. Float solutions (Q=2) are used by default (BGÓ 2026-10-29: long
+baselines often cannot fix); ``--fixed-only`` drops them.
 """
 
 from __future__ import annotations
@@ -34,6 +39,17 @@ SPECIALS: dict[str, dt.timedelta] = {
     "month": dt.timedelta(days=30),
 }
 DEFAULT_SPECIAL = "twodays"
+#: --longterm spans of the daily record (full = the whole series)
+LONGTERM: dict[str, dt.timedelta | None] = {
+    "90d": dt.timedelta(days=90),
+    "year": dt.timedelta(days=365),
+    "full": None,
+}
+#: --longterm defaults: the RTK tail and its median interval
+LONGTERM_RTK_SPAN = "week"
+LONGTERM_INTERVAL = "10min"
+LONGTERM_YMARGIN = 10  # mm around the daily + robust RTK range
+FULL_START = dt.datetime(1995, 1, 1)  # before any IMO daily solution
 TIME_FORMATS = ("%Y%m%d-%H:%M", "%Y%m%d")
 
 EXAMPLES = """\
@@ -44,7 +60,11 @@ examples:
                                           a month of 10-min medians + the daily
                                           GLOBK baselines on top
   gpsplot rtk SENG-SUDV -s 20261001 -e 20261005-12:00 --save pdf
-Times are UTC. Patterns match the RTK baseline directories; quote them."""
+  gpsplot rtk SVIN-SKFC --longterm year --save pdf
+                                          a year of daily GLOBK + the last week
+                                          of RTK (10-min medians) on top
+Times are UTC. Patterns match the RTK baseline directories; quote them. A
+plain pair processed the other way round (B-A) is read negated, as A-B."""
 
 
 def _when(value: str) -> dt.datetime:
@@ -83,9 +103,23 @@ def build_parser(
         help=f"span ending at -e (default {DEFAULT_SPECIAL} when -s is not given)",
     )
     parser.add_argument(
+        "--longterm",
+        choices=list(LONGTERM),
+        default=None,
+        help="the daily GLOBK baseline over this span ending at -e, with the RTK "
+        "tail (--rtk-span) moved onto it by the median over their overlap",
+    )
+    parser.add_argument(
+        "--rtk-span",
+        choices=list(SPECIALS),
+        default=None,
+        help=f"--longterm: the RTK tail ending at -e (default {LONGTERM_RTK_SPAN})",
+    )
+    parser.add_argument(
         "--interval",
-        default="60s",
-        help="median interval, e.g. 60s (default), 10min, 1h",
+        default=None,
+        help="median interval, e.g. 60s (default; --longterm "
+        f"{LONGTERM_INTERVAL}), 10min, 1h",
     )
     parser.add_argument(
         "--offset", type=float, default=0.0, metavar="MM",
@@ -108,11 +142,14 @@ def build_parser(
     )  # fmt: skip
     quality = parser.add_mutually_exclusive_group()
     quality.add_argument(
-        "--keep-float",
+        "--fixed-only",
         action="store_true",
-        help="also the float solutions (Q=2), as rtk_gps plots them; by "
-        "default only fixed solutions (Q=1) are used: the floats carry most "
-        "of the spikes",
+        help="only the fixed solutions (Q=1); by default float (Q=2) is used "
+        "too, as rtk_gps plots them: less accurate, but long baselines often "
+        "cannot fix",
+    )
+    quality.add_argument(  # the default since 2026-10-29; kept for old scripts
+        "--keep-float", action="store_true", help=argparse.SUPPRESS
     )
     quality.add_argument(
         "--keep-single",
@@ -133,15 +170,33 @@ def build_parser(
 def resolve_span(
     args: argparse.Namespace, now: dt.datetime
 ) -> tuple[dt.datetime, dt.datetime, str | None]:
-    """``(start, end, special)``: -s/-e, or the special span ending at -e/now."""
+    """``(start, end, special)``: -s/-e, or the special span ending at -e/now.
+
+    With ``--longterm`` the span of the RTK tail (``--rtk-span``).
+    """
     end = args.end or now
+    if getattr(args, "longterm", None):
+        special = args.rtk_span or LONGTERM_RTK_SPAN
+        return end - SPECIALS[special], end, special
     if args.start is not None and args.special is None:
         return args.start, end, None
     special = args.special or DEFAULT_SPECIAL
     return end - SPECIALS[special], end, special
 
 
-def _title(n: int, bases: set[str], last: dt.datetime, now: dt.datetime) -> Any:
+def longterm_start(longterm: str, end: dt.datetime) -> dt.datetime:
+    """Start of the daily record shown by ``--longterm``."""
+    span = LONGTERM[longterm]
+    return FULL_START if span is None else end - span
+
+
+def _title(
+    n: int,
+    bases: set[str],
+    last: dt.datetime,
+    now: dt.datetime,
+    longterm: str | None = None,
+) -> Any:
     from gps_plot import timesmatplt as tplt
 
     status_color = (
@@ -149,8 +204,10 @@ def _title(n: int, bases: set[str], last: dt.datetime, now: dt.datetime) -> Any:
         else tplt.STATUS_STALE_COLOR
     )  # fmt: skip
     base = f"base {next(iter(bases))}" if len(bases) == 1 else "mixed bases"
+    what = r"RTK + daily" if longterm else "RTK"
     return tplt.StationTitle(
-        main=r"\Huge RTK \ \Large %d baseline%s, %s" % (n, "" if n == 1 else "s", base),
+        main=r"\Huge %s \ \Large %d baseline%s, %s"
+        % (what, n, "" if n == 1 else "s", base),
         status=r"\LARGE Last epoch: %s UTC" % last.strftime("%d %b %Y %H:%M"),
         created=r"\large (Plot created on %s UTC)" % now.strftime("%b %d %Y %H:%M"),
         status_color=status_color,
@@ -188,6 +245,64 @@ def _daily(
     return dataclasses.replace(s, t=t, label=f"{pair} daily")
 
 
+def _longterm_pair(
+    name: str,
+    plot_start: dt.datetime,
+    start: dt.datetime,
+    end: dt.datetime,
+    args: argparse.Namespace,
+    config: Any,
+    root: Any,
+    dirs: list[str],
+    interval: str,
+) -> tuple[list[tuple[Any, str]], dict[str, list[str]]]:
+    """One ``--longterm`` pair: its daily points, then its RTK tail on them.
+
+    The daily series is the anchor; the RTK tail (``start``–``end``) is
+    moved onto it by :func:`~gps_plot.sources.rtk.align`, or left on its
+    own first-hour zero, noted, when the two do not overlap (a daily
+    series that stopped before the RTK came back must not be hidden by
+    pinning). Either part may be missing; ``([], ...)`` when both are.
+    """
+    from gps_plot.sources import rtk as rtk_source
+
+    got: list[tuple[Any, str]] = []
+    out: dict[str, list[str]] = {"dropped": [], "notes": []}
+    daily = None
+    try:
+        daily = _daily(name, plot_start, end, args, config)
+        daily = dataclasses.replace(daily, meta={**daily.meta, "pair": name})
+        got.append((daily, "marked"))
+    except Exception as exc:
+        out["dropped"].append(f"{name} daily: {exc}")
+    try:
+        directory, flipped = rtk_source.rtk_direction(name, dirs)
+        s = rtk_source.fetch_rtk(
+            name, start, end, root=str(root), interval=interval,
+            drop_q=drop_q(args), max_sigma=args.max_sigma,
+            directory=directory, flipped=flipped,
+        )  # fmt: skip
+    except Exception as exc:
+        out["dropped"].append(f"{name}: {exc}")
+        return got, out
+    if len(s.t) == 0:
+        out["dropped"].append(f"{name}: no RTK solutions in the span")
+        return got, out
+    s = dataclasses.replace(s, meta={**s.meta, "pair": name})
+    if daily is not None:
+        try:
+            s = rtk_source.align(s, daily)
+            sh = s.meta["aligned"]["shift"]
+            out["notes"].append(
+                f"{name} {sh[0]:+.0f}/{sh[1]:+.0f}/{sh[2]:+.0f}"
+                f" ({s.meta['aligned']['days']} d)"
+            )
+        except ValueError:
+            out["notes"].append(f"{name} NOT aligned (no overlap, own zero)")
+    got.append((s, "line"))
+    return got, out
+
+
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
     try:  # bad --events fail before the data are read
         events = common.resolve_events(args)
@@ -209,14 +324,35 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     start, end, special = resolve_span(args, now)
     if start >= end:
         parser.error(f"start {start} is not before end {end}")
+    if args.longterm and args.daily:
+        parser.error("--longterm already draws the daily baseline; drop --daily")
+    interval = args.interval or (LONGTERM_INTERVAL if args.longterm else "60s")
+    dirs = list_baselines(root)
 
     series, styles, colors, dropped, notes = [], [], [], [], []
     palette = compose.series_colors(baselines)
+    plot_start = start
+    if args.longterm:
+        plot_start = longterm_start(args.longterm, end)
+        for name, color in zip(baselines, palette, strict=True):
+            got, note = _longterm_pair(
+                name, plot_start, start, end, args, config, root, dirs, interval
+            )
+            for s, style in got:
+                series.append(s)
+                styles.append(style)
+                colors.append(color)
+            dropped.extend(note["dropped"])
+            notes.extend(note["notes"])
     for name, color in zip(baselines, palette, strict=True):
+        if args.longterm:
+            break
         try:
+            directory, flipped = rtk_source.rtk_direction(name, dirs)
             s = rtk_source.fetch_rtk(
-                name, start, end, root=str(root), interval=args.interval,
+                name, start, end, root=str(root), interval=interval,
                 drop_q=drop_q(args), max_sigma=args.max_sigma,
+                directory=directory, flipped=flipped,
             )  # fmt: skip
         except Exception as exc:  # one bad baseline must not sink the plot
             dropped.append(f"{name}: {exc}")
@@ -224,12 +360,14 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         if len(s.t) == 0:
             dropped.append(f"{name}: no RTK solutions in the span")
             continue
+        s = dataclasses.replace(s, meta={**s.meta, "pair": name})
         series.append(s)
         styles.append("line")
         colors.append(color)
         if args.daily:
             try:
                 d = rtk_source.align_daily(_daily(name, start, end, args, config), s)
+                d = dataclasses.replace(d, meta={**d.meta, "pair": name})
             except Exception as exc:
                 dropped.append(f"{name} daily: {exc}")
                 continue
@@ -247,11 +385,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         print("nothing plotted", file=sys.stderr)
         return 1
 
+    if args.longterm == "full":  # the axis starts with the record
+        plot_start = min(as_datetime(s.t[0]) for s in series)
     if not args.save:
         mpl.use("WebAgg")
     rtk_only = [s for s in series if s.meta.get("source") == "rtk"]
-    last = max(as_datetime(s.t[-1]) for s in rtk_only)
-    bases = {s.label[5:] for s in rtk_only}
+    last = max((as_datetime(s.t[-1]) for s in rtk_only), default=start)
+    bases = {s.meta.get("pair", s.label)[5:] for s in series}
     index = baseline_index(series)
     # --offset moves each BASELINE: its RTK line and its daily points together
     moved = [
@@ -264,19 +404,31 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     ]
     fig = compose.stack_figure(
         moved,
-        title=_title(len(rtk_only), bases, last, now),
+        title=_title(
+            len({s.meta.get("pair", s.label) for s in series}),
+            bases,
+            last,
+            now,
+            args.longterm,
+        ),
         labels=labels,
-        start=start,
+        start=plot_start,
         end=end,
-        ylim=args.ylim,
+        # --longterm: a margin around the robust range, so RTK spikes clip
+        ylim=args.ylim or ([LONGTERM_YMARGIN] if args.longterm else []),
         styles=styles,
         colors=colors,
         fig=tplt._reusable_figure() if args.save else None,
+        robust_lines=bool(args.longterm),
     )
     if notes:
+        what = (
+            "RTK placed on daily, N/E/U mm (median over the overlap): "
+            if args.longterm
+            else "daily placed on RTK, N/E/U mm (median over days): "
+        )
         fig.axes[2].text(
-            0.01, 0.02, "daily placed on RTK, N/E/U mm (median over days): "
-            + "; ".join(notes), transform=fig.axes[2].transAxes,
+            0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
             fontsize="x-small", color="0.3", va="bottom",
         )  # fmt: skip
     if events:
@@ -292,13 +444,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         stem = args.name
     else:
         first = baselines[0].replace("-", "_")
-        n = sum(1 for s in series if s.meta.get("source") == "rtk")
+        n = len({s.meta.get("pair", s.label) for s in series})
         span = special if special else f"{start:%Y%m%d%H%M}-{end:%Y%m%d%H%M}"
+        if args.longterm:
+            span = f"long{args.longterm}-{span}"
         stem = f"rtk_{first}_{n}-{span}"
-        if args.interval != "60s":
+        if args.interval:
             stem += f"-{args.interval}"
-        if args.keep_float:
-            stem += "-float"
+        if args.fixed_only:
+            stem += "-fixed"
         elif args.keep_single:
             stem += "-allq"
         if args.daily:
@@ -315,12 +469,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
 
 def drop_q(args: argparse.Namespace) -> tuple[int, ...]:
-    """RTKLIB quality flags dropped: all but fixed (Q=1) by default."""
+    """RTKLIB quality flags dropped: single (Q=5) by default, as rtk_gps."""
     if args.keep_single:
         return ()
-    if args.keep_float:
-        return (5,)
-    return (2, 3, 4, 5, 6)
+    if getattr(args, "fixed_only", False):
+        return (2, 3, 4, 5, 6)
+    return (5,)
 
 
 def as_datetime(t: Any) -> dt.datetime:
@@ -329,10 +483,23 @@ def as_datetime(t: Any) -> dt.datetime:
 
 
 def baseline_index(series: Any) -> list[int]:
-    """Per series, the index of the baseline it belongs to (RTK line first)."""
-    out, k = [], -1
+    """Per series, the index of the baseline (``meta["pair"]``) it belongs to.
+
+    Series without a pair start a new baseline at each RTK line, the
+    daily points following it.
+    """
+    out: list[int] = []
+    seen: dict[str, int] = {}
+    k = -1
     for s in series:
-        if s.meta.get("source") == "rtk":
-            k += 1
-        out.append(k)
+        pair = s.meta.get("pair")
+        if pair is None:
+            if s.meta.get("source") == "rtk":
+                k += 1
+            out.append(k)
+        else:
+            if pair not in seen:
+                k += 1
+                seen[pair] = k
+            out.append(seen[pair])
     return out

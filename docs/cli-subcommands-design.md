@@ -148,11 +148,22 @@ merge (main `ff4e1f4`). Steps 0–4, 6, 7 done 2026-10-14; 5 (seismic) on ice.*
     4 s cold, 0.2 s cached); nothing written under the mount.
   - `gpsplot rtk "SEY?-SEYD" [--special 6h|12h|day|twodays|threedays|week|month]
     [-s/-e YYYYMMDD[-HH:MM] UTC] [--interval 10min] [--offset MM]
-    [--keep-float|--keep-single] [--daily]`: lines in mm with English labels
+    [--fixed-only|--keep-single] [--daily]`: lines in mm with English labels
     (BGÓ; rtk_gps plots cm, Icelandic), each zeroed on its first hour;
-    patterns match the existing RTK directories (rover and base sides).
-    Fixed solutions only by default (BGÓ): the floats (Q=2) carry most of
-    the spikes; `--keep-float` is the rtk_gps behaviour.
+    patterns match the existing RTK directories (rover and base sides); a
+    plain pair processed only the other way (B-A) is read negated as A-B.
+    Float (Q=2) is used by default since 2026-10-29 (BGÓ: less accurate, but
+    long baselines often cannot fix); `--fixed-only` drops it (the floats
+    carry most of the spikes). `--keep-float` is accepted, a no-op.
+  - `--longterm 90d|year|full [--rtk-span week]` (2026-10-29): long-term
+    change with real-time monitoring on one plot. The daily GLOBK baseline
+    over the span is the anchor; the RTK tail (default the last week, 10-min
+    medians) is moved onto it by the median over their overlap
+    (`sources.rtk.align`). No overlap (a daily series that stopped before the
+    RTK came back) → the tail keeps its own first-hour zero and the figure
+    says "NOT aligned": pinning it to the last daily point could hide the
+    offset being watched. The y range comes from the daily points and the
+    2–98 % of the RTK line (+10 mm), so float spikes clip off the axis.
   - `--daily` (decision #2, the join): the daily GLOBK baseline of each pair
     (`sources.gps.fetch`, plate ref, itrf2014 or `--frame`) as dark-edged
     points over the RTK line, placed by the MEDIAN of rtk(t_day) − daily over

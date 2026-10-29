@@ -68,6 +68,7 @@ def stack_figure(
     styles: Sequence[str] | None = None,
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
+    robust_lines: bool = False,
 ) -> Figure:
     """Overlay ``series`` on the N/E/U frame; series ``k`` is moved by k·offset.
 
@@ -87,6 +88,10 @@ def stack_figure(
             over lines) or ``"line"`` (a thin line, no error bars: dense
             series such as 1-minute RTK medians). Lines are drawn first.
         colors: Per series colours (default: :func:`series_colors`).
+        robust_lines: ``"line"`` series set the y range by their
+            2–98 percentiles, not their extremes: the spikes of a dense
+            RTK line run off the axis instead of squashing the points
+            (takes effect where ``ylim`` sets the range: one number).
     """
     from gps_plot import timesmatplt as tplt
 
@@ -117,8 +122,19 @@ def stack_figure(
             oy = np.asarray(oy, dtype=float) + k * float(offset)
             if np.isfinite(oy).any():
                 flagged[k] = (oy, ody)
-    ymin = [min(float(np.nanmin(y[i])) for y in shifted) for i in range(3)]
-    ymax = [max(float(np.nanmax(y[i])) for y in shifted) for i in range(3)]
+
+    def low(k: int, i: int) -> float:
+        if robust_lines and styles[k] == "line":
+            return float(np.nanpercentile(shifted[k][i], 2.0))
+        return float(np.nanmin(shifted[k][i]))
+
+    def high(k: int, i: int) -> float:
+        if robust_lines and styles[k] == "line":
+            return float(np.nanpercentile(shifted[k][i], 98.0))
+        return float(np.nanmax(shifted[k][i]))
+
+    ymin = [min(low(k, i) for k in range(len(series))) for i in range(3)]
+    ymax = [max(high(k, i) for k in range(len(series))) for i in range(3)]
     for f in flagged:
         if f is not None:
             ymin = [min(v, float(np.nanmin(f[0][i]))) for i, v in enumerate(ymin)]

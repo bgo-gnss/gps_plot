@@ -1,8 +1,9 @@
-"""``gpsplot rtk``: baseline patterns, zeroing, the daily join, spans, failures."""
+"""``gpsplot rtk``: patterns, directions, zeroing, the joins, spans, failures."""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 
 import numpy as np
@@ -12,13 +13,38 @@ from gps_plot import rtk
 from gps_plot.series import Series
 from gps_plot.sources import rtk as source
 
-DIRS = ["SEY1-SEYD", "SEY2-SEYD", "SEY3-SEYD", "AUSV-ELDC", "ELDC-AUSV"]
+DIRS = ["SEY1-SEYD", "SEY2-SEYD", "SEY3-SEYD", "AUSV-ELDC", "ELDC-AUSV", "SKFC-SVIN"]
 
 
 def test_expand_matches_existing_directories_only():
     assert source.expand_rtk(["SEY[1-2]-SEYD"], DIRS) == ["SEY1-SEYD", "SEY2-SEYD"]
     assert source.expand_rtk(["*-AUSV", "AUSV-*"], DIRS) == ["ELDC-AUSV", "AUSV-ELDC"]
     assert source.expand_rtk(["sey1-seyd", "SEY?-SEYD"], DIRS) == DIRS[:3]
+
+
+def test_a_plain_pair_processed_the_other_way_is_kept_as_written():
+    assert source.expand_rtk(["SVIN-SKFC"], DIRS) == ["SVIN-SKFC"]
+    assert source.rtk_direction("SVIN-SKFC", DIRS) == ("SKFC-SVIN", True)
+    assert source.rtk_direction("SEY1-SEYD", DIRS) == ("SEY1-SEYD", False)
+    with pytest.raises(ValueError, match="no RTK baseline"):
+        source.rtk_direction("SEY4-SEYD", DIRS)
+
+
+def test_a_flipped_baseline_is_negated(monkeypatch):
+    import geo_dataread.rtk_read as rr
+
+    seen = {}
+
+    def read(name, start, end, **kw):
+        seen["name"] = name
+        t = _minutes(3)
+        return rr.RtkBaseline(name, t, np.ones((3, 3)) * [[0.001], [0.002], [0.0]],
+                              np.full((3, 3), 0.001), np.ones(3, int), "60s")  # fmt: skip
+
+    monkeypatch.setattr(rr, "read_rtk_baseline", read)
+    s = source.fetch_rtk("SVIN-SKFC", None, None, directory="SKFC-SVIN", flipped=True)
+    assert seen["name"] == "SKFC-SVIN" and s.label == "SVIN-SKFC"
+    np.testing.assert_allclose(s.meta["level"], [-1.0, -2.0, 0.0])
 
 
 @pytest.mark.parametrize(
@@ -68,8 +94,26 @@ def test_align_daily_without_overlap_is_an_error():
         source.align_daily(daily, rtk_line)
 
 
+def test_align_moves_an_rtk_tail_onto_daily_points():
+    t_day = np.datetime64("2026-09-01T12:00", "ns") + np.arange(40) * np.timedelta64(
+        1, "D"
+    )
+    daily = Series("A-B daily", t_day, np.vstack([np.full(40, 4.0)] * 3),
+                   np.ones((3, 40)))  # fmt: skip
+    t_rtk = _minutes(3 * 1440, "2026-10-08T00:00")  # last 3 days of the daily
+    tail = Series("A-B", t_rtk, np.vstack([np.full(t_rtk.size, -1.0)] * 3), None)
+    got = source.align(tail, daily)
+    assert got.meta["aligned"]["days"] == 3  # the noons of Oct 8, 9 and 10
+    np.testing.assert_allclose(got.meta["aligned"]["shift"], [5.0, 5.0, 5.0])
+    with pytest.raises(ValueError, match="do not overlap"):
+        source.align(
+            dataclasses.replace(tail, t=t_rtk + np.timedelta64(30, "D")), daily
+        )
+
+
 def _args(**kw):
-    base = dict(start=None, end=None, special=None, keep_single=False, keep_float=False)
+    base = dict(start=None, end=None, special=None, keep_single=False,
+                fixed_only=False, longterm=None, rtk_span=None)  # fmt: skip
     return argparse.Namespace(**{**base, **kw})
 
 
@@ -89,9 +133,21 @@ def test_span_defaults_to_two_days_before_now():
     assert rtk.resolve_span(_args(start=s, end=end), now) == (s, end, None)
 
 
+def test_longterm_spans():
+    now = dt.datetime(2026, 10, 29, 12, 0)
+    assert rtk.resolve_span(_args(longterm="year"), now) == (
+        now - dt.timedelta(days=7), now, "week",
+    )  # fmt: skip
+    assert rtk.resolve_span(_args(longterm="90d", rtk_span="day"), now)[0] == (
+        now - dt.timedelta(days=1)
+    )
+    assert rtk.longterm_start("year", now) == now - dt.timedelta(days=365)
+    assert rtk.longterm_start("full", now) == rtk.FULL_START
+
+
 def test_quality_flags():
-    assert rtk.drop_q(_args()) == (2, 3, 4, 5, 6)  # fixed only
-    assert rtk.drop_q(_args(keep_float=True)) == (5,)  # as rtk_gps
+    assert rtk.drop_q(_args()) == (5,)  # float too, as rtk_gps (BGÓ 2026-10-29)
+    assert rtk.drop_q(_args(fixed_only=True)) == (2, 3, 4, 5, 6)
     assert rtk.drop_q(_args(keep_single=True)) == ()
 
 
@@ -106,6 +162,44 @@ def test_baseline_index_groups_daily_with_its_rtk_line():
     s = [Series(n, None, None, None, meta={"source": src})
          for n, src in [("a", "rtk"), ("a d", None), ("b", "rtk"), ("b d", None)]]  # fmt: skip
     assert rtk.baseline_index(s) == [0, 0, 1, 1]
+    # --longterm: daily first, grouped by pair
+    s = [Series(n, None, None, None, meta={"pair": p})
+         for n, p in [("a d", "a"), ("a", "a"), ("b d", "b"), ("b", "b")]]  # fmt: skip
+    assert rtk.baseline_index(s) == [0, 0, 1, 1]
+
+
+def _longterm(monkeypatch, daily_t, rtk_t):
+    def daily(name, start, end, args, config):
+        return Series(f"{name} daily", daily_t, np.zeros((3, daily_t.size)),
+                      np.ones((3, daily_t.size)))  # fmt: skip
+
+    def fetch(name, start, end, **kw):
+        return Series(name, rtk_t, np.ones((3, rtk_t.size)), None,
+                      meta={"source": "rtk"})  # fmt: skip
+
+    monkeypatch.setattr(rtk, "_daily", daily)
+    monkeypatch.setattr(source, "fetch_rtk", fetch)
+    args = _args(max_sigma=0.1)
+    return rtk._longterm_pair("SVIN-SKFC", None, None, None, args, None, "/r",
+                              DIRS, "10min")  # fmt: skip
+
+
+def test_longterm_pair_aligns_the_rtk_tail_on_the_daily(monkeypatch):
+    days = np.datetime64("2026-10-20T12:00", "ns") + np.arange(5) * np.timedelta64(
+        1, "D"
+    )
+    got, out = _longterm(monkeypatch, days, _minutes(2 * 1440, "2026-10-22T00:00"))
+    assert [style for _, style in got] == ["marked", "line"]
+    assert all(s.meta["pair"] == "SVIN-SKFC" for s, _ in got)
+    np.testing.assert_allclose(got[1][0].y, 0.0)
+    assert out["notes"] == ["SVIN-SKFC -1/-1/-1 (2 d)"] and not out["dropped"]
+
+
+def test_longterm_pair_without_overlap_keeps_its_own_zero(monkeypatch):
+    days = np.array(["2026-10-20T12:00"], dtype="datetime64[ns]")
+    got, out = _longterm(monkeypatch, days, _minutes(60, "2026-10-29T00:00"))
+    np.testing.assert_allclose(got[1][0].y, 1.0)  # not moved
+    assert "NOT aligned" in out["notes"][0]
 
 
 class _Config:
