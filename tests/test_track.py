@@ -350,7 +350,7 @@ def test_a_few_days_station_is_listed_even_if_not_beyond_three_sigma() -> None:
 def test_newest_day_text_green_through_yesterday_else_red() -> None:
     today = dt.date(2026, 10, 29)
     assert track.newest_text(dt.date(2026, 10, 28), today) == (
-        "newest 28.10.2026",
+        "last datapoint: 28.10.2026",
         track.FRESH_COLOR,
     )
     assert track.newest_text(dt.date(2026, 10, 27), today)[1] == track.STALE_COLOR
