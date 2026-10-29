@@ -87,7 +87,11 @@ event is removed, so only a change at the onset shows; `--track-trend keep`
 removes only the seasonal (on the reference stations too) and writes each
 moving station's rate before the event in the legend (grey): creep before
 the event shows. The rates' σ include how much the daily noise wanders
-(block means of the residuals before the event). `--inset W/E/S/N` adds a
+(block means of the residuals before the event). A station with fewer
+than 5 days since the event gets a black arrow to its newest position (at
+the dots' scale) and a dashed 1-σ ellipse; with no days just before the
+event its zero is the trend carried across the gap, and that σ is in the
+ellipse. `--inset W/E/S/N` adds a
 zoom inset with the tracks inside it drawn at its own scale.
 
 **Captions** are made from the map's options (place, dates, horizontal or

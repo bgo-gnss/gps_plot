@@ -40,6 +40,12 @@ RECENT_DAYS = 14
 ZERO_DAYS = 14
 #: fewest days for a line rate
 MIN_RATE_DAYS = 5
+#: the newest position: the mean of the days at most this many days before
+#: the newest (two at most), not of two days a week apart
+END_SPAN_DAYS = 3
+#: the few-days station's displacement arrow and its 1-σ ellipse (dashed)
+DISPLACEMENT_COLOR = "black"
+DISPLACEMENT_ELLIPSE_PEN = "0.6p,black,4_2:0"
 #: moved = the newest position off the station by more than this × its scatter
 MOVED_SIGMA = 3.0
 #: largest horizontal formal σ kept [mm]
@@ -128,12 +134,29 @@ class Track:
     #: the trend kept (``keep_trend``): the rate in the window before the
     #: onset, relative to the reference (creep before the event)
     before: Rate | None = None
+    #: the daily scatter before the onset per component (N, E) [mm]
+    scatter_ne: tuple[float, float] = (0.0, 0.0)
+    #: σ of the zero (N, E) [mm]: of the median of the days before the onset,
+    #: or, with too few of them, of the trend extrapolated to the onset
+    zero_sigma: tuple[float, float] = (0.0, 0.0)
+    #: no days just before the onset: the zero is the extrapolated trend
+    zero_extrapolated: bool = False
+
+    @property
+    def end_count(self) -> int:
+        """Days averaged for :attr:`end`: the newest one, and the one before
+        it if within ``END_SPAN_DAYS``."""
+        if self.n_after == 0:
+            return 0
+        if self.n_after >= 2 and self.days[-1] - self.days[-2] <= END_SPAN_DAYS:
+            return 2
+        return 1
 
     @property
     def end(self) -> tuple[float, float]:
-        """The newest position (N, E): the mean of the last two days after
-        the onset (one if only one)."""
-        m = min(2, self.n_after)
+        """The newest position (N, E): the mean of the newest days after
+        the onset (:attr:`end_count`)."""
+        m = self.end_count
         if m == 0:
             return (0.0, 0.0)
         return (float(np.mean(self.north[-m:])), float(np.mean(self.east[-m:])))
@@ -149,9 +172,24 @@ class Track:
         return math.hypot(*self.end) > MOVED_SIGMA * self.end_sigma
 
     @property
+    def end_sigmas(self) -> tuple[float, float]:
+        """σ of :attr:`end` (N, E): the daily scatter over the days averaged
+        and the zero's σ, in quadrature."""
+        m = math.sqrt(max(1, self.end_count))
+        daily = (
+            self.scatter_ne
+            if any(self.scatter_ne)
+            else (self.scatter / math.sqrt(2),) * 2
+        )
+        n, e = (
+            math.hypot(d / m, z) for d, z in zip(daily, self.zero_sigma, strict=True)
+        )
+        return (n, e)
+
+    @property
     def end_sigma(self) -> float:
-        """σ of :attr:`end`: the daily scatter over the days averaged."""
-        return self.scatter / math.sqrt(max(1, min(2, self.n_after)))
+        """Horizontal σ of :attr:`end`."""
+        return math.hypot(*self.end_sigmas)
 
 
 def yearf(day: dt.date) -> float:
@@ -240,6 +278,32 @@ def pre_rate(t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]) -> Rate:
         k = block_mean_scale(tp, res, step=1.0 / YEAR).k
         out.append((float(m[1]), k * math.sqrt(float(cov[1, 1]))))
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
+
+
+def extrapolation_sigma(
+    t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_], t_at: float
+) -> FloatArray:
+    """σ (N, E) of the line + seasonal fitted on ``pre`` as the position at
+    ``t_at``, the zero of a station with no days just before the onset: the
+    fit's prediction σ there and how far a ``ZERO_DAYS`` mean of the days
+    strays from the fit (the residuals' block means before the onset), in
+    quadrature. The second is what the median of the days before would
+    have carried; across a long gap the first grows."""
+    tp = t[pre]
+    t_ref = float(tp.mean())
+    g = _design(tp, t_ref)
+    g0 = _design(np.array([t_at]), t_ref)[0]
+    block = np.floor((tp - tp[0]) * YEAR / ZERO_DAYS)
+    out = np.empty(2)
+    for c in (0, 1):
+        m, *_ = np.linalg.lstsq(g, y[c, pre], rcond=None)
+        res = y[c, pre] - g @ m
+        cov = np.linalg.inv(g.T @ g) * float(np.var(res, ddof=g.shape[1]))
+        means = [res[block == b].mean() for b in np.unique(block)
+                 if int((block == b).sum()) >= 5]  # fmt: skip
+        wander = float(np.std(means, ddof=1)) if len(means) >= 3 else 0.0
+        out[c] = math.hypot(math.sqrt(float(g0 @ cov @ g0)), wander)
+    return out
 
 
 def line_rate(
@@ -415,7 +479,13 @@ def station_track(
     r, rms = detrend(t, y, in_pre, keep_line=keep_trend)
     before = pre_rate(t, y, in_pre) if keep_trend else None
     near = (t >= t_on - ZERO_DAYS / YEAR) & (t < t_on)
-    zero = np.median(r[:, near], axis=1) if int(near.sum()) >= 3 else np.zeros(2)
+    n_near = int(near.sum())
+    if n_near >= 3:
+        zero = np.median(r[:, near], axis=1)
+        zero_sigma = 1.25 * rms / math.sqrt(n_near)  # σ of a median
+    else:
+        zero = np.zeros(2)
+        zero_sigma = extrapolation_sigma(t, y, in_pre, t_on)
     r = r - zero[:, None]
     shown = t >= t_on - before_days / YEAR
     if not shown.any() or t[-1] < t_on:
@@ -432,7 +502,8 @@ def station_track(
     return Track(
         marker, lon, lat, t[shown], r[0, shown], r[1, shown],
         (t[shown] - t_on) * YEAR, float(math.hypot(*rms)), since, recent,
-        int((t >= t_on).sum()), before,
+        int((t >= t_on).sum()), before, (float(rms[0]), float(rms[1])),
+        (float(zero_sigma[0]), float(zero_sigma[1])), n_near < 3,
     )  # fmt: skip
 
 
@@ -506,7 +577,7 @@ def legend_entries(
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
     for tr in tracks:
-        if not tr.moved:
+        if tr.n_after == 0 or (tr.since is not None and not tr.moved):
             continue
         if tr.since is not None:
             s = tr.since
@@ -524,9 +595,12 @@ def legend_entries(
         else:
             n, e = tr.end
             az = math.degrees(math.atan2(e, n)) % 360
+            gap = ", none just before" if tr.zero_extrapolated else ""
             out.append((f"{tr.marker} moved {math.hypot(n, e):.0f} {pm} "
                         f"{tr.end_sigma:.0f} mm toward {az:.0f}{deg} since "
-                        f"{onset:%d.%m} ({tr.n_after} days of data)", "black"))  # fmt: skip
+                        f"{onset:%d.%m} ({tr.n_after} day{'s' if tr.n_after != 1 else ''}"
+                        f"{gap})",
+                        DISPLACEMENT_COLOR))  # fmt: skip
     return out
 
 
@@ -606,12 +680,15 @@ def draw_track_marks(
     region: Sequence[float] | None = None,
     width_cm: float | None = None,
     cpt: str | None = None,
+    cm_per_mm: float | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """The dotted paths, the dots (coloured by ``cpt``, else the current
     CPT) and the
     arrows of ``tracks``; on the map or in a zoom inset at its own scale.
-    Returns the dots' and (with ``region`` and ``width_cm``) the arrow
-    tips' positions (lon, lat)."""
+    A station with too few days for a rate gets a displacement arrow to
+    its newest position, at the dots' scale (``cm_per_mm``), with a dashed
+    1-σ ellipse. Returns the dots' and (with ``region`` and ``width_cm``)
+    the arrow tips' positions (lon, lat)."""
     from gps_plot import maps
 
     lons, lats, days = [], [], []
@@ -654,6 +731,19 @@ def draw_track_marks(
                     tips_x.append(v.lon + f * v.east * arrow_scale * deg_per_cm)
                     tips_y.append(v.lat + f * v.north * arrow_scale * deg_per_cm
                                   * math.cos(math.radians(v.lat)))  # fmt: skip
+    few = [tr for tr in tracks if tr.since is None and tr.n_after > 0]
+    if arrows and few and cm_per_mm:
+        disp = []
+        for tr in few:
+            (n, e), (sn, se) = tr.end, tr.end_sigmas
+            disp.append(maps.VelocityVector(
+                tr.marker, tr.lon, tr.lat, east=e, north=n, sigma_east=se,
+                sigma_north=sn, method="moved"))  # fmt: skip
+        maps.draw_velocity_vectors(
+            fig, disp, colors={"moved": DISPLACEMENT_COLOR}, scale=cm_per_mm,
+            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+            ellipse_pen=DISPLACEMENT_ELLIPSE_PEN, markers=False, labels=False,
+        )  # fmt: skip
     return np.concatenate([x, tips_x]), np.concatenate([y, tips_y])
 
 
@@ -708,6 +798,7 @@ def draw_tracks(
     lons, lats = draw_track_marks(
         fig, tracks, m_per_mm=m_per_mm, arrow_scale=scale, arrows=arrows,
         path_days=path_days, region=region, width_cm=width, cpt=cpt,
+        cm_per_mm=m_per_mm / (km_per_cm(region, width) * 1000.0),
     )  # fmt: skip
     if tracks:
         # small, inside the upper right, on a white box (BGÓ 2026-10-28)
@@ -807,7 +898,8 @@ def draw_zoom_tracks(
     m_per_mm, dot_ref = dot_scale(inside, km_per_cm(box, width_cm))
     scale, ref = arrow_scale_of(inside, ZOOM_ARROW_CM)
     draw_track_marks(fig, inside, m_per_mm=m_per_mm, arrow_scale=scale,
-                     arrows=arrows, path_days=path_days, cpt=cpt)  # fmt: skip
+                     arrows=arrows, path_days=path_days, cpt=cpt,
+                     cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0))  # fmt: skip
     moved = any(tr.moved and tr.since is not None for tr in inside)
     draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
                       arrow_ref=ref if arrows and moved else None,

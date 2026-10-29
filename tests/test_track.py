@@ -78,7 +78,7 @@ def test_too_few_days_gives_a_displacement() -> None:
     tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
     assert tr.n_after == 2 and tr.since is None and tr.moved
     ((text, colour),) = track.legend_entries([tr], ONSET, 14)
-    assert colour == "black" and "2 days of data" in text
+    assert colour == "black" and "(2 days)" in text
     assert re.search(r"SVIN moved 1[789] ± \d mm toward 29\d°", text)
 
 
@@ -310,3 +310,38 @@ def test_inset_helpers() -> None:
     assert ref == track.nice(tr.since.speed / 2)
     still = track.station_track("SKFC", -17.0, 64.0, *_series(seed=3), ONSET, PRE)
     assert track.arrow_scale_of([still]) == (0.01, 100.0)
+
+
+def test_few_days_zero_extrapolated_gets_a_wider_sigma() -> None:
+    """No days just before the onset: the zero is the trend carried across
+    the gap, and its σ (fit prediction + 14-day wander) widens the
+    displacement's; the newest position is not a mean of days a week apart."""
+    t, y = _series(days_after=40)
+    keep = t < track.yearf(ONSET) - 120 / 365.25  # a 4-month gap before
+    keep[[-12, -5]] = True
+    y = y.copy()
+    y[:, -12:] += np.array([[7.0], [-17.0]])
+    tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
+    assert tr.zero_extrapolated and tr.end_count == 1
+    assert all(z > 0 for z in tr.zero_sigma)
+    assert tr.end_sigmas[0] > tr.scatter_ne[0]
+    ((text, _),) = track.legend_entries([tr], ONSET, 14)
+    assert ", none just before)" in text
+
+
+def test_extrapolation_sigma_grows_with_the_gap() -> None:
+    t, y = _series()
+    pre = (t >= track.yearf(PRE[0])) & (t < track.yearf(PRE[1]))
+    near = track.extrapolation_sigma(t, y, pre, track.yearf(PRE[1]))
+    far = track.extrapolation_sigma(t, y, pre, track.yearf(PRE[1]) + 1.0)
+    assert np.all(far > near) and np.all(near > 0)
+
+
+def test_a_few_days_station_is_listed_even_if_not_beyond_three_sigma() -> None:
+    t, y = _series(days_after=40)
+    keep = t < track.yearf(ONSET)
+    keep[[-5]] = True  # one day after, on the station
+    tr = track.station_track("SVIN", -16.8, 64.0, t[keep], y[:, keep], ONSET, PRE)
+    assert not tr.moved
+    ((text, colour),) = track.legend_entries([tr], ONSET, 14)
+    assert colour == track.DISPLACEMENT_COLOR and "(1 day)" in text
