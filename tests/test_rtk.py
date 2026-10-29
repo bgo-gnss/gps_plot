@@ -253,3 +253,17 @@ def test_rtk_dir_comes_from_the_config(monkeypatch, tmp_path):
     rtk.run(parser.parse_args(["SEY1-SEYD", "--rtk-dir", "/x", "--save", "png"]),
             parser, _Config())  # fmt: skip
     assert seen["root"] == "/x"
+
+
+def test_a_line_breaks_at_gaps():
+    import datetime as _dt
+
+    from gps_plot.compose import break_gaps
+
+    t0 = _dt.datetime(2026, 10, 27)
+    x = [t0 + _dt.timedelta(minutes=10 * k) for k in (0, 1, 2, 3, 300, 301)]
+    y = np.vstack([np.arange(6.0)] * 3)
+    xs, ys = break_gaps(x, y)
+    assert len(xs) == 7 and xs[4] == x[3]
+    assert np.isnan(ys[:, 4]).all() and ys[0, 5] == 4.0
+    assert break_gaps(x[:4], y[:, :4])[0] == x[:4]  # no gap, unchanged

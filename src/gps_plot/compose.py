@@ -55,6 +55,28 @@ def offset_label(label: str, k: int, offset: float) -> str:
     return f"{label} ({k * offset:+g} mm)"
 
 
+#: a line is broken where its epochs are further apart than this many
+#: median spacings (an RTK outage must not be drawn as motion)
+GAP_FACTOR = 5.0
+
+
+def break_gaps(x: Sequence[Any], y: Any) -> tuple[list[Any], Any]:
+    """``(x, y)`` with a NaN point in each gap wider than :data:`GAP_FACTOR`
+    median spacings, so a plotted line stops there instead of bridging it."""
+    y = np.asarray(y, dtype=float)
+    if len(x) < 3:
+        return list(x), y
+    t = np.array(x, dtype="datetime64[ns]").astype(np.int64).astype(float)
+    step = np.diff(t)
+    gaps = np.flatnonzero(step > GAP_FACTOR * np.median(step)) + 1
+    if gaps.size == 0:
+        return list(x), y
+    xs = list(x)
+    for k in gaps[::-1]:
+        xs.insert(int(k), xs[int(k) - 1])
+    return xs, np.insert(y, gaps, np.nan, axis=1)
+
+
 def stack_figure(
     series: Sequence[Series],
     *,
@@ -151,9 +173,10 @@ def stack_figure(
         s, x, y, color, style = series[k], xs[k], shifted[k], colors[k], styles[k]
         label = offset_label(labels[k], k, offset)
         if style == "line":
+            xl, yl = break_gaps(x, y)
             for i, ax in enumerate(axes[:3]):
                 ax.plot(
-                    x, y[i], color=color, linewidth=1.0,
+                    xl, yl[i], color=color, linewidth=1.0,
                     label=label if i == 0 else None,
                 )  # fmt: skip
             continue
