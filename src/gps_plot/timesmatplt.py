@@ -1726,7 +1726,7 @@ def plotTime(
             raise ValueError(f"{sta}: --rate reads the daily .pos series only")
         settings = rate_settings(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
-            uncert=uncert, Dir=Dir,
+            uncert=uncert, Dir=Dir, common_mode=common_mode,
         )  # fmt: skip
         if rate_segments is not None:
             from gps_plot.layers.rate import (

@@ -1662,6 +1662,18 @@ def _draw_tracks(
                 print(f"--track-ref: {r} left out: {exc}", file=sys.stderr)
         if not used:
             parser.error("--track-ref: none of the stations has data")
+        if len(used) >= 3:
+            try:
+                kept, moved = track.screen_references(
+                    dict(zip(used, loaded, strict=True)), pre, onset
+                )
+            except ValueError as exc:
+                parser.error(f"--track-ref: {exc}")
+            for name, speed in moved:
+                print(f"--track-ref: {name} left out: it moves {speed:.0f} mm/yr "
+                      "against the others since the onset", file=sys.stderr)  # fmt: skip
+            loaded = [loaded[used.index(k)] for k in kept]
+            used = kept
         if len(refs) > 1:
             ref_name = "the mean of " + ", ".join(used)
         try:

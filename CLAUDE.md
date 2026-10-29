@@ -109,7 +109,11 @@ deleted; design doc "Map products"). `map station --track EVENT`
 `--track-series STA,…` (plots.yaml `ts_stations:` on a track map) draws each
 track as a N/E series with the legend's rates on the data, `<dir>/ts/`;
 `--track-ref STA` = every track relative to STA (a baseline: shared motion
-drops out); the dotted path follows a 5-day running median
+drops out); `--track-ref A,B,C…` = relative to their weighted mean (each detrended on
+the pre-onset window first, days ≥ half of them have; glorg-like translation), a
+reference station that moves since the onset (> 5 σ from the median rate, while
+≥ 3 are left) is left out (`track.screen_references`; EYVI 2026-10);
+days are matched by calendar `track.day_key`; the dotted path follows a 5-day running median
 (`--track-path-days`).
 Area layers for any map: `--layers volcanic` (FutureVolc swarms, central
 volcanoes named, caldera rims) and `rural` (IS 50V main + local roads,
@@ -258,7 +262,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-28 — area map defaults, captions, --gmt list, --track-ref, guide draft; layer/DEM fallbacks; map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-29 — track --track-ref A,B,… (network mean + screening), ts --rate follows --common-mode; 2026-10-28 — area map defaults, captions, --gmt list, --track-ref, guide draft; layer/DEM fallbacks; map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in

@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -54,6 +54,9 @@ PATH_PEN = "0.5p,40/40/40,1_1.5:0"
 #: the dotted path follows the running median of this many days (odd; 1 or
 #: 0 = the daily positions themselves): the direction without the scatter
 PATH_MEDIAN_DAYS = 5
+#: a reference station whose motion since the onset, against the mean of
+#: the others, is above this many σ (either component) is left out
+REF_REJECT_SIGMA = 5.0
 ARROW_HEAD = "0.25c"
 ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
@@ -269,6 +272,55 @@ def reference_mean(
         count[i] += 1
     keep = count >= math.ceil(len(series) / 2)
     return from_day_key(grid[keep]), total[:, keep] / wsum[:, keep]
+
+
+def screen_references(
+    series: Mapping[str, tuple[FloatArray, FloatArray]],
+    pre: tuple[dt.date, dt.date],
+    onset: dt.date,
+    *,
+    n_sigma: float = REF_REJECT_SIGMA,
+) -> tuple[list[str], list[tuple[str, float]]]:
+    """Leave out reference stations that move: GLOBK's n-σ deletion of
+    reference sites, one at a time. Each station's own rate since the onset
+    (its trend and seasonal before removed) is compared with the median
+    rate of the stations kept, in units of √(σ² + median σ²); the worst one
+    above ``n_sigma`` (either component) goes and the rest are checked
+    again, while three or more are left (with two, which one moved cannot
+    be told). A median, not a mean, so the mover cannot pull the yardstick.
+    Returns the kept names and ``(name, its speed against the median
+    [mm/yr])`` of those left out."""
+    t_on = yearf(onset)
+    a, b = yearf(pre[0]), yearf(pre[1])
+    rates: dict[str, Rate] = {}
+    for name, (t, y) in series.items():
+        r, rms = detrend(t, y, (t >= a) & (t < b))
+        rate = line_rate(t, r, t_on, float(t[-1]), rms) if t.size else None
+        if rate is not None:
+            rates[name] = rate
+    kept = list(series)
+    out: list[tuple[str, float]] = []
+    while len(kept) >= 3:
+        have = [rates[k] for k in kept if k in rates]
+        if len(have) < 3:
+            break
+        mid = np.median([[q.north, q.east] for q in have], axis=0)
+        sig = np.median([[q.sigma_north, q.sigma_east] for q in have], axis=0)
+        worst, worst_z, worst_v = None, n_sigma, 0.0
+        for name in kept:
+            q = rates.get(name)
+            if q is None:
+                continue
+            d = np.array([q.north, q.east]) - mid
+            s = np.hypot([q.sigma_north, q.sigma_east], sig)
+            z = float(np.max(np.abs(d) / s))
+            if z > worst_z:
+                worst, worst_z, worst_v = name, z, float(np.hypot(*d))
+        if worst is None:
+            break
+        kept.remove(worst)
+        out.append((worst, worst_v))
+    return kept, out
 
 
 def station_track(
