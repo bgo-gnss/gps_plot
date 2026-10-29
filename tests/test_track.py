@@ -184,3 +184,63 @@ def test_relative_to_takes_the_shared_motion_out_on_common_days() -> None:
     a = track.station_track("SVIE", -16.8, 64.0, t2, d, ONSET, PRE)
     assert a.since is not None
     assert a.since.north == pytest.approx(200, abs=4 * a.since.sigma_north)
+
+
+def test_reference_mean_shares_out_one_stations_wander() -> None:
+    pre = (dt.date(2024, 1, 1), dt.date(2025, 1, 1))
+    days = np.arange(0, 600)
+    t = 2024.0 + (days + 0.5) / track.YEAR
+    rng = np.random.default_rng(0)
+    after = t >= 2025.0
+    quiet = [(t, rng.normal(0, 1.0, (2, t.size)) + 5.0 * (t - 2024)) for _ in range(3)]
+    moving = (t, quiet[0][1] + np.where(after, 30.0 * (t - 2025.0), 0.0))
+    tm, ym = track.reference_mean([*quiet[1:], moving], pre)
+    assert tm.size == t.size
+    # the trend before is gone; a third of the mover's 30 mm/yr is left
+    late = tm >= 2025.0
+    slope = np.polyfit(tm[late], ym[0, late], 1)[0]
+    assert slope == pytest.approx(10.0, abs=1.5)
+    # a day only one of three has is left out (fewer than half)
+    lone = (np.array([2030.0]), np.zeros((2, 1)))
+    tm2, _ = track.reference_mean([*quiet[1:], (np.concatenate([t, lone[0]]),
+                                                np.hstack([moving[1], lone[1]]))], pre)  # fmt: skip
+    assert tm2.size == t.size
+    with pytest.raises(ValueError):
+        track.reference_mean([], pre)
+
+
+def test_day_key_is_one_per_calendar_day_in_leap_years() -> None:
+    days = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(800)]
+    t = np.array([track.yearf(d) for d in days])
+    key = track.day_key(t)
+    assert np.array_equal(key, [d.toordinal() for d in days])
+    np.testing.assert_allclose(track.from_day_key(key), t)
+
+
+def test_screen_references_leaves_out_the_one_that_moves() -> None:
+    pre = (dt.date(2024, 1, 1), dt.date(2025, 1, 1))
+    onset = dt.date(2025, 1, 10)
+    days = [dt.date(2024, 1, 1) + dt.timedelta(days=i) for i in range(560)]
+    t = np.array([track.yearf(d) for d in days])
+    rng = np.random.default_rng(2)
+    after = t >= track.yearf(onset)
+    series = {
+        f"Q{i}": (t, rng.normal(0, 1.0, (2, t.size)) + 4.0 * (t - 2024))
+        for i in range(3)
+    }
+    mover = rng.normal(0, 1.0, (2, t.size))
+    mover[1] += np.where(after, 200.0 * (t - track.yearf(onset)), 0.0)
+    series["MOVE"] = (t, mover)
+    kept, out = track.screen_references(series, pre, onset)
+    assert kept == ["Q0", "Q1", "Q2"]
+    assert [name for name, _ in out] == ["MOVE"]
+    assert out[0][1] == pytest.approx(200.0, rel=0.15)
+    # quiet ones all stay; two cannot be screened
+    assert (
+        track.screen_references({k: series[k] for k in ("Q0", "Q1", "Q2")}, pre, onset)[
+            1
+        ]
+        == []
+    )
+    two = {k: series[k] for k in ("Q0", "MOVE")}
+    assert track.screen_references(two, pre, onset) == (["Q0", "MOVE"], [])

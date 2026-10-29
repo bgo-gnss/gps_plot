@@ -38,8 +38,10 @@ def rate_settings(
     pos_id: str | None,
     uncert: float,
     Dir: str | None,
+    common_mode: bool = True,
 ) -> Any:
-    """The velocity product's settings matching a ``gpsplot ts`` plot.
+    """The velocity product's settings matching a ``gpsplot ts`` plot
+    (``common_mode``: the plot's ``--common-mode``, the product's default).
 
     ``--ref plate`` → ``plate``; ``--ref detrend`` with the seasonal alone
     removed (``--detrend-terms periodic``) → ``plate-periodic``, with the
@@ -83,7 +85,7 @@ def rate_settings(
     session = "8h" if pos_id and ".08hr_" in pos_id else "24h"
     return VelocitySettings(
         frame=frame_name(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
-        pos_dir=Dir, session=session,
+        pos_dir=Dir, session=session, common_mode=common_mode,
     )  # fmt: skip
 
 

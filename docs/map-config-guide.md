@@ -80,7 +80,9 @@ korta).
 
 **A track map** (`map: station` with `--track EVENT`) shows the daily
 positions since an event in events.yaml. `--track-ref STA` measures them
-against a reference station, and `ts_stations:` adds each station's series.
+against a reference station; `--track-ref A,B,C` against the mean of several
+(a station of them that moves is left out, with a message), and
+`ts_stations:` adds each station's series.
 
 **Captions** are made from the map's options (place, dates, horizontal or
 vertical). `label:` on the product names the place; `caption:` on a run

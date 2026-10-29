@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -54,6 +54,9 @@ PATH_PEN = "0.5p,40/40/40,1_1.5:0"
 #: the dotted path follows the running median of this many days (odd; 1 or
 #: 0 = the daily positions themselves): the direction without the scatter
 PATH_MEDIAN_DAYS = 5
+#: a reference station whose motion since the onset, against the mean of
+#: the others, is above this many σ (either component) is left out
+REF_REJECT_SIGMA = 5.0
 ARROW_HEAD = "0.25c"
 ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
@@ -147,6 +150,23 @@ def yearf(day: dt.date) -> float:
     return day.year + ((day - start).days + 0.5) / length
 
 
+def day_key(t: FloatArray) -> npt.NDArray[np.int64]:
+    """The calendar day (proleptic ordinal) of each fractional-year epoch,
+    :func:`yearf`'s inverse to the day. ``round(t·365.25)`` is not one: in
+    a leap year a day is 365.25/366 of a unit, and two days can share it."""
+    year = np.floor(t).astype(np.int64)
+    leap = (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
+    length = np.where(leap, 366, 365)
+    doy = np.floor((t - year) * length).astype(np.int64)
+    first = np.array([dt.date(int(y), 1, 1).toordinal() for y in year], dtype=np.int64)
+    return first + doy
+
+
+def from_day_key(key: npt.NDArray[np.int64]) -> FloatArray:
+    """Noon of each :func:`day_key` day as a fractional year."""
+    return np.array([yearf(dt.date.fromordinal(int(k))) for k in key])
+
+
 def pre_window(onset: dt.date) -> tuple[dt.date, dt.date]:
     """The default trend window: ``PRE_DAYS`` up to ``PRE_GAP_DAYS`` before
     the onset."""
@@ -218,10 +238,89 @@ def relative_to(
     (matched to the day): the station's motion relative to the reference,
     a baseline, so motion they share (the network's, the plate's) drops
     out."""
-    day = np.round(t * YEAR).astype(np.int64)
-    ref_day = np.round(t_ref * YEAR).astype(np.int64)
-    common, i, j = np.intersect1d(day, ref_day, return_indices=True)
+    common, i, j = np.intersect1d(day_key(t), day_key(t_ref), return_indices=True)
     return t[i], y[:, i] - y_ref[:, j]
+
+
+def reference_mean(
+    series: Sequence[tuple[FloatArray, FloatArray]],
+    pre: tuple[dt.date, dt.date],
+) -> tuple[FloatArray, FloatArray]:
+    """One reference from several stations: each one's trend and seasonal
+    (fitted on ``pre``) removed, then their weighted mean per day (weights
+    1/scatter², the fit's per component), on the days at least half of
+    them have. Like GLOBK's frame realisation by many reference stations,
+    translation only: one station's own wander (a bad day, a local
+    motion) moves the reference by its share, not wholly."""
+    if not series:
+        raise ValueError("no reference stations")
+    a, b = yearf(pre[0]), yearf(pre[1])
+    days, values, weights = [], [], []
+    for t, y in series:
+        r, rms = detrend(t, y, (t >= a) & (t < b))
+        days.append(day_key(t))
+        values.append(r)
+        weights.append(1.0 / np.maximum(rms, 1e-3) ** 2)
+    grid = np.unique(np.concatenate(days))
+    total = np.zeros((2, grid.size))
+    wsum = np.zeros((2, grid.size))
+    count = np.zeros(grid.size)
+    for d, r, w in zip(days, values, weights, strict=True):
+        i = np.searchsorted(grid, d)
+        total[:, i] += w[:, None] * r
+        wsum[:, i] += w[:, None]
+        count[i] += 1
+    keep = count >= math.ceil(len(series) / 2)
+    return from_day_key(grid[keep]), total[:, keep] / wsum[:, keep]
+
+
+def screen_references(
+    series: Mapping[str, tuple[FloatArray, FloatArray]],
+    pre: tuple[dt.date, dt.date],
+    onset: dt.date,
+    *,
+    n_sigma: float = REF_REJECT_SIGMA,
+) -> tuple[list[str], list[tuple[str, float]]]:
+    """Leave out reference stations that move: GLOBK's n-σ deletion of
+    reference sites, one at a time. Each station's own rate since the onset
+    (its trend and seasonal before removed) is compared with the median
+    rate of the stations kept, in units of √(σ² + median σ²); the worst one
+    above ``n_sigma`` (either component) goes and the rest are checked
+    again, while three or more are left (with two, which one moved cannot
+    be told). A median, not a mean, so the mover cannot pull the yardstick.
+    Returns the kept names and ``(name, its speed against the median
+    [mm/yr])`` of those left out."""
+    t_on = yearf(onset)
+    a, b = yearf(pre[0]), yearf(pre[1])
+    rates: dict[str, Rate] = {}
+    for name, (t, y) in series.items():
+        r, rms = detrend(t, y, (t >= a) & (t < b))
+        rate = line_rate(t, r, t_on, float(t[-1]), rms) if t.size else None
+        if rate is not None:
+            rates[name] = rate
+    kept = list(series)
+    out: list[tuple[str, float]] = []
+    while len(kept) >= 3:
+        have = [rates[k] for k in kept if k in rates]
+        if len(have) < 3:
+            break
+        mid = np.median([[q.north, q.east] for q in have], axis=0)
+        sig = np.median([[q.sigma_north, q.sigma_east] for q in have], axis=0)
+        worst, worst_z, worst_v = None, n_sigma, 0.0
+        for name in kept:
+            q = rates.get(name)
+            if q is None:
+                continue
+            d = np.array([q.north, q.east]) - mid
+            s = np.hypot([q.sigma_north, q.sigma_east], sig)
+            z = float(np.max(np.abs(d) / s))
+            if z > worst_z:
+                worst, worst_z, worst_v = name, z, float(np.hypot(*d))
+        if worst is None:
+            break
+        kept.remove(worst)
+        out.append((worst, worst_v))
+    return kept, out
 
 
 def station_track(
