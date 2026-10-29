@@ -145,3 +145,36 @@ def test_a_run_still_going_makes_the_next_skip(monkeypatch, tmp_path, capsys):
         fcntl.flock(held, fcntl.LOCK_EX)
         assert rtk_run.run("rtk-run", []) == 0
     assert "still going" in capsys.readouterr().out
+
+
+def test_each_selection_of_runs_has_its_own_lock():
+    assert rtk_run.lock_name(None) == rtk_run.LOCK_NAME
+    assert rtk_run.lock_name(["2d", "6h", "12h"]) == ".rtk-run-12h_2d_6h.lock"
+    assert rtk_run.lock_name(["14d"]) != rtk_run.lock_name(["6h"])
+
+
+def test_a_run_selection_keeps_the_other_runs_plots(monkeypatch, tmp_path):
+    import geo_dataread.rtk_read as rr
+
+    from gps_plot import plot_gps_timeseries, products
+
+    class Config:
+        config_path = str(tmp_path)
+
+        def getPostProcessDir(self, option):
+            return str(tmp_path)
+
+    plots = tmp_path / "plots"
+    monkeypatch.setattr(plot_gps_timeseries, "_load_config", lambda: Config())
+    monkeypatch.setattr(products, "area_table", lambda doc: AREAS)
+    monkeypatch.setattr(products, "load_yaml", lambda p: {"plots_dir": str(plots)})
+    monkeypatch.setattr(rr, "list_baselines", lambda root=None: DIRS)
+    made = []
+    monkeypatch.setattr(rtk_run, "plot", lambda j, *a: made.append(j.run) or True)
+    d = plots / "locations/skridurogflod/seydisfjordur/graphs/rtk"
+    d.mkdir(parents=True)
+    (d / "SEY1_SEYD-rtk-14d.png").touch()
+    assert rtk_run.run("rtk-run", ["--run", "6h", "--area", "seydisfjordur"]) == 0
+    assert set(made) == {"6h"}
+    assert (d / "SEY1_SEYD-rtk-14d.png").exists()  # another run's plot stays
+    assert rtk_run.run("rtk-run", ["--run", "nope"]) == 2

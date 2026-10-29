@@ -26,7 +26,9 @@ every group figure, ``overrides: {<area>/<group>: {args: …}}`` to one) —
 stable names, outside the ``A_B-baseline-*`` / ``stack_<g>-<frame>`` names
 ``gpsplot run`` prunes. Each file is written beside its target and
 renamed over it, so a reader never sees half a PNG. A lock file keeps two
-runs from overlapping (a run still going makes the next one exit 0). A pair
+runs of the same selection from overlapping (a run still going makes the next
+one exit 0); ``--run 6h,12h,2d`` picks runs, so the short plots can go on a
+fast timer and the long ones on a slow one (each selection its own lock). A pair
 with nothing to plot (its stations down) is skipped, not an error; exit 1
 only when a plot raised.
 ``rtk-*`` plots the config no longer has are deleted from the rtk dirs.
@@ -210,6 +212,14 @@ def plot(job: RtkJob, root: Path, config: Any) -> bool:
     return False
 
 
+def lock_name(runs: Sequence[str] | None) -> str:
+    """One lock per selection of runs: a slow selection (the long plots) never
+    holds up a fast one (6h/12h/2d); the same selection never overlaps."""
+    if not runs:
+        return LOCK_NAME
+    return f".rtk-run-{'_'.join(sorted(runs))}.lock"
+
+
 def build_parser(prog: str) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=prog,
@@ -223,6 +233,12 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     p.add_argument(
         "--area", action="append", default=None,
         help="only these areas (cdn slug), comma separated or repeated",
+    )  # fmt: skip
+    p.add_argument(
+        "--run", action="append", default=None,
+        help="only these runs (plots.yaml rtk: names, e.g. 6h,12h,2d), comma "
+        "separated or repeated: the short plots on a fast timer, the long ones "
+        "on a slow one",
     )  # fmt: skip
     p.add_argument("--dry-run", action="store_true", help="list the plots and exit")
     p.add_argument(
@@ -251,10 +267,16 @@ def run(prog: str, argv: list[str]) -> int:
     areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
     dirs = list_baselines(rtk_dir(common.config_dir(config, "rtk_dir")))
     try:
-        jobs = plan(cfg, areas, dirs, _names(args.area))
+        configured = plan(cfg, areas, dirs, _names(args.area))
     except ValueError as exc:
         print(f"{prog}: {plots_path}: {exc}", file=sys.stderr)
         return 2
+    runs = _names(args.run)
+    unknown = sorted(set(runs or ()) - {j.run for j in configured})
+    if unknown and configured:
+        print(f"{prog}: unknown run(s) {unknown}", file=sys.stderr)
+        return 2
+    jobs = [j for j in configured if runs is None or j.run in runs]
     root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
     if args.dry_run:
         for j in jobs:
@@ -269,11 +291,11 @@ def run(prog: str, argv: list[str]) -> int:
         )
         return 2
     root.mkdir(parents=True, exist_ok=True)
-    with open(root / LOCK_NAME, "w") as lock:
+    with open(root / lock_name(runs), "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(f"{prog}: another rtk-run is still going; skipped")
+            print(f"{prog}: the previous rtk-run of these runs is still going; skipped")
             return 0
         status, skipped = 0, []
         for j in jobs:
@@ -283,8 +305,8 @@ def run(prog: str, argv: list[str]) -> int:
             except Exception as exc:  # one pair must not sink the rest
                 print(f"{prog}: {j.stem}: {exc}", file=sys.stderr)
                 status = 1
-        if not args.keep_stale:
-            for f in stale(jobs, root):
+        if not args.keep_stale:  # against every configured run, not just these
+            for f in stale(configured, root):
                 f.unlink(missing_ok=True)
                 print(f"{prog}: deleted stale {f}")
     if skipped:

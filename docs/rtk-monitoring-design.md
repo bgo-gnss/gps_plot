@@ -66,13 +66,16 @@ because RTK plots go stale in minutes. Module `gps_plot.rtk_run`.
 - **Host:** the same host as `gpsplot run` (BGÓ). There is no CDN push yet:
   aflogun is tested locally against `plots_dir` while the server is awaited.
 
-Timer (user systemd, 5 min):
+Two timers (2026-10-29: all six runs took 5–8 min, mostly drawing):
+`gpsplot rtk-run --run 6h,12h,2d` every 5 min and `--run 4d,7d,14d` every
+30 min; each selection has its own lock, and stale plots are judged against
+every configured run. Example unit (user systemd, 5 min):
 
 ```ini
 # ~/.config/systemd/user/gpsplot-rtk.service
 [Service]
 Type=oneshot
-ExecStart=%h/.miniforge/envs/gpslibrary/bin/gpsplot rtk-run
+ExecStart=%h/.miniforge/envs/gpslibrary/bin/gpsplot rtk-run --run 6h,12h,2d
 # ~/.config/systemd/user/gpsplot-rtk.timer
 [Timer]
 OnCalendar=*:0/5
