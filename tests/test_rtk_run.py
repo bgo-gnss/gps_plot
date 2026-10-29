@@ -86,7 +86,7 @@ def test_plan_refuses(cfg, area, msg):
 
 def test_stale_only_touches_rtk_plots_no_job_writes(tmp_path):
     jobs = rtk_run.plan({}, AREAS, DIRS, area=["seydisfjordur"])
-    assert sorted({j.run for j in jobs}) == ["12h", "14d", "2d", "3d", "6h", "7d"]
+    assert sorted({j.run for j in jobs}) == ["12h", "14d", "2d", "4d", "6h", "7d"]
     d = tmp_path / jobs[0].out_dir
     d.mkdir(parents=True)
     for name in ["SEY1_SEYD-rtk-14d.png", "SEY4_SEYD-rtk-14d.png",
