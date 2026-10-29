@@ -359,10 +359,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     )  # fmt: skip
     g.add_argument(
         "--layers", action="append", default=[], metavar="NAME[,NAME…]",
-        help="named GIS layers, each with its own look and --gmt step: roads, "
-        "towns, lavas, graben, fissures, barriers, places, or a preset "
-        "(reykjanes = all of them; infrastructure; eruptions); 'list' prints "
-        "them. Built by the GIS directory's vector/build_08_reykjanes.sh",
+        help="named GIS layers or presets of the layer catalogue "
+        "(map_layers.yaml; 'list' prints them, marking files not on this "
+        "host), each with its own look and --gmt step; repeatable, in drawing "
+        "order. -NAME takes a layer or preset out again: --layers "
+        "volcanic,roads --layers=-swarms (the = is needed for a leading -)",
     )  # fmt: skip
     g.add_argument(
         "--inset", type=_region, default=None, metavar="W/E/S/N|AREA",
@@ -407,8 +408,9 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--gmt", action="append", default=[], metavar="STEP:KEY=VALUE",
         help="a GMT argument for one drawing step, replacing gpsplot's own: "
         "KEY is a PyGMT long name or one GMT letter, e.g. coast:A=500/0/1, "
-        "glaciers:pen=0.3p,blue, dem:t=20 (repeatable; steps: "
-        + ", ".join(gmt_overrides.LAYERS) + ")",
+        "glaciers:pen=0.3p,blue, dem:t=20, calderas:pen=2p,red (repeatable; "
+        "'--gmt list' prints every step, its PyGMT call and its options; "
+        "every --layers layer is a step of its own name)",
     )  # fmt: skip
     g.add_argument(
         "--strict-layers", action="store_true",
@@ -528,6 +530,18 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--track-frame", default="itrf14", metavar="FRAME",
         help="the .pos series read (default itrf14)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-ref", default=None, metavar="STA",
+        help="every track relative to this station (STA - REF on common "
+        "days, a baseline): motion they share, the network's or a region's, "
+        "drops out; REF itself is not drawn as a track",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-path-days", type=int, default=track.PATH_MEDIAN_DAYS,
+        metavar="N",
+        help="the dotted path follows the running median of N days "
+        f"(default {track.PATH_MEDIAN_DAYS}; 1 = the daily positions)",
     )  # fmt: skip
     g.add_argument(
         "--track-uncert", type=float, default=track.TRACK_UNCERT, metavar="MM",
@@ -1407,6 +1421,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     try:
         # the layer catalogue first: its layers are --gmt steps too
         args.layer_catalogue = layer_catalogue(args, config)
+        if any(spec.strip().lower() == gmt_overrides.LIST for spec in args.gmt):
+            print(gmt_overrides.describe(pygmt))  # the catalogue's layers too
+            return 0
         layers = gmt_overrides.parse(args.gmt)
         gmt_overrides.check(layers, pygmt)
         defaults = gmt_config(args.gmt_config)
@@ -1619,14 +1636,27 @@ def _draw_tracks(
     # the series show more days before the onset than the dots: load those,
     # the map draws its own days (trimmed: same rates and zero)
     before = max(args.track_before, track.SERIES_BEFORE_DAYS if series else 0)
+    common_mode = args.track_common_mode == "subtract"
+    ref_name = (args.track_ref or "").upper() or None
+    reference = None
+    if ref_name:
+        try:
+            reference = track.load_series(
+                ref_name, pre, frame=args.track_frame, pos_dir=pos_dir,
+                uncert=args.track_uncert, common_mode=common_mode,
+            )  # fmt: skip
+        except (ValueError, OSError) as exc:
+            parser.error(f"--track-ref {ref_name}: {exc}")
     tracks, dropped = [], []
     for c in stations:
+        if c.marker == ref_name:
+            continue  # zero by construction
         try:
             tracks.append(track.load_track(
                 c.marker, c.lon, c.lat, onset, pre, frame=args.track_frame,
-                pos_dir=pos_dir, uncert=args.track_uncert,
-                common_mode=args.track_common_mode == "subtract",
+                pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
+                reference=reference,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -1646,6 +1676,8 @@ def _draw_tracks(
         arrows=args.track_arrows,
         arrow_scale=(args.track_arrow_scale / 100 if args.track_arrow_scale else None),
         cmap=args.track_cmap, legend_floor_cm=BOTTOM_LABELS_CM,
+        path_days=args.track_path_days,
+        note=f"motion relative to {ref_name}" if ref_name else None,
     )  # fmt: skip
     # the map's colour scale (draw_tracks: from the first dot, at least a day)
     days = np.concatenate([tr.days for tr in shown]) if shown else np.zeros(1)
@@ -1655,8 +1687,8 @@ def _draw_tracks(
     return floor, [
         (tr.marker, track.series_figure(
             tr, onset, recent_days=args.track_recent, before_days=args.track_before,
-            days_range=span, cmap=args.track_cmap,
-            common_mode=args.track_common_mode == "subtract"))
+            days_range=span, cmap=args.track_cmap, common_mode=common_mode,
+            reference=ref_name))
         for tr in picked
     ]  # fmt: skip
 

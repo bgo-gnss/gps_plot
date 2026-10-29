@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import shutil
 import sys
 import tempfile
@@ -275,6 +276,16 @@ def run(prog: str, argv: list[str]) -> int:
             fh.writelines(f + "\n" for f in files)
         if job.publish:
             published += files
+    # the map captions beside the maps (aflogun Kort shows them)
+    for out_dir, caps in products.map_captions(jobs, configured).items():
+        path = root / out_dir / products.CAPTIONS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(dict(sorted(caps.items())), ensure_ascii=False, indent=1) + "\n",
+            encoding="utf-8",
+        )
+        if any(j.publish and any(d == out_dir for d, *_ in j.captions) for j in jobs):
+            published.append(str(path.resolve()))
     with open(run_dir / "publish.manifest", "w") as fh:
         # relative to plots_dir: rsync --files-from=publish.manifest plots_dir/ target
         fh.writelines(

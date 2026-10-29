@@ -165,3 +165,22 @@ def test_trimmed_keeps_the_rates_and_the_series_lines_match_them() -> None:
     fig = track.series_figure(tr, ONSET, before_days=30)
     texts = [t.get_text() for ax in fig.axes[:2] for t in ax.texts]
     assert any(f"v = {tr.since.north:.0f} ±" in x for x in texts)
+
+
+def test_running_median_smooths_a_spike_and_keeps_the_ends() -> None:
+    y = np.array([0.0, 1.0, 2.0, 30.0, 4.0, 5.0, 6.0])
+    m = track.running_median(y, 5)
+    assert m[3] == 4.0 and m.size == y.size
+    assert track.running_median(y, 1) is y
+
+
+def test_relative_to_takes_the_shared_motion_out_on_common_days() -> None:
+    t, y = _series(move=(200.0, -120.0), seed=7)
+    shared = np.vstack([5.0 * np.sin(40 * t), 3.0 * np.cos(30 * t)])
+    t_ref, y_ref = t[::2], shared[:, ::2]  # the reference has every 2nd day
+    t2, d = track.relative_to(t, y + shared, t_ref, y_ref)
+    assert t2.size == t_ref.size
+    assert np.allclose(d, y[:, ::2])  # the shared signal gone
+    a = track.station_track("SVIE", -16.8, 64.0, t2, d, ONSET, PRE)
+    assert a.since is not None
+    assert a.since.north == pytest.approx(200, abs=4 * a.since.sigma_north)

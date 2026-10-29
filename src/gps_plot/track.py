@@ -51,6 +51,9 @@ ARROW_CM = 2.0
 DOT_STYLE = "c0.13c"
 DOT_PEN = "0.2p,black"
 PATH_PEN = "0.5p,40/40/40,1_1.5:0"
+#: the dotted path follows the running median of this many days (odd; 1 or
+#: 0 = the daily positions themselves): the direction without the scatter
+PATH_MEDIAN_DAYS = 5
 ARROW_HEAD = "0.25c"
 ARROW_PEN = "0.9p"
 ELLIPSE_PEN = "0.6p,black"
@@ -197,6 +200,30 @@ def line_rate(
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
 
 
+def running_median(y: FloatArray, n: int) -> FloatArray:
+    """The centred running median of ``n`` points (odd; shorter at the
+    ends); ``n`` <= 1: ``y`` itself."""
+    if n <= 1 or y.size == 0:
+        return y
+    half = n // 2
+    return np.array(
+        [np.median(y[max(0, i - half) : i + half + 1]) for i in range(y.size)]
+    )
+
+
+def relative_to(
+    t: FloatArray, y: FloatArray, t_ref: FloatArray, y_ref: FloatArray
+) -> tuple[FloatArray, FloatArray]:
+    """``y`` minus the reference station's ``y_ref`` on the days both have
+    (matched to the day): the station's motion relative to the reference,
+    a baseline, so motion they share (the network's, the plate's) drops
+    out."""
+    day = np.round(t * YEAR).astype(np.int64)
+    ref_day = np.round(t_ref * YEAR).astype(np.int64)
+    common, i, j = np.intersect1d(day, ref_day, return_indices=True)
+    return t[i], y[:, i] - y_ref[:, j]
+
+
 def station_track(
     marker: str,
     lon: float,
@@ -229,22 +256,18 @@ def station_track(
     )  # fmt: skip
 
 
-def load_track(
+def load_series(
     marker: str,
-    lon: float,
-    lat: float,
-    onset: dt.date,
     pre: tuple[dt.date, dt.date],
     *,
     frame: str = "itrf14",
     pos_dir: str | None = None,
     uncert: float = TRACK_UNCERT,
     common_mode: bool = True,
-    before_days: int = BEFORE_DAYS,
-    recent_days: int = RECENT_DAYS,
     end: dt.date | None = None,
-) -> Track:
-    """Read a station (cleaned view, plate removed) and make its track.
+) -> tuple[FloatArray, FloatArray]:
+    """A station's daily horizontal series (cleaned view, plate removed)
+    from the trend window on: ``(t, y)``, ``y`` (N, E) [mm].
 
     Screened on the horizontal formal σ only (a map of horizontal motion
     keeps a day whose Up σ is large); the daily network common mode is
@@ -262,6 +285,31 @@ def load_track(
         epochs, values, _src = resolve_common_mode(pos_dir if pos_dir else None)
         if epochs.size:
             y, _n = subtract_common_mode(t, y, epochs, values[:2])
+    return t, y
+
+
+def load_track(
+    marker: str,
+    lon: float,
+    lat: float,
+    onset: dt.date,
+    pre: tuple[dt.date, dt.date],
+    *,
+    frame: str = "itrf14",
+    pos_dir: str | None = None,
+    uncert: float = TRACK_UNCERT,
+    common_mode: bool = True,
+    before_days: int = BEFORE_DAYS,
+    recent_days: int = RECENT_DAYS,
+    end: dt.date | None = None,
+    reference: tuple[FloatArray, FloatArray] | None = None,
+) -> Track:
+    """Read a station (:func:`load_series`) and make its track; with
+    ``reference`` (another station's ``load_series``) relative to it."""
+    t, y = load_series(marker, pre, frame=frame, pos_dir=pos_dir, uncert=uncert,
+                       common_mode=common_mode, end=end)  # fmt: skip
+    if reference is not None:
+        t, y = relative_to(t, y, *reference)
     return station_track(marker, lon, lat, t, y, onset, pre,
                          before_days=before_days, recent_days=recent_days)  # fmt: skip
 
@@ -338,6 +386,8 @@ def draw_tracks(
     arrow_scale: float | None = None,
     cmap: str = DEFAULT_CMAP,
     legend_floor_cm: float = 1.0,
+    path_days: int = PATH_MEDIAN_DAYS,
+    note: str | None = None,
 ) -> float:
     """Draw the tracks, arrows, legend and colour bar on ``fig``.
 
@@ -361,7 +411,9 @@ def draw_tracks(
     for tr in tracks:
         x, y = offset_lonlat(tr.lon, tr.lat, tr.north, tr.east, m_per_mm)
         paths.append((x, y, tr.days))
-        fig.plot(x=x, y=y, pen=PATH_PEN)
+        pn, pe = running_median(tr.north, path_days), running_median(tr.east, path_days)
+        px, py = offset_lonlat(tr.lon, tr.lat, pn, pe, m_per_mm)
+        fig.plot(x=px, y=py, pen=PATH_PEN)
     x = np.concatenate([p[0] for p in paths]) if paths else np.zeros(0)
     y = np.concatenate([p[1] for p in paths]) if paths else np.zeros(0)
     z = np.concatenate([p[2] for p in paths]) if paths else np.zeros(0)
@@ -401,8 +453,11 @@ def draw_tracks(
             labels=False,
         )  # fmt: skip
 
+    entries = legend_entries(tracks, onset, recent_days)
+    if note:  # e.g. the reference station: what the motion is relative to
+        entries = [(note, "black"), *entries]
     return _draw_legend(
-        fig, legend_entries(tracks, onset, recent_days), region=region,
+        fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
         floor_cm=legend_floor_cm,
@@ -500,6 +555,7 @@ def series_figure(
     days_range: tuple[float, float] | None = None,
     cmap: str = DEFAULT_CMAP,
     common_mode: bool = True,
+    reference: str | None = None,
 ) -> Any:
     """A station's track as a time series: North and East (the trend and
     seasonal before the onset removed, zero at the onset, as on the map),
@@ -547,7 +603,8 @@ def series_figure(
         ax.grid(True, color="0.85", lw=0.5)
     fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
                  shrink=0.6, aspect=30)  # fmt: skip
-    fig.suptitle(f"{tr.marker}: horizontal motion, trend and seasonal before "
+    rel = f" relative to {reference}" if reference else ""
+    fig.suptitle(f"{tr.marker}: horizontal motion{rel}, trend and seasonal before "
                  "the onset removed", fontsize=12)  # fmt: skip
     if common_mode:
         axes[1].text(0.99, 0.02, "network common mode removed",

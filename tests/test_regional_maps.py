@@ -366,3 +366,26 @@ def test_earth_relief_fallback_fits_the_pixels_and_skips_srtm_in_the_north():
     assert maps.earth_relief_fallback((-180.0, 180.0, -60.0, 60.0), "M3c") == (
         "@earth_relief_01m"
     )
+
+
+def test_a_minus_name_takes_a_layer_or_preset_out():
+    assert gis_layers.expand(["volcanic,roads", "-volcanic,reykjanes", "-places"]) == [
+        "roads", "towns", "lavas", "graben", "fissures", "barriers",
+    ]  # fmt: skip
+    assert gis_layers.expand(["rural", "-buildings"]) == [
+        "localroads",
+        "roads",
+        "farms",
+    ]
+    with pytest.raises(ValueError, match="not a layer"):
+        gis_layers.expand(["-nope"])
+
+
+def test_gmt_list_names_every_step_and_its_options():
+    from gps_plot import gmt_overrides
+
+    gis_layers.register_steps(gis_layers.BUILTIN)
+    text = gmt_overrides.describe()
+    for step in ("coast", "dem", "calderas", "buildings", "place-labels"):
+        assert f"\n  {step} " in text
+    assert "transparency=t" in text and "pen=W" in text
