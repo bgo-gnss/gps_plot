@@ -417,7 +417,8 @@ def test_baseline_products_expand_to_ts_and_stack_jobs() -> None:
     argv = budh[0].argv
     assert argv[-2:] == ("--label", "budh")
     assert "--skip-missing" not in argv and "--legacy-names" not in argv
-    assert not any("--events" in j.argv for j in stacks)  # stack draws none
+    # BL_AREAS_DOC has no events: the catalog lines are tested below
+    assert not any("--events" in j.argv for j in stacks)
     assert budh[0].name == "stacks/vatnsfell/budh"
 
 
@@ -945,3 +946,15 @@ def test_update_pos_script_from_flag_or_plots_yaml(tmp_path, capsys) -> None:
     good.chmod(0o755)
     assert run_cli.update_pos(good, "gpsplot run")
     assert not run_cli.update_pos(run_cli.Path(), "gpsplot run")
+
+
+def test_stacks_get_the_catalog_event_lines_too() -> None:
+    # BGÓ 2026-10-30: the landslide onset on the stack figures as well
+    jobs = products.expand(
+        BL_CFG, areas=products.area_table(BL_AREAS_DOC), events=EVENTS
+    )
+    eldc = [j for j in jobs if j.product == "stacks" and j.group == "eldc"]
+    assert eldc and all("--events" in j.argv for j in eldc)
+    argv = eldc[0].argv
+    assert argv[argv.index("--events") + 1 :][:2] == ("20210224,b", "20210319,r")
+    assert argv[-2:] == ("--label", "eldc")

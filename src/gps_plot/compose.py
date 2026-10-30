@@ -19,10 +19,12 @@ from matplotlib.figure import Figure
 from gps_plot.series import Series
 
 #: colours for overlaid series: distinct, readable on white, no pure red
-#: (red is the single-series data colour of gpsplot ts)
+#: (red is the single-series data colour of gpsplot ts) and no grey (the
+#: error bars and the set-aside days are grey; slot 7 is black since
+#: 2026-10-30, so the other slots keep their stations)
 STACK_PALETTE: tuple[str, ...] = (
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
-    "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#393b79", "#637939",
+    "#e377c2", "#000000", "#bcbd22", "#17becf", "#393b79", "#637939",
 )  # fmt: skip
 
 
@@ -87,6 +89,8 @@ def stack_figure(
     ylim: Sequence[Any] = (),
     offset: float = 0.0,
     show_outliers: int | None = None,
+    show_obstruction: int | None = None,
+    show_network: int | None = None,
     styles: Sequence[str] | None = None,
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
@@ -105,6 +109,10 @@ def stack_figure(
             ``outliers`` overlay) in the series' colour with a bold black
             outline — 0 all of them, N only among its last N epochs; None
             (default) none. They widen the y range, so none is cut off.
+        show_obstruction: The same for the icing and snow-burial days
+            (``iced``, ``buried``): light blue, edged in the series' colour.
+        show_network: The same for the network days (``netday``): dark
+            grey, edged in the series' colour.
         styles: Per series ``"points"`` (markers with error bars, the
             default), ``"marked"`` (larger, dark-edged points, to stand out
             over lines) or ``"line"`` (a thin line, no error bars: dense
@@ -133,17 +141,31 @@ def stack_figure(
     shifted = [
         np.asarray(s.y, dtype=float) + k * float(offset) for k, s in enumerate(series)
     ]
-    flagged: list[Any] = [None] * len(series)
-    if show_outliers is not None:
-        for k, s in enumerate(series):
-            if s.outliers is None:
-                continue
-            oy, ody = s.outliers
-            if show_outliers:
-                oy, ody = tplt.last_flagged(oy, ody, show_outliers)
-            oy = np.asarray(oy, dtype=float) + k * float(offset)
-            if np.isfinite(oy).any():
-                flagged[k] = (oy, ody)
+
+    def overlay(k: int, layer: Any, tail: int | None) -> Any:
+        """Series k's set-aside layer, shifted with it; None when empty."""
+        if tail is None or layer is None:
+            return None
+        oy, ody = layer
+        if tail:
+            oy, ody = tplt.last_flagged(oy, ody, tail)
+        oy = np.asarray(oy, dtype=float) + k * float(offset)
+        return (oy, ody) if np.isfinite(oy).any() else None
+
+    def merged(a: Any, b: Any) -> Any:  # icing on N/E/U, snow on Up only
+        if a is None or b is None:
+            return a if b is None else b
+        keep = np.isfinite(np.asarray(a[0], dtype=float))
+        return (np.where(keep, a[0], b[0]), np.where(keep, a[1], b[1]))
+
+    flagged = [overlay(k, s.outliers, show_outliers) for k, s in enumerate(series)]
+    obstructed = [
+        merged(
+            overlay(k, s.iced, show_obstruction), overlay(k, s.buried, show_obstruction)
+        )
+        for k, s in enumerate(series)
+    ]
+    netdays = [overlay(k, s.netday, show_network) for k, s in enumerate(series)]
 
     def low(k: int, i: int) -> float:
         if robust_lines and styles[k] == "line":
@@ -157,7 +179,7 @@ def stack_figure(
 
     ymin = [min(low(k, i) for k in range(len(series))) for i in range(3)]
     ymax = [max(high(k, i) for k in range(len(series))) for i in range(3)]
-    for f in flagged:
+    for f in [*flagged, *obstructed, *netdays]:
         if f is not None:
             ymin = [min(v, float(np.nanmin(f[0][i]))) for i, v in enumerate(ymin)]
             ymax = [max(v, float(np.nanmax(f[0][i]))) for i, v in enumerate(ymax)]
@@ -167,8 +189,10 @@ def stack_figure(
             ymax = [max(v, k * float(offset)) for v in ymax]
     fig = tplt.setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
-    # lines first, then markers: dense line series must not hide points
-    order = sorted(range(len(series)), key=lambda k: styles[k] != "line")
+    # lines first, then markers: dense line series must not hide points;
+    # among the markers the densest first, so a station with a day a week
+    # is not buried under a daily one (SVIN under SVIE)
+    order = sorted(range(len(series)), key=lambda k: (styles[k] != "line", -len(xs[k])))
     for k in order:
         s, x, y, color, style = series[k], xs[k], shifted[k], colors[k], styles[k]
         label = offset_label(labels[k], k, offset)
@@ -213,6 +237,27 @@ def stack_figure(
             markerfacecolor="white", markeredgecolor="black",
             markeredgewidth=1.6, label="outlier (its series' colour)",
         )  # fmt: skip
+    # icing/snow and network days: the class's colour, edged in the series'
+    # colour (which station it was), as gpsplot ts draws them
+    for layers, face, bar, key in (
+        (obstructed, tplt.ICING_FACE_COLOR, tplt.ICING_ERRORBAR_COLOR,
+         "icing / snow suspected (set aside)"),
+        (netdays, tplt.NETWORK_FACE_COLOR, tplt.NETWORK_ERRORBAR_COLOR,
+         "network day (set aside)"),
+    ):  # fmt: skip
+        for k, f in enumerate(layers):
+            if f is not None:
+                tplt.addData(
+                    xs[k], f[0], f[1], fig, ecolor=bar, markersize=5.0,
+                    markerfacecolor=face, markeredgecolor=colors[k],
+                    markeredgewidth=1.6,
+                )  # fmt: skip
+        if any(f is not None for f in layers):
+            axes[0].plot(
+                [], [], linestyle="none", marker="o", markersize=5.0,
+                markerfacecolor=face, markeredgecolor="black",
+                markeredgewidth=1.6, label=key,
+            )  # fmt: skip
     # a late series' backcast (stack.backcast_late_starts): its fitted rate,
     # dashed, from the stack's first epoch (zero) to where its data begin
     for k, s in enumerate(series):

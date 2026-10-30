@@ -760,7 +760,7 @@ def _area_jobs(
     overrides = spec.get("overrides") or {}
     ev = (
         event_specs(events, [slug, entry["key"]], colours)
-        if spec.get("events") == "catalog" and tool == "ts"
+        if spec.get("events") == "catalog"  # ts and stack both draw them
         else []
     )
     root = entry.get("root", DEFAULT_ROOT)

@@ -25,7 +25,7 @@ import sys
 import textwrap
 import warnings
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -119,6 +119,44 @@ def build_parser(
         "epochs). Off by default",
     )
     parser.add_argument(
+        "--outlier-sigma",
+        type=float,
+        default=None,
+        metavar="K",
+        help="with --view cleaned: the outlier tolerance in local noise "
+        "units, as gpsplot ts (default 4.5; the published plots use 3.5)",
+    )
+    parser.add_argument(
+        "--show-obstruction",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="with --view cleaned: draw the icing and snow-burial days (set "
+        "aside) light blue, edged in the series' colour; N: only among its "
+        "last N epochs. Off by default",
+    )
+    parser.add_argument(
+        "--show-network",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="with --view cleaned: draw the network days (set aside) dark "
+        "grey, edged in the series' colour; N as --show-obstruction",
+    )
+    parser.add_argument(
+        "--colors",
+        nargs="+",
+        default=None,
+        metavar="SERIES=COLOR",
+        help="a series' own colour, e.g. --colors SVIN-SKFC=red "
+        "SVIE-SKFC=#1f77b4 (any matplotlib colour); the rest keep the "
+        "palette colour of their name",
+    )
+    parser.add_argument(
         "--label",
         default=None,
         metavar="NAME",
@@ -144,6 +182,36 @@ def build_parser(
 # ---------------------------------------------------------------------------
 # series list
 # ---------------------------------------------------------------------------
+
+
+def outlier_params(sigma: float | None) -> Any:
+    """``--outlier-sigma K`` as the cleaned view's OutlierParams (the
+    running window's k, as gpsplot ts); None keeps the default."""
+    from gps_plot import plot_gps_timeseries as pgt
+
+    return pgt._build_outlier_params([], base=pgt._method_overrides(None, sigma))
+
+
+def parse_colors(items: Sequence[str] | None) -> dict[str, str]:
+    """``--colors SERIES=COLOR ...`` as ``{series: colour}``; a bad colour
+    or a missing ``=`` raises ValueError."""
+    from matplotlib.colors import is_color_like
+
+    out: dict[str, str] = {}
+    for item in items or ():
+        name, sep, color = item.partition("=")
+        if not (sep and name and is_color_like(color)):
+            raise ValueError(f"--colors {item!r}: give SERIES=COLOR")
+        out[name.upper()] = color
+    return out
+
+
+def series_colors(series: Sequence[Series], own: Mapping[str, str]) -> list[str]:
+    """Each series' colour: its own (``--colors``) or the palette's."""
+    from gps_plot import compose
+
+    palette = compose.series_colors([s.label for s in series])
+    return [own.get(s.label.upper(), c) for s, c in zip(series, palette, strict=True)]
 
 
 #: a series starting more than this after the stack's first epoch is backcast
@@ -248,15 +316,21 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
         # value of each line at t0 (the shift) and at t1 (where it meets the data)
         at_t0 = np.array([lv + r * (t0 - t1) for lv, r in lines])  # type: ignore[misc]
         at_t1 = np.array([lv for lv, _ in lines])  # type: ignore[misc]
-        shifted_outliers = None
-        if s.outliers is not None:  # the overlay moves with its series
-            oy, ody = s.outliers
-            shifted_outliers = (np.asarray(oy, dtype=float) - at_t0[:, None], ody)
+
+        def moved(overlay: Any) -> Any:  # an overlay moves with its series
+            if overlay is None:
+                return None
+            oy, ody = overlay
+            return (np.asarray(oy, dtype=float) - at_t0[:, None], ody)
+
         out.append(
             dataclasses.replace(
                 s,
                 y=y - at_t0[:, None],
-                outliers=shifted_outliers,
+                outliers=moved(s.outliers),
+                iced=moved(s.iced),
+                buried=moved(s.buried),
+                netday=moved(s.netday),
                 meta={**s.meta, "backcast": (t0, t1, at_t1 - at_t0)},
             )
         )
@@ -427,8 +501,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         parser.error(str(exc))
     if detrend_terms is not None and args.ref != "detrend":
         parser.error("--detrend-terms needs --ref detrend")
-    if args.show_outliers is not None and args.show_outliers < 0:
-        parser.error("--show-outliers N: N must be positive")
+    for opt in ("show_outliers", "show_obstruction", "show_network"):
+        if (getattr(args, opt) or 0) < 0:
+            parser.error(f"--{opt.replace('_', '-')} N: N must be positive")
+    if args.outlier_sigma is not None and args.outlier_sigma <= 0:
+        parser.error("--outlier-sigma: must be > 0")
+    try:
+        own_colors = parse_colors(args.colors)
+    except ValueError as exc:
+        parser.error(str(exc))
     start, end = common.resolve_dates(args, currDatetime)
     try:
         events = common.resolve_events(args)
@@ -456,6 +537,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         view=args.view,
         detrend_terms=detrend_terms,
         pos_id=pos_id,
+        outlier_params=outlier_params(args.outlier_sigma),
     )
     empirical = args.baseline_sigma == "empirical"
     if empirical and is_8h:
@@ -527,7 +609,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         end=end,
         ylim=args.ylim,
         offset=args.offset,
+        colors=series_colors(got, own_colors),
         show_outliers=args.show_outliers if args.view == "cleaned" else None,
+        show_obstruction=args.show_obstruction if args.view == "cleaned" else None,
+        show_network=args.show_network if args.view == "cleaned" else None,
         fig=tplt._reusable_figure() if args.save else None,
     )
     if events:

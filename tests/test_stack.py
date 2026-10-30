@@ -315,3 +315,67 @@ def test_backcast_line_ignores_an_outlier_at_the_start():
     level, rate = stk._rate_line(t, y, np.full_like(t, 3.0), t[0])
     assert level == pytest.approx(-140.0, abs=1.0)
     assert rate == pytest.approx(400.0, rel=0.01)
+
+
+def test_palette_has_no_grey():
+    # grey is the error bars' and the set-aside days' colour (SVIN-SKFC
+    # drew grey and vanished, 2026-10-30)
+    for c in compose.STACK_PALETTE:
+        r, g, b = (int(c[i : i + 2], 16) for i in (1, 3, 5))
+        assert not (r == g == b and 0 < r < 255), c
+
+
+def test_stack_figure_draws_the_sparse_series_over_the_dense_one():
+    from gps_plot.timesmatplt import StationTitle
+
+    series = [_series("A-B", n=40), _series("C-D", n=5)]
+    title = StationTitle("x", "y", "z", "black")
+    fig = compose.stack_figure(series, title=title, offset=0.0, fig=Figure())
+    colors = compose.series_colors(["A-B", "C-D"])
+    drawn = [ln.get_markerfacecolor() for ln in fig.axes[0].lines
+             if len(ln.get_xdata()) and ln.get_marker() not in ("", "None")]  # fmt: skip
+    assert drawn.index(colors[1]) > drawn.index(colors[0])
+
+
+def test_colors_option_sets_a_series_own_colour() -> None:
+    from gps_plot import stack
+
+    own = stack.parse_colors(["svin-skfc=red"])
+    got = stack.series_colors([_series("SVIN-SKFC"), _series("SVIE-SKFC")], own)
+    assert got[0] == "red"
+    assert got[1] == compose.series_colors(["SVIN-SKFC", "SVIE-SKFC"])[1]
+    for bad in ("SVIN-SKFC", "SVIN-SKFC=notacolour", "=red"):
+        with pytest.raises(ValueError):
+            stack.parse_colors([bad])
+
+
+def test_stack_figure_draws_icing_and_network_days_edged_in_the_series_colour():
+    import dataclasses
+
+    from gps_plot import timesmatplt as tplt
+    from gps_plot.timesmatplt import StationTitle
+
+    n = 30
+    iy = np.full((3, n), np.nan)
+    iy[:, 4] = 7.0
+    ny = np.full((3, n), np.nan)
+    ny[:, 9] = -6.0
+    s = dataclasses.replace(
+        _series("A-B", n), iced=(iy, np.ones((3, n))), netday=(ny, np.ones((3, n)))
+    )
+    title = StationTitle("x", "y", "z", "black")
+    color = compose.series_colors(["A-B"])[0]
+
+    def faces(fig):
+        return {ln.get_markerfacecolor() for ln in fig.axes[0].lines
+                if len(ln.get_xdata()) and ln.get_markeredgecolor() == color}  # fmt: skip
+
+    hidden = compose.stack_figure([s], title=title, fig=Figure())
+    assert tplt.ICING_FACE_COLOR not in faces(hidden)
+    fig = compose.stack_figure(
+        [s], title=title, show_obstruction=0, show_network=0, fig=Figure()
+    )
+    assert {tplt.ICING_FACE_COLOR, tplt.NETWORK_FACE_COLOR} <= faces(fig)
+    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert "network day (set aside)" in legend
+    assert fig.axes[0].get_ylim()[1] >= 7.0
