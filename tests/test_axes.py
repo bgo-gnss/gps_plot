@@ -98,10 +98,10 @@ def test_orienter_signs_each_pair_and_reports_the_labels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     found = {
-        "SEY1-SEYD": sign_axes([-2582.9, 351.0, 32.9]),
-        "SEY2-SEYD": sign_axes([-2000.0, 300.0, 0.4]),
+        "SEY1-SEYD": np.array([-2582.9, 351.0, 32.9]),
+        "SEY2-SEYD": np.array([-2000.0, 300.0, 0.4]),
     }
-    monkeypatch.setattr(axes, "pair_axes", lambda pair: found.get(pair))
+    monkeypatch.setattr(axes, "apriori", lambda pair: found.get(pair))
     o = axes.Orienter("apart")
     s1 = o(_series(meta={"pair": "SEY1-SEYD"}))
     assert np.allclose(s1.y[0], [-1.0, -2.0])
@@ -206,3 +206,93 @@ def test_daily_sign_options() -> None:
     assert ts.parse_args(["SEY1-SEYD", "--sign", "raw"]).baseline_sign == "raw"
     st = stack.build_parser(config=_Config())
     assert st.parse_args(["SEY1-SEYD"]).sign == "apart"
+
+
+B0 = np.array([-2582.9, 351.0, 32.9])  # SEY1-SEYD: south, east and above
+
+
+def _rtk(level_m: object, **kw: object) -> Series:
+    return _series(meta={"pair": "SEY1-SEYD", "source": "rtk",
+                         "level": np.asarray(level_m) * 1000.0}, **kw)  # fmt: skip
+
+
+def test_pair_frame_along_keeps_up_signed() -> None:
+    ax = axes.pair_frame(B0, "along")
+    h = B0[:2] / np.hypot(*B0[:2])
+    np.testing.assert_allclose(ax.matrix[0], [h[0], h[1], 0.0])
+    np.testing.assert_allclose(ax.matrix[1], [-h[1], h[0], 0.0])  # clockwise
+    np.testing.assert_allclose(ax.matrix[2], [0.0, 0.0, 1.0])
+    down = axes.pair_frame(B0 * [1, 1, -1], "along")
+    np.testing.assert_allclose(down.matrix[2], [0.0, 0.0, -1.0])  # + = apart
+    assert axes.pair_frame(B0 * [1, 1, 0.01], "along").raw == (False, False, True)
+    three = axes.pair_frame(B0, "3d")
+    np.testing.assert_allclose(three.matrix[0], B0 / np.linalg.norm(B0))
+    assert three.keys == ("along", "across", "normal")
+    with pytest.raises(ValueError):
+        axes.pair_frame(B0, "sideways")
+
+
+def test_along_lengthening_is_positive() -> None:
+    """The rover moving straight away from the reference plots + along."""
+    ax = axes.pair_frame(B0, "along")
+    step = 10.0 * B0 / np.linalg.norm(B0)  # mm, along the 3-D line
+    y = np.stack([np.zeros(3), step], axis=1)
+    s = axes.orient(_series(y=y, sigma=np.ones((3, 2))), ax)
+    assert s.y[0, 1] > 9.9 and abs(s.y[1, 1]) < 1e-9
+
+
+def test_orienter_along_checks_the_direction(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(axes, "apriori", lambda pair: B0)
+    near = axes.Orienter(axes="along")
+    turned = np.array([[np.cos(0.2e-2), -np.sin(0.2e-2)],
+                       [np.sin(0.2e-2), np.cos(0.2e-2)]]) @ B0[:2]  # 0.11°  # fmt: skip
+    near(_rtk([*turned, B0[2]]))
+    np.testing.assert_allclose(
+        near.found["SEY1-SEYD"].matrix, axes.pair_frame(B0, "along").matrix
+    )
+    far = axes.Orienter(axes="along")
+    data = np.array([-2582.9, 400.0, 32.9])  # ~1.1° off
+    far(_rtk(data))
+    np.testing.assert_allclose(
+        far.found["SEY1-SEYD"].matrix, axes.pair_frame(data, "along").matrix
+    )
+    assert "off the RTK vector" in capsys.readouterr().err
+    # the daily series that follows gets the same axes
+    d = far(_series(meta={"pair": "SEY1-SEYD"}))
+    assert d.components == ("along", "across", "up")
+
+
+def test_orienter_along_without_a_direction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(axes, "apriori", lambda pair: None)
+    with pytest.raises(ValueError, match="no direction"):
+        axes.Orienter(axes="along")(_series(meta={"pair": "SEY1-SEYD"}))
+    s = _series(meta={"pair": "SEY1-SEYD"})
+    assert axes.Orienter()(s) is s  # neu: left as A - B
+    # an RTK series is its own direction
+    o = axes.Orienter(axes="along")
+    assert o(_rtk(B0)).components == ("along", "across", "up")
+
+
+def test_orienter_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(axes, "apriori", lambda pair: B0)
+    o = axes.Orienter(axes="along")
+    o(_series(meta={"pair": "SEY1-SEYD"}))
+    assert o.labels("en", "mm") == ("Along [mm] (+ apart)", "Across [mm]",
+                                    "Up [mm] (+ apart)")  # fmt: skip
+    assert o.labels("is", "cm")[:2] == ("Lengd [cm] (+ fjær)", "Þvert [cm]")
+    n = axes.Orienter()
+    n(_series(meta={"pair": "SEY1-SEYD"}))
+    assert n.labels("en", "mm")[0] == "North [mm] (+ apart)"
+    assert n.keys == ("north", "east", "up")
+
+
+def test_axes_option() -> None:
+    class _Config:
+        def get(self, *a: object, **k: object) -> None:
+            return None
+
+    parser = rtk.build_parser(config=_Config())
+    assert parser.parse_args(["SEY1-SEYD"]).axes == "neu"
+    assert parser.parse_args(["SEY1-SEYD", "--axes", "3d"]).axes == "3d"
