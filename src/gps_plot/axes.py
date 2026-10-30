@@ -99,8 +99,21 @@ def _overlay(pair: tuple[Any, Any] | None, ax: Axes) -> tuple[Any, Any] | None:
     return r.values.T, r.sigma.T
 
 
+def _rotate_full(y: Any, sigma: Any, corr: Any, ax: Axes) -> tuple[Any, Any, Any]:
+    """(values, σ, corr) along ``ax``, each (3, N), through the covariance."""
+    from geo_dataread.rtk_read import RHO_INDEX, covariance
+
+    r = rotate(np.asarray(y, dtype=float).T, ax, cov=covariance(sigma, corr))
+    assert r.cov is not None and r.sigma is not None
+    sd = r.sigma  # (N, 3)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rho = np.stack([r.cov[:, i, j] / (sd[:, i] * sd[:, j]) for i, j in RHO_INDEX])
+    return r.values.T, sd.T, rho
+
+
 def orient(s: Series, ax: Axes) -> Series:
-    """``s`` along ``ax``: values, σ (as uncorrelated), overlays, ends, level.
+    """``s`` along ``ax``: values, σ (full covariance when ``s.corr`` is
+    known, else uncorrelated), overlays, ends, level.
 
     A component is ``aborted`` when any component it mixes was. ``meta``
     gains ``axes`` (the component keys), ``raw`` (components left as rover −
@@ -109,10 +122,17 @@ def orient(s: Series, ax: Axes) -> Series:
     if tuple(s.components) != ("north", "east", "up") or "axes" in s.meta:
         # a re-signed series is still N/E/U: signing it again would undo it
         raise ValueError(f"{s.label}: orient wants raw N/E/U, got {s.components}")
-    r = rotate(
-        np.asarray(s.y, dtype=float).T, ax, sigma=np.asarray(s.sigma, dtype=float).T
-    )
-    assert r.sigma is not None
+    corr = None
+    if s.corr is not None:
+        y, sigma, corr = _rotate_full(s.y, s.sigma, s.corr, ax)
+    else:
+        r = rotate(
+            np.asarray(s.y, dtype=float).T,
+            ax,
+            sigma=np.asarray(s.sigma, dtype=float).T,
+        )
+        assert r.sigma is not None
+        y, sigma = r.values.T, r.sigma.T
     uses = ax.matrix != 0.0
     aborted = None
     if s.aborted is not None:
@@ -127,8 +147,9 @@ def orient(s: Series, ax: Axes) -> Series:
         ends = (orient(s.ends[0], ax), orient(s.ends[1], ax))
     return dataclasses.replace(
         s,
-        y=r.values.T,
-        sigma=r.sigma.T,
+        y=y,
+        sigma=sigma,
+        corr=corr,
         components=ax.keys,
         outliers=_overlay(s.outliers, ax),
         provisional=_overlay(s.provisional, ax),

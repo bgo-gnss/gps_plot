@@ -120,6 +120,21 @@ def test_orienter_signs_each_pair_and_reports_the_labels(
     assert keep(plain) is plain and keep.summary() == (False, (False, False, False))
 
 
+def test_orient_carries_the_correlations() -> None:
+    """Re-signing flips the sign of ρ for each pair it splits; σ unchanged."""
+    corr = np.array([[0.2, 0.2], [0.4, 0.4], [-0.1, -0.1]])  # NE, NU, EU
+    s = axes.orient(_series(corr=corr), sign_axes([-2582.9, 351.0, 32.9]))
+    np.testing.assert_allclose(s.corr[:, 0], [-0.2, -0.4, -0.1])
+    np.testing.assert_allclose(s.sigma, _series().sigma)
+    # a rotation mixes: σ_along from the full covariance, not quadrature
+    ax = along_axes(np.pi / 4)  # radians
+    s2 = axes.orient(_series(corr=np.array([[0.9], [0.0], [0.0]]) * [1, 1]), ax)
+    sn, se = 0.1, 0.3  # first epoch's σ_N, σ_E
+    want = np.sqrt((sn**2 + se**2 + 2 * 0.9 * sn * se) / 2)
+    assert s2.sigma[0, 0] == pytest.approx(want)
+    assert axes.orient(_series(), ax).corr is None  # unknown stays unknown
+
+
 def test_orient_refuses_to_sign_twice() -> None:
     ax = sign_axes([-2582.9, 351.0, 32.9])
     with pytest.raises(ValueError):
