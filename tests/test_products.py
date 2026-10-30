@@ -1052,6 +1052,19 @@ def test_polar_product_one_job_per_area_and_period() -> None:
         products.expand(cfg, areas=BASELINE_AREAS)
 
 
+def test_polar_over_stacks_is_one_together_figure_per_group() -> None:
+    areas = {"svinafellsheidi": {**BASELINE_AREAS["svinafellsheidi"],
+                                 "stacks": {"skfc": ["SVIN-SKFC", "SVIE-SKFC"]}}}  # fmt: skip
+    cfg = {"products": {"polar": {
+        "tool": "polar", "stations": "area_stacks",
+        "dir": "locations/{root}/{cdn}/graphs/baselines",
+        "runs": [{"special": ["90d", "year"]}],
+    }}}  # fmt: skip
+    jobs = products.expand(cfg, areas=areas)
+    assert [j.stations for j in jobs] == [("SVIN-SKFC", "SVIE-SKFC")] * 2
+    assert all("--together" in j.argv and "--label" not in j.argv for j in jobs)
+
+
 def test_runner_knows_the_polar_tool() -> None:
     from gps_plot.cli import run
 

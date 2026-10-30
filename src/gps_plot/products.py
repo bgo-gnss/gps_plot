@@ -522,7 +522,8 @@ def expand(
     area product, or on one of its runs, keeps only those area slugs (e.g.
     the rotated-axes runs for the landslide areas). ``tool: polar`` with
     ``stations: area_baselines`` is one ``gpsplot polar`` per area, run and
-    period.
+    period (a figure per pair); with ``area_stacks`` one ``--together``
+    figure per ``stacks:`` group.
     """
     defaults = dict(cfg.get("defaults") or {})
     colours = {**DEFAULT_EVENT_COLOURS, **(cfg.get("event_colours") or {})}
@@ -540,8 +541,13 @@ def expand(
             if want_areas is None or spec.get("area") in want_areas:
                 jobs += map_jobs(pname, spec, defaults, areas, cfg, events)
             continue
-        if spec.get("tool") == "polar" and kind != "area_baselines":
-            raise ValueError(f"plots.yaml {pname}: tool: polar needs area_baselines")
+        if spec.get("tool") == "polar" and kind not in (
+            "area_baselines",
+            "area_stacks",
+        ):
+            raise ValueError(
+                f"plots.yaml {pname}: tool: polar needs area_baselines or area_stacks"
+            )
         if kind in AREA_KINDS:
             only = _area_filter(pname, spec.get("areas"), areas)
             for run in runs:
@@ -920,7 +926,9 @@ def _area_jobs(
             ):
                 if ev and tool != "polar":
                     argv = argv + ["--events", *ev]
-                if group:
+                if group and tool == "polar":  # a group: its pairs in one figure
+                    argv = argv + ["--together"]
+                elif group:
                     argv = argv + ["--label", group]
                 jobs.append(
                     Job(
