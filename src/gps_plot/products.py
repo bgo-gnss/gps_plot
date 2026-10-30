@@ -930,12 +930,15 @@ def _area_jobs(
                     argv = argv + ["--together"]
                 elif group:
                     argv = argv + ["--label", group]
+                plotted = _with_direction(stations, argv, entry)
+                if not plotted:
+                    continue
                 jobs.append(
                     Job(
                         pname,
                         slug,
                         out_dir,
-                        stations,
+                        plotted,
                         tuple(argv),
                         publish,
                         tool=tool,
@@ -943,6 +946,18 @@ def _area_jobs(
                     )
                 )
     return jobs
+
+
+def _with_direction(
+    stations: tuple[str, ...], argv: Sequence[str], entry: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The pairs a run with ``--axes motion|slope`` can plot: those with that
+    direction in the area's ``directions:`` (any other run: all of them)."""
+    mode = _option(argv, "--axes")
+    if mode not in ("motion", "slope"):
+        return stations
+    directions = entry.get("directions") or {}
+    return tuple(s for s in stations if (directions.get(s.upper()) or {}).get(mode))
 
 
 def select_stations(

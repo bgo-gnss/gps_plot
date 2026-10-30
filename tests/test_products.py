@@ -1072,3 +1072,27 @@ def test_runner_knows_the_polar_tool() -> None:
     args = parser.parse_args(["SVIE-SKFC", "--special", "year", "--save", "png",
                               "-d", "/tmp/x", "--manifest", "/tmp/m"])  # fmt: skip
     assert args.manifest == "/tmp/m" and run_fn.__module__ == "gps_plot.polar"
+
+
+def test_motion_runs_keep_the_pairs_with_a_direction() -> None:
+    areas = {"svinafellsheidi": {
+        **BASELINE_AREAS["svinafellsheidi"],
+        "baselines": ["SVIN-SVIE", "SVIN-SKFC", "SVIE-SKFC"],
+        "directions": {"SVIN-SKFC": {"motion": 292.0},
+                       "SVIE-SKFC": {"motion": 334.0, "slope": (260.0, 21.0)}},
+    }}  # fmt: skip
+    cfg = {"products": {"baselines": {
+        "stations": "area_baselines",
+        "dir": "x/{cdn}",
+        "runs": [
+            {"special": ["year"], "args": ["--axes motion"]},
+            {"special": ["year"], "args": ["--axes slope"]},
+            {"special": ["year"], "args": ["--axes along"]},
+        ],
+    }}}  # fmt: skip
+    jobs = products.expand(cfg, areas=areas)
+    assert [j.stations for j in jobs] == [
+        ("SVIN-SKFC", "SVIE-SKFC"),
+        ("SVIE-SKFC",),
+        ("SVIN-SVIE", "SVIN-SKFC", "SVIE-SKFC"),
+    ]
