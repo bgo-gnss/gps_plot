@@ -357,6 +357,7 @@ def _stack(
 ) -> Any:
     """The gpsplot figure (stack frame, mm, English) of the plotted series."""
     from gps_plot import compose
+    from gps_plot import rtk_classic
     from gps_plot import timesmatplt as tplt
 
     if args.longterm == "full":  # the axis starts with the record
@@ -401,6 +402,8 @@ def _stack(
             0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
             fontsize="x-small", color="0.3", va="bottom",
         )  # fmt: skip
+    # the plot-time line, green while the RTK stream is current (as --classic)
+    rtk_classic.now_line(fig.axes[:3], now=now, last=last, fontsize=12)
     if events:
         tplt.addEvent(events, fig)
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
