@@ -39,12 +39,14 @@ def test_a_flipped_baseline_is_negated(monkeypatch):
         seen["name"] = name
         t = _minutes(3)
         return rr.RtkBaseline(name, t, np.ones((3, 3)) * [[0.001], [0.002], [0.0]],
-                              np.full((3, 3), 0.001), np.ones(3, int), "60s")  # fmt: skip
+                              np.full((3, 3), 0.001), np.ones(3, int), "60s",
+                              rho=np.full((3, 3), 0.25))  # fmt: skip
 
     monkeypatch.setattr(rr, "read_rtk_baseline", read)
     s = source.fetch_rtk("SVIN-SKFC", None, None, directory="SKFC-SVIN", flipped=True)
     assert seen["name"] == "SKFC-SVIN" and s.label == "SVIN-SKFC"
     np.testing.assert_allclose(s.meta["level"], [-1.0, -2.0, 0.0])
+    np.testing.assert_allclose(s.corr, 0.25)  # flipped: all three negated
 
 
 @pytest.mark.parametrize(

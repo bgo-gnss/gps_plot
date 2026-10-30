@@ -104,6 +104,8 @@ def fetch_rtk(
 
     ``t`` is ``datetime64`` (UTC). ``meta`` has ``interval`` and ``level``
     (the removed zero, mm) so a joined series can be placed against it.
+    ``corr`` carries the interval-median N/E/U correlations (a flipped
+    pair negates all three components, so they stay as read).
     ``directory``/``flipped`` (:func:`rtk_direction`) read a pair from its
     reversed directory, negated; the label stays ``baseline``.
     """
@@ -126,6 +128,7 @@ def fetch_rtk(
         t=r.time,
         y=y - level[:, None],
         sigma=sigma,
+        corr=r.rho,
         meta={"interval": interval, "level": level, "source": "rtk"},
     )
 

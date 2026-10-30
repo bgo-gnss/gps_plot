@@ -47,6 +47,10 @@ class Series:
             baseline's first common epoch; None otherwise.
         meta: Free-form provenance for titles and notes (e.g.
             ``sigma_note`` for a baseline's σ).
+        corr: Correlations of the component pairs (0,1), (0,2), (1,2)
+            (N/E/U: NE, NU, EU), shape (3, N), with ``sigma`` the full
+            covariance; None = not known, taken as uncorrelated (RTK has
+            them, daily GLOBK series not yet).
 
     The arrays are passed through as the source produced them (no copies or
     casts), so a plot drawn from a Series is the one drawn from the arrays.
@@ -66,3 +70,4 @@ class Series:
     iced: tuple[Any, Any] | None = None
     buried: tuple[Any, Any] | None = None
     netday: tuple[Any, Any] | None = None
+    corr: Any = None
