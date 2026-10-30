@@ -47,21 +47,23 @@ def axis_labels(
     lang: Lang,
     unit: str,
     *,
-    apart: bool = False,
+    apart: bool | Sequence[bool] = False,
     raw: Sequence[bool] = (False, False, False),
 ) -> tuple[str, ...]:
     """Y-axis labels, e.g. ``"North [mm] (+ apart)"``, ``"Norður [cm] (+ fjær)"``.
 
-    ``apart``: the components are signed so that + is lengthening;
+    ``apart``: the components (all, or per component) are signed so that +
+    is lengthening;
     ``raw[i]``: component i kept as rover − reference (too short to carry a
     sign), said instead.
     """
+    marks = [apart] * len(keys) if isinstance(apart, bool) else list(apart)
     out = []
-    for key, kept in zip(keys, raw, strict=True):
+    for key, kept, mark in zip(keys, raw, marks, strict=True):
         text = f"{component(key, lang)} [{unit}]"
         if kept:
             text += f" ({word('raw', lang)})"
-        elif apart:
+        elif mark:
             text += f" ({word('apart', lang)})"
         out.append(text)
     return tuple(out)

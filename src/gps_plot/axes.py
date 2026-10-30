@@ -16,7 +16,14 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 import numpy as np
-from geofunc.axes import Axes, rotate, sign_axes
+from geofunc.axes import (
+    Axes,
+    along_axes,
+    baseline_azimuth,
+    rotate,
+    sign_axes,
+    slant_axes,
+)
 
 from gps_plot.series import Series
 
@@ -24,16 +31,63 @@ from gps_plot.series import Series
 SignMode = Literal["apart", "raw"]
 SIGN_MODES: tuple[str, ...] = ("apart", "raw")
 
+#: --axes: N/E/U (signed per --sign), along/across/up (horizontal along the
+#: baseline), or along the 3-D line between the antennas
+AXES_MODES: tuple[str, ...] = ("neu", "along", "3d")
 
-def pair_axes(pair: str, *, coord_file: str | None = None) -> Axes | None:
-    """N/E/U re-signed for ``pair`` (``ROVER-REF``), or None without coordinates."""
+#: the a-priori direction may be this far [°] off the RTK data vector; past
+#: it the data vector is used (a station coordinate is off, or the rover moved
+#: metres on a short baseline)
+DIRECTION_TOLERANCE_DEG = 0.5
+
+#: components whose + is the baseline lengthening when signed: N/E/U by
+#: :func:`sign_axes`, along by construction (across and normal: a direction)
+APART_KEYS = frozenset({"north", "east", "up", "along"})
+
+
+def apriori(pair: str, *, coord_file: str | None = None) -> Any:
+    """The a-priori N/E/U baseline [m] of ``pair`` (``ROVER-REF``), or None."""
     from geo_dataread.station_catalog import apriori_baseline
 
     try:
-        b0 = apriori_baseline(pair[:4], pair[5:], coord_file)
+        return apriori_baseline(pair[:4], pair[5:], coord_file)
     except OSError:  # no coordinate file configured
         return None
+
+
+def pair_axes(pair: str, *, coord_file: str | None = None) -> Axes | None:
+    """N/E/U re-signed for ``pair`` (``ROVER-REF``), or None without coordinates."""
+    b0 = apriori(pair, coord_file=coord_file)
     return None if b0 is None else sign_axes(b0)
+
+
+def pair_frame(b: Any, mode: str) -> Axes:
+    """The axes of ``--axes mode`` for a baseline vector ``b`` (N/E/U, m).
+
+    ``neu``: :func:`sign_axes`. ``along``: along/across/up, Up signed as in
+    ``neu`` (so switching ``--axes`` changes only the horizontal panels).
+    ``3d``: :func:`slant_axes` (along the line, across, normal).
+    """
+    signed = sign_axes(b)
+    if mode == "neu":
+        return signed
+    if mode == "3d":
+        return slant_axes(b)
+    if mode != "along":
+        raise ValueError(f"--axes {mode!r}: choose from {', '.join(AXES_MODES)}")
+    ax = along_axes(baseline_azimuth(b))
+    m = np.array(ax.matrix, dtype=float)
+    m[2] *= signed.matrix[2, 2]
+    return Axes(m, ax.keys, (False, False, signed.raw[2]))
+
+
+def angle_off(b0: Any, b: Any, *, horizontal: bool) -> float:
+    """Angle [°] between two baseline vectors (their horizontal parts if asked)."""
+    u, v = np.asarray(b0, dtype=float), np.asarray(b, dtype=float)
+    if horizontal:
+        u, v = u[:2], v[:2]
+    c = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))
+    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
 
 
 def _is_pair(spec: str) -> bool:
@@ -163,38 +217,72 @@ def orient(s: Series, ax: Axes) -> Series:
 
 
 class Orienter:
-    """Puts each series on its pair's re-signed N/E/U (``--sign apart``).
+    """Puts each series of a figure on its pair's axes (``--sign``/``--axes``).
 
     For a stream of series read piece by piece (RTK): called on every series
     as it is read, before any alignment, so shifts and notes are in the
-    plotted signs. One a-priori lookup per pair; a pair without coordinates
-    stays rover − reference, with one warning; ``--sign raw`` changes nothing.
+    plotted axes. A pair's axes are fixed on its first series: from the
+    a-priori coordinates, checked against the RTK data vector (the absolute
+    first-hour level of an RTK series) when that series is RTK; more than
+    :data:`DIRECTION_TOLERANCE_DEG` off, or no coordinates, and the data
+    vector is used, with a message. ``--axes neu`` without either leaves the
+    pair rover − reference; ``along``/``3d`` refuse it (ValueError): one
+    figure never mixes axes. ``--sign raw`` with ``neu`` changes nothing.
     """
 
-    def __init__(self, sign: str) -> None:
-        self.sign = sign
+    def __init__(self, sign: str = "apart", axes: str = "neu") -> None:
+        if axes not in AXES_MODES:
+            raise ValueError(f"--axes {axes!r}: choose from {', '.join(AXES_MODES)}")
+        self.sign, self.mode = sign, axes
         self.found: dict[str, Axes | None] = {}
+        self.messages: list[str] = []
+
+    def _say(self, text: str) -> None:
+        self.messages.append(text)
+        print(text, file=sys.stderr)
+
+    def _resolve(self, pair: str, s: Series) -> Axes | None:
+        b0 = apriori(pair)
+        data = None
+        if s.meta.get("source") == "rtk" and s.meta.get("level") is not None:
+            data = np.asarray(s.meta["level"], dtype=float) / 1000.0  # mm → m
+        if b0 is None and data is None:
+            self._say(f"{pair}: no a-priori coordinates, plotted A - B")
+            return None
+        b = b0 if b0 is not None else data
+        if b0 is None:
+            self._say(f"{pair}: no a-priori coordinates, axes from the RTK vector")
+        elif data is not None and self.mode != "neu":
+            off = angle_off(b0, data, horizontal=self.mode == "along")
+            if off > DIRECTION_TOLERANCE_DEG:
+                self._say(
+                    f"{pair}: a-priori direction {off:.2f}° off the RTK vector, "
+                    "axes from the RTK vector"
+                )
+                b = data
+        return pair_frame(b, self.mode)
 
     def __call__(self, s: Series) -> Series:
-        if self.sign == "raw":
+        if self.mode == "neu" and self.sign == "raw":
             return s
         pair = s.meta.get("pair", s.label)
         if not _is_pair(pair):
             self.found.setdefault(pair, None)
             return s
         if pair not in self.found:
-            self.found[pair] = pair_axes(pair)
-            if self.found[pair] is None:
-                print(f"{pair}: no a-priori coordinates, plotted A - B",
-                      file=sys.stderr)  # fmt: skip
+            self.found[pair] = self._resolve(pair, s)
         ax = self.found[pair]
-        return s if ax is None else orient(s, ax)
+        if ax is None:
+            if self.mode != "neu":
+                raise ValueError(f"{pair}: no direction for --axes {self.mode}")
+            return s
+        return orient(s, ax)
 
     def summary(self) -> tuple[bool, tuple[bool, bool, bool]]:
         """(every pair re-signed, per component: every pair kept it raw).
 
-        What the axis labels say; a component kept raw (under 1 m) in only
-        some pairs of a group is reported on stderr.
+        A component kept raw (under 1 m) in only some pairs of a group is
+        reported on stderr.
         """
         if not self.found or any(ax is None for ax in self.found.values()):
             return False, (False, False, False)
@@ -208,3 +296,20 @@ class Orienter:
                 print(f"{pair}: {'/'.join(short)} under 1 m, plotted A - B",
                       file=sys.stderr)  # fmt: skip
         return True, (raw[0], raw[1], raw[2])
+
+    @property
+    def keys(self) -> tuple[str, str, str]:
+        """The plotted components (N/E/U unless ``--axes`` rotated them)."""
+        for ax in self.found.values():
+            if ax is not None:
+                return ax.keys
+        return ("north", "east", "up")
+
+    def labels(self, lang: Any, unit: str) -> tuple[str, ...]:
+        """The figure's y-axis labels (:func:`gps_plot.labels.axis_labels`)."""
+        from gps_plot import labels
+
+        signed, raw = self.summary()
+        keys = self.keys
+        apart = [signed and k in APART_KEYS for k in keys]
+        return labels.axis_labels(keys, lang, unit, apart=apart, raw=raw)

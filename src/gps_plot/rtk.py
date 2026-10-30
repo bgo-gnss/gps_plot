@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from gps_plot.axes import Orienter
+from gps_plot.axes import AXES_MODES, Orienter
 from gps_plot.cli import common
 
 #: span ending at -e (default now, UTC), as rtk_gps's specials (+ month)
@@ -166,6 +166,17 @@ def build_parser(
         help="apart (default): each of N/E/U signed so that + is the baseline "
         "lengthening in that component (from the a-priori station "
         "coordinates); raw: plain rover - reference",
+    )
+    parser.add_argument(
+        "--axes",
+        choices=AXES_MODES,
+        default="neu",
+        help="neu (default): North/East/Up, signed by --sign; along: "
+        "along/across/up, horizontal along the baseline (+ = lengthening, "
+        "across 90 deg clockwise, Up signed as in neu); 3d: along the 3-D line "
+        "between the antennas, across, normal. The direction is the a-priori "
+        "one, or the RTK vector if they differ by more than 0.5 deg. Adds "
+        "-along/-3d to the file name",
     )
     parser.add_argument(
         "--max-sigma", type=float, default=0.1, metavar="M",
@@ -322,11 +333,12 @@ def _longterm_pair(
     daily = None
     try:
         daily = _daily(name, plot_start, end, args, config)
-        daily = orient(dataclasses.replace(daily, meta={**daily.meta, "pair": name}))
-        got.append((daily, "marked"))
+        daily = dataclasses.replace(daily, meta={**daily.meta, "pair": name})
     except Exception as exc:
         out["dropped"].append(f"{name} daily: {exc}")
     start = rtk_start(start, plot_start, daily, getattr(args, "rtk_overlap", None))
+
+    s = None
     try:
         directory, flipped = rtk_source.rtk_direction(name, dirs)
         s = rtk_source.fetch_rtk(
@@ -334,13 +346,23 @@ def _longterm_pair(
             drop_q=drop_q(args), max_sigma=args.max_sigma,
             directory=directory, flipped=flipped,
         )  # fmt: skip
+        if len(s.t) == 0:
+            raise ValueError("no RTK solutions in the span")
+        s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
     except Exception as exc:
         out["dropped"].append(f"{name}: {exc}")
+        s = None
+    if daily is not None:
+        # after the RTK series: the pair's axes are fixed on its first series,
+        # and only an RTK one can check the direction against the data
+        try:
+            daily = orient(daily)
+            got.append((daily, "marked"))
+        except ValueError as exc:
+            out["dropped"].append(f"{name} daily: {exc}")
+            daily = None
+    if s is None:
         return got, out
-    if len(s.t) == 0:
-        out["dropped"].append(f"{name}: no RTK solutions in the span")
-        return got, out
-    s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
     if daily is not None:
         try:
             s = rtk_source.align(s, daily)
@@ -367,11 +389,13 @@ def _stack(
     plot_start: dt.datetime,
     end: dt.datetime,
     ylabels: Sequence[str] | None = None,
+    keys: Sequence[str] = ("north", "east", "up"),
 ) -> Any:
     """The gpsplot figure (stack frame, mm, English) of the plotted series."""
     from gps_plot import compose
     from gps_plot import rtk_classic
     from gps_plot import timesmatplt as tplt
+    from gps_plot.labels import component
 
     if args.longterm == "full":  # the axis starts with the record
         plot_start = min(as_datetime(s.t[0]) for s in series)
@@ -407,10 +431,13 @@ def _stack(
         ylabels=ylabels,
     )
     if notes:
+        comps = "/".join(component(k, "en") for k in keys)
+        if comps == "North/East/Up":
+            comps = "N/E/U"
         what = (
-            "RTK placed on daily, N/E/U mm (median over the overlap): "
+            f"RTK placed on daily, {comps} mm (median over the overlap): "
             if args.longterm
-            else "daily placed on RTK, N/E/U mm (median over days): "
+            else f"daily placed on RTK, {comps} mm (median over days): "
         )
         fig.axes[2].text(
             0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
@@ -433,9 +460,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     import matplotlib as mpl
     from geo_dataread.rtk_read import list_baselines, rtk_dir
 
-    from gps_plot import compose, labels
+    from gps_plot import compose
     from gps_plot import timesmatplt as tplt
-    from gps_plot.series import NEU
     from gps_plot.sources import rtk as rtk_source
 
     now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
@@ -455,7 +481,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     dirs = list_baselines(root)
 
     series, styles, colors, dropped, notes = [], [], [], [], []
-    orient = Orienter(args.sign)  # before alignment: shifts/notes in its signs
+    # before alignment: shifts and notes are in the plotted axes
+    orient = Orienter(args.sign, args.axes)
     palette = compose.series_colors(baselines)
     plot_start = start
     if args.longterm:
@@ -489,13 +516,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                 drop_q=drop_q(args), max_sigma=args.max_sigma,
                 directory=directory, flipped=flipped,
             )  # fmt: skip
+            if len(s.t) == 0:
+                raise ValueError("no RTK solutions in the span")
+            s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
         except Exception as exc:  # one bad baseline must not sink the plot
             dropped.append(f"{name}: {exc}")
             continue
-        if len(s.t) == 0:
-            dropped.append(f"{name}: no RTK solutions in the span")
-            continue
-        s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
         series.append(s)
         styles.append("line")
         colors.append(color)
@@ -520,7 +546,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     if not series:
         print("nothing plotted", file=sys.stderr)
         return 1
-    apart, raw = orient.summary()
 
     if not args.save:
         mpl.use("WebAgg")
@@ -534,12 +559,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             title=rtk_classic.classic_title([s.label for s in series], special),
             start=start, end=end, now=now, last=last, interactive=not args.save,
             names=baselines,
-            ylabels=labels.axis_labels(NEU, "is", "cm", apart=apart, raw=raw),
+            ylabels=orient.labels("is", "cm"),
         )  # fmt: skip
     else:
         fig = _stack(args, series, styles, colors, notes, events, now, last,
                      plot_start, end,
-                     labels.axis_labels(NEU, "en", "mm", apart=apart, raw=raw),
+                     orient.labels("en", "mm"), keys=orient.keys,
                      )  # fmt: skip
 
     if not args.save:
@@ -569,6 +594,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             stem += "-daily"
         if args.offset:
             stem += f"-offset{args.offset:g}"
+        if args.axes != "neu":
+            stem += f"-{args.axes}"
     fig_dir = (
         args.figDir
         if args.figDir is not None
