@@ -81,6 +81,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.direction:run",
     ),
     Command(
+        "polar",
+        "where a baseline's rover went since an onset: sector + hodograph",
+        "gps_plot.cli.polar:run",
+    ),
+    Command(
         "map",
         "PyGMT maps: station, velocity (windowed fits), deformation, slip",
         "gps_plot.cli.map:run",
