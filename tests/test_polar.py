@@ -99,32 +99,45 @@ def test_bad_onset_is_a_usage_error() -> None:
         polar.run(args, parser, object())
 
 
-@pytest.mark.parametrize(
-    "panels", [("sector", "map", "section"), ("sector", "hodograph"), ("map",)]
-)
-def test_figure_panels(panels: tuple[str, ...]) -> None:
-    from gps_plot import terrain
-
-    xs = np.arange(-120.0, 121.0, 5.0)
-    z = 800.0 - 0.4 * xs[None, :] + 0.0 * xs[:, None]  # falls toward east
-    dem = terrain.DemWindow(xs, xs.copy(), z)
-    t = 20300.0 + np.arange(30.0)
+def _pair(name: str, motion: float, **kw: object) -> polar.PairPlot:
     d = np.vstack(
         [np.linspace(0, 10, 30), np.linspace(0, -5, 30), -np.linspace(0, 3, 30)]
     )
-    fig = polar.polar_figure(
-        "SVIE-SKFC", t, d, onset=dt.datetime(2025, 7, 30), motion=333.0,
-        note="n", downslope=(90.0, 21.8), panels=panels, dem=dem,
-        ref=("SKFC", 260.0, 9300.0),
-    )  # fmt: skip
+    return polar.PairPlot(name, np.arange(30.0), d, motion, **kw)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "panels", [("sector", "map", "section"), ("sector", "hodograph"), ("map",)]
+)
+@pytest.mark.parametrize("together", [False, True])
+def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
+    from gps_plot import terrain
+
+    xs = np.arange(-300.0, 301.0, 5.0)
+    z = 800.0 - 0.4 * xs[None, :] + 0.0 * xs[:, None]  # falls toward east
+    dem = terrain.DemWindow(xs, xs.copy(), z)
+    pairs = [_pair("SVIE-SKFC", 333.0, downslope=(90.0, 21.8),
+                   ref=("SKFC", 260.0, 9300.0), pos=(150.0, 0.0))]  # fmt: skip
+    if together:
+        pairs.append(_pair("SVIN-SKFC", 292.0, marker="^", colour="magenta",
+                           pos=(-150.0, 0.0)))  # fmt: skip
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+                             panels=panels, dem=dem, half=300.0)  # fmt: skip
     titles = [ax.get_title() for ax in fig.axes]
     if "map" in panels:
         assert any(t.startswith("terrain, path") for t in titles)
     if "section" in panels:
         assert "vertical section along the motion" in titles
     with pytest.raises(ValueError, match="unknown panel"):
-        polar.polar_figure("A-B", t, d, onset=dt.datetime(2025, 7, 30), motion=None,
-                           note="n", panels=("pie",))  # fmt: skip
+        polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+                           panels=("pie",))  # fmt: skip
+
+
+def test_together_needs_few_pairs() -> None:
+    parser = polar.build_parser()
+    args = parser.parse_args(["A-B", "C-D", "E-F", "G-H", "I-J", "--together"])
+    with pytest.raises(SystemExit):
+        polar.run(args, parser, object())
 
 
 def test_slope_field_and_nice() -> None:
