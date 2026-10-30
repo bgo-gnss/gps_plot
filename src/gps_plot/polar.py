@@ -93,6 +93,14 @@ def build_parser(
     )  # fmt: skip
     add_direction_options(parser)
     parser.add_argument(
+        "--no-dem", action="store_true",
+        help="no DEM downslope line (default: the 5 m DEM's slope at the rover)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--slope-radius", type=float, default=None, metavar="M",
+        help="radius of the DEM plane fitted at the rover [m] (default 50)",
+    )  # fmt: skip
+    parser.add_argument(
         "--save", nargs="?", const="png", default=None,
         help="save as png (default) / pdf / eps …, comma separated",
     )  # fmt: skip
@@ -182,6 +190,7 @@ def polar_figure(
     onset: dt.datetime,
     motion: float | None,
     note: str,
+    downslope: tuple[float, float] | None = None,
     title_status: Any = None,
     status_color: Any = "k",
     interactive: bool = False,
@@ -189,7 +198,9 @@ def polar_figure(
     """The figure: the sector (left) and the hodograph (right).
 
     ``t_days`` days since 1970, ``d`` (3, N) mm since the onset; ``motion``
-    the direction line [°] (None: none drawn).
+    the direction line [°] (None: none drawn), with the across direction
+    (± 90°) in blue; ``downslope`` the DEM slope (azimuth, dip) [°] at the
+    rover, a brown dashed ray (None: none). The sector holds every line.
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -228,8 +239,11 @@ def polar_figure(
     # of the largest displacement (and MIN_RADIUS_MM); a smaller point outside
     # it is drawn at the centre (counted in the note), never hidden
     big = r >= max(MIN_RADIUS_MM, SECTOR_FRACTION * (float(r.max()) if r.size else 0.0))
-    lo, hi = sector_limits(np.r_[az[big], [] if motion is None else [motion]])
-    if not big.any() and motion is None:
+    lines = [] if motion is None else [motion, motion + 90.0, motion - 90.0]
+    if downslope is not None:
+        lines.append(downslope[0])
+    lo, hi = sector_limits(np.r_[az[big], lines])
+    if not big.any() and not lines:
         lo, hi = 0.0, 360.0
     pax.set_thetamin(lo)
     pax.set_thetamax(hi)
@@ -252,9 +266,19 @@ def polar_figure(
     hax.scatter(de, dn, c=since, cmap=cmap, norm=norm, s=14, zorder=3)
     hax.axhline(0.0, color="0.6", lw=0.8)
     hax.axvline(0.0, color="0.6", lw=0.8)
+    if downslope is not None:
+        b = np.radians((downslope[0] - lo) % 360.0 + lo)
+        pax.plot([b, b], [0.0, rmax], color="saddlebrown", lw=1.4, ls="--",
+                 label=f"downslope {downslope[0]:.0f}°, dip {downslope[1]:.0f}° (DEM)")  # fmt: skip
     if motion is not None:
-        a = np.radians(motion)
-        pax.plot([a, a], [0.0, rmax], color="r", lw=1.2)
+        a = np.radians((motion - lo) % 360.0 + lo)
+        pax.plot([a, a], [0.0, rmax], color="r", lw=1.2, label=f"motion {motion:.0f}°")
+        for side in (90.0, -90.0):
+            c = np.radians((motion + side - lo) % 360.0 + lo)
+            pax.plot([c, c], [0.0, 0.3 * rmax], color="b", lw=1.2,
+                     label="across" if side > 0 else None)  # fmt: skip
+    if motion is not None or downslope is not None:
+        pax.legend(loc="lower left", bbox_to_anchor=(-0.05, -0.08), fontsize="small")
         hax.plot([0.0, rmax * np.sin(a)], [0.0, rmax * np.cos(a)], color="r", lw=1.2,
                  label=f"motion {motion:.0f}°")  # fmt: skip
         across = a + np.pi / 2
@@ -358,7 +382,21 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         else:
             title = tplt.make_title(name, last)
             status, colour = title.status, title.status_color
+        downslope = None
+        if not args.no_dem:
+            from gps_plot import terrain
+            from gps_plot.map import gis_dir
+
+            radius = args.slope_radius or terrain.SLOPE_RADIUS_M
+            try:
+                sl = terrain.station_slope(name[:4], gis_dir(config), radius=radius)
+            except (OSError, ValueError) as exc:
+                print(f"{name}: no DEM slope ({exc})", file=sys.stderr)
+            else:
+                downslope = (sl.azimuth, sl.dip)
+                note += f"; DEM slope at {name[:4]} over {radius:g} m"
         fig = polar_figure(name, td, d, onset=when, motion=motion, note=note,
+                           downslope=downslope,
                            title_status=status, status_color=colour,
                            interactive=not args.save)  # fmt: skip
         tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
