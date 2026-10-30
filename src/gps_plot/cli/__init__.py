@@ -76,6 +76,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.cli.seasonal:run",
     ),
     Command(
+        "direction",
+        "the direction a baseline or station moved, as a directions: line",
+        "gps_plot.cli.direction:run",
+    ),
+    Command(
         "map",
         "PyGMT maps: station, velocity (windowed fits), deformation, slip",
         "gps_plot.cli.map:run",
