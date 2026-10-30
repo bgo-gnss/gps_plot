@@ -192,7 +192,7 @@ def _longterm(monkeypatch, daily_t, rtk_t):
     monkeypatch.setattr(source, "fetch_rtk", fetch)
     args = _args(max_sigma=0.1)
     return rtk._longterm_pair("SVIN-SKFC", None, None, None, args, None, "/r",
-                              DIRS, "10min")  # fmt: skip
+                              DIRS, "10min", rtk.Orienter("raw"))  # fmt: skip
 
 
 def test_longterm_pair_aligns_the_rtk_tail_on_the_daily(monkeypatch):

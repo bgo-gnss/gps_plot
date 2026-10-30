@@ -93,8 +93,12 @@ def classic_figure(
     last: dt.datetime,
     interactive: bool = False,
     names: Sequence[str] | None = None,
+    ylabels: Sequence[str] | None = None,
 ) -> Any:
     """The rtk_gps figure of RTK ``series`` (y in mm, zeroed; drawn in cm).
+
+    ``ylabels``: the three y-axis labels (default ``Norður [cm]`` …; see
+    :func:`gps_plot.labels.axis_labels`).
 
     ``names``: every baseline asked for, in order. A baseline without data
     keeps its legend entry ("engin gögn": a silent station is visible) and
@@ -126,12 +130,14 @@ def classic_figure(
         xs, ys = break_gaps(x, np.asarray(s.y, dtype=float) / 10.0)  # mm -> cm
         for i, ax in enumerate(axs):
             ax.plot(xs, ys[i], label=label if i == 0 else None)
-    for ax, ylabel in zip(axs, YLABELS, strict=True):
+    if ylabels is None:
+        ylabels = [f"{name} [cm]" for name in YLABELS]
+    for ax, ylabel in zip(axs, ylabels, strict=True):
         ax.grid(which="major", color="#DDDDDD", linewidth=2.0)
         ax.grid(which="minor", color="#EEEEEE", linestyle=":", linewidth=1.5)
         ax.xaxis.set_minor_locator(AutoMinorLocator())
         ax.yaxis.set_minor_locator(AutoMinorLocator())
-        ax.set_ylabel(f"{ylabel} [cm]", fontsize=16)
+        ax.set_ylabel(ylabel, fontsize=16)
         ax.tick_params(axis="both", labelsize=14)
         ax.set_xlim(start, end)
     now_line(axs, now=now, last=last, start=start, stale="síðast")

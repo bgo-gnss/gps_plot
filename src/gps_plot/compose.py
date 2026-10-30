@@ -95,6 +95,7 @@ def stack_figure(
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
     robust_lines: bool = False,
+    ylabels: Sequence[str] | None = None,
 ) -> Figure:
     """Overlay ``series`` on the N/E/U frame; series ``k`` is moved by k·offset.
 
@@ -122,6 +123,8 @@ def stack_figure(
             2–98 percentiles, not their extremes: the spikes of a dense
             RTK line run off the axis instead of squashing the points
             (takes effect where ``ylim`` sets the range: one number).
+        ylabels: The three y-axis labels (default North/East/Up [mm]; see
+            :func:`gps_plot.labels.axis_labels`).
     """
     from gps_plot import timesmatplt as tplt
 
@@ -132,7 +135,7 @@ def stack_figure(
     styles = list(styles or ["points"] * len(series))
     xs = [tplt._as_datetime_list(s.t) for s in series]
 
-    fig, axes = tplt.stdFrame(None, title, fig=fig)
+    fig, axes = tplt.stdFrame(ylabels, title, fig=fig)
     first = min(x[0] for x in xs)
     last = max(x[-1] for x in xs)
     period = tplt.setXlim(axes, first, last, start=start, end=end)
