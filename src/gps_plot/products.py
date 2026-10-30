@@ -135,7 +135,7 @@ def load_yaml(path: str | Path) -> Any:
 
 def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """``{cdn slug: {"key", "category", "root", "stations", "baselines",
-    "stacks"}}`` from a station_areas.yaml document.
+    "stacks", "directions"}}`` from a station_areas.yaml document.
 
     Only areas with a ``cdn:`` slug have a plot directory; the slug names
     the area everywhere (plot tree, aflogun, events.yaml regions). Areas
@@ -144,8 +144,9 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     its top-level ``category_roots:`` entry (default :data:`DEFAULT_ROOT`).
 
     Raises:
-        ValueError: A malformed ``baselines:`` / ``stacks:`` (see
-            :func:`area_baselines`, :func:`area_stacks`).
+        ValueError: A malformed ``baselines:`` / ``stacks:`` /
+            ``directions:`` (see :func:`area_baselines`, :func:`area_stacks`,
+            :func:`area_directions`).
     """
     out: dict[str, dict[str, Any]] = {}
     roots = {str(k): str(v) for k, v in (doc.get("category_roots") or {}).items()}
@@ -168,6 +169,7 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                     "stations": [],
                     "baselines": [],
                     "stacks": {},
+                    "directions": {},
                 },
             )
             for sta in members:
@@ -176,6 +178,7 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             try:
                 pairs = area_baselines(spec.get("baselines"))
                 groups = area_stacks(spec.get("stacks"))
+                dirs = area_directions(spec.get("directions"))
             except ValueError as exc:
                 raise ValueError(f"station_areas {section}.{key}: {exc}") from None
             entry["baselines"] = area_pairs({"": entry["baselines"], key: pairs})
@@ -187,6 +190,75 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                         f"differs from the one of another {cdn!r} area"
                     )
                 entry["stacks"][name] = group
+            entry["directions"].update(dirs)
+    return out
+
+
+def area_directions(value: Any) -> dict[str, dict[str, Any]]:
+    """An area's ``directions:``: per pair, the fixed axes of ``--axes
+    motion|slope`` (``gpsplot direction`` prints the lines)::
+
+        directions:
+          SVIE-SKFC: {motion: 334}             # azimuth [°] the rover moves
+          SVIN-SKFC: {motion: 292, slope: [210, 28]}   # downslope az, dip [°]
+
+    Returns ``{PAIR: {"motion": float, "slope": (az, dip)}}`` (each key only
+    when given; pairs upper-cased, written as the plotted pair).
+
+    Raises:
+        ValueError: Not a mapping, a key not ``AAAA-BBBB``, an entry without
+            motion or slope, an unknown key, or a value out of range.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"directions: a mapping of AAAA-BBBB, got {value!r}")
+    out: dict[str, dict[str, Any]] = {}
+    for key, entry in value.items():
+        pair = str(key).strip().upper()
+        if not _PAIR.match(pair):
+            raise ValueError(f"directions: {key!r} is no AAAA-BBBB")
+        if not isinstance(entry, Mapping) or not entry:
+            raise ValueError(f"directions {pair}: {{motion: AZ, slope: [AZ, DIP]}}")
+        unknown = set(entry) - {"motion", "slope"}
+        if unknown:
+            raise ValueError(f"directions {pair}: unknown {sorted(unknown)}")
+        got: dict[str, Any] = {}
+        if "motion" in entry:
+            az = entry["motion"]
+            if not isinstance(az, (int, float)) or not 0 <= az < 360:
+                raise ValueError(f"directions {pair}: motion {az!r} not in 0..360")
+            got["motion"] = float(az)
+        if "slope" in entry:
+            sl = entry["slope"]
+            if (
+                not isinstance(sl, (list, tuple))
+                or len(sl) != 2
+                or not all(isinstance(x, (int, float)) for x in sl)
+                or not 0 <= sl[0] < 360
+                or not 0 <= sl[1] < 90
+            ):
+                raise ValueError(
+                    f"directions {pair}: slope {sl!r} is no [azimuth 0..360, dip 0..90]"
+                )
+            got["slope"] = (float(sl[0]), float(sl[1]))
+        out[pair] = got
+    return out
+
+
+def directions_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every area's ``directions:`` in one ``{PAIR: {...}}``.
+
+    Raises:
+        ValueError: A malformed entry, or one pair given differently in two
+            areas.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for slug, area in area_table(doc).items():
+        for pair, got in area["directions"].items():
+            if out.get(pair, got) != got:
+                raise ValueError(f"station_areas: directions {pair} differ ({slug})")
+            out[pair] = got
     return out
 
 

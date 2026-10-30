@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import numpy as np
@@ -21,8 +21,10 @@ from geofunc.axes import (
     along_axes,
     baseline_azimuth,
     rotate,
+    baseline_elevation,
     sign_axes,
     slant_axes,
+    tilted_axes,
 )
 
 from gps_plot.series import Series
@@ -33,7 +35,11 @@ SIGN_MODES: tuple[str, ...] = ("apart", "raw")
 
 #: --axes: N/E/U (signed per --sign), along/across/up (horizontal along the
 #: baseline), or along the 3-D line between the antennas
-AXES_MODES: tuple[str, ...] = ("neu", "along", "3d")
+AXES_MODES: tuple[str, ...] = ("neu", "along", "3d", "motion", "slope")
+
+#: the modes whose direction is not the baseline's but given (config
+#: ``directions:``, ``--direction``/``--slope`` or ``--direction-from``)
+GIVEN_MODES: tuple[str, ...] = ("motion", "slope")
 
 #: the a-priori direction may be this far [°] off the RTK data vector; past
 #: it the data vector is used (a station coordinate is off, or the rover moved
@@ -61,13 +67,42 @@ def pair_axes(pair: str, *, coord_file: str | None = None) -> Axes | None:
     return None if b0 is None else sign_axes(b0)
 
 
-def pair_frame(b: Any, mode: str) -> Axes:
+def _up_signed(ax: Axes, b: Any) -> Axes:
+    """``ax`` with its Up row signed as in ``neu`` (raw without ``b``)."""
+    if b is None:
+        return Axes(ax.matrix, ax.keys, (False, False, True))
+    signed = sign_axes(b)
+    m = np.array(ax.matrix, dtype=float)
+    m[2] *= signed.matrix[2, 2]
+    return Axes(m, ax.keys, (False, False, signed.raw[2]))
+
+
+def pair_frame(b: Any, mode: str, direction: Mapping[str, Any] | None = None) -> Axes:
     """The axes of ``--axes mode`` for a baseline vector ``b`` (N/E/U, m).
 
     ``neu``: :func:`sign_axes`. ``along``: along/across/up, Up signed as in
     ``neu`` (so switching ``--axes`` changes only the horizontal panels).
-    ``3d``: :func:`slant_axes` (along the line, across, normal).
+    ``3d``: :func:`slant_axes` (along the line, across, normal). ``motion``:
+    motion/across/up toward ``direction["motion"]`` [°] (+ = the rover
+    moving that way), Up as in ``neu``. ``slope``: downslope/across/normal
+    of ``direction["slope"]`` = (downslope azimuth, dip) [°], the normal
+    out of the slope. ``b`` may be None for the last two (Up then A − B).
+
+    Raises:
+        ValueError: an unknown mode, or ``motion``/``slope`` without its
+            direction.
     """
+    if mode in GIVEN_MODES:
+        got = (direction or {}).get(mode)
+        if got is None:
+            raise ValueError(f"no {mode} direction")
+        if mode == "slope":
+            az, dip = got
+            return tilted_axes(
+                np.radians(az), np.radians(dip), keys=("downslope", "across", "normal")
+            )
+        ax = tilted_axes(np.radians(got), 0.0, keys=("motion", "across", "up"))
+        return _up_signed(ax, b)
     signed = sign_axes(b)
     if mode == "neu":
         return signed
@@ -75,10 +110,25 @@ def pair_frame(b: Any, mode: str) -> Axes:
         return slant_axes(b)
     if mode != "along":
         raise ValueError(f"--axes {mode!r}: choose from {', '.join(AXES_MODES)}")
-    ax = along_axes(baseline_azimuth(b))
-    m = np.array(ax.matrix, dtype=float)
-    m[2] *= signed.matrix[2, 2]
-    return Axes(m, ax.keys, (False, False, signed.raw[2]))
+    return _up_signed(along_axes(baseline_azimuth(b)), b)
+
+
+def direction_note(b: Any, mode: str, direction: Mapping[str, Any] | None) -> str:
+    """The direction of a pair's axes for its legend: ``"334°"``, ``"210°/28°"``.
+
+    Empty for ``neu``.
+    """
+    if mode == "neu":
+        return ""
+    if mode == "motion":
+        return f"{(direction or {})['motion']:.0f}°"
+    if mode == "slope":
+        az, dip = (direction or {})["slope"]
+        return f"{az:.0f}°/{dip:.0f}°"
+    az = np.degrees(baseline_azimuth(b))
+    if mode == "3d":
+        return f"{az:.0f}°/{np.degrees(-baseline_elevation(b)):.0f}°"
+    return f"{az:.0f}°"
 
 
 def angle_off(b0: Any, b: Any, *, horizontal: bool) -> float:
@@ -102,14 +152,17 @@ def pair_orient(
     sign: str = "apart",
     axes: str = "neu",
     data: Any = None,
+    direction: Mapping[str, Any] | None = None,
 ) -> Series:
     """A baseline ``s`` on its pair's axes (``--sign``/``--axes``).
 
     The direction is the a-priori baseline, or ``data`` (a measured vector,
     N/E/U m) when that is more than :data:`DIRECTION_TOLERANCE_DEG` off it
-    or there are no coordinates (with a warning). A single station is
-    returned unchanged; so is a pair with no direction in ``neu`` (A − B,
-    with a warning), while ``along``/``3d`` refuse it (ValueError).
+    or there are no coordinates (with a warning); ``motion``/``slope`` take
+    theirs from ``direction`` (the pair's ``directions:`` entry). A single
+    station is returned unchanged; so is a pair with no direction in ``neu``
+    (A − B, with a warning), while the other modes refuse it (ValueError).
+    ``meta["direction"]`` says the direction (:func:`direction_note`).
     """
     if not _is_pair(spec) or (axes == "neu" and sign == "raw"):
         return s
@@ -128,12 +181,22 @@ def pair_orient(
                 stacklevel=2,
             )
             b = data
-    if b is None:
+    if axes in GIVEN_MODES:
+        if (direction or {}).get(axes) is None:
+            raise ValueError(
+                f"{spec}: no {axes} direction (directions: in station_areas.yaml, "
+                "--direction/--slope or --direction-from)"
+            )
+    elif b is None:
         if axes != "neu":
             raise ValueError(f"{spec}: no direction for --axes {axes}")
         warnings.warn(f"{spec}: no a-priori coordinates, plotted A - B", stacklevel=2)
         return s
-    return orient(s, pair_frame(b, axes))
+    out = orient(s, pair_frame(b, axes, direction))
+    note = direction_note(b, axes, direction)
+    return (
+        dataclasses.replace(out, meta={**out.meta, "direction": note}) if note else out
+    )
 
 
 def sign_pair(spec: str, s: Series, sign: str = "apart") -> Series:
@@ -318,11 +381,18 @@ class Orienter:
     figure never mixes axes. ``--sign raw`` with ``neu`` changes nothing.
     """
 
-    def __init__(self, sign: str = "apart", axes: str = "neu") -> None:
+    def __init__(
+        self,
+        sign: str = "apart",
+        axes: str = "neu",
+        directions: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
         if axes not in AXES_MODES:
             raise ValueError(f"--axes {axes!r}: choose from {', '.join(AXES_MODES)}")
         self.sign, self.mode = sign, axes
+        self.directions = dict(directions or {})
         self.found: dict[str, Axes | None] = {}
+        self.notes: dict[str, str] = {}
         self.messages: list[str] = []
 
     def _say(self, text: str) -> None:
@@ -334,6 +404,14 @@ class Orienter:
         data = None
         if s.meta.get("source") == "rtk" and s.meta.get("level") is not None:
             data = np.asarray(s.meta["level"], dtype=float) / 1000.0  # mm → m
+        if self.mode in GIVEN_MODES:
+            given = self.directions.get(pair)
+            if (given or {}).get(self.mode) is None:
+                self._say(f"{pair}: no {self.mode} direction")
+                return None
+            b = b0 if b0 is not None else data
+            self.notes[pair] = direction_note(b, self.mode, given)
+            return pair_frame(b, self.mode, given)
         if b0 is None and data is None:
             self._say(f"{pair}: no a-priori coordinates, plotted A - B")
             return None
@@ -348,6 +426,7 @@ class Orienter:
                     "axes from the RTK vector"
                 )
                 b = data
+        self.notes[pair] = direction_note(b, self.mode, None)
         return pair_frame(b, self.mode)
 
     def __call__(self, s: Series) -> Series:
@@ -364,7 +443,13 @@ class Orienter:
             if self.mode != "neu":
                 raise ValueError(f"{pair}: no direction for --axes {self.mode}")
             return s
-        return orient(s, ax)
+        out = orient(s, ax)
+        note = self.notes.get(pair)
+        return (
+            dataclasses.replace(out, meta={**out.meta, "direction": note})
+            if note
+            else out
+        )
 
     def summary(self) -> tuple[bool, tuple[bool, bool, bool]]:
         """(every pair re-signed, per component: every pair kept it raw).

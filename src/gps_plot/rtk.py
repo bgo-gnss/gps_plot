@@ -174,10 +174,15 @@ def build_parser(
         help="neu (default): North/East/Up, signed by --sign; along: "
         "along/across/up, horizontal along the baseline (+ = lengthening, "
         "across 90 deg clockwise, Up signed as in neu); 3d: along the 3-D line "
-        "between the antennas, across, normal. The direction is the a-priori "
-        "one, or the RTK vector if they differ by more than 0.5 deg. Adds "
-        "-along/-3d to the file name",
+        "between the antennas, across, normal (the direction: a-priori, or the "
+        "RTK vector if more than 0.5 deg off); motion: motion/across/up toward "
+        "the pair's motion azimuth; slope: downslope/across/normal of its "
+        "slope (station_areas.yaml directions:, --direction/--slope or "
+        "--direction-from; a pair without one is dropped). Adds -<axes>",
     )
+    from gps_plot.direction import add_direction_options
+
+    add_direction_options(parser)
     parser.add_argument(
         "--max-sigma", type=float, default=0.1, metavar="M",
         help="drop RTK epochs with sdn/sde/sdu above this [m] (default 0.1, 0 = keep)",
@@ -408,6 +413,7 @@ def _stack(
     ]
     labels = [
         compose.offset_label(s.label, k, args.offset)
+        + (f" ({s.meta['direction']})" if s.meta.get("direction") else "")
         for k, s in zip(index, series, strict=True)
     ]
     fig = compose.stack_figure(
@@ -482,7 +488,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
 
     series, styles, colors, dropped, notes = [], [], [], [], []
     # before alignment: shifts and notes are in the plotted axes
-    orient = Orienter(args.sign, args.axes)
+    from gps_plot.direction import resolve_directions
+
+    directions = resolve_directions(
+        baselines, args.axes, motion=args.direction, slope=args.slope,
+        span=args.direction_from, config=config, frame=args.frame,
+    )  # fmt: skip
+    orient = Orienter(args.sign, args.axes, directions)
     palette = compose.series_colors(baselines)
     plot_start = start
     if args.longterm:
