@@ -108,6 +108,13 @@ def build_parser(
         "gpsplot ts --baseline-sigma. Adds -empsig",
     )
     parser.add_argument(
+        "--sign",
+        choices=("apart", "raw"),
+        default="apart",
+        help="baselines: apart (default) = each of N/E/U signed so that + is "
+        "the baseline lengthening (a-priori coordinates); raw = A - B",
+    )
+    parser.add_argument(
         "--show-outliers",
         type=int,
         nargs="?",
@@ -483,6 +490,15 @@ def output_stem(
     return stem
 
 
+def _ylabels(series: Sequence[Series]) -> tuple[str, ...]:
+    """North/East/Up [mm], "(+ apart)" when every series is a re-signed pair."""
+    from gps_plot import labels
+    from gps_plot.axes import label_flags
+
+    apart, raw = label_flags(series)
+    return labels.axis_labels(series[0].components, "en", "mm", apart=apart, raw=raw)
+
+
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
     """Plot the stack; 0 when at least one series plotted, 1 otherwise."""
     import matplotlib as mpl
@@ -548,6 +564,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     bl_opts = source.BaselineOptions(
         tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS,
         empirical=empirical,
+        sign=args.sign,
     )
 
     got, labels, dropped = [], [], []
@@ -614,6 +631,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         show_obstruction=args.show_obstruction if args.view == "cleaned" else None,
         show_network=args.show_network if args.view == "cleaned" else None,
         fig=tplt._reusable_figure() if args.save else None,
+        ylabels=_ylabels(got),
     )
     if events:
         tplt.addEvent(events, fig)

@@ -1147,6 +1147,7 @@ def plotTime(
     baseline_sigma_scale: tuple[Sequence[float], Sequence[float]] | None = None,
     baseline_sigma: str = "formal",
     baseline_noise: str | None = None,
+    baseline_sign: str = "apart",
     overlay_pos_id: str | None = None,
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
@@ -1228,6 +1229,10 @@ def plotTime(
     coordinates); each station's scale k, or the network median. Missing
     record/coordinates warn and fall back to the formal σ; a note on the
     plot says which σ is shown. Adds ``-empsig`` to the file name.
+
+    ``baseline_sign="apart"`` (default) signs each of N/E/U by the pair's
+    a-priori baseline so + is lengthening (ends and overlays alike, labels
+    "(+ apart)"); ``"raw"`` plots A − B. The file name does not change.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -1403,6 +1408,7 @@ def plotTime(
                 rho=baseline_rho,
                 sigma_scale=baseline_sigma_scale,
                 noise_path=baseline_noise,
+                sign=baseline_sign,
             ),
         )
     except ValueError as exc:
@@ -1449,10 +1455,20 @@ def plotTime(
         fig = _reusable_figure()
 
     empty = bool(main_series.meta.get("empty_period"))
+    ylabels = None
+    if pair is not None:
+        from gps_plot import labels
+        from gps_plot.axes import label_flags
+
+        apart, kept = label_flags([main_series])
+        ylabels = labels.axis_labels(
+            main_series.components, "en", "mm", apart=apart, raw=kept
+        )
     fig = stdTimesPlot(
         x,
         data,
         Ddata,
+        Ylabel=ylabels,
         Title=Title,
         start=start,
         end=end,
@@ -1677,6 +1693,7 @@ def plotTime(
             overlay_pos_id,
             series_kw,
             main=(yearf, data, Ddata, x),
+            sign=baseline_sign,
         )
 
     if model is not None:
@@ -1959,6 +1976,7 @@ def _add_session_overlay(
     series_kw: dict[str, Any],
     *,
     main: tuple[Any, Any, Any, Any],
+    sign: str = "apart",
 ) -> Figure:
     """Draw another session's series (8 h) behind the main (24 h) one.
 
@@ -1973,7 +1991,9 @@ def _add_session_overlay(
     overlay = gps_source.fetch(
         sta,
         gps_source.SeriesRequest(**series_kw).replace(pos_id=overlay_pos_id),
-        gps_source.BaselineOptions(tol=2.0 / 24.0 / 365.25, check_view=False),
+        gps_source.BaselineOptions(
+            tol=2.0 / 24.0 / 365.25, check_view=False, sign=sign
+        ),
     )
     t8, d8, s8 = overlay.t, np.asarray(overlay.y), np.asarray(overlay.sigma)
     note = None

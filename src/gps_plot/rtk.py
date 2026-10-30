@@ -22,10 +22,12 @@ import datetime as dt
 import os
 import sys
 import textwrap
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 
+from gps_plot.axes import Orienter
 from gps_plot.cli import common
 
 #: span ending at -e (default now, UTC), as rtk_gps's specials (+ month)
@@ -158,6 +160,14 @@ def build_parser(
         "RTK alone: not with --daily/--longterm/--offset",
     )
     parser.add_argument(
+        "--sign",
+        choices=("apart", "raw"),
+        default="apart",
+        help="apart (default): each of N/E/U signed so that + is the baseline "
+        "lengthening in that component (from the a-priori station "
+        "coordinates); raw: plain rover - reference",
+    )
+    parser.add_argument(
         "--max-sigma", type=float, default=0.1, metavar="M",
         help="drop RTK epochs with sdn/sde/sdu above this [m] (default 0.1, 0 = keep)",
     )  # fmt: skip
@@ -261,7 +271,8 @@ def _daily(
         view="raw",
         pos_id=pid,
     )
-    s = source.fetch(pair, req)
+    # raw: the Orienter signs it alongside the RTK series
+    s = source.fetch(pair, req, source.BaselineOptions(sign="raw"))
     t = np.array(list(toDateTime(s.t)), dtype="datetime64[ns]")
     return dataclasses.replace(s, t=t, label=f"{pair} daily")
 
@@ -294,6 +305,7 @@ def _longterm_pair(
     root: Any,
     dirs: list[str],
     interval: str,
+    orient: Orienter,
 ) -> tuple[list[tuple[Any, str]], dict[str, list[str]]]:
     """One ``--longterm`` pair: its daily points, then its RTK tail on them.
 
@@ -310,7 +322,7 @@ def _longterm_pair(
     daily = None
     try:
         daily = _daily(name, plot_start, end, args, config)
-        daily = dataclasses.replace(daily, meta={**daily.meta, "pair": name})
+        daily = orient(dataclasses.replace(daily, meta={**daily.meta, "pair": name}))
         got.append((daily, "marked"))
     except Exception as exc:
         out["dropped"].append(f"{name} daily: {exc}")
@@ -328,7 +340,7 @@ def _longterm_pair(
     if len(s.t) == 0:
         out["dropped"].append(f"{name}: no RTK solutions in the span")
         return got, out
-    s = dataclasses.replace(s, meta={**s.meta, "pair": name})
+    s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
     if daily is not None:
         try:
             s = rtk_source.align(s, daily)
@@ -354,6 +366,7 @@ def _stack(
     last: dt.datetime,
     plot_start: dt.datetime,
     end: dt.datetime,
+    ylabels: Sequence[str] | None = None,
 ) -> Any:
     """The gpsplot figure (stack frame, mm, English) of the plotted series."""
     from gps_plot import compose
@@ -391,6 +404,7 @@ def _stack(
         colors=colors,
         fig=tplt._reusable_figure() if args.save else None,
         robust_lines=bool(args.longterm),
+        ylabels=ylabels,
     )
     if notes:
         what = (
@@ -419,8 +433,9 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     import matplotlib as mpl
     from geo_dataread.rtk_read import list_baselines, rtk_dir
 
-    from gps_plot import compose
+    from gps_plot import compose, labels
     from gps_plot import timesmatplt as tplt
+    from gps_plot.series import NEU
     from gps_plot.sources import rtk as rtk_source
 
     now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
@@ -440,13 +455,23 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     dirs = list_baselines(root)
 
     series, styles, colors, dropped, notes = [], [], [], [], []
+    orient = Orienter(args.sign)  # before alignment: shifts/notes in its signs
     palette = compose.series_colors(baselines)
     plot_start = start
     if args.longterm:
         plot_start = longterm_start(args.longterm, end)
         for name, color in zip(baselines, palette, strict=True):
             got, note = _longterm_pair(
-                name, plot_start, start, end, args, config, root, dirs, interval
+                name,
+                plot_start,
+                start,
+                end,
+                args,
+                config,
+                root,
+                dirs,
+                interval,
+                orient,
             )
             for s, style in got:
                 series.append(s)
@@ -470,14 +495,15 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         if len(s.t) == 0:
             dropped.append(f"{name}: no RTK solutions in the span")
             continue
-        s = dataclasses.replace(s, meta={**s.meta, "pair": name})
+        s = orient(dataclasses.replace(s, meta={**s.meta, "pair": name}))
         series.append(s)
         styles.append("line")
         colors.append(color)
         if args.daily:
             try:
-                d = rtk_source.align_daily(_daily(name, start, end, args, config), s)
-                d = dataclasses.replace(d, meta={**d.meta, "pair": name})
+                d = _daily(name, start, end, args, config)
+                d = orient(dataclasses.replace(d, meta={**d.meta, "pair": name}))
+                d = rtk_source.align_daily(d, s)
             except Exception as exc:
                 dropped.append(f"{name} daily: {exc}")
                 continue
@@ -494,6 +520,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     if not series:
         print("nothing plotted", file=sys.stderr)
         return 1
+    apart, raw = orient.summary()
 
     if not args.save:
         mpl.use("WebAgg")
@@ -507,10 +534,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             title=rtk_classic.classic_title([s.label for s in series], special),
             start=start, end=end, now=now, last=last, interactive=not args.save,
             names=baselines,
+            ylabels=labels.axis_labels(NEU, "is", "cm", apart=apart, raw=raw),
         )  # fmt: skip
     else:
         fig = _stack(args, series, styles, colors, notes, events, now, last,
-                     plot_start, end)  # fmt: skip
+                     plot_start, end,
+                     labels.axis_labels(NEU, "en", "mm", apart=apart, raw=raw),
+                     )  # fmt: skip
 
     if not args.save:
         import matplotlib.pyplot as plt

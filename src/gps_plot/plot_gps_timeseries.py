@@ -899,6 +899,15 @@ def build_parser(
         "geo_dataread.baseline_noise / gps-baseline-noise). Adds -empsig",
     )
     parser.add_argument(
+        "--sign",
+        dest="baseline_sign",
+        choices=("apart", "raw"),
+        default="apart",
+        help="baselines only: apart (default) = each of N/E/U signed so that + "
+        "is the baseline lengthening in that component (from the a-priori "
+        "station coordinates); raw = plain AAAA - BBBB",
+    )
+    parser.add_argument(
         "--baseline-noise",
         default=None,
         help="path of the baseline noise record (default: "

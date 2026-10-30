@@ -85,6 +85,8 @@ class BaselineOptions:
         noise_path: Baseline noise record path; None = deployed default.
         check_view: Refuse a detrended baseline with an end that has no
             stored record (it would difference detrended against plate).
+        sign: "apart" (default): N/E/U signed so + is the baseline
+            lengthening (:func:`gps_plot.axes.sign_pair`); "raw": A − B.
     """
 
     tol: float | None = None
@@ -93,6 +95,7 @@ class BaselineOptions:
     sigma_scale: Any = None
     noise_path: str | None = None
     check_view: bool = True
+    sign: str = "apart"
 
 
 def fetch_station(sta: str, req: SeriesRequest) -> Series:
@@ -132,7 +135,8 @@ def fetch(
     baseline's first common epoch. ``meta`` holds the ``rho`` and
     ``sigma_scale`` the baseline σ was formed with (None = formal
     quadrature) and a ``sigma_note`` saying which σ an empirical request
-    ended up with.
+    ended up with. With ``sign="apart"`` everything above, ends included, is
+    on the pair's re-signed N/E/U (``meta`` ``apart``/``raw``).
     """
     from geo_dataread.baseline import baseline as compute_baseline
     from geo_dataread.baseline import check_same_view, split_baseline
@@ -170,7 +174,9 @@ def fetch(
         Series(label=e.label, t=t, y=d, sigma=e.sigma)
         for (t, d), e in zip(bl.ends, ends, strict=True)
     )
-    return Series(
+    from gps_plot.axes import sign_pair
+
+    series = Series(
         label=spec,
         t=bl.yearf,
         y=bl.data,
@@ -184,6 +190,7 @@ def fetch(
         ends=(zeroed[0], zeroed[1]),
         meta={"rho": rho, "sigma_scale": sigma_scale, "sigma_note": sigma_note},
     )
+    return sign_pair(spec, series, opts.sign)
 
 
 #: a baseline day set aside at either end is drawn under the most serious
