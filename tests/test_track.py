@@ -422,3 +422,15 @@ def test_with_colours_one_per_listed_station_in_order() -> None:
     assert [tr.colour for tr in got] == ["blue", track.SINCE_COLOR, "red"]
     lines = track.legend_entries(got, ONSET, 14)
     assert [c for _, c in lines] == ["blue", "red"]
+
+
+def test_recent_window_widens_for_weekly_days() -> None:
+    """A station with a day a week has too few in 14 days: its recent rate
+    reaches back to the 5th newest day since the onset (SVIN)."""
+    on = track.yearf(ONSET)
+    weekly = on + np.arange(0, 42, 7) / 365.25  # 6 days, a week apart
+    t = np.concatenate([on - np.arange(400, 0, -1) / 365.25, weekly])
+    assert track.recent_span(t, on, 14) == 28
+    daily = on + np.arange(30) / 365.25
+    assert track.recent_span(np.concatenate([t[:400], daily]), on, 14) == 14
+    assert track.recent_span(t[:403], on, 14) == 14  # too few since the onset

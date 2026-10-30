@@ -147,6 +147,8 @@ class Vertical:
     since: tuple[float, float] | None
     recent: tuple[float, float] | None
     n_after: int
+    #: the window of :attr:`recent` [days] (:func:`recent_span`)
+    recent_window: float = RECENT_DAYS
 
     @property
     def end_count(self) -> int:
@@ -206,6 +208,8 @@ class Track:
     vertical: Vertical | None = None
     #: its arrows', legend lines' and series' colour (:func:`with_colours`)
     colour: str = SINCE_COLOR
+    #: the window of :attr:`recent` [days] (:func:`recent_span`)
+    recent_window: float = RECENT_DAYS
 
     @property
     def end_count(self) -> int:
@@ -402,6 +406,19 @@ def line_rate(
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
 
 
+def recent_span(t: FloatArray, t_on: float, recent_days: float) -> float:
+    """The recent rate's window [days]: ``recent_days``, or, when that holds
+    fewer than ``MIN_RATE_DAYS`` days, back to the ``MIN_RATE_DAYS``-th
+    newest day since the onset (a station with weekly days, SVIN; BGÓ
+    2026-10-30); never before the onset."""
+    after = t[t >= t_on]
+    inside = after >= t[-1] - recent_days / YEAR
+    if int(inside.sum()) >= MIN_RATE_DAYS or after.size < MIN_RATE_DAYS:
+        return float(recent_days)
+    return max(float(recent_days),
+               math.ceil((float(t[-1]) - float(after[-MIN_RATE_DAYS])) * YEAR))  # fmt: skip
+
+
 def wander_scale(
     t: FloatArray, r: FloatArray, pre: npt.NDArray[np.bool_], days: float
 ) -> FloatArray:
@@ -572,15 +589,17 @@ def station_track(
         line_rate(t, r, t_on, float(t[-1]), rms),
         wander_scale(t, resid, in_pre, (float(t[-1]) - t_on) * YEAR),
     )
+    span = recent_span(t, t_on, recent_days)
     recent = scaled(
-        line_rate(t, r, float(t[-1]) - recent_days / YEAR, float(t[-1]), rms),
-        wander_scale(t, resid, in_pre, recent_days),
+        line_rate(t, r, float(t[-1]) - span / YEAR, float(t[-1]), rms),
+        wander_scale(t, resid, in_pre, span),
     )  # fmt: skip
     return Track(
         marker, lon, lat, t[shown], r[0, shown], r[1, shown],
         (t[shown] - t_on) * YEAR, float(math.hypot(*rms)), since, recent,
         int((t >= t_on).sum()), before, (float(rms[0]), float(rms[1])),
         (float(zero_sigma[0]), float(zero_sigma[1])), n_near < 3,
+        recent_window=span,
     )  # fmt: skip
 
 
@@ -615,6 +634,8 @@ def vertical_track(
         raise ValueError(f"no Up since {onset:%Y-%m-%d}")
     resid = detrend(t, u, in_pre)[0] if keep_trend else r
 
+    span = recent_span(t, t_on, recent_days)
+
     def rate(a: float, days: float) -> tuple[float, float] | None:
         got = line_fit(t, r, a, float(t[-1]), rms)
         if got is None:
@@ -626,8 +647,9 @@ def vertical_track(
         t[shown], r[0, shown], (t[shown] - t_on) * YEAR, float(rms[0]),
         zero_sigma, n_near < 3,
         rate(t_on, (float(t[-1]) - t_on) * YEAR),
-        rate(float(t[-1]) - recent_days / YEAR, recent_days),
+        rate(float(t[-1]) - span / YEAR, span),
         int((t >= t_on).sum()),
+        span,
     )  # fmt: skip
 
 
@@ -740,6 +762,19 @@ def with_colours(tracks: Sequence[Track]) -> list[Track]:
             i += 1
         out.append(tr)
     return out
+
+
+def recent_key(recent_days: int, tracks: Sequence[Track] = ()) -> str:
+    """The legend's line saying what the black arrows are (their numbers
+    are on the stations' series), with the stations whose window had to be
+    longer (:func:`recent_span`)."""
+    longer = [f"{tr.marker} {tr.recent_window:.0f}" for tr in tracks
+              if tr.moved and tr.since is not None and tr.recent is not None
+              and tr.recent_window > recent_days + 0.5]  # fmt: skip
+    more = (
+        f" ({', '.join(longer)} days: too few days in {recent_days})" if longer else ""
+    )
+    return f"black arrows: mean velocity of the last {recent_days} days{more}"
 
 
 def up_text(marker: str, vt: Vertical, onset: dt.date) -> str:
@@ -921,6 +956,26 @@ def draw_up_arrows(
 
     xs: list[float] = []
     ys: list[float] = []
+    # the vertical of the last days (black), from the station as the rest
+    # (BGÓ 2026-10-30): drawn first, so the station's own on the same line
+    # stays on top
+    recent = []
+    for tr in tracks:
+        vt = tr.vertical
+        if (up_vector(tr) is None or tr.recent is None or vt is None
+                or vt.recent is None):  # fmt: skip
+            continue
+        recent.append(maps.VelocityVector(
+            tr.marker, tr.lon, tr.lat, east=0.0, north=vt.recent[0],
+            sigma_east=0.0, sigma_north=vt.recent[1], method="recent"))  # fmt: skip
+    if recent:
+        maps.draw_velocity_vectors(
+            fig, recent, colors={"recent": RECENT_COLOR}, scale=arrow_scale,
+            confidence=0.39, vector_head="0.2c", pen_width=UP_PEN,
+            ellipse_pen=UP_ERROR_PEN, markers=False, labels=False,
+        )  # fmt: skip
+        xs += [v.lon for v in recent]
+        ys += [v.lat + v.north * arrow_scale * deg_per_cm for v in recent]
     for rate in (True, False):
         vecs = []
         for tr in tracks:
@@ -1103,6 +1158,9 @@ def draw_tracks(
 
     moved = any(tr.moved and tr.since is not None for tr in tracks)
     entries = legend_entries(tracks, onset, recent_days, up=up)
+    if arrows and any(tr.moved and tr.since is not None and tr.recent is not None
+                      for tr in tracks):  # fmt: skip
+        entries = [(recent_key(recent_days, tracks), RECENT_COLOR), *entries]
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
     top, right = _draw_legend(
@@ -1310,8 +1368,8 @@ def _up_panel(ax: Any, vt: Vertical, onset: dt.date, t0: dt.datetime, lo: float,
     text = []
     for rate, color, first, label in (
         (vt.since, colour, 0.0, f"since {onset:%d.%m}"),
-        (vt.recent, RECENT_COLOR, float(vt.days[-1]) - recent_days,
-         f"last {recent_days} days"),
+        (vt.recent, RECENT_COLOR, float(vt.days[-1]) - vt.recent_window,
+         f"last {vt.recent_window:.0f} days"),
     ):  # fmt: skip
         if rate is None:
             continue
@@ -1360,8 +1418,8 @@ def series_figure(
     lo, hi = days_range or (-float(before_days), float(max(tr.days.max(), 1.0)))
     on_map = tr.days >= -before_days
     rates = ((tr.since, tr.colour, 0.0, f"since {onset:%d.%m}"),
-             (tr.recent, RECENT_COLOR, float(tr.days[-1]) - recent_days,
-              f"last {recent_days} days"))  # fmt: skip
+             (tr.recent, RECENT_COLOR, float(tr.days[-1]) - tr.recent_window,
+              f"last {tr.recent_window:.0f} days"))  # fmt: skip
     for comp, (ax, name) in enumerate(zip(axes[:2], ("North", "East"), strict=True)):
         y = (tr.north, tr.east)[comp]
         ax.plot(when, y, color="0.6", lw=0.5, ls=":", zorder=1)
