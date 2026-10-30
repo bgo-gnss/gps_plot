@@ -323,3 +323,27 @@ def test_classic_keeps_a_silent_station_in_the_legend():
     assert legend == ["ASVE (engin gögn)", "SENG"]
     # SENG keeps the second colour of the cycle, as with ASVE reporting
     assert fig.axes[0].lines[1].get_color() == "#ff7f0e"
+
+
+def test_now_line_marks_plot_time_on_every_panel():
+    from matplotlib import dates as mdates
+    from matplotlib.figure import Figure
+
+    from gps_plot import rtk_classic
+
+    now = dt.datetime(2026, 10, 30, 10, 0)
+    start = now - dt.timedelta(days=4)
+    axs = Figure().subplots(nrows=3)
+    for ax in axs:
+        ax.set_xlim(start, now)  # the frame ends at now: the line would hide
+    color = rtk_classic.now_line(axs, now=now, last=now - dt.timedelta(minutes=10))
+    assert color == "green"
+    for ax in axs:
+        assert ax.lines[-1].get_color() == "green"
+        assert ax.get_xlim()[1] > mdates.date2num(now)  # room right of the line
+        assert ax.texts[-1].get_text() == "2026-10-30 10:00:00"
+    stale = Figure().subplots(nrows=1)
+    stale.set_xlim(start, now)
+    last = now - dt.timedelta(hours=2)
+    assert rtk_classic.now_line([stale], now=now, last=last) == rtk_classic.STALE_COLOR
+    assert stale.texts[-1].get_text().endswith("(last 2026-10-30 08:00)")
