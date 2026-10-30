@@ -997,3 +997,65 @@ def test_area_directions_parse_and_merge() -> None:
 def test_area_directions_refuses(value: object, msg: str) -> None:
     with pytest.raises(ValueError, match=msg):
         products.area_directions(value)
+
+
+BASELINE_AREAS = {
+    "svinafellsheidi": {"key": "s", "root": "skridurogflod", "stations": [],
+                        "baselines": ["SVIN-SKFC", "SVIE-SKFC"], "stacks": {}},
+    "seydisfjordur": {"key": "y", "root": "skridurogflod", "stations": [],
+                      "baselines": ["SEY1-SEYD"], "stacks": {}},
+    "hekla": {"key": "h", "root": "volcanos", "stations": [],
+              "baselines": ["HEKR-ISAK"], "stacks": {}},
+}  # fmt: skip
+
+
+def test_product_and_run_areas_keep_to_those_areas() -> None:
+    cfg = {"products": {"baselines": {
+        "stations": "area_baselines",
+        "dir": "locations/{root}/{cdn}/graphs/baselines",
+        "areas": ["svinafellsheidi", "seydisfjordur"],
+        "runs": [
+            {"ref": "plate", "special": ["year"]},
+            {"ref": "plate", "special": ["year"], "args": ["--axes along"],
+             "areas": ["svinafellsheidi"]},
+        ],
+    }}}  # fmt: skip
+    jobs = products.expand(cfg, areas=BASELINE_AREAS)
+    assert {j.area for j in jobs} == {"svinafellsheidi", "seydisfjordur"}
+    along = [j for j in jobs if "--axes" in j.argv]
+    assert [j.area for j in along] == ["svinafellsheidi"]
+    cfg["products"]["baselines"]["runs"][1]["areas"] = ["nowhere"]
+    with pytest.raises(ValueError, match="nowhere"):
+        products.expand(cfg, areas=BASELINE_AREAS)
+
+
+def test_polar_product_one_job_per_area_and_period() -> None:
+    cfg = {"defaults": {"frame": "itrf14", "save": "png", "legacy_names": True},
+           "products": {"polar": {
+               "tool": "polar", "stations": "area_baselines",
+               "dir": "locations/{root}/{cdn}/graphs/baselines",
+               "areas": ["svinafellsheidi"], "events": "catalog",
+               "runs": [{"special": ["90d", "year"], "publish": True,
+                         "args": ["--onset 20260920"]}],
+           }}}  # fmt: skip
+    jobs = products.expand(cfg, areas=BASELINE_AREAS)
+    assert [j.tool for j in jobs] == ["polar", "polar"]
+    assert jobs[0].stations == ("SVIN-SKFC", "SVIE-SKFC")
+    assert jobs[0].argv == ("--save", "png", "--frame", "itrf14", "--onset",
+                            "20260920", "--special", "90d")  # fmt: skip
+    assert "--events" not in jobs[1].argv  # polar draws no event lines
+    cfg["products"]["polar"]["runs"][0]["ref"] = "plate"
+    with pytest.raises(ValueError, match="time-series keys"):
+        products.expand(cfg, areas=BASELINE_AREAS)
+    cfg["products"]["polar"]["stations"] = "area"
+    with pytest.raises(ValueError, match="area_baselines"):
+        products.expand(cfg, areas=BASELINE_AREAS)
+
+
+def test_runner_knows_the_polar_tool() -> None:
+    from gps_plot.cli import run
+
+    run_fn, parser = run._tool("polar", None)
+    args = parser.parse_args(["SVIE-SKFC", "--special", "year", "--save", "png",
+                              "-d", "/tmp/x", "--manifest", "/tmp/m"])  # fmt: skip
+    assert args.manifest == "/tmp/m" and run_fn.__module__ == "gps_plot.polar"

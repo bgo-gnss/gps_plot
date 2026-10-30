@@ -33,6 +33,7 @@ RUN_KEYS = (
     "publish",
     "fixedstart",
     "args",
+    "areas",  # only these area slugs (an area product's run)
 )
 
 #: ts options a plots.yaml ``args:`` list may not carry: the runner sets
@@ -108,7 +109,7 @@ class Job:
     stations: tuple[str, ...]  # stations and/or baselines AAAA-BBBB
     argv: tuple[str, ...]  # tool options (no stations, -d, --manifest)
     publish: bool
-    tool: str = "ts"  # "ts", "stack" (one figure of all) or "map"
+    tool: str = "ts"  # "ts", "stack" (one figure of all), "map" or "polar"
     group: str | None = None  # the stacks: group of a stack
     kind: str | None = None  # a map's KIND (velocity, deformation, station)
     #: (dir, file stem, text) of the captions of the files it writes
@@ -414,6 +415,8 @@ def run_argv(
     if unknown:
         raise ValueError(f"plots.yaml run: unknown key(s) {sorted(unknown)}")
     opts = {**defaults, **run}
+    if tool == "polar":
+        return _polar_argv(opts, defaults, product_args, run, override_args)
     stack = tool == "stack"
     if stack and opts.get("operational"):
         raise ValueError("plots.yaml run: operational: is a ts preset, not for stacks")
@@ -452,6 +455,48 @@ def run_argv(
     return out
 
 
+#: run keys a polar product does not take (they are time-series options)
+POLAR_UNUSED = ("ref", "detrend_terms", "ylim", "uncert", "operational", "session",
+                "view")  # fmt: skip
+
+
+def _polar_argv(
+    opts: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    product_args: Any,
+    run: Mapping[str, Any],
+    override_args: Any,
+) -> list[list[str]]:
+    """The ``gpsplot polar`` options of one run: one list per period
+    (``special:`` each, ``fixedstart:`` as ``-s``)."""
+    bad = [k for k in POLAR_UNUSED if run.get(k) is not None]
+    if bad:
+        raise ValueError(f"plots.yaml polar run: {bad} are time-series keys")
+    base: list[str] = ["--save", str(opts.get("save", "png"))]
+    if opts.get("frame") is not None:
+        base += ["--frame", str(opts["frame"])]
+    for value in (defaults.get("args"), product_args, run.get("args"), override_args):
+        base += extra_args(value)
+    out = [base + ["--special", str(s)] for s in _as_list(opts.get("special") or [])]
+    out += [base + ["-s", _ymd(s)] for s in _as_list(opts.get("fixedstart") or [])]
+    if not out:
+        raise ValueError("plots.yaml polar run: needs special and/or fixedstart")
+    return out
+
+
+def _area_filter(pname: str, value: Any, areas: Mapping[str, Any]) -> set[str] | None:
+    """A product's or run's ``areas:`` (None: every area); unknown slugs refused."""
+    if value is None:
+        return None
+    picked = {str(a) for a in _as_list(value)}
+    if missing := picked - set(areas):
+        raise ValueError(
+            f"plots.yaml {pname}: areas: {', '.join(sorted(missing))} is no cdn "
+            "slug of station_areas.yaml"
+        )
+    return picked
+
+
 def expand(
     cfg: Mapping[str, Any],
     *,
@@ -473,7 +518,11 @@ def expand(
     The ``dir:`` of an area product may use ``{cdn}``, ``{root}`` (the area's
     category root, station_areas.yaml ``category_roots:``) and, for stacks,
     ``{group}``. A product's ``overrides:`` are keyed by area slug, or for
-    stacks by ``<slug>/<group>`` (applied after the area's).
+    stacks by ``<slug>/<group>`` (applied after the area's). ``areas:`` on an
+    area product, or on one of its runs, keeps only those area slugs (e.g.
+    the rotated-axes runs for the landslide areas). ``tool: polar`` with
+    ``stations: area_baselines`` is one ``gpsplot polar`` per area, run and
+    period.
     """
     defaults = dict(cfg.get("defaults") or {})
     colours = {**DEFAULT_EVENT_COLOURS, **(cfg.get("event_colours") or {})}
@@ -491,10 +540,17 @@ def expand(
             if want_areas is None or spec.get("area") in want_areas:
                 jobs += map_jobs(pname, spec, defaults, areas, cfg, events)
             continue
+        if spec.get("tool") == "polar" and kind != "area_baselines":
+            raise ValueError(f"plots.yaml {pname}: tool: polar needs area_baselines")
         if kind in AREA_KINDS:
+            only = _area_filter(pname, spec.get("areas"), areas)
+            for run in runs:
+                _area_filter(pname, run.get("areas"), areas)
             names = [a for a in areas if a not in set(spec.get("exclude") or ())]
             for slug in names:
                 if want_areas is not None and slug not in want_areas:
+                    continue
+                if only is not None and slug not in only:
                     continue
                 jobs += _area_jobs(
                     pname,
@@ -829,6 +885,8 @@ def _area_jobs(
         stacks: Mapping[str, Sequence[str]] = entry.get("stacks") or {}
         targets = [(g, tuple(p)) for g, p in stacks.items()]
     tool = "stack" if kind == "area_stacks" else "ts"
+    if spec.get("tool") == "polar":
+        tool = "polar"
     overrides = spec.get("overrides") or {}
     ev = (
         event_specs(events, [slug, entry["key"]], colours)
@@ -848,6 +906,8 @@ def _area_jobs(
             tok for o in (area_over, group_over) for tok in extra_args(o.get("args"))
         ]
         for run in runs:
+            if run.get("areas") is not None and slug not in _as_list(run["areas"]):
+                continue
             publish = bool({**run, **over}.get("publish", False))
             merged = {
                 **run,
@@ -858,7 +918,7 @@ def _area_jobs(
             for argv in run_argv(
                 merged, defaults, spec.get("args"), over_args, tool=tool
             ):
-                if ev:
+                if ev and tool != "polar":
                     argv = argv + ["--events", *ev]
                 if group:
                     argv = argv + ["--label", group]

@@ -97,6 +97,10 @@ def build_parser(
         help="save as png (default) / pdf / eps …, comma separated",
     )  # fmt: skip
     parser.add_argument("-d", "--figDir", default=None, help="output directory")
+    parser.add_argument(
+        "--manifest", default=None, metavar="FILE",
+        help="append the files written to FILE, one absolute path per line",
+    )  # fmt: skip
     return parser
 
 
@@ -370,6 +374,11 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             else common.config_dir(config, "fig_dir", "")
         )
         tplt.saveFig(os.path.join(fig_dir, stem), args.save, fig)
+        if args.manifest:
+            with open(args.manifest, "a") as fh:
+                fh.writelines(
+                    os.path.abspath(f) + "\n" for f in getattr(fig, "_gps_files", ())
+                )
         print(f"plotted {name}: {os.path.join(fig_dir, stem)}")
     return 1 if failed == len(args.Baselines) else 0
 
