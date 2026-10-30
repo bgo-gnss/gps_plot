@@ -96,19 +96,68 @@ def _is_pair(spec: str) -> bool:
     return split_baseline(spec) is not None
 
 
-def sign_pair(spec: str, s: Series, sign: str = "apart") -> Series:
-    """A baseline ``s`` on its re-signed N/E/U (``sign="apart"``).
+def pair_orient(
+    spec: str,
+    s: Series,
+    sign: str = "apart",
+    axes: str = "neu",
+    data: Any = None,
+) -> Series:
+    """A baseline ``s`` on its pair's axes (``--sign``/``--axes``).
 
-    A single station, ``sign="raw"``, or a pair without a-priori
-    coordinates (with a warning) is returned unchanged.
+    The direction is the a-priori baseline, or ``data`` (a measured vector,
+    N/E/U m) when that is more than :data:`DIRECTION_TOLERANCE_DEG` off it
+    or there are no coordinates (with a warning). A single station is
+    returned unchanged; so is a pair with no direction in ``neu`` (A − B,
+    with a warning), while ``along``/``3d`` refuse it (ValueError).
     """
-    if sign == "raw" or not _is_pair(spec):
+    if not _is_pair(spec) or (axes == "neu" and sign == "raw"):
         return s
-    ax = pair_axes(spec)
-    if ax is None:
+    b0 = apriori(spec)
+    b = b0 if b0 is not None else data
+    if b0 is None and data is not None:
+        warnings.warn(
+            f"{spec}: no a-priori coordinates, axes from the data", stacklevel=2
+        )
+    elif b0 is not None and data is not None and axes != "neu":
+        off = angle_off(b0, data, horizontal=axes == "along")
+        if off > DIRECTION_TOLERANCE_DEG:
+            warnings.warn(
+                f"{spec}: a-priori direction {off:.2f}° off the data, axes from "
+                "the data",
+                stacklevel=2,
+            )
+            b = data
+    if b is None:
+        if axes != "neu":
+            raise ValueError(f"{spec}: no direction for --axes {axes}")
         warnings.warn(f"{spec}: no a-priori coordinates, plotted A - B", stacklevel=2)
         return s
-    return orient(s, ax)
+    return orient(s, pair_frame(b, axes))
+
+
+def sign_pair(spec: str, s: Series, sign: str = "apart") -> Series:
+    """A baseline ``s`` on its re-signed N/E/U (:func:`pair_orient`, ``neu``)."""
+    return pair_orient(spec, s, sign)
+
+
+def figure_labels(series: Sequence[Series], lang: Any, unit: str) -> tuple[str, ...]:
+    """The y-axis labels of a figure of ``series``.
+
+    Their components (all alike, or ValueError); "+ apart" on a component
+    whose + is lengthening (:data:`APART_KEYS`) when every series is an
+    oriented pair, "(A − B)" on one every series kept raw (a component kept
+    raw in only some is reported on stderr).
+    """
+    from gps_plot import labels
+
+    keys = {tuple(x.components) for x in series}
+    if len(keys) != 1:
+        raise ValueError(f"one figure, different axes: {sorted(keys)}")
+    comps = keys.pop()
+    apart, raw = label_flags(series)
+    marks = [apart and k in APART_KEYS for k in comps]
+    return labels.axis_labels(comps, lang, unit, apart=marks, raw=raw)
 
 
 def label_flags(
@@ -116,11 +165,11 @@ def label_flags(
 ) -> tuple[bool, tuple[bool, bool, bool]]:
     """What the axis labels of a figure of ``series`` may say.
 
-    (every series is a re-signed baseline, per component: every one kept it
+    (every series is an oriented baseline, per component: every one kept it
     as A − B). A component kept raw in only some of them is reported on
     stderr; the label then says "+ apart" for the rest.
     """
-    signed = [s for s in series if s.meta.get("apart")]
+    signed = [s for s in series if s.meta.get("axes") is not None]
     apart = bool(signed) and len(signed) == len(series)
     if not apart:
         return False, (False, False, False)
@@ -151,6 +200,44 @@ def _overlay(pair: tuple[Any, Any] | None, ax: Axes) -> tuple[Any, Any] | None:
     )
     assert r.sigma is not None
     return r.values.T, r.sigma.T
+
+
+#: a baseline day set aside is drawn under the most serious reason it had
+#: (as :data:`gps_plot.sources.gps.OVERLAY_PRIORITY`)
+_OVERLAYS = ("netday", "iced", "buried", "outliers")
+
+
+def _mixed_overlays(s: Series, ax: Axes, y: Any) -> dict[str, Any]:
+    """The set-aside overlays of ``s`` on axes that mix components.
+
+    A rotated component is set aside wherever a component it mixes was
+    (``y``, the rotated values, is NaN there): it is drawn from the whole
+    vector of that epoch (the kept values completed by the overlays) under
+    the most serious reason among the components it mixes.
+    """
+    full = np.array(s.y, dtype=float)
+    for name in _OVERLAYS:
+        pair = getattr(s, name)
+        if pair is not None:
+            v = np.asarray(pair[0], dtype=float)
+            full = np.where(np.isnan(full) & np.isfinite(v), v, full)
+    r = rotate(full.T, ax, sigma=np.asarray(s.sigma, dtype=float).T)
+    assert r.sigma is not None
+    yf, sf = r.values.T, r.sigma.T
+    lost = np.isnan(y) & np.isfinite(yf)
+    uses = (ax.matrix != 0.0).astype(float)
+    taken = np.zeros_like(lost)
+    out: dict[str, Any] = {}
+    for name in _OVERLAYS:
+        pair = getattr(s, name)
+        if pair is None:
+            out[name] = None
+            continue
+        flagged = np.isfinite(np.asarray(pair[0], dtype=float)).astype(float)
+        cell = lost & ((uses @ flagged) > 0) & ~taken
+        taken |= cell
+        out[name] = (np.where(cell, yf, np.nan), np.where(cell, sf, np.nan))
+    return out
 
 
 def _rotate_full(y: Any, sigma: Any, corr: Any, ax: Axes) -> tuple[Any, Any, Any]:
@@ -192,6 +279,10 @@ def orient(s: Series, ax: Axes) -> Series:
     if s.aborted is not None:
         bad = np.asarray(s.aborted, dtype=bool)
         aborted = [bool((uses[i] & bad).any()) for i in range(3)]
+    if np.count_nonzero(ax.matrix - np.diag(np.diag(ax.matrix))):
+        overlays = _mixed_overlays(s, ax, y)
+    else:  # a re-signing: each overlay keeps its own components
+        overlays = {k: _overlay(getattr(s, k), ax) for k in _OVERLAYS}
     meta = dict(s.meta)
     if "level" in meta:
         meta["level"] = _rows(np.asarray(meta["level"])[:, None], ax)[:, 0]
@@ -205,11 +296,8 @@ def orient(s: Series, ax: Axes) -> Series:
         sigma=sigma,
         corr=corr,
         components=ax.keys,
-        outliers=_overlay(s.outliers, ax),
         provisional=_overlay(s.provisional, ax),
-        iced=_overlay(s.iced, ax),
-        buried=_overlay(s.buried, ax),
-        netday=_overlay(s.netday, ax),
+        **overlays,
         aborted=aborted,
         ends=ends,
         meta=meta,

@@ -142,8 +142,8 @@ def test_orient_refuses_to_sign_twice() -> None:
 
 
 def test_sign_pair_and_label_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    found = {"SEY1-SEYD": sign_axes([-2582.9, 351.0, 0.3])}
-    monkeypatch.setattr(axes, "pair_axes", lambda pair: found.get(pair))
+    found = {"SEY1-SEYD": np.array([-2582.9, 351.0, 0.3])}
+    monkeypatch.setattr(axes, "apriori", lambda pair: found.get(pair))
     s = axes.sign_pair("SEY1-SEYD", _series())
     assert np.allclose(s.y[0], [-1.0, -2.0]) and s.meta["raw"] == (False, False, True)
     assert axes.sign_pair("SEY1-SEYD", _series(), "raw").meta == {}
@@ -163,9 +163,7 @@ def test_fetch_signs_a_baseline_once(monkeypatch: pytest.MonkeyPatch) -> None:
         return _series(label=sta, y=y, sigma=np.ones((3, 2)))
 
     monkeypatch.setattr(source, "fetch_station", station)
-    monkeypatch.setattr(
-        axes, "pair_axes", lambda pair: sign_axes([-2582.9, 351.0, 32.9])
-    )
+    monkeypatch.setattr(axes, "apriori", lambda pair: np.array([-2582.9, 351.0, 32.9]))
     req = source.SeriesRequest(
         fstart=None, fend=None, ref="plate", Dir=None, tType="POS", uncert=10,
         view="raw",
@@ -296,3 +294,81 @@ def test_axes_option() -> None:
     parser = rtk.build_parser(config=_Config())
     assert parser.parse_args(["SEY1-SEYD"]).axes == "neu"
     assert parser.parse_args(["SEY1-SEYD", "--axes", "3d"]).axes == "3d"
+
+
+def test_pair_orient_along_and_the_data_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(axes, "apriori", lambda pair: B0)
+    s = axes.pair_orient("SEY1-SEYD", _series(), axes="along")
+    assert s.components == ("along", "across", "up")
+    assert s.meta["axes"] == ("along", "across", "up")
+    data = np.array([-2582.9, 400.0, 32.9])  # ~1.1° off
+    with pytest.warns(UserWarning, match="off the data"):
+        t = axes.pair_orient("SEY1-SEYD", _series(), axes="along", data=data)
+    want = axes.orient(_series(), axes.pair_frame(data, "along"))
+    np.testing.assert_allclose(t.y, want.y)
+    monkeypatch.setattr(axes, "apriori", lambda pair: None)
+    with pytest.raises(ValueError, match="no direction"):
+        axes.pair_orient("SEY1-SEYD", _series(), axes="3d")
+
+
+def test_rotation_sets_aside_every_component_a_masked_one_reaches() -> None:
+    """N masked at epoch 0 (an outlier), E at epoch 1 (icing): along mixes N
+    and E, so both epochs leave along/across and go to the overlays, epoch 1
+    under icing (the more serious); Up is untouched."""
+    y = np.array([[NAN, NAN, 3.0], [1.0, NAN, 3.0], [5.0, 6.0, 7.0]])
+    out = np.full((3, 3), NAN)
+    out[0, 0] = 10.0
+    ice = np.full((3, 3), NAN)
+    ice[1, 1] = 20.0
+    ice[0, 1] = 30.0  # epoch 1 is also an outlier in N … under icing
+    sig = np.ones((3, 3))
+    s = _series(t=np.arange(3.0), y=y, sigma=sig, outliers=(out, sig),
+                iced=(ice, sig))  # fmt: skip
+    ax = axes.pair_frame(B0, "along")
+    r = axes.orient(s, ax)
+    assert np.isnan(r.y[:2, :2]).all() and np.isfinite(r.y[:2, 2]).all()
+    np.testing.assert_allclose(r.y[2], y[2])  # Up keeps its own values
+    assert r.outliers is not None and r.iced is not None
+    full0 = ax.matrix @ np.array([10.0, 1.0, 5.0])
+    np.testing.assert_allclose(r.outliers[0][:2, 0], full0[:2])
+    full1 = ax.matrix @ np.array([30.0, 20.0, 6.0])
+    np.testing.assert_allclose(r.iced[0][:2, 1], full1[:2])
+    assert np.isnan(r.outliers[0][:, 1]).all()  # icing outranks it
+    assert np.isnan(r.outliers[0][2]).all() and np.isnan(r.iced[0][2]).all()
+
+
+def test_figure_labels() -> None:
+    signed = axes.orient(_series(), axes.pair_frame(B0, "along"))
+    assert axes.figure_labels([signed], "en", "mm") == (
+        "Along [mm] (+ apart)", "Across [mm]", "Up [mm] (+ apart)",
+    )  # fmt: skip
+    neu = axes.orient(_series(), axes.pair_frame(B0, "neu"))
+    with pytest.raises(ValueError, match="different axes"):
+        axes.figure_labels([signed, neu], "en", "mm")
+    assert axes.figure_labels([neu, _series()], "en", "mm")[0] == "North [mm]"
+
+
+def test_daily_axes_options() -> None:
+    from gps_plot import plot_gps_timeseries as driver
+    from gps_plot import stack
+
+    class _Config:
+        def getPostProcessDir(self, option: str) -> str:
+            return f"/cfg/{option}"
+
+        def getStationInfo(self) -> list[str]:
+            return ["HOFN"]
+
+        def get(self, *a: object, **k: object) -> None:
+            return None
+
+    ts = driver.build_parser(config=_Config())
+    assert ts.parse_args(["A-B"]).baseline_axes == "neu"
+    assert ts.parse_args(["A-B", "--axes", "along"]).baseline_axes == "along"
+    assert stack.build_parser(config=_Config()).parse_args(["A-B"]).axes == "neu"
+    stem = stack.output_stem(
+        ["AAAA-BBBB"], label=None, ref="plate", detrend_terms=None, view=None,
+        offset=0, tType="TOT", pos_id=None, special="year", first=None, last=None,
+        axes="along",
+    )  # fmt: skip
+    assert "-along" in stem

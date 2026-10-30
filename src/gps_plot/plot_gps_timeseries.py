@@ -908,6 +908,17 @@ def build_parser(
         "station coordinates); raw = plain AAAA - BBBB",
     )
     parser.add_argument(
+        "--axes",
+        dest="baseline_axes",
+        choices=("neu", "along", "3d"),
+        default="neu",
+        help="baselines only: neu (default) = North/East/Up; along = "
+        "along/across/up, horizontal along the baseline (+ = lengthening, "
+        "across 90 deg clockwise, Up as in neu); 3d = along the line between "
+        "the stations, across, normal. The direction is the a-priori one, or "
+        "the newest .pos positions if more than 0.5 deg off. Adds -along/-3d",
+    )
+    parser.add_argument(
         "--baseline-noise",
         default=None,
         help="path of the baseline noise record (default: "
