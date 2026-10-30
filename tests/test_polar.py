@@ -85,7 +85,7 @@ def test_run_saves_one_figure_per_pair(
     parser = polar.build_parser()
     args = parser.parse_args(
         ["SVIE-SKFC", "-s", "20250801", "-e", "20251001", "--save", "png",
-         "-d", str(tmp_path)]
+         "-d", str(tmp_path), "--no-dem"]
     )  # fmt: skip
     assert polar.run(args, parser, object()) == 0
     assert saved == [str(tmp_path / "SVIE_SKFC-polar-20250801-20251001")]
@@ -97,3 +97,56 @@ def test_bad_onset_is_a_usage_error() -> None:
     args = parser.parse_args(["A-B", "--onset", "202"])
     with pytest.raises((SystemExit, argparse.ArgumentTypeError)):
         polar.run(args, parser, object())
+
+
+def _pair(name: str, motion: float, **kw: object) -> polar.PairPlot:
+    d = np.vstack(
+        [np.linspace(0, 10, 30), np.linspace(0, -5, 30), -np.linspace(0, 3, 30)]
+    )
+    return polar.PairPlot(name, np.arange(30.0), d, motion, **kw)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "panels", [("sector", "map", "section"), ("sector", "hodograph"), ("map",)]
+)
+@pytest.mark.parametrize("together", [False, True])
+def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
+    from gps_plot import terrain
+
+    xs = np.arange(-300.0, 301.0, 5.0)
+    z = 800.0 - 0.4 * xs[None, :] + 0.0 * xs[:, None]  # falls toward east
+    dem = terrain.DemWindow(xs, xs.copy(), z)
+    pairs = [_pair("SVIE-SKFC", 333.0, downslope=(90.0, 21.8),
+                   ref=("SKFC", 260.0, 9300.0), pos=(150.0, 0.0))]  # fmt: skip
+    if together:
+        pairs.append(_pair("SVIN-SKFC", 292.0, marker="^", colour="magenta",
+                           pos=(-150.0, 0.0)))  # fmt: skip
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+                             panels=panels, dem=dem, half=300.0)  # fmt: skip
+    titles = [ax.get_title() for ax in fig.axes]
+    if "map" in panels:
+        assert any(t.startswith("terrain, path") for t in titles)
+    if "section" in panels:
+        assert "vertical section along the motion" in titles
+    with pytest.raises(ValueError, match="unknown panel"):
+        polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+                           panels=("pie",))  # fmt: skip
+
+
+def test_together_needs_few_pairs() -> None:
+    parser = polar.build_parser()
+    args = parser.parse_args(["A-B", "C-D", "E-F", "G-H", "I-J", "--together"])
+    with pytest.raises(SystemExit):
+        polar.run(args, parser, object())
+
+
+def test_slope_field_and_nice() -> None:
+    from gps_plot import terrain
+
+    x = np.arange(0.0, 50.0, 5.0)
+    z = 100.0 - np.tan(np.radians(30.0)) * x[None, :] + 0.0 * x[:, None]
+    angle, fall = terrain.slope_field(z, 5.0)
+    assert np.allclose(angle, 30.0) and np.allclose(fall, 90.0)
+    assert (
+        polar._nice(4.3) == 5.0 and polar._nice(1.4) == 1.0 and polar._nice(17) == 20.0
+    )

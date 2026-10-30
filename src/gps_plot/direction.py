@@ -80,6 +80,12 @@ def build_parser(
         "--frame", default=None,
         help=f"daily .pos frame (default {common.DEFAULT_PLOT_FRAME})",
     )  # fmt: skip
+    parser.add_argument(
+        "--slope-from-dem", nargs="?", type=float, const=50.0, default=None,
+        metavar="RADIUS_M",
+        help="also the DEM slope at the rover (plane over RADIUS_M, default "
+        "50 m), as slope: [downslope azimuth, dip] in the line",
+    )  # fmt: skip
     return parser
 
 
@@ -130,15 +136,20 @@ def _date(days: float) -> str:
     return f"{dt.datetime(1970, 1, 1) + dt.timedelta(days=days):%Y-%m-%d %H:%M}"
 
 
-def line(spec: str, d: Any, what: str) -> str:
-    """The ``directions:`` line of one result."""
+def line(spec: str, d: Any, what: str, slope: Any = None) -> str:
+    """The ``directions:`` line of one result (``slope``: a
+    :class:`gps_plot.terrain.Slope` to add)."""
     note = (
         f"±{d.sigma_azimuth:.1f}°, plunge {d.plunge:.1f}° ±{d.sigma_plunge:.1f}°, "
         f"|d_h| {d.horizontal:.1f} mm, {what}"
     )
     if not d.significant:
         note = "NOT significant (|d_h| < 3σ): " + note
-    return f"{spec}: {{motion: {d.azimuth:.1f}}}  # {note}"
+    entry = f"motion: {d.azimuth:.1f}"
+    if slope is not None:
+        entry += f", slope: [{slope.azimuth:.0f}, {slope.dip:.0f}]"
+        note += f"; DEM slope over {slope.radius:g} m (rms {slope.rms:.1f} m)"
+    return f"{spec}: {{{entry}}}  # {note}"
 
 
 def estimate(
@@ -312,5 +323,17 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             print(f"# {spec}: {exc}", file=sys.stderr)
             failed += 1
             continue
-        print(line(spec, d, f"{_date(start)}…{_date(end)} {kind}, {window:g} d ends"))
+        slope = None
+        if args.slope_from_dem is not None:
+            from gps_plot import terrain
+            from gps_plot.map import gis_dir
+
+            try:
+                slope = terrain.station_slope(
+                    spec[:4], gis_dir(config), radius=args.slope_from_dem
+                )
+            except (OSError, ValueError) as exc:
+                print(f"# {spec}: no DEM slope ({exc})", file=sys.stderr)
+        what = f"{_date(start)}…{_date(end)} {kind}, {window:g} d ends"
+        print(line(spec, d, what, slope))
     return 1 if failed == len(args.Series) else 0
