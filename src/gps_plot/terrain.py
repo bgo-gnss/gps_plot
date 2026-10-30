@@ -106,6 +106,59 @@ def slope_at(
     return Slope(azimuth, dip, height, radius, rms)
 
 
+@dataclasses.dataclass(frozen=True)
+class DemWindow:
+    """A square of the DEM around a point: ``z`` (ny, nx) [m] at ``x``/``y``
+    (ISN93 metres east/north of the point)."""
+
+    x: Any
+    y: Any
+    z: Any
+
+
+def dem_window(lon: float, lat: float, gis_dir: str, half: float) -> DemWindow:
+    """The DEM within ``half`` [m] of (``lon``, ``lat``), in metres from it.
+
+    Raises:
+        FileNotFoundError: no DEM under ``gis_dir``.
+    """
+    import pygmt
+    import pyproj
+
+    dem = os.path.join(os.path.expanduser(gis_dir), DEM_5M)
+    if not os.path.isfile(dem):
+        raise FileNotFoundError(f"no DEM at {dem}")
+    to_isn = pyproj.Transformer.from_crs("EPSG:4326", ISN93, always_xy=True)
+    x0, y0 = to_isn.transform(lon, lat)
+    grid = pygmt.grdcut(grid=dem, region=[x0 - half, x0 + half, y0 - half, y0 + half])
+    xs = np.asarray(grid.coords[grid.dims[1]], dtype=float) - x0
+    ys = np.asarray(grid.coords[grid.dims[0]], dtype=float) - y0
+    return DemWindow(xs, ys, np.asarray(grid.values, dtype=float))
+
+
+def hillshade(
+    z: Any, dx: float, *, azimuth: float = 315.0, altitude: float = 45.0
+) -> Any:
+    """Shaded relief 0…1 of a north-up grid (rows south to north) of spacing ``dx``."""
+    gy, gx = np.gradient(np.asarray(z, dtype=float), dx)
+    slope = np.arctan(np.hypot(gx, gy))
+    aspect = np.arctan2(-gx, -gy)  # downslope azimuth, clockwise from north
+    az, alt = np.radians(azimuth), np.radians(altitude)
+    shade = np.sin(alt) * np.cos(slope) + np.cos(alt) * np.sin(slope) * np.cos(
+        az - aspect
+    )
+    return np.clip(shade, 0.0, 1.0)
+
+
+def slope_field(z: Any, dx: float) -> tuple[Any, Any]:
+    """(slope angle [°], downslope azimuth [°]) of every cell of a north-up
+    grid (rows south to north) of spacing ``dx``."""
+    gy, gx = np.gradient(np.asarray(z, dtype=float), dx)
+    angle = np.degrees(np.arctan(np.hypot(gx, gy)))
+    azimuth = np.degrees(np.arctan2(-gx, -gy)) % 360.0
+    return angle, azimuth
+
+
 def station_slope(sta: str, gis_dir: str, *, radius: float = SLOPE_RADIUS_M) -> Slope:
     """The DEM slope around ``sta``'s a-priori position (:func:`slope_at`)."""
     lon, lat = station_lonlat(sta)
