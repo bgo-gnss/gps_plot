@@ -372,3 +372,47 @@ def test_daily_axes_options() -> None:
         axes="along",
     )  # fmt: skip
     assert "-along" in stem
+
+
+def test_pair_frame_motion_and_slope() -> None:
+    m = axes.pair_frame(B0, "motion", {"motion": 90.0})
+    np.testing.assert_allclose(m.matrix[0], [0.0, 1.0, 0.0], atol=1e-12)  # east
+    np.testing.assert_allclose(m.matrix[1], [-1.0, 0.0, 0.0], atol=1e-12)  # cw: S
+    assert m.keys == ("motion", "across", "up")
+    np.testing.assert_allclose(m.matrix[2], [0.0, 0.0, 1.0])  # Up as in neu
+    sl = axes.pair_frame(None, "slope", {"slope": (180.0, 30.0)})
+    c, s30 = np.cos(np.radians(30)), np.sin(np.radians(30))
+    np.testing.assert_allclose(sl.matrix[0], [-c, 0.0, -s30], atol=1e-12)
+    np.testing.assert_allclose(sl.matrix[2], [-s30, 0.0, c], atol=1e-12)  # normal
+    assert sl.keys == ("downslope", "across", "normal")
+    with pytest.raises(ValueError, match="no motion direction"):
+        axes.pair_frame(B0, "motion", {"slope": (1.0, 2.0)})
+    assert axes.pair_frame(None, "motion", {"motion": 1.0}).raw == (False, False, True)
+
+
+def test_direction_notes() -> None:
+    assert axes.direction_note(B0, "neu", None) == ""
+    assert axes.direction_note(B0, "along", None) == "172°"
+    assert axes.direction_note(B0, "motion", {"motion": 334.2}) == "334°"
+    assert axes.direction_note(None, "slope", {"slope": (210, 28)}) == "210°/28°"
+
+
+def test_motion_through_pair_orient_and_orienter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(axes, "apriori", lambda pair: B0)
+    y = np.array([[0.0, 3.0], [0.0, 4.0], [0.0, 1.0]])  # moved toward 53.13°
+    s = _series(y=y, sigma=np.ones((3, 2)))
+    got = axes.pair_orient("SEY1-SEYD", s, axes="motion",
+                           direction={"motion": 53.130102354})  # fmt: skip
+    np.testing.assert_allclose(got.y[:, 1], [5.0, 0.0, 1.0], atol=1e-9)
+    assert got.meta["direction"] == "53°"
+    with pytest.raises(ValueError, match="no motion direction"):
+        axes.pair_orient("SEY1-SEYD", s, axes="motion")
+    o = axes.Orienter(axes="slope",
+                      directions={"SEY1-SEYD": {"slope": (172.0, 10.0)}})  # fmt: skip
+    r = o(_series(meta={"pair": "SEY1-SEYD"}))
+    assert r.components == ("downslope", "across", "normal")
+    assert r.meta["direction"] == "172°/10°"
+    with pytest.raises(ValueError, match="no direction"):
+        o(_series(meta={"pair": "SEY2-SEYD"}))

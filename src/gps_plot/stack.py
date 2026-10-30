@@ -30,7 +30,9 @@ from typing import Any
 
 import numpy as np
 
+from gps_plot.axes import AXES_MODES
 from gps_plot.cli import common
+from gps_plot.direction import resolve_directions
 from gps_plot.series import Series
 
 SPECIALS = ["90d", "year", "full", "fixedstart"]
@@ -116,13 +118,16 @@ def build_parser(
     )
     parser.add_argument(
         "--axes",
-        choices=("neu", "along", "3d"),
+        choices=AXES_MODES,
         default="neu",
         help="baselines: neu (default) North/East/Up; along = along/across/up "
         "(horizontal along each baseline, + = lengthening, Up as neu); 3d = "
-        "along the line between the stations, across, normal. Stations are "
-        "dropped. Adds -along/-3d",
+        "along the line between the stations, across, normal; motion = motion/across/up toward the pair's motion azimuth; slope = downslope/across/normal of its slope (station_areas.yaml directions:, --direction/--slope or --direction-from; a pair without one is dropped). Stations are "
+        "dropped. Adds -<axes>",
     )
+    from gps_plot.direction import add_direction_options
+
+    add_direction_options(parser)
     parser.add_argument(
         "--show-outliers",
         type=int,
@@ -571,12 +576,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             "--baseline-sigma empirical: the noise record is fitted on daily "
             "solutions; use formal for 8 h sessions"
         )
-    bl_opts = source.BaselineOptions(
-        tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS,
-        empirical=empirical,
-        sign=args.sign,
-        axes=args.axes,
-    )
     if args.axes != "neu":
         # one figure never mixes axes: a station has no baseline direction
         singles = [x for x in series_specs if not split_baseline(x)]
@@ -584,6 +583,21 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             print(f"dropped {x}: --axes {args.axes} is for baselines", file=sys.stderr)
         series_specs = [x for x in series_specs if split_baseline(x)]
 
+    bl_opts = source.BaselineOptions(
+        tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS,
+        empirical=empirical,
+        sign=args.sign,
+        axes=args.axes,
+        directions=resolve_directions(
+            series_specs,
+            args.axes,
+            motion=args.direction,
+            slope=args.slope,
+            span=args.direction_from,
+            config=config,
+            frame=pos_id,
+        ),
+    )
     got, labels, dropped = [], [], []
     for spec in series_specs:
         try:
@@ -598,6 +612,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         for w in caught:
             print(f"warning: {spec}: {w.message}", file=sys.stderr)
         label = spec
+        if s.meta.get("direction"):
+            label += f" ({s.meta['direction']})"
         if (ref == "detrend" or args.view == "detrended") and not s.detrend_applied:
             # no stored record: the series is the plate series, not
             # detrended; never let it pass as detrended in the legend

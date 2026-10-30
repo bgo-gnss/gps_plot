@@ -1149,6 +1149,9 @@ def plotTime(
     baseline_noise: str | None = None,
     baseline_sign: str = "apart",
     baseline_axes: str = "neu",
+    baseline_direction: float | None = None,
+    baseline_slope: tuple[float, float] | None = None,
+    baseline_direction_from: tuple[datetime.datetime, datetime.datetime] | None = None,
     overlay_pos_id: str | None = None,
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
@@ -1237,7 +1240,11 @@ def plotTime(
     ``baseline_axes="along"``/``"3d"`` plots along/across/up (or along the
     3-D line, across, normal; :func:`gps_plot.axes.pair_frame`), σ as
     uncorrelated; adds ``-along``/``-3d`` to the file name. A single
-    station ignores it, with a warning.
+    station ignores it, with a warning. ``"motion"``/``"slope"`` take the
+    pair's direction from ``baseline_direction``/``baseline_slope``, else
+    the motion estimated over ``baseline_direction_from``, else
+    station_areas.yaml ``directions:`` (:func:`gps_plot.direction.
+    resolve_directions`); the direction is named in the title.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -1326,6 +1333,15 @@ def plotTime(
                 f"{sta}: --model is for the daily series only (no 8 h "
                 "sessions, --session both or a reference position) for now"
             )
+    directions = None
+    if pair is not None and baseline_axes in ("motion", "slope"):
+        from gps_plot.direction import resolve_directions
+        from gps_plot.plot_gps_timeseries import _load_config
+
+        directions = resolve_directions(
+            [sta], baseline_axes, motion=baseline_direction, slope=baseline_slope,
+            span=baseline_direction_from, config=_load_config(),
+        )  # fmt: skip
     if baseline_axes != "neu" and pair is None:
         warnings.warn(
             f"{sta}: --axes {baseline_axes} applies to baselines (AAAA-BBBB) only; "
@@ -1421,6 +1437,7 @@ def plotTime(
                 noise_path=baseline_noise,
                 sign=baseline_sign,
                 axes=baseline_axes,
+                directions=directions,
             ),
         )
     except ValueError as exc:
@@ -1457,6 +1474,8 @@ def plotTime(
     firstpoint, lastpoint = x[0], x[-1]
 
     warnp = -1  # data through currDate(warnp) is labelled green
+    if main_series.meta.get("direction"):
+        refTitle = f"{refTitle}, {baseline_axes} {main_series.meta['direction']}"
     Title = make_title(sta, lastpoint, ref=refTitle, warnp=warnp)
     # ONE currency decision drives both the green title fragment and the
     # green last-point marker, computed here on the UNMASKED epoch list so
@@ -1703,6 +1722,7 @@ def plotTime(
             main=(yearf, data, Ddata, x),
             sign=baseline_sign,
             axes=baseline_axes,
+            directions=directions,
         )
 
     if model is not None:
@@ -1989,6 +2009,7 @@ def _add_session_overlay(
     main: tuple[Any, Any, Any, Any],
     sign: str = "apart",
     axes: str = "neu",
+    directions: Any = None,
 ) -> Figure:
     """Draw another session's series (8 h) behind the main (24 h) one.
 
@@ -2004,7 +2025,11 @@ def _add_session_overlay(
         sta,
         gps_source.SeriesRequest(**series_kw).replace(pos_id=overlay_pos_id),
         gps_source.BaselineOptions(
-            tol=2.0 / 24.0 / 365.25, check_view=False, sign=sign, axes=axes
+            tol=2.0 / 24.0 / 365.25,
+            check_view=False,
+            sign=sign,
+            axes=axes,
+            directions=directions,
         ),
     )
     t8, d8, s8 = overlay.t, np.asarray(overlay.y), np.asarray(overlay.sigma)

@@ -17,6 +17,7 @@ import datetime as dt
 import re
 import sys
 import textwrap
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -83,7 +84,7 @@ def build_parser(
 
 
 def _daily(
-    spec: str, start: dt.datetime, end: dt.datetime, args: Any, config: Any
+    spec: str, start: dt.datetime, end: dt.datetime, config: Any, frame: str | None
 ) -> Any:
     """(t [days since 1970], y, σ) of the cleaned daily series, unsigned."""
     from geo_dataread.pos import pos_product
@@ -99,7 +100,7 @@ def _daily(
         tType="POS",
         uncert=10,
         view="cleaned",
-        pos_id=pos_product(args.frame or common.DEFAULT_PLOT_FRAME, "24h"),
+        pos_id=pos_product(frame or common.DEFAULT_PLOT_FRAME, "24h"),
     )
     from geo_dataread.gps_read import toDateTime
 
@@ -140,9 +141,162 @@ def line(spec: str, d: Any, what: str) -> str:
     return f"{spec}: {{motion: {d.azimuth:.1f}}}  # {note}"
 
 
-def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
+def estimate(
+    spec: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    config: Any,
+    *,
+    rtk: bool = False,
+    window: float | None = None,
+    frame: str | None = None,
+) -> tuple[Any, float, float]:
+    """(:class:`gps_analysis.direction.Direction`, first, last [days since
+    1970]) of ``spec``'s motion between ``start`` and ``end``.
+
+    The ends are where the data are: a series that starts late or stops
+    early is measured over its own span (returned). ``window`` [days]
+    defaults to 7 (daily) or 1 h (RTK), at most half the span.
+
+    Raises:
+        ValueError: no data, or too little for an end level.
+    """
     from gps_analysis.direction import motion_direction
 
+    if rtk:
+        t, y, s = _rtk(spec, start, end, config)
+    else:
+        t, y, s = _daily(spec, start, end, config, frame)
+    have = np.isfinite(np.asarray(y, dtype=float)).all(axis=0)
+    if not have.any():
+        raise ValueError("no data between -s and -e")
+    first, last = float(t[have].min()), float(t[have].max())
+    w = window or (1.0 / 24.0 if rtk else 7.0)
+    return (
+        motion_direction(t, y, s, first, last, min(w, (last - first) / 2)),
+        first,
+        last,
+    )
+
+
+#: START:END of --direction-from (each YYYYMMDD or YYYYMMDD-HH:MM)
+SPAN = re.compile(r"^(\d{8}(?:-\d\d:\d\d)?):(\d{8}(?:-\d\d:\d\d)?)$")
+
+
+def parse_span(value: str) -> tuple[dt.datetime, dt.datetime]:
+    """``--direction-from START:END`` (YYYYMMDD[-HH:MM] each)."""
+    from gps_plot.rtk import _when
+
+    m = SPAN.match(value)
+    if m is None:
+        raise argparse.ArgumentTypeError(f"{value!r}: use YYYYMMDD:YYYYMMDD")
+    start, end = _when(m.group(1)), _when(m.group(2))
+    if start >= end:
+        raise argparse.ArgumentTypeError(f"{value!r}: start is not before end")
+    return start, end
+
+
+def parse_slope(value: str) -> tuple[float, float]:
+    """``--slope AZ,DIP`` [°]."""
+    try:
+        az, dip = (float(x) for x in value.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: use AZIMUTH,DIP") from None
+    if not (0 <= az < 360 and 0 <= dip < 90):
+        raise argparse.ArgumentTypeError(f"{value!r}: azimuth 0..360, dip 0..90")
+    return az, dip
+
+
+def config_directions(config: Any) -> dict[str, dict[str, Any]]:
+    """station_areas.yaml ``directions:`` of the deployed config ({} if none).
+
+    A malformed table is an error (it is configuration, not data).
+    """
+    from pathlib import Path
+
+    from gps_plot import products
+
+    path_dir = getattr(config, "config_path", None)
+    if path_dir is None:
+        return {}
+    path = Path(path_dir) / "station_areas.yaml"
+    if not path.is_file():
+        return {}
+    return products.directions_table(products.load_yaml(path))
+
+
+def resolve_directions(
+    pairs: Sequence[str],
+    mode: str,
+    *,
+    motion: float | None = None,
+    slope: tuple[float, float] | None = None,
+    span: tuple[dt.datetime, dt.datetime] | None = None,
+    config: Any = None,
+    frame: str | None = None,
+    rtk: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Each pair's directions for ``--axes motion|slope``.
+
+    Per key, the first of: the command line (``motion``/``slope``, for every
+    pair), the motion estimated over ``span`` (``--direction-from``; motion
+    only, reported on stderr), the config's ``directions:``. Pairs with none
+    are left out (they are dropped from the plot). ``{}`` for other modes.
+    """
+    from gps_plot.axes import GIVEN_MODES
+
+    if mode not in GIVEN_MODES:
+        return {}
+    table = config_directions(config) if config is not None else {}
+    out: dict[str, dict[str, Any]] = {}
+    for pair in pairs:
+        got = dict(table.get(pair.upper(), {}))
+        if span is not None and mode == "motion" and motion is None:
+            try:
+                d, first, last = estimate(
+                    pair, span[0], span[1], config, rtk=rtk, frame=frame
+                )
+            except Exception as exc:
+                print(f"{pair}: --direction-from: {exc}", file=sys.stderr)
+            else:
+                got["motion"] = d.azimuth
+                mark = "" if d.significant else " (NOT significant)"
+                print(
+                    f"{pair}: motion {d.azimuth:.1f}° ±{d.sigma_azimuth:.1f}° over "
+                    f"{_date(first)}…{_date(last)}{mark}",
+                    file=sys.stderr,
+                )
+        if motion is not None:
+            got["motion"] = float(motion)
+        if slope is not None:
+            got["slope"] = slope
+        if got.get(mode) is not None:
+            out[pair] = got
+    return out
+
+
+def add_direction_options(parser: argparse.ArgumentParser, dest: str = "") -> None:
+    """``--direction`` / ``--slope`` / ``--direction-from`` (``dest`` prefix)."""
+    parser.add_argument(
+        "--direction", dest=f"{dest}direction", type=float, default=None,
+        metavar="AZ",
+        help="--axes motion: the motion azimuth [deg] for every pair, instead "
+        "of station_areas.yaml directions:",
+    )  # fmt: skip
+    parser.add_argument(
+        "--slope", dest=f"{dest}slope", type=parse_slope, default=None,
+        metavar="AZ,DIP",
+        help="--axes slope: downslope azimuth and dip [deg] for every pair",
+    )  # fmt: skip
+    parser.add_argument(
+        "--direction-from", dest=f"{dest}direction_from", type=parse_span,
+        default=None, metavar="START:END",
+        help="--axes motion: estimate each pair's motion direction over "
+        "START:END (YYYYMMDD) from its daily series, as gpsplot direction",
+    )  # fmt: skip
+
+
+def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
     if args.start >= args.end:
         parser.error(f"start {args.start} is not before end {args.end}")
     window = args.window or (1.0 / 24.0 if args.rtk else 7.0)
@@ -150,17 +304,10 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     failed = 0
     for spec in args.Series:
         try:
-            if args.rtk:
-                t, y, s = _rtk(spec, args.start, args.end, config)
-            else:
-                t, y, s = _daily(spec, args.start, args.end, args, config)
-            # the ends are where the data are: a series that starts late or
-            # stops early is measured over its own span, which is printed
-            have = np.isfinite(np.asarray(y, dtype=float)).all(axis=0)
-            if not have.any():
-                raise ValueError("no data between -s and -e")
-            start, end = float(t[have].min()), float(t[have].max())
-            d = motion_direction(t, y, s, start, end, min(window, (end - start) / 2))
+            d, start, end = estimate(
+                spec, args.start, args.end, config,
+                rtk=args.rtk, window=window, frame=args.frame,
+            )  # fmt: skip
         except Exception as exc:  # one bad series must not sink the rest
             print(f"# {spec}: {exc}", file=sys.stderr)
             failed += 1

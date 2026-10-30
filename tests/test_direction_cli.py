@@ -64,3 +64,42 @@ def test_start_after_end_is_an_error() -> None:
     args = parser.parse_args(["A-B", "-s", "20240401", "-e", "20240101"])
     with pytest.raises(SystemExit):
         direction.run(args, parser, None)
+
+
+def test_parse_span_and_slope() -> None:
+    a, b = direction.parse_span("20260920:20261029")
+    assert (a, b) == (dt.datetime(2026, 9, 20), dt.datetime(2026, 10, 29))
+    a, b = direction.parse_span("20261029-12:00:20261029-18:30")
+    assert a.hour == 12 and b.minute == 30
+    for bad in ("20261029", "20261029:20260920", "2026-10-29:2026-10-30"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            direction.parse_span(bad)
+    assert direction.parse_slope("210,28") == (210.0, 28.0)
+    with pytest.raises(argparse.ArgumentTypeError):
+        direction.parse_slope("210,95")
+
+
+def test_resolve_directions_precedence(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    table = {"AAAA-BBBB": {"motion": 10.0, "slope": (200.0, 20.0)}}
+    monkeypatch.setattr(direction, "config_directions", lambda config: table)
+
+    class _D:
+        azimuth, sigma_azimuth, significant = 99.0, 2.0, True
+
+    monkeypatch.setattr(direction, "estimate", lambda *a, **k: (_D(), 20000.0, 20030.0))
+    pairs = ["AAAA-BBBB", "CCCC-DDDD"]
+    cfg = object()
+    assert direction.resolve_directions(pairs, "along", config=cfg) == {}
+    got = direction.resolve_directions(pairs, "motion", config=cfg)
+    assert got == {"AAAA-BBBB": table["AAAA-BBBB"]}  # CCCC-DDDD: none → left out
+    span = (dt.datetime(2026, 1, 1), dt.datetime(2026, 2, 1))
+    got = direction.resolve_directions(pairs, "motion", span=span, config=cfg)
+    assert got["AAAA-BBBB"]["motion"] == 99.0 and got["CCCC-DDDD"]["motion"] == 99.0
+    assert "motion 99.0°" in capsys.readouterr().err
+    got = direction.resolve_directions(pairs, "motion", motion=5.0, span=span,
+                                       config=cfg)  # fmt: skip
+    assert {p: g["motion"] for p, g in got.items()} == {p: 5.0 for p in pairs}
+    got = direction.resolve_directions(pairs, "slope", config=cfg)
+    assert list(got) == ["AAAA-BBBB"]

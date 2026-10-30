@@ -958,3 +958,42 @@ def test_stacks_get_the_catalog_event_lines_too() -> None:
     argv = eldc[0].argv
     assert argv[argv.index("--events") + 1 :][:2] == ("20210224,b", "20210319,r")
     assert argv[-2:] == ("--label", "eldc")
+
+
+def test_area_directions_parse_and_merge() -> None:
+    doc = {
+        "landslide_areas": {
+            "a": {
+                "cdn": "a",
+                "directions": {
+                    "svie-skfc": {"motion": 334},
+                    "SVIN-SKFC": {"motion": 292, "slope": [210, 28]},
+                },
+            },  # fmt: skip
+            "b": {"cdn": "b", "directions": {"SVIE-SKFC": {"motion": 334}}},
+        }
+    }
+    table = products.directions_table(doc)
+    assert table["SVIE-SKFC"] == {"motion": 334.0}
+    assert table["SVIN-SKFC"] == {"motion": 292.0, "slope": (210.0, 28.0)}
+    assert products.area_table(doc)["a"]["directions"]["SVIE-SKFC"]["motion"] == 334
+    doc["landslide_areas"]["b"]["directions"]["SVIE-SKFC"]["motion"] = 300
+    with pytest.raises(ValueError, match="differ"):
+        products.directions_table(doc)
+
+
+@pytest.mark.parametrize(
+    "value, msg",
+    [
+        ([], "mapping"),
+        ({"SVIE": {"motion": 1}}, "no AAAA-BBBB"),
+        ({"SVIE-SKFC": {}}, "motion: AZ"),
+        ({"SVIE-SKFC": {"azimuth": 3}}, "unknown"),
+        ({"SVIE-SKFC": {"motion": 400}}, "0..360"),
+        ({"SVIE-SKFC": {"slope": [210]}}, "dip"),
+        ({"SVIE-SKFC": {"slope": [210, 95]}}, "dip"),
+    ],
+)
+def test_area_directions_refuses(value: object, msg: str) -> None:
+    with pytest.raises(ValueError, match=msg):
+        products.area_directions(value)

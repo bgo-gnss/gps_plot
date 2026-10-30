@@ -90,6 +90,8 @@ class BaselineOptions:
         axes: "neu" (default), "along" or "3d" (``--axes``,
             :func:`gps_plot.axes.pair_orient`); the direction is checked
             against the newest common ``.pos`` positions (tType POS).
+        directions: Per pair, the ``motion``/``slope`` directions of
+            ``axes="motion"|"slope"`` (station_areas.yaml ``directions:``).
     """
 
     tol: float | None = None
@@ -100,6 +102,7 @@ class BaselineOptions:
     check_view: bool = True
     sign: str = "apart"
     axes: str = "neu"
+    directions: Any = None
 
 
 def fetch_station(sta: str, req: SeriesRequest) -> Series:
@@ -195,7 +198,8 @@ def fetch(
         meta={"rho": rho, "sigma_scale": sigma_scale, "sigma_note": sigma_note},
     )
     data = pos_baseline(pair, req) if opts.axes != "neu" else None
-    return pair_orient(spec, series, opts.sign, opts.axes, data)
+    direction = (opts.directions or {}).get(spec.upper())
+    return pair_orient(spec, series, opts.sign, opts.axes, data, direction)
 
 
 def pos_baseline(pair: tuple[str, str], req: SeriesRequest) -> Any:
