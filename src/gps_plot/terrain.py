@@ -3,7 +3,8 @@
 For the slope axes (``--axes slope``, ``directions: {PAIR: {slope: [AZ,
 DIP]}}``) and the downslope line of ``gpsplot polar``: the plane fitted
 (least squares) to the 5 m Iceland DEM (ISN93, ``iceland_land_5m_isn93.tif``
-under the GIS directory) within ``radius`` of the station gives the
+under the GIS directory, or a 2 m ArcticDEM area grid where one covers:
+:func:`pick_dem`) within ``radius`` of the station gives the
 downslope azimuth (clockwise from north) and the dip. The DEM is read
 through GMT (``pygmt.grdcut``), one small window per station.
 """
@@ -11,6 +12,7 @@ through GMT (``pygmt.grdcut``), one small window per station.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import os
 from typing import Any
 
@@ -18,6 +20,12 @@ import numpy as np
 
 #: the 5 m land DEM, under the GIS directory (gis_dir in postprocess.cfg)
 DEM_5M = os.path.join("dem", "layers", "iceland_land_5m_isn93.tif")
+#: 2 m grids of the monitoring areas (ArcticDEM v-1, LMÍ prerelease 2019,
+#: geoid removed; ISN93), under the GIS directory: used where one holds the
+#: whole window (``res="auto"``/``"2m"``)
+DEM_2M_DIR = os.path.join("dem", "arcticdem_2m")
+#: DEM choices: the finest that covers, or one
+DEM_RES = ("auto", "2m", "5m")
 #: ISN93 / Lambert 1993, the DEM's projection
 ISN93 = "EPSG:3057"
 #: the default radius [m] of the plane fitted around a station
@@ -34,6 +42,7 @@ class Slope:
         height: The plane's height at the point [m, as the DEM].
         radius: The radius it was fitted over [m].
         rms: The DEM's scatter about the plane [m] (rough terrain is large).
+        source: The DEM it was fitted on (``"2m"`` or ``"5m"``).
     """
 
     azimuth: float
@@ -41,6 +50,7 @@ class Slope:
     height: float
     radius: float
     rms: float
+    source: str = "5m"
 
 
 def station_lonlat(sta: str, coord_file: str | None = None) -> tuple[float, float]:
@@ -75,8 +85,50 @@ def slope_from_gradient(dzdx: float, dzdy: float) -> tuple[float, float]:
     return azimuth, dip
 
 
+@functools.lru_cache(maxsize=64)
+def _region(path: str) -> tuple[float, float, float, float]:
+    import pygmt
+
+    w, e, s, n = (float(v) for v in pygmt.grdinfo(path, per_column=True).split()[:4])
+    return w, e, s, n
+
+
+def pick_dem(
+    gis_dir: str, region: tuple[float, float, float, float], res: str = "auto"
+) -> tuple[str, str]:
+    """(path, ``"2m"``/``"5m"``) of the DEM for an ISN93 ``region``.
+
+    ``auto``: a 2 m area grid holding the whole region, else the 5 m DEM;
+    ``2m`` insists on one; ``5m`` is the 5 m DEM.
+
+    Raises:
+        FileNotFoundError: no such DEM.
+    """
+    root = os.path.expanduser(gis_dir)
+    if res not in DEM_RES:
+        raise ValueError(f"DEM resolution {res!r}: one of {', '.join(DEM_RES)}")
+    if res in ("auto", "2m"):
+        folder = os.path.join(root, DEM_2M_DIR)
+        for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else ():
+            path = os.path.join(folder, name)
+            w, e, s, n = _region(path)
+            if w <= region[0] and region[1] <= e and s <= region[2] and region[3] <= n:
+                return path, "2m"
+        if res == "2m":
+            raise FileNotFoundError(f"no 2 m DEM under {folder} covers {region}")
+    path = os.path.join(root, DEM_5M)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"no DEM at {path}")
+    return path, "5m"
+
+
 def slope_at(
-    lon: float, lat: float, gis_dir: str, *, radius: float = SLOPE_RADIUS_M
+    lon: float,
+    lat: float,
+    gis_dir: str,
+    *,
+    radius: float = SLOPE_RADIUS_M,
+    res: str = "auto",
 ) -> Slope:
     """The DEM slope within ``radius`` [m] of (``lon``, ``lat``).
 
@@ -87,13 +139,12 @@ def slope_at(
     import pygmt
     import pyproj
 
-    dem = os.path.join(os.path.expanduser(gis_dir), DEM_5M)
-    if not os.path.isfile(dem):
-        raise FileNotFoundError(f"no DEM at {dem}")
     to_isn = pyproj.Transformer.from_crs("EPSG:4326", ISN93, always_xy=True)
     x0, y0 = to_isn.transform(lon, lat)
     pad = radius + 10.0
-    grid = pygmt.grdcut(grid=dem, region=[x0 - pad, x0 + pad, y0 - pad, y0 + pad])
+    region = (x0 - pad, x0 + pad, y0 - pad, y0 + pad)
+    dem, source = pick_dem(gis_dir, region, res)
+    grid = pygmt.grdcut(grid=dem, region=list(region))
     xs = np.asarray(grid.coords[grid.dims[1]], dtype=float) - x0
     ys = np.asarray(grid.coords[grid.dims[0]], dtype=float) - y0
     gx, gy = np.meshgrid(xs, ys)
@@ -103,7 +154,7 @@ def slope_at(
         raise ValueError(f"only {int(ok.sum())} DEM cells within {radius:g} m")
     dzdx, dzdy, height, rms = fit_plane(gx[ok], gy[ok], z[ok])
     azimuth, dip = slope_from_gradient(dzdx, dzdy)
-    return Slope(azimuth, dip, height, radius, rms)
+    return Slope(azimuth, dip, height, radius, rms, source)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -114,9 +165,12 @@ class DemWindow:
     x: Any
     y: Any
     z: Any
+    source: str = "5m"
 
 
-def dem_window(lon: float, lat: float, gis_dir: str, half: float) -> DemWindow:
+def dem_window(
+    lon: float, lat: float, gis_dir: str, half: float, *, res: str = "auto"
+) -> DemWindow:
     """The DEM within ``half`` [m] of (``lon``, ``lat``), in metres from it.
 
     Raises:
@@ -125,15 +179,14 @@ def dem_window(lon: float, lat: float, gis_dir: str, half: float) -> DemWindow:
     import pygmt
     import pyproj
 
-    dem = os.path.join(os.path.expanduser(gis_dir), DEM_5M)
-    if not os.path.isfile(dem):
-        raise FileNotFoundError(f"no DEM at {dem}")
     to_isn = pyproj.Transformer.from_crs("EPSG:4326", ISN93, always_xy=True)
     x0, y0 = to_isn.transform(lon, lat)
-    grid = pygmt.grdcut(grid=dem, region=[x0 - half, x0 + half, y0 - half, y0 + half])
+    region = (x0 - half, x0 + half, y0 - half, y0 + half)
+    dem, source = pick_dem(gis_dir, region, res)
+    grid = pygmt.grdcut(grid=dem, region=list(region))
     xs = np.asarray(grid.coords[grid.dims[1]], dtype=float) - x0
     ys = np.asarray(grid.coords[grid.dims[0]], dtype=float) - y0
-    return DemWindow(xs, ys, np.asarray(grid.values, dtype=float))
+    return DemWindow(xs, ys, np.asarray(grid.values, dtype=float), source)
 
 
 def hillshade(
@@ -159,7 +212,9 @@ def slope_field(z: Any, dx: float) -> tuple[Any, Any]:
     return angle, azimuth
 
 
-def station_slope(sta: str, gis_dir: str, *, radius: float = SLOPE_RADIUS_M) -> Slope:
+def station_slope(
+    sta: str, gis_dir: str, *, radius: float = SLOPE_RADIUS_M, res: str = "auto"
+) -> Slope:
     """The DEM slope around ``sta``'s a-priori position (:func:`slope_at`)."""
     lon, lat = station_lonlat(sta)
-    return slope_at(lon, lat, gis_dir, radius=radius)
+    return slope_at(lon, lat, gis_dir, radius=radius, res=res)

@@ -148,7 +148,7 @@ def line(spec: str, d: Any, what: str, slope: Any = None) -> str:
     entry = f"motion: {d.azimuth:.1f}"
     if slope is not None:
         entry += f", slope: [{slope.azimuth:.0f}, {slope.dip:.0f}]"
-        note += f"; DEM slope over {slope.radius:g} m (rms {slope.rms:.1f} m)"
+        note += f"; {slope.source} DEM slope over {slope.radius:g} m (rms {slope.rms:.1f} m)"
     return f"{spec}: {{{entry}}}  # {note}"
 
 

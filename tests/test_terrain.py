@@ -60,3 +60,22 @@ def test_direction_line_with_the_dem_slope() -> None:
     got = direction.line("SVIE-SKFC", _D(), "span", sl)
     assert got.startswith("SVIE-SKFC: {motion: 334.2, slope: [260, 21]}  # ±3.9°")
     assert "DEM slope over 50 m" in got
+
+
+def test_pick_dem_prefers_a_2m_grid_that_covers(monkeypatch: pytest.MonkeyPatch,
+                                                tmp_path) -> None:  # fmt: skip
+    five = tmp_path / terrain.DEM_5M
+    five.parent.mkdir(parents=True)
+    five.write_bytes(b"")
+    two = tmp_path / terrain.DEM_2M_DIR
+    two.mkdir(parents=True)
+    (two / "area.nc").write_bytes(b"")
+    monkeypatch.setattr(terrain, "_region", lambda path: (0.0, 100.0, 0.0, 100.0))
+    gis = str(tmp_path)
+    assert terrain.pick_dem(gis, (10, 20, 10, 20))[1] == "2m"
+    assert terrain.pick_dem(gis, (90, 120, 10, 20))[1] == "5m"  # not inside
+    assert terrain.pick_dem(gis, (10, 20, 10, 20), "5m")[1] == "5m"
+    with pytest.raises(FileNotFoundError):
+        terrain.pick_dem(gis, (90, 120, 10, 20), "2m")
+    with pytest.raises(ValueError):
+        terrain.pick_dem(gis, (10, 20, 10, 20), "1m")
