@@ -1148,6 +1148,7 @@ def plotTime(
     baseline_sigma: str = "formal",
     baseline_noise: str | None = None,
     baseline_sign: str = "apart",
+    baseline_axes: str = "neu",
     overlay_pos_id: str | None = None,
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
@@ -1233,6 +1234,10 @@ def plotTime(
     ``baseline_sign="apart"`` (default) signs each of N/E/U by the pair's
     a-priori baseline so + is lengthening (ends and overlays alike, labels
     "(+ apart)"); ``"raw"`` plots A − B. The file name does not change.
+    ``baseline_axes="along"``/``"3d"`` plots along/across/up (or along the
+    3-D line, across, normal; :func:`gps_plot.axes.pair_frame`), σ as
+    uncorrelated; adds ``-along``/``-3d`` to the file name. A single
+    station ignores it, with a warning.
     """
     if view not in ("raw", "cleaned", "detrended"):
         raise ValueError(f"view must be 'raw', 'cleaned' or 'detrended', got {view!r}")
@@ -1321,6 +1326,12 @@ def plotTime(
                 f"{sta}: --model is for the daily series only (no 8 h "
                 "sessions, --session both or a reference position) for now"
             )
+    if baseline_axes != "neu" and pair is None:
+        warnings.warn(
+            f"{sta}: --axes {baseline_axes} applies to baselines (AAAA-BBBB) only; "
+            "ignored",
+            stacklevel=2,
+        )
     if baseline_sigma not in ("formal", "empirical"):
         raise ValueError(
             f"baseline_sigma must be 'formal' or 'empirical', got {baseline_sigma!r}"
@@ -1409,6 +1420,7 @@ def plotTime(
                 sigma_scale=baseline_sigma_scale,
                 noise_path=baseline_noise,
                 sign=baseline_sign,
+                axes=baseline_axes,
             ),
         )
     except ValueError as exc:
@@ -1457,13 +1469,9 @@ def plotTime(
     empty = bool(main_series.meta.get("empty_period"))
     ylabels = None
     if pair is not None:
-        from gps_plot import labels
-        from gps_plot.axes import label_flags
+        from gps_plot.axes import figure_labels
 
-        apart, kept = label_flags([main_series])
-        ylabels = labels.axis_labels(
-            main_series.components, "en", "mm", apart=apart, raw=kept
-        )
+        ylabels = figure_labels([main_series], "en", "mm")
     fig = stdTimesPlot(
         x,
         data,
@@ -1694,6 +1702,7 @@ def plotTime(
             series_kw,
             main=(yearf, data, Ddata, x),
             sign=baseline_sign,
+            axes=baseline_axes,
         )
 
     if model is not None:
@@ -1854,6 +1863,8 @@ def plotTime(
             filend += "-detrended"
         if show_ends and pair is not None:
             filend += "-ends"
+        if baseline_axes != "neu" and pair is not None:
+            filend += f"-{baseline_axes}"
         if pair is not None and baseline_rho is not None:
             filend += "-empsig"
         if remove_kinds:
@@ -1977,6 +1988,7 @@ def _add_session_overlay(
     *,
     main: tuple[Any, Any, Any, Any],
     sign: str = "apart",
+    axes: str = "neu",
 ) -> Figure:
     """Draw another session's series (8 h) behind the main (24 h) one.
 
@@ -1992,7 +2004,7 @@ def _add_session_overlay(
         sta,
         gps_source.SeriesRequest(**series_kw).replace(pos_id=overlay_pos_id),
         gps_source.BaselineOptions(
-            tol=2.0 / 24.0 / 365.25, check_view=False, sign=sign
+            tol=2.0 / 24.0 / 365.25, check_view=False, sign=sign, axes=axes
         ),
     )
     t8, d8, s8 = overlay.t, np.asarray(overlay.y), np.asarray(overlay.sigma)

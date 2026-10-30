@@ -115,6 +115,15 @@ def build_parser(
         "the baseline lengthening (a-priori coordinates); raw = A - B",
     )
     parser.add_argument(
+        "--axes",
+        choices=("neu", "along", "3d"),
+        default="neu",
+        help="baselines: neu (default) North/East/Up; along = along/across/up "
+        "(horizontal along each baseline, + = lengthening, Up as neu); 3d = "
+        "along the line between the stations, across, normal. Stations are "
+        "dropped. Adds -along/-3d",
+    )
+    parser.add_argument(
         "--show-outliers",
         type=int,
         nargs="?",
@@ -445,11 +454,12 @@ def output_stem(
     first: Any,
     last: Any,
     baseline_sigma: str = "formal",
+    axes: str = "neu",
 ) -> str:
     """The figure's file name (no directory, no suffix).
 
     ``stack_<label or first series_count>-<ref>[-terms][-cleaned][-empsig]
-    [-offsetN][-<frame>][-8h]-<period>`` (``-empsig``: empirical baseline σ,
+    [-offsetN][-along|-3d][-<frame>][-8h]-<period>`` (``-empsig``: empirical baseline σ,
     when a series is a baseline — as gpsplot ts names it). A labelled (plots.yaml) stack
     leaves out the offset (a display setting, not another product), and a
     stack of baselines the frame (it cancels in a baseline).
@@ -472,6 +482,8 @@ def output_stem(
         stem += "-empsig"
     if offset and not label:
         stem += f"-offset{offset:g}"
+    if axes != "neu":
+        stem += f"-{axes}"
     if tType == "POS" and pos_id is not None:
         from geo_dataread.pos import frame_name, pos_product
 
@@ -491,12 +503,10 @@ def output_stem(
 
 
 def _ylabels(series: Sequence[Series]) -> tuple[str, ...]:
-    """North/East/Up [mm], "(+ apart)" when every series is a re-signed pair."""
-    from gps_plot import labels
-    from gps_plot.axes import label_flags
+    """The components [mm], "(+ apart)" where + is lengthening in every series."""
+    from gps_plot.axes import figure_labels
 
-    apart, raw = label_flags(series)
-    return labels.axis_labels(series[0].components, "en", "mm", apart=apart, raw=raw)
+    return figure_labels(series, "en", "mm")
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
@@ -565,7 +575,14 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         tol=2.0 / 24.0 / 365.25 if is_8h else BASELINE_EPOCH_TOLERANCE_YEARS,
         empirical=empirical,
         sign=args.sign,
+        axes=args.axes,
     )
+    if args.axes != "neu":
+        # one figure never mixes axes: a station has no baseline direction
+        singles = [x for x in series_specs if not split_baseline(x)]
+        for x in singles:
+            print(f"dropped {x}: --axes {args.axes} is for baselines", file=sys.stderr)
+        series_specs = [x for x in series_specs if split_baseline(x)]
 
     got, labels, dropped = [], [], []
     for spec in series_specs:
@@ -656,6 +673,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         first=first,
         last=last,
         baseline_sigma=args.baseline_sigma,
+        axes=args.axes,
     )
     tplt.saveFig(os.path.join(kwargs["figDir"], stem), args.save, fig)
     if args.manifest:

@@ -3,6 +3,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -59,6 +60,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -115,6 +117,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -171,6 +174,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -227,6 +231,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -283,6 +288,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -339,6 +345,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -395,6 +402,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -451,6 +459,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -507,6 +516,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -563,6 +573,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -619,6 +630,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -675,6 +687,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -731,6 +744,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -787,6 +801,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -843,6 +858,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -899,6 +915,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -955,6 +972,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1011,6 +1029,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1067,6 +1086,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1123,6 +1143,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1179,6 +1200,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1235,6 +1257,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1291,6 +1314,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1349,6 +1373,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'empirical'",
    "baseline_sign": "'apart'",
@@ -1407,6 +1432,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1465,6 +1491,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1523,6 +1550,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1581,6 +1609,7 @@
   {
    "Dir": "'/tmp/pos'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1639,6 +1668,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1697,6 +1727,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1755,6 +1786,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1812,6 +1844,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1871,6 +1904,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1930,6 +1964,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -1988,6 +2023,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2046,6 +2082,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2104,6 +2141,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2162,6 +2200,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2220,6 +2259,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2279,6 +2319,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2337,6 +2378,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2395,6 +2437,7 @@
   {
    "Dir": "'/cfg/pos_dir'",
    "annotate_steps": "True",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",
@@ -2453,6 +2496,7 @@
   {
    "Dir": "'/cfg/totPath'",
    "annotate_steps": "False",
+   "baseline_axes": "'neu'",
    "baseline_noise": "None",
    "baseline_sigma": "'formal'",
    "baseline_sign": "'apart'",

@@ -87,6 +87,9 @@ class BaselineOptions:
             stored record (it would difference detrended against plate).
         sign: "apart" (default): N/E/U signed so + is the baseline
             lengthening (:func:`gps_plot.axes.sign_pair`); "raw": A − B.
+        axes: "neu" (default), "along" or "3d" (``--axes``,
+            :func:`gps_plot.axes.pair_orient`); the direction is checked
+            against the newest common ``.pos`` positions (tType POS).
     """
 
     tol: float | None = None
@@ -96,6 +99,7 @@ class BaselineOptions:
     noise_path: str | None = None
     check_view: bool = True
     sign: str = "apart"
+    axes: str = "neu"
 
 
 def fetch_station(sta: str, req: SeriesRequest) -> Series:
@@ -174,7 +178,7 @@ def fetch(
         Series(label=e.label, t=t, y=d, sigma=e.sigma)
         for (t, d), e in zip(bl.ends, ends, strict=True)
     )
-    from gps_plot.axes import sign_pair
+    from gps_plot.axes import pair_orient
 
     series = Series(
         label=spec,
@@ -190,7 +194,31 @@ def fetch(
         ends=(zeroed[0], zeroed[1]),
         meta={"rho": rho, "sigma_scale": sigma_scale, "sigma_note": sigma_note},
     )
-    return sign_pair(spec, series, opts.sign)
+    data = pos_baseline(pair, req) if opts.axes != "neu" else None
+    return pair_orient(spec, series, opts.sign, opts.axes, data)
+
+
+def pos_baseline(pair: tuple[str, str], req: SeriesRequest) -> Any:
+    """The pair's baseline [m, N/E/U in B's frame] at their newest common
+    ``.pos`` epoch, or None (not a POS read, or no such epoch)."""
+    if req.tType != "POS":
+        return None
+    from geo_dataread import pos as _pos
+    from geofunc import local
+
+    try:
+        a, b = (
+            _pos.read_pos(_pos.pos_path(x, req.Dir, _pos.pos_product(req.pos_id)))
+            for x in pair
+        )
+    except (OSError, ValueError):
+        return None
+    common = np.intersect1d(a.epochs, b.epochs)
+    if common.size == 0:
+        return None
+    ia = int(np.searchsorted(a.epochs, common[-1]))
+    ib = int(np.searchsorted(b.epochs, common[-1]))
+    return local.baseline(a.xyz[ia], b.xyz[ib], at="b").d
 
 
 #: a baseline day set aside at either end is drawn under the most serious
