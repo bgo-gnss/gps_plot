@@ -35,6 +35,43 @@ def status_color(last: dt.datetime, now: dt.datetime) -> str:
     return CURRENT_COLOR if now - last < CURRENT_FOR else STALE_COLOR
 
 
+def now_line(
+    axes: Sequence[Any],
+    *,
+    now: dt.datetime,
+    last: dt.datetime,
+    start: dt.datetime | None = None,
+    stale: str = "last",
+    fontsize: float = 18,
+) -> str:
+    """The plot-time line on each of ``axes``, with the time down the right edge.
+
+    Green while the stream is current, red (and ``stale`` + the last epoch
+    written beside the time) once it stopped. The x-axis is widened a little
+    past ``now`` (from ``start``, else the current left limit), so the frame
+    does not hide the line. Returns the colour.
+    """
+    from matplotlib import dates as mdates
+
+    color = status_color(last, now)
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    if color == STALE_COLOR:
+        stamp += f"   ({stale} {last:%Y-%m-%d %H:%M})"
+    t_now = float(mdates.date2num(now))  # type: ignore[no-untyped-call]
+    for ax in axes:
+        left, right = ax.get_xlim()
+        if start is not None:
+            left = float(mdates.date2num(start))  # type: ignore[no-untyped-call]
+        span = max(right, t_now) - left
+        ax.set_xlim(left, max(right, t_now + 0.015 * span))
+        ax.axvline(x=now, color=color, zorder=2, linewidth=2)
+        ax.text(
+            1.01, 0.5, stamp, transform=ax.transAxes, rotation="vertical",
+            va="center", ha="left", color=color, fontsize=fontsize,
+        )  # fmt: skip
+    return color
+
+
 def line_labels(names: Sequence[str]) -> list[str]:
     """The rover alone when every baseline shares one base, else the pair."""
     mixed = len({n[5:] for n in names}) > 1
@@ -89,12 +126,6 @@ def classic_figure(
         xs, ys = break_gaps(x, np.asarray(s.y, dtype=float) / 10.0)  # mm -> cm
         for i, ax in enumerate(axs):
             ax.plot(xs, ys[i], label=label if i == 0 else None)
-    color = status_color(last, now)
-    # a little room right of the plot-time line, so the frame does not hide it
-    right = max(end, now) + (max(end, now) - start) * 0.015
-    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
-    if color == STALE_COLOR:
-        stamp += f"   (síðast {last:%Y-%m-%d %H:%M})"
     for ax, ylabel in zip(axs, YLABELS, strict=True):
         ax.grid(which="major", color="#DDDDDD", linewidth=2.0)
         ax.grid(which="minor", color="#EEEEEE", linestyle=":", linewidth=1.5)
@@ -102,12 +133,8 @@ def classic_figure(
         ax.yaxis.set_minor_locator(AutoMinorLocator())
         ax.set_ylabel(f"{ylabel} [cm]", fontsize=16)
         ax.tick_params(axis="both", labelsize=14)
-        ax.set_xlim(start, right)
-        ax.axvline(x=now, color=color, zorder=2, linewidth=2)
-        ax.text(
-            1.01, 0.5, stamp, transform=ax.transAxes, rotation="vertical",
-            va="center", ha="left", color=color, fontsize=18,
-        )  # fmt: skip
+        ax.set_xlim(start, end)
+    now_line(axs, now=now, last=last, start=start, stale="síðast")
     axs[0].set_title(title, fontdict={"fontsize": 30, "verticalalignment": "bottom"})
     axs[0].legend(loc="lower left", fontsize=16)
     logo = resources.files("gps_plot").joinpath("assets", LOGO)
