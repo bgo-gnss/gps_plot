@@ -27,6 +27,7 @@ from typing import Any
 
 import numpy as np
 
+from gps_plot.axes import Orienter
 from gps_plot.cli import common
 
 #: span ending at -e (default now, UTC), as rtk_gps's specials (+ month)
@@ -270,7 +271,8 @@ def _daily(
         view="raw",
         pos_id=pid,
     )
-    s = source.fetch(pair, req)
+    # raw: the Orienter signs it alongside the RTK series
+    s = source.fetch(pair, req, source.BaselineOptions(sign="raw"))
     t = np.array(list(toDateTime(s.t)), dtype="datetime64[ns]")
     return dataclasses.replace(s, t=t, label=f"{pair} daily")
 
@@ -574,48 +576,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     )
     tplt.saveFig(os.path.join(fig_dir, stem), args.save, fig)
     return 0
-
-
-class Orienter:
-    """Puts each series on its pair's re-signed N/E/U (``--sign apart``).
-
-    Called on every series as it is read, before any alignment, so shifts
-    and notes are in the plotted signs. A pair without a-priori coordinates
-    stays rover − reference, with a warning; ``--sign raw`` changes nothing.
-    """
-
-    def __init__(self, sign: str) -> None:
-        self.sign = sign
-        self.found: dict[str, Any] = {}
-
-    def __call__(self, s: Any) -> Any:
-        from gps_plot.axes import orient, pair_axes
-
-        if self.sign == "raw":
-            return s
-        pair = s.meta.get("pair", s.label)
-        if pair not in self.found:
-            self.found[pair] = pair_axes(pair)
-            if self.found[pair] is None:
-                print(f"{pair}: no a-priori coordinates, plotted A - B",
-                      file=sys.stderr)  # fmt: skip
-        ax = self.found[pair]
-        return s if ax is None else orient(s, ax)
-
-    def summary(self) -> tuple[bool, tuple[bool, bool, bool]]:
-        """(any pair re-signed, per component: every re-signed pair kept it raw).
-
-        What the axis labels say; a component kept raw (under 1 m) in only
-        some pairs of a group is reported on stderr.
-        """
-        signed = [ax for ax in self.found.values() if ax is not None]
-        for pair, ax in self.found.items():
-            if ax is not None and any(ax.raw) and len(signed) > 1:
-                short = [k for k, kept in zip(ax.keys, ax.raw, strict=True) if kept]
-                print(f"{pair}: {'/'.join(short)} under 1 m, plotted A - B",
-                      file=sys.stderr)  # fmt: skip
-        raw = [bool(signed) and all(ax.raw[i] for ax in signed) for i in range(3)]
-        return bool(signed), (raw[0], raw[1], raw[2])
 
 
 def drop_q(args: argparse.Namespace) -> tuple[int, ...]:

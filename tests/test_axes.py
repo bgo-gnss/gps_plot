@@ -102,17 +102,64 @@ def test_orienter_signs_each_pair_and_reports_the_labels(
         "SEY2-SEYD": sign_axes([-2000.0, 300.0, 0.4]),
     }
     monkeypatch.setattr(axes, "pair_axes", lambda pair: found.get(pair))
-    o = rtk.Orienter("apart")
+    o = axes.Orienter("apart")
     s1 = o(_series(meta={"pair": "SEY1-SEYD"}))
     assert np.allclose(s1.y[0], [-1.0, -2.0])
     none = _series(label="AAAA-BBBB")
     assert o(none) is none  # no coordinates: left as A − B
+    assert not o.summary()[0]  # a pair left A - B: no "+ apart" on the axes
+    o = axes.Orienter("apart")
+    o(_series(meta={"pair": "SEY1-SEYD"}))
     o(_series(label="SEY2-SEYD"))
     apart, raw = o.summary()
     assert apart and raw == (False, False, False)  # only one pair has Up raw
-    keep = rtk.Orienter("raw")
+    station = _series(label="HOFN")
+    assert o(station) is station  # a single station is never signed
+    keep = axes.Orienter("raw")
     plain = _series()
     assert keep(plain) is plain and keep.summary() == (False, (False, False, False))
+
+
+def test_orient_refuses_to_sign_twice() -> None:
+    ax = sign_axes([-2582.9, 351.0, 32.9])
+    with pytest.raises(ValueError):
+        axes.orient(axes.orient(_series(), ax), ax)
+
+
+def test_sign_pair_and_label_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    found = {"SEY1-SEYD": sign_axes([-2582.9, 351.0, 0.3])}
+    monkeypatch.setattr(axes, "pair_axes", lambda pair: found.get(pair))
+    s = axes.sign_pair("SEY1-SEYD", _series())
+    assert np.allclose(s.y[0], [-1.0, -2.0]) and s.meta["raw"] == (False, False, True)
+    assert axes.sign_pair("SEY1-SEYD", _series(), "raw").meta == {}
+    station = _series(label="HOFN")
+    assert axes.sign_pair("HOFN", station) is station
+    with pytest.warns(UserWarning, match="no a-priori"):
+        axes.sign_pair("AAAA-BBBB", _series())
+    assert axes.label_flags([s]) == (True, (False, False, True))
+    assert axes.label_flags([s, station]) == (False, (False, False, False))
+
+
+def test_fetch_signs_a_baseline_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gps_plot.sources import gps as source
+
+    def station(sta: str, req: object) -> Series:
+        y = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]]) * (1 if sta == "SEY1" else 0)
+        return _series(label=sta, y=y, sigma=np.ones((3, 2)))
+
+    monkeypatch.setattr(source, "fetch_station", station)
+    monkeypatch.setattr(
+        axes, "pair_axes", lambda pair: sign_axes([-2582.9, 351.0, 32.9])
+    )
+    req = source.SeriesRequest(
+        fstart=None, fend=None, ref="plate", Dir=None, tType="POS", uncert=10,
+        view="raw",
+    )  # fmt: skip
+    s = source.fetch("SEY1-SEYD", req)
+    assert np.allclose(s.y[:, -1], [-1.0, 1.0, 1.0]) and s.meta["apart"]
+    assert s.ends is not None and np.allclose(s.ends[0].y[:, -1], [-1.0, 1.0, 1.0])
+    raw = source.fetch("SEY1-SEYD", req, source.BaselineOptions(sign="raw"))
+    assert np.allclose(raw.y[:, -1], [1.0, 1.0, 1.0]) and "apart" not in raw.meta
 
 
 def test_sign_option_defaults_to_apart() -> None:
@@ -123,3 +170,24 @@ def test_sign_option_defaults_to_apart() -> None:
     parser = rtk.build_parser(config=_Config())
     assert parser.parse_args(["SEY1-SEYD"]).sign == "apart"
     assert parser.parse_args(["SEY1-SEYD", "--sign", "raw"]).sign == "raw"
+
+
+def test_daily_sign_options() -> None:
+    from gps_plot import plot_gps_timeseries as driver
+    from gps_plot import stack
+
+    class _Config:
+        def getPostProcessDir(self, option: str) -> str:
+            return f"/cfg/{option}"
+
+        def getStationInfo(self) -> list[str]:
+            return ["HOFN"]
+
+        def get(self, *a: object, **k: object) -> None:
+            return None
+
+    ts = driver.build_parser(config=_Config())
+    assert ts.parse_args(["SEY1-SEYD"]).baseline_sign == "apart"
+    assert ts.parse_args(["SEY1-SEYD", "--sign", "raw"]).baseline_sign == "raw"
+    st = stack.build_parser(config=_Config())
+    assert st.parse_args(["SEY1-SEYD"]).sign == "apart"

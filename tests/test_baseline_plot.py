@@ -32,9 +32,13 @@ def _stub(monkeypatch, series: dict[str, np.ndarray], n: int = 30):
     gps_views.baseline_arrays = baseline_arrays
     # the --model line's window alignment, absent from the stub world
     gps_views.window_datum_shift = lambda sta, **kw: np.zeros(3)
+    # no a-priori coordinates in the stub world: baselines stay A - B
+    catalog = types.ModuleType("geo_dataread.station_catalog")
+    catalog.apriori_baseline = lambda a, b, path=None: None
     package = types.ModuleType("geo_dataread")
     package.gps_read, package.gps_views = gps_read, gps_views
     monkeypatch.setitem(sys.modules, "geo_dataread", package)
+    monkeypatch.setitem(sys.modules, "geo_dataread.station_catalog", catalog)
     monkeypatch.setitem(sys.modules, "geo_dataread.gps_read", gps_read)
     monkeypatch.setitem(sys.modules, "geo_dataread.gps_views", gps_views)
     return n
@@ -91,6 +95,7 @@ def test_baseline_defaults_to_plate_and_names_two_plates(monkeypatch, tmp_path) 
     n = _stub(monkeypatch, {"AAAA": np.zeros((3, 30)), "BBBB": np.zeros((3, 30))})
     catalog = types.ModuleType("geo_dataread.station_catalog")
     catalog.plate_table = lambda: {"AAAA": "NA", "BBBB": "EU"}
+    catalog.apriori_baseline = lambda a, b, path=None: None
     monkeypatch.setitem(sys.modules, "geo_dataread.station_catalog", catalog)
     monkeypatch.setattr(
         "geofunc.plates.plate_name",
