@@ -13,6 +13,9 @@ plots.yaml ``rtk:`` section says where and what::
         - { name: 4d, args: [--longterm 4d, --rtk-overlap 1] }
         - { name: 7d, args: [--longterm week, --rtk-overlap 2] }
         - { name: 14d, args: [--longterm 14d, --rtk-overlap 2] }
+        # rotated axes for the landslide areas only (areas: per run)
+        - { name: 7d-along, args: [--longterm week, --axes along],
+            areas: [svinafellsheidi, seydisfjordur] }
       overrides:                    # per area slug: args appended to each run
         svinafellsheidi: { args: [--rtk-span week] }
 
@@ -106,7 +109,7 @@ def plan(
 
     Raises:
         ValueError: A run without a name, a duplicate name, a reserved
-            option, or an unknown ``--area``.
+            option, an unknown ``--area`` or slug in a run's ``areas:``.
     """
     from gps_plot.products import area_pairs
     from gps_plot.sources.rtk import rtk_direction
@@ -124,6 +127,12 @@ def plan(
         unknown = [a for a in area if a not in areas]
         if unknown:
             raise ValueError(f"unknown area(s) {unknown}")
+    for r in runs:  # a run's areas: keeps it to those area slugs
+        only = r.get("areas")
+        if only is not None:
+            bad = [a for a in only if a not in areas]
+            if bad:
+                raise ValueError(f"rtk run {r['name']}: areas: {bad} unknown")
     overrides = spec.get("overrides") or {}
     jobs: list[RtkJob] = []
     for slug, entry in areas.items():
@@ -151,6 +160,8 @@ def plan(
         extra = _args((overrides.get(slug) or {}).get("args"))
         stack_args = _args(spec.get("stack_args"))
         for r in runs:
+            if r.get("areas") is not None and slug not in r["areas"]:
+                continue
             argv = (*_args(r.get("args")), *extra)
             jobs.extend(
                 RtkJob(slug, pair, str(r["name"]), out_dir, argv) for pair in pairs

@@ -178,3 +178,22 @@ def test_a_run_selection_keeps_the_other_runs_plots(monkeypatch, tmp_path):
     assert set(made) == {"6h"}
     assert (d / "SEY1_SEYD-rtk-14d.png").exists()  # another run's plot stays
     assert rtk_run.run("rtk-run", ["--run", "nope"]) == 2
+
+
+def test_a_run_keeps_to_its_areas():
+    cfg = {"rtk": {"runs": [
+        {"name": "14d", "args": ["--longterm 14d"]},
+        {"name": "7d-along", "args": ["--longterm week", "--axes along"],
+         "areas": ["svinafellsheidi"]},
+    ]}}  # fmt: skip
+    jobs = rtk_run.plan(cfg, AREAS, DIRS)
+    along = [j for j in jobs if j.run == "7d-along"]
+    assert {j.area for j in along} == {"svinafellsheidi"}
+    assert along[0].stem.endswith("-rtk-7d-along")
+    assert {j.area for j in jobs if j.run == "14d"} == {
+        "seydisfjordur",
+        "svinafellsheidi",
+    }
+    cfg["rtk"]["runs"][1]["areas"] = ["nowhere"]
+    with pytest.raises(ValueError, match="nowhere"):
+        rtk_run.plan(cfg, AREAS, DIRS)

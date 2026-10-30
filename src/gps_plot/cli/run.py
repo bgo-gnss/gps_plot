@@ -371,7 +371,7 @@ def _stale(
 
 
 def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:
-    """``(run function, parser)`` of a job tool: ``ts``, ``stack`` or ``map``."""
+    """``(run function, parser)`` of a job tool: ts, stack, map or polar."""
     if name == "map":
         from gps_plot import map as gmap
 
@@ -379,6 +379,13 @@ def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:
             argparse.ArgumentParser(prog="gpsplot map", **parser_kw), config=config
         )
         return gmap.run, parser
+    if name == "polar":
+        from gps_plot import polar
+
+        parser = polar.build_parser(
+            argparse.ArgumentParser(prog="gpsplot polar", **parser_kw), config=config
+        )
+        return polar.run, parser
     if name == "stack":
         from gps_plot import stack
 
