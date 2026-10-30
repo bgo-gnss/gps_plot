@@ -149,6 +149,8 @@ class Vertical:
     n_after: int
     #: the window of :attr:`recent` [days] (:func:`recent_span`)
     recent_window: float = RECENT_DAYS
+    #: the trend kept (``keep_trend``): the Up rate before the onset
+    before: tuple[float, float] | None = None
 
     @property
     def end_count(self) -> int:
@@ -328,6 +330,25 @@ def detrend(
     return r, rms
 
 
+def pre_rates(
+    t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]
+) -> list[tuple[float, float]]:
+    """Per row of ``y``, the rate of the line + seasonal fit on ``pre`` and
+    its σ [mm/yr] (:func:`pre_rate`)."""
+    from gps_analysis.shared_tau import block_mean_scale
+
+    tp = t[pre]
+    g = _design(tp, float(tp.mean()))
+    out = []
+    for c in range(y.shape[0]):
+        m, *_ = np.linalg.lstsq(g, y[c, pre], rcond=None)
+        res = y[c, pre] - g @ m
+        cov = np.linalg.inv(g.T @ g) * float(np.var(res, ddof=g.shape[1]))
+        k = block_mean_scale(tp, res, step=1.0 / YEAR).k
+        out.append((float(m[1]), k * math.sqrt(float(cov[1, 1]))))
+    return out
+
+
 def pre_rate(t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]) -> Rate:
     """The N/E rate of the line + seasonal fit on ``pre`` [mm/yr]: a
     station's motion before the onset. Its σ is the fit's white-noise σ
@@ -335,17 +356,7 @@ def pre_rate(t: FloatArray, y: FloatArray, pre: npt.NDArray[np.bool_]) -> Rate:
     (:func:`gps_analysis.shared_tau.block_mean_scale`), as the transient
     product's: daily noise wanders, and three years of it are not
     independent days."""
-    from gps_analysis.shared_tau import block_mean_scale
-
-    tp = t[pre]
-    g = _design(tp, float(tp.mean()))
-    out = []
-    for c in (0, 1):
-        m, *_ = np.linalg.lstsq(g, y[c, pre], rcond=None)
-        res = y[c, pre] - g @ m
-        cov = np.linalg.inv(g.T @ g) * float(np.var(res, ddof=g.shape[1]))
-        k = block_mean_scale(tp, res, step=1.0 / YEAR).k
-        out.append((float(m[1]), k * math.sqrt(float(cov[1, 1]))))
+    out = pre_rates(t, y[:2], pre)
     return Rate(out[0][0], out[1][0], out[0][1], out[1][1])
 
 
@@ -620,6 +631,7 @@ def vertical_track(
     t_on = yearf(onset)
     in_pre = (t >= yearf(pre[0])) & (t < yearf(pre[1]))
     r, rms = detrend(t, u, in_pre, keep_line=keep_trend)
+    before = pre_rates(t, u, in_pre)[0] if keep_trend else None
     near = (t >= t_on - ZERO_DAYS / YEAR) & (t < t_on)
     n_near = int(near.sum())
     if n_near >= 3:
@@ -650,6 +662,7 @@ def vertical_track(
         rate(float(t[-1]) - span / YEAR, span),
         int((t >= t_on).sum()),
         span,
+        before,
     )  # fmt: skip
 
 
@@ -817,7 +830,9 @@ def legend_entries(
             # the recent rate: its arrow only, no legend line (BGÓ
             # 2026-10-29); its numbers are on the station's series
             if tr.before is not None:
-                out.append((before_text(tr.marker, tr.before), BEFORE_COLOR))
+                out.append((before_text(tr.marker, tr.before,
+                                        vt.before if vt is not None else None),
+                            BEFORE_COLOR))  # fmt: skip
         else:
             n, e = tr.end
             az = math.degrees(math.atan2(e, n)) % 360
@@ -858,12 +873,13 @@ def draw_dot_pair(fig: Any, x: float, y: float, length_deg: float, *,
              pen=DOT_PEN)  # fmt: skip
 
 
-def before_text(marker: str, rate: Rate) -> str:
-    """The legend's line for a rate before the onset: north and east, not
-    a speed (a small speed is biased by its noise)."""
+def before_text(marker: str, rate: Rate, up: tuple[float, float] | None = None) -> str:
+    """The legend's line for a rate before the onset: north and east (not a
+    speed: a small speed is biased by its noise), and Up when known."""
     pm = "±"
+    u = f", U {up[0]:.1f} {pm} {up[1]:.1f}" if up is not None else ""
     return (f"{marker} before: N {rate.north:.1f} {pm} {rate.sigma_north:.1f}, "
-            f"E {rate.east:.1f} {pm} {rate.sigma_east:.1f} mm/yr")  # fmt: skip
+            f"E {rate.east:.1f} {pm} {rate.sigma_east:.1f}{u} mm/yr")  # fmt: skip
 
 
 def nice(x: float) -> float:
@@ -956,6 +972,18 @@ def draw_up_arrows(
 
     xs: list[float] = []
     ys: list[float] = []
+    # the vertical before the onset (trend kept), grey, under the others
+    grey = [maps.VelocityVector(
+        tr.marker, tr.lon, tr.lat, east=0.0, north=tr.vertical.before[0],
+        sigma_east=0.0, sigma_north=tr.vertical.before[1], method="before")
+        for tr in tracks if up_vector(tr) is not None and tr.vertical is not None
+        and tr.vertical.before is not None and tr.since is not None]  # fmt: skip
+    if grey:
+        maps.draw_velocity_vectors(
+            fig, grey, colors={"before": BEFORE_COLOR}, scale=arrow_scale,
+            confidence=0.39, vector_head="0.2c", pen_width=UP_PEN,
+            ellipse_pen=f"0.6p,{BEFORE_COLOR}", markers=False, labels=False,
+        )  # fmt: skip
     # the vertical of the last days (black), from the station as the rest
     # (BGÓ 2026-10-30): drawn first, so the station's own on the same line
     # stays on top
@@ -1042,6 +1070,17 @@ def draw_track_marks(
                  style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
     moved = [tr for tr in tracks if tr.moved and tr.since is not None]
     tips_x, tips_y = [], []
+    # the rates before the onset (trend kept), grey, under the others
+    before = [maps.VelocityVector(
+        tr.marker, tr.lon, tr.lat, east=tr.before.east, north=tr.before.north,
+        sigma_east=tr.before.sigma_east, sigma_north=tr.before.sigma_north,
+        method="before") for tr in moved if tr.before is not None]  # fmt: skip
+    if arrows and before:
+        maps.draw_velocity_vectors(
+            fig, before, colors={"before": BEFORE_COLOR}, scale=arrow_scale,
+            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+            ellipse_pen=f"0.6p,{BEFORE_COLOR}", markers=False, labels=False,
+        )  # fmt: skip
     if arrows and moved:
         vecs = []
         for tr in moved:
