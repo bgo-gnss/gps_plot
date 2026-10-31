@@ -69,6 +69,31 @@ the region and is no coarser than one 300-dpi output pixel
 3″ grid took 20 s and looked the same. It draws the IS 50V coast, not GSHHG:
 the full one on local maps, and for overviews one without the islets under
 0.2 km², which otherwise blot Breiðafjörður (`build_05_coast.sh`).
+**2 m ArcticDEM on zooms (2026-10-31).** When the map's pixels are finer
+than the 1″ level (a ~3 km box, or a zoom inset) and a 2 m area grid
+covers the whole map, `--dem iceland` takes that grid instead: the
+lon/lat copies in `dem/arcticdem_2m_ll/` (Svínafellsheiði, Seyðisfjörður,
+the Reykjanes station clusters; built from `dem/arcticdem_2m/` by
+`~/gps-data/gis/dem/build_08_arcticdem_ll.sh`, orthometric like the Iceland
+DEM). A 2 m grid is shaded harder, from two directions
+(`maps.FINE_DEM_SHADING`: `-A315/45 -Nt1.5`), so the slopes show. A zoom
+inset picks its own grid the same way, so the overview keeps 1″ while the
+inset gets 2 m, drawn as it is instead of the resampled, smoothed 1″. A map
+the 2 m grid covers only partly keeps the Iceland DEM (no splicing).
+Maps narrower than 0.1° in longitude get decimal minutes on the frame.
+
+**Steep ground: `--steep [DEG[:COLOUR]]`** tints the land steeper than DEG
+(default 30°, orange `#f0a050`) under the hillshade, on top of any
+`--dem-zone`. The slope is taken over the DEM averaged 6 m wide, and
+patches under 1000 m² are left out, otherwise single 2 m cells speckle.
+Meant for landslide zooms (Svínafellsheiði, Seyðisfjörður). It works on
+any DEM, but on the 1″ level it only catches long, steep slopes. With a
+zoom inset it tints the inset only (BGÓ 2026-10-31: on the overview it
+paints whole ice caps), and a track map's legend gets a line for it.
+
+A track map's legend sits 0.5 cm above the bottom annotations
+(`TRACK_LEGEND_GAP_CM`), so it no longer crowds the frame labels.
+
 Glaciers and lakes follow BGÓ's GMT maps (`gogn/gmt_maps/*/volc-systems.gmt`):
 - **Glaciers:** clipped to their outlines, coloured with an all-white CPT
   (`pol.cpt`) and their own gentle two-azimuth hillshade (`-A110/310 -Nt0.4`),

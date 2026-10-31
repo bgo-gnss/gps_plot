@@ -915,3 +915,115 @@ def test_smooth_sea_changes_the_sea_floor_alone() -> None:
     # sea cells take the smoothed value, kept sea-coloured; land and NaN unchanged
     assert v[0, 0] == v[0, 1] == v[1, 0] == maps.SEA_SMOOTH_SHALLOWEST
     assert v[0, 2] == 10.0 and v[1, 2] == 300.0 and np.isnan(v[1, 1])
+
+
+def _area_grid(path, w, s, n_lon, n_lat, dlon=4.1e-5, dlat=1.8e-5, z=None):
+    """A lon/lat netCDF grid like the arcticdem_2m_ll ones (netCDF3)."""
+    import xarray as xr
+
+    lon = w + dlon * np.arange(n_lon)
+    lat = s + dlat * np.arange(n_lat)
+    z = np.zeros((n_lat, n_lon)) + 100.0 if z is None else z
+    da = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"), name="z")
+    da.to_dataset().to_netcdf(path, engine="scipy")
+    return lon, lat
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
+    """A zoom finer than the 1" level takes the 2 m area grid that covers
+    it, with the fine shading flag; a map it does not cover, or one the
+    Iceland levels are fine enough for, keeps the Iceland DEM."""
+    from gps_plot import maps
+
+    (tmp_path / maps.GIS_DEM).mkdir()
+    for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
+        (tmp_path / maps.GIS_DEM / name).write_text("")
+    pick = lambda region, proj="M5c": maps.iceland_dem(tmp_path, region, proj)  # noqa: E731
+    zoom = (-16.84, -16.785, 63.998, 64.022)  # the Svínafellsheiði inset
+    assert not pick(zoom).fine  # no area grids on this host
+    folder = tmp_path / maps.ARCTICDEM_LL_DIR
+    folder.mkdir(parents=True)
+    path = folder / "svinafellsheidi.nc"
+    _area_grid(path, -16.86, 63.99, 2420, 2090)  # -16.86..-16.761, 63.99..64.028
+    (w, e, s, n) = maps.area_dems(tmp_path)[0][2]
+    assert maps.area_dems(tmp_path)[0][0] == str(path)
+    assert maps.area_dems(tmp_path)[0][1] == pytest.approx(4.1e-5)
+    # (GMT may take the cells as pixels: half a cell either way)
+    assert (w, s) == pytest.approx((-16.86, 63.99), abs=1e-4)
+    assert e > -16.762 and n > 64.027
+    fine = pick(zoom)
+    assert fine.fine and fine.grid == str(path)
+    # the same box 1 cm wide: its pixels are coarser than 1", that level fits
+    assert not pick(zoom, "M1c").fine
+    # sticking out of the area grid: the Iceland DEM
+    assert pick((-16.90, -16.85, 63.998, 64.022)).grid.endswith("_1s.nc")
+    # inside its box but over its NaN corner (the ISN93 rectangle's edge in
+    # lon/lat): the Iceland DEM, not a flat patch
+    z = np.full((2090, 2420), 100.0)
+    z[:300, :300] = np.nan  # the south-west corner, ~600 m x 540 m
+    _area_grid(path, -16.86, 63.99, 2420, 2090, z=z)
+    corner = (-16.859, -16.85, 63.9905, 63.995)
+    assert pick(corner).grid.endswith("_1s.nc")
+    assert pick(zoom).fine  # the middle still has data everywhere
+    # the whole Öræfi map: an Iceland level
+    assert pick((-17.06, -16.38, 63.76, 64.07), "M18c").grid.endswith("_1s.nc")
+
+
+def test_steep_mask_finds_the_slope_and_drops_specks():
+    """Land steeper than the threshold, from a lon/lat grid with ~2 m cells:
+    a 45° ramp is steep, the flats are not, a steep speck under the
+    minimum area is dropped, the NaN edge leaves no false slope."""
+    import xarray as xr
+
+    from gps_plot import maps
+
+    dlat, lat0 = 1.8e-5, 64.0
+    dlon = dlat / math.cos(math.radians(lat0))  # square cells
+    ny, nx = 200, 200
+    lat = lat0 + dlat * np.arange(ny)
+    lon = -16.8 + dlon * np.arange(nx)
+    dy = dlat * maps.M_PER_DEG
+    y = np.arange(ny)[:, None] * dy + np.zeros((1, nx))
+    # flat at 100 m, a 45° ramp over rows 80-120, flat again above
+    z = 100.0 + np.clip(y - 80 * dy, 0.0, 40 * dy)
+    z[20:24, 20:24] += np.array([0.0, 8.0, 8.0, 0.0])[:, None]  # a ~8x8 m bump
+    z[:, -5:] = np.nan  # the grid's data edge
+    grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+    mask = maps.steep_mask(grid, 30.0)
+    assert mask is not None
+    assert mask[95:105, 20:150].all()  # the ramp
+    assert not mask[:60, :].any()  # the flat and the speck on it
+    assert not mask[140:, :].any()
+    assert not mask[:, -9:].any()  # NaN (5) and the eroded band (4)
+    assert mask[100, -12]  # the ramp itself, just inside it
+    assert maps.steep_mask(grid, 60.0) is None  # nothing that steep
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_steep_zone_recolours_the_steep_land(tmp_path, monkeypatch):
+    import pygmt
+    import xarray as xr
+
+    from gps_plot import maps
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    dlat = 1.8e-5
+    dlon = dlat / math.cos(math.radians(64.0))
+    lat = 64.0 + dlat * np.arange(120)
+    lon = -16.8 + dlon * np.arange(120)
+    dy = dlat * maps.M_PER_DEG
+    y = np.arange(120)[:, None] * dy + np.zeros((1, 120))
+    z = 100.0 + np.clip(y - 40 * dy, 0.0, 40 * dy)
+    grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+    grid.gmt.registration, grid.gmt.gtype = 0, 1
+    shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
+    comp, _shading, cpt, _ice = maps._dem_colours(
+        pygmt, grid, shade, land="lightgrey", zones=(maps.SteepZone(min_slope=30.0),)
+    )
+    steep = maps.steep_mask(grid, 30.0)
+    shifted = comp.values - grid.values
+    assert steep is not None and steep.any()
+    assert (shifted[steep] == maps.GLACIER_Z_OFFSET + maps.ZONE_Z_OFFSET).all()
+    assert (shifted[~steep] == 0).all()
+    assert "240/160/80" in open(cpt).read()

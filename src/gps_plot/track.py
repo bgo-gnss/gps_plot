@@ -1150,6 +1150,7 @@ def draw_tracks(
     path_days: int = PATH_MEDIAN_DAYS,
     note: str | None = None,
     up: bool = True,
+    keys: Sequence[tuple[str, str]] = (),
 ) -> Drawn:
     """Draw the tracks, arrows, legend and colour bar on ``fig``.
 
@@ -1202,6 +1203,7 @@ def draw_tracks(
         entries = [(recent_key(recent_days, tracks), RECENT_COLOR), *entries]
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
+    entries = [*entries, *keys]  # (text, colour) of the map's own, e.g. --steep
     top, right = _draw_legend(
         fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
