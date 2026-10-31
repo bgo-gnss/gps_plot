@@ -84,6 +84,10 @@ Persistent=false
 WantedBy=timers.target
 ```
 
+Rotated axes (2026-10-31): the rtk run `7d-along` (`--axes along`, areas
+svinafellsheidi, seydisfjordur, reykjanes) is in the long timer; sign and axes
+in [`baselines.md`](baselines.md).
+
 ## 3. aflogun: click a baseline to show its plot
 
 Today (only on the unmerged `feat/local-plots` → `feat/kort-captions`, MR !8)

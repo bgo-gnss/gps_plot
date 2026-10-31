@@ -239,6 +239,12 @@ chosen pairs — never every combination.
   `graphs/baselines/` directories and the `voktun/` root need it to learn
   a second listing (follow-up).
 
+## Rotated axes, polar, `areas:` (2026-10-30)
+
+Runs and products may carry `areas: [...]`; baselines runs with `--axes
+along|motion`, the `polar` product (`tool: polar`) and the rtk `7d-along`
+run are described in [`baselines.md`](baselines.md#plotsyaml).
+
 ## Map products (2026-10-27)
 
 Velocity maps as plots.yaml products, first for Svartsengi (BGÓ: past
