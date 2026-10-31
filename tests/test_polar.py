@@ -175,3 +175,15 @@ def test_slope_field_and_nice() -> None:
     assert (
         polar._nice(4.3) == 5.0 and polar._nice(1.4) == 1.0 and polar._nice(17) == 20.0
     )
+
+
+def test_a_westward_section_is_mirrored_with_compass_ends():
+    from gps_plot.polar import compass, section_heading
+
+    assert [compass(d) for d in (0, 292, 313, 334, 359, 90)] == [
+        "N", "WNW", "NW", "NNW", "N", "E"
+    ]  # fmt: skip
+    mean, mirrored = section_heading([292.0, 334.0])
+    assert mean == pytest.approx(313.0) and mirrored
+    assert section_heading([110.0]) == (pytest.approx(110.0), False)
+    assert section_heading([350.0, 20.0])[0] == pytest.approx(5.0)

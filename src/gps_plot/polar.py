@@ -6,8 +6,8 @@ coloured by the time since the onset:
 * sector: the azimuth (compass, clockwise from north) and size of the
   horizontal displacement, with the motion direction (red), the across
   direction (blue) and the DEM downslope at the rover;
-* map: the paths on the terrain (slope colour, hillshade, contours, fall
-  lines) around the rover, scaled up to show;
+* map: the paths on the terrain (grey hillshade, ground steeper than 30°
+  tinted orange, contours) around the rover, scaled up to show;
 * section: the displacement along the motion direction against Up;
 * hodograph: north against east (optional).
 
@@ -46,6 +46,14 @@ MIN_RADIUS_MM = 1.0
 
 #: points past this fraction of the largest displacement set the sector
 SECTOR_FRACTION = 0.15
+
+#: the epochs' colours, days since the onset (as the track maps)
+CMAP = "turbo"
+#: the map: ground steeper than this [°] tinted in this colour (BGÓ
+#: 2026-10-31, the 2 m ArcticDEM dots map), lit from the north-west
+STEEP_DEG = 30.0
+STEEP_CMAP = "Oranges"
+SHADE_AZIMUTH, SHADE_ALTITUDE = 315.0, 45.0
 
 EXAMPLES = """examples:
   gpsplot polar SVIE-SKFC --special year --save png
@@ -381,29 +389,25 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     """The DEM with each rover's path since the onset scaled up, as velocity
     arrows on a map; returns the scale for the note. ``path_half``: the half
     width the longest path is scaled to fill about half of."""
+    import matplotlib as mpl
+
     from gps_plot import terrain
 
     many = len(pairs) > 1
     if dem is not None:
         dx = float(abs(dem.x[1] - dem.x[0]))
         extent = (dem.x[0], dem.x[-1], dem.y[0], dem.y[-1])
-        # the slope angle in colour, the relief shaded over it
-        angle, fall = terrain.slope_field(dem.z, dx)
-        im = ax.imshow(angle, extent=extent, origin="lower", cmap="YlOrBr", vmin=0,
-                       vmax=45, zorder=0, interpolation="nearest")  # fmt: skip
-        shade = terrain.hillshade(dem.z, dx)
+        # grey relief, the steep ground tinted over it (scarps and gullies)
+        shade = terrain.hillshade(dem.z, dx, azimuth=SHADE_AZIMUTH,
+                                  altitude=SHADE_ALTITUDE)  # fmt: skip
         ax.imshow(shade, extent=extent, origin="lower", cmap="gray", vmin=0, vmax=1,
-                  alpha=0.35, zorder=0.5)  # fmt: skip
-        bar = ax.figure.colorbar(im, ax=ax, fraction=0.04, pad=0.01)
-        bar.set_label("terrain slope [°]")
-        # fall lines: which way the ground falls, on a grid of about 16 a side
-        k = max(1, int(round(half / 8.0 / dx)))
-        fx, fy = np.meshgrid(dem.x[::k], dem.y[::k])
-        a = np.radians(fall[::k, ::k])
-        steep = angle[::k, ::k] > 3.0
-        ax.quiver(fx[steep], fy[steep], np.sin(a)[steep], np.cos(a)[steep],
-                  color="0.25", scale=30, width=0.0025, headwidth=4, zorder=1.5,
-                  alpha=0.7)  # fmt: skip
+                  zorder=0)  # fmt: skip
+        angle, _ = terrain.slope_field(dem.z, dx)
+        ax.imshow(np.ma.masked_less(angle, STEEP_DEG), extent=extent, origin="lower",
+                  cmap=STEEP_CMAP, vmin=20, vmax=60, alpha=0.35, zorder=0.5,
+                  interpolation="nearest")  # fmt: skip
+        ax.fill([np.nan] * 3, [np.nan] * 3, color=mpl.colormaps[STEEP_CMAP](0.55),
+                alpha=0.6, label=f"steeper than {STEEP_DEG:g}°")  # fmt: skip
         relief = float(np.nanmax(dem.z) - np.nanmin(dem.z))
         step = 2.0 if relief < 40 else 5.0 if relief < 120 else 10.0
         levels = np.arange(np.floor(np.nanmin(dem.z) / step) * step,
@@ -421,8 +425,9 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
         x0, y0 = pp.pos
         px, py = x0 + pp.d[1] * scale, y0 + pp.d[0] * scale
         ax.plot(px, py, color="k", lw=0.6, ls=":", zorder=2)
-        ax.scatter(px, py, c=pp.since, s=18, marker=pp.marker, zorder=3,
-                   edgecolors="k", linewidths=0.3, **style)  # fmt: skip
+        order = np.argsort(pp.since)  # the newest on top
+        ax.scatter(px[order], py[order], c=pp.since[order], s=60, marker=pp.marker,
+                   zorder=3, edgecolors="k", linewidths=0.4, **style)  # fmt: skip
         ax.plot(x0, y0, marker="^", ms=11, color="w", mec="k", zorder=4)
         if many:
             ax.annotate(pp.rover, (x0, y0), xytext=(8, -14), textcoords="offset points",
@@ -458,6 +463,14 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
                     xy=(0.9 * half * np.sin(a), 0.9 * half * np.cos(a)),
                     ha="center", va="center", fontsize="small", color="navy",
                     bbox={"boxstyle": "round", "fc": "w", "alpha": 0.8})  # fmt: skip
+    # the dots' scale, lower right
+    bar_mm = _nice(hmax / 2)
+    xb, yb = 0.55 * half, -0.9 * half
+    ax.plot([xb, xb + bar_mm * scale], [yb, yb], "o-", color="k", lw=2.5, ms=4,
+            zorder=6)  # fmt: skip
+    ax.annotate(f"{bar_mm:g} mm (dots)", (xb, yb), xytext=(0, 7),
+                textcoords="offset points", fontsize="small", zorder=6,
+                bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
     ax.set_xlim(-half, half)
     ax.set_ylim(-half, half)
     ax.set_aspect("equal")
@@ -470,9 +483,36 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     return f"map paths scaled {scale:g} m per mm"
 
 
+#: the 16 compass points, from north clockwise
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")  # fmt: skip
+
+
+def compass(deg: float) -> str:
+    """The compass point (16) of an azimuth [°]."""
+    return COMPASS[int(round((deg % 360.0) / 22.5)) % 16]
+
+
+def _usetex() -> bool:
+    import matplotlib as mpl
+
+    return bool(mpl.rcParams["text.usetex"])
+
+
+def section_heading(motions: Sequence[float]) -> tuple[float, bool]:
+    """The mean of the ``motions`` azimuths [°] and whether the section is
+    drawn mirrored: a westward motion runs to the left, so the section reads
+    as seen from the south (BGÓ 2026-10-31: drawn to the right, a slide
+    going down to the west looked like one going down to the east)."""
+    a = np.radians(np.asarray(motions, dtype=float))
+    mean = float(np.degrees(np.arctan2(np.sin(a).sum(), np.cos(a).sum()))) % 360.0
+    return mean, bool(np.sin(np.radians(mean)) < 0)
+
+
 def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
     """Along each pair's motion against Up [mm], with the terrain's apparent
-    dip along it."""
+    dip along it; mirrored when the motion is westward
+    (:func:`section_heading`), the compass points at the axis ends."""
     many = len(pairs) > 1
     drawn = False
     for pp in pairs:
@@ -498,11 +538,20 @@ def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
         return
     ax.axhline(0.0, color="0.6", lw=0.8)
     ax.axvline(0.0, color="0.6", lw=0.8)
+    mean, mirrored = section_heading([pp.motion for pp in pairs
+                                      if pp.motion is not None])  # fmt: skip
+    if mirrored:
+        ax.invert_xaxis()
     if any(pp.downslope is not None for pp in pairs):
-        ax.legend(loc="upper right", fontsize="small")
+        ax.legend(loc="best", fontsize="small")
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xlabel("along the motion [mm]" if many
-                  else f"along the motion ({pairs[0].motion:.0f}°) [mm]")  # fmt: skip
+    ahead, back = compass(mean), compass(mean + 180.0)
+    left, right = (ahead, back) if mirrored else (back, ahead)
+    what = ("along the motion [mm]" if many
+            else f"along the motion ({pairs[0].motion:.0f}°) [mm]")  # fmt: skip
+    ax.set_xlabel(rf"{left} $\leftarrow$ \quad {what} \quad $\rightarrow$ {right}"
+                  if _usetex() else
+                  rf"{left} $\leftarrow$   {what}   $\rightarrow$ {right}")  # fmt: skip
     ax.set_ylabel("Up [mm]")
     ax.set_title("vertical section along the motion")
 
@@ -551,7 +600,7 @@ def polar_figure(
     vmax = max(
         (float(np.max(pp.since)) for pp in pairs if np.size(pp.since)), default=1.0
     )
-    cmap = mpl.colormaps["viridis"]
+    cmap = mpl.colormaps[CMAP]
     norm = mpl.colors.Normalize(vmin=0.0, vmax=max(vmax, 1e-9))
     style = {"cmap": cmap, "norm": norm}
     centred = 0

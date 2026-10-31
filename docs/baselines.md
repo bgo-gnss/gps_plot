@@ -89,10 +89,15 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,section`)
 - **sector** — compass azimuth and size; motion direction (red), across
   (blue), DEM downslope. Its limits come from points ≥ 15 % of the largest;
   smaller points outside are drawn at the centre and counted, never hidden.
-- **map** — the paths on the terrain around the rovers (slope colour 0–45°,
-  hillshade, contours, fall lines), scaled up (title: m per mm) — the same
-  convention as a velocity arrow on a map.
+- **map** — the paths on the terrain around the rovers (grey hillshade lit
+  from 315°/45°, ground steeper than 30° tinted orange, contours), each
+  epoch a dot coloured by days since the onset (turbo, as the track maps),
+  scaled up (title: m per mm; a dot scale bar) — the same convention as a
+  velocity arrow on a map. BGÓ 2026-10-31, from the 2 m ArcticDEM dots
+  experiment; the slope colour field and fall lines went.
 - **section** — along the motion against Up, with the terrain's apparent dip.
+  A westward motion runs to the left (seen from the south), the compass
+  points at the axis ends (BGÓ 2026-10-31).
 - **hodograph** — north against east (optional; redundant with the sector).
 
 `--together` draws all pairs in one figure, one marker per pair (the plots.yaml
