@@ -125,9 +125,8 @@ were measured on the 5 m DEM; at SVIE the 2 m plane agrees (260°/21°).
 - `rtk:` run `7d-along` (`--longterm week --rtk-overlap 2 --axes along`, same
   three areas), in the long timer (`gpsplot rtk-run --run 4d,7d,14d,7d-along`).
 - aflogun (`graphs.py`) lists the `-along`/`-motion` baseline variants and
-  two-station polar files ("A-B · polar-<variant>"). **Follow-up:** its
-  `_POLAR_PNG` matches only `A_B-polar-*`, so the together figures the
-  `polar` product writes (`SVIN_SVIE_SKFC-polar-*`) are not listed yet.
+  the polar files under each station in their name: "A-B · polar-<variant>",
+  together "SVIN-SVIE-SKFC · polar-90d" (aflogun !13).
 
 ## Daily baselines: layering (2026-10-08)
 
