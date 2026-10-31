@@ -550,3 +550,27 @@ only when the station list is fetched.
 - `../../gps_api/CLAUDE.md` — the `/velocities` and slip-distribution
   products these consume
 - `detrend-lane.md` — the other deep lane (cleaned view, workbench, pickers)
+
+## Summary (moved verbatim from CLAUDE.md, 2026-10-31)
+
+`maps.py` — four PyGMT functions sharing one set of slice-1 conventions
+(coords from `stations.cfg` via `gps_parser`, zero hardcoding, lazy pygmt
+guard, `dem_grid=` hillshade on all of them): `station_map`, `velocity_map`,
+`deformation_vectors`, `slip_map`. They consume `gps_api` products directly,
+and the dormant `gmtplot.py::velomap` recipe is fully absorbed into them.
+`gpsplot map station --tos` plots every TOS GPS station by status
+(`--tos-search "…"` takes any `tos search` line, `--stations-file` adds
+sites from files, `map base`/`--no-stations` draws none), and
+`--dem iceland` draws the spliced Iceland DEM at the level the map needs
+(the TOS current-value rules are in the lane doc). Regional maps
+(2026-10-16): `--region reykjanes`, `--layers reykjanes` (roads, towns,
+lavas, graben, fissures, barriers, places), `--inset svartsengi` (zoom box),
+the Iceland locator and decluttered station names. Windowed velocity maps
+read the velocity product (`geo_dataread.velocity`; `--velocities FILE`,
+`--velocities-out DIR`, `--ref plate-periodic|background|plate`). Signatures, inputs and
+the install story are in **[`docs/map-lane.md`](docs/map-lane.md)**.
+
+```python
+from gps_plot.maps import station_map
+station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
+```

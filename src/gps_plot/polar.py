@@ -13,8 +13,9 @@ coloured by the time since the onset:
 
 The displacement is rover − reference, unsigned (where the rover went),
 from its level at the onset (the median of the first ``--window``). The
-onset is ``--onset`` (a date, or an events.yaml event id), else the start
-of the period. The motion direction is the pair's (station_areas.yaml
+onset is ``--onset``: a date, an events.yaml event id, ``auto`` (the
+default: the newest events.yaml event whose region holds a rover, inside
+the period) or ``start`` (the start of the period). The motion direction is the pair's (station_areas.yaml
 ``directions:``, ``--direction``, ``--direction-from``), else the one
 estimated over the plotted span. Daily by default (the cleaned plate
 series), ``--rtk`` for the RTK baseline (10-minute medians). Files:
@@ -84,9 +85,10 @@ def build_parser(
         "week, month (for --rtk). Default year (week with --rtk)",
     )  # fmt: skip
     parser.add_argument(
-        "--onset", default=None,
-        help="the onset: YYYYMMDD[-HH:MM] or an events.yaml event id "
-        "(default: the start of the period)",
+        "--onset", default="auto",
+        help="the onset: YYYYMMDD[-HH:MM], an events.yaml event id, auto "
+        "(default: the newest events.yaml event whose region holds a rover, "
+        "inside the period; else its start) or start (the start of the period)",
     )  # fmt: skip
     parser.add_argument(
         "--window", type=window_days, default=None,
@@ -153,6 +155,28 @@ def resolve_onset(value: str | None) -> dt.datetime | None:
         if event.id == value:
             return dt.datetime.combine(event.onset, dt.time())
     raise ValueError(f"--onset {value!r}: no such date or events.yaml event id")
+
+
+def auto_onset(
+    rovers: Sequence[str], start: dt.datetime | None, end: dt.datetime
+) -> tuple[dt.datetime, str] | None:
+    """(onset, event id) of the newest events.yaml event, of any kind, whose
+    region (a station_areas.yaml area) holds one of ``rovers`` and whose onset
+    is inside [``start``, ``end``); None when there is none."""
+    from geo_dataread.events import read_events, read_station_areas, station_events
+    from geo_dataread.events import KINDS
+
+    areas = read_station_areas()
+    found = {
+        e.id: e
+        for r in rovers
+        for e in station_events(r, read_events(), areas, kinds=KINDS)
+        if (start is None or e.onset >= start.date()) and e.onset < end.date()
+    }
+    if not found:
+        return None
+    event = max(found.values(), key=lambda e: (e.onset, e.id))
+    return dt.datetime.combine(event.onset, dt.time()), event.id
 
 
 def resolve_span(args: argparse.Namespace, now: dt.datetime) -> tuple[Any, Any, str]:
@@ -665,8 +689,20 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     start, end, period = resolve_span(args, now)
     if start is not None and start >= end:
         parser.error(f"start {start} is not before end {end}")
+    onset_note = ""
     try:
-        onset = resolve_onset(args.onset)
+        if args.onset == "auto":
+            rovers = [b.split("-")[0].upper() for b in args.Baselines]
+            hit = auto_onset(rovers, start, end)
+            onset, onset_note = (
+                (None, "")
+                if hit is None
+                else (hit[0], f"; onset: events.yaml {hit[1]}")
+            )
+        elif args.onset == "start":
+            onset = None
+        else:
+            onset = resolve_onset(args.onset)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     if onset is not None and start is not None and onset < start:
@@ -700,7 +736,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     span = f"{window:g} d" if window >= 1 else f"{24 * window:g} h"
     head = (
         f"rover - reference, {kind}; displacement from the median of the first "
-        f"{span} after the onset"
+        f"{span} after the onset{onset_note}"
     )
     groups = [[g for g in got]] if args.together else [[g] for g in got]
     for group in groups:

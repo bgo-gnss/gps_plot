@@ -42,3 +42,19 @@ so long series make detection slow until the Toeplitz/Cholesky speedup lands.
 - `../../PLAN-analysis-lane.md` — thread C / task L5 (dev-viz), task H6
   (the Toeplitz/Cholesky speed pass the cost warning above waits on)
 - `detrend-lane.md`, `map-lane.md` — the other two deep lanes
+
+## Summary (moved verbatim from CLAUDE.md, 2026-10-31)
+
+`dev_viz.py` — three shared-axis panels for one station/component (observed +
+`lineperiodic` fit with WLS velocity annotation, detrended residuals, GBIS4TS
+break model). All math is called from `gps_analysis`; nothing is re-derived
+here. Two things to know before using it, both in
+**[`docs/dev-viz.md`](docs/dev-viz.md)**: `--break-input` decides what
+detection runs on and one of its three values is known-bad on purpose, and the
+MCMC dev default is 2 000 iterations against production's 1e6 — the dev
+posterior is indicative only.
+
+```bash
+uv run gps-analysis-devviz --synthetic --component east --out /tmp/devviz.png
+uv run gps-analysis-devviz --neu STA.NEU --component north --breaks 2 --out sta.png
+```
