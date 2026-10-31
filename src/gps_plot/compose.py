@@ -234,19 +234,21 @@ def stack_figure(
             markeredgecolor="black",
             markeredgewidth=1.6,
         )
-    if any(f is not None for f in flagged):  # one legend key for all of them
+    # one legend key per kind for all series: grey stands for "its series'
+    # colour" (a black-edged key read as the drawn colour, BGÓ 2026-10-30)
+    if any(f is not None for f in flagged):
         axes[0].plot(
             [], [], linestyle="none", marker="o", markersize=5.0,
-            markerfacecolor="white", markeredgecolor="black",
-            markeredgewidth=1.6, label="outlier (its series' colour)",
+            markerfacecolor="0.6", markeredgecolor="black",
+            markeredgewidth=1.6, label="outlier (filled: its series' colour)",
         )  # fmt: skip
     # icing/snow and network days: the class's colour, edged in the series'
     # colour (which station it was), as gpsplot ts draws them
     for layers, face, bar, key in (
         (obstructed, tplt.ICING_FACE_COLOR, tplt.ICING_ERRORBAR_COLOR,
-         "icing / snow suspected (set aside)"),
+         "icing / snow suspected (ring: its series' colour)"),
         (netdays, tplt.NETWORK_FACE_COLOR, tplt.NETWORK_ERRORBAR_COLOR,
-         "network day (set aside)"),
+         "network day (ring: its series' colour)"),
     ):  # fmt: skip
         for k, f in enumerate(layers):
             if f is not None:
@@ -258,7 +260,7 @@ def stack_figure(
         if any(f is not None for f in layers):
             axes[0].plot(
                 [], [], linestyle="none", marker="o", markersize=5.0,
-                markerfacecolor=face, markeredgecolor="black",
+                markerfacecolor=face, markeredgecolor="0.6",
                 markeredgewidth=1.6, label=key,
             )  # fmt: skip
     # a late series' backcast (stack.backcast_late_starts): its fitted rate,
@@ -277,6 +279,7 @@ def stack_figure(
         loc="upper left",
         fontsize="medium",
         markerscale=2.0,
+        numpoints=1,  # one dot per key, not two joined
         ncol=max(1, (len(series) + 5) // 6),
         framealpha=0.85,
     )

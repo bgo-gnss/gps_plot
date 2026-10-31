@@ -236,7 +236,7 @@ def test_stack_figure_draws_outliers_in_the_series_colour_with_a_black_outline()
     np.testing.assert_allclose(np.asarray(flagged[0].get_ydata())[[5, 20]], 9.0)
     assert ax.get_ylim()[1] >= 9.0  # the axis keeps them in view
     legend = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert "outlier (its series' colour)" in legend
+    assert "outlier (filled: its series' colour)" in legend
 
 
 def test_stack_figure_shows_no_outliers_unless_asked_or_only_the_tail():
@@ -377,5 +377,5 @@ def test_stack_figure_draws_icing_and_network_days_edged_in_the_series_colour():
     )
     assert {tplt.ICING_FACE_COLOR, tplt.NETWORK_FACE_COLOR} <= faces(fig)
     legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
-    assert "network day (set aside)" in legend
+    assert "network day (ring: its series' colour)" in legend
     assert fig.axes[0].get_ylim()[1] >= 7.0
