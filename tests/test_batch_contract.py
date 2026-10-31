@@ -179,3 +179,34 @@ def test_is_no_data() -> None:
     assert tplt.is_no_data(tplt.NoDataError("no data for station X"))
     assert tplt.is_no_data(ValueError("uncertainty screening left no nonzero data"))
     assert not tplt.is_no_data(ValueError("no plate assigned"))
+
+
+def test_a_period_with_no_day_passing_the_screens_is_drawn_not_failed(
+    tmp_path, monkeypatch
+) -> None:
+    """SAFH 2026-10-31: days in the 90 d, but every one screened out (σ
+    above --uncert): the plot is drawn like an empty period, with a note,
+    instead of failing on a NaN axis limit with --ylim."""
+    import datetime as dt
+
+    import numpy as np
+
+    from gps_plot.series import Series
+    from gps_plot.sources import gps as gps_source
+
+    now = dt.datetime.now()
+    yearf = now.year + (now.timetuple().tm_yday - 0.5) / 365.25
+    t = np.array([yearf - d / 365.25 for d in (30, 20, 10)])  # fractional years
+    nan = np.full((3, 3), np.nan)
+
+    def fetch(sta: str, req: Any, baseline: Any = None) -> Any:
+        return Series(sta, t, nan, nan.copy())
+
+    monkeypatch.setattr(gps_source, "fetch", fetch)
+    fig = tplt.plotTime(
+        "SAFH", special="90d", ylim=(30,), ref="plate", save="png",
+        figDir=str(tmp_path),
+    )  # fmt: skip
+    texts = [x.get_text() for ax in fig.axes[:3] for x in ax.texts]
+    assert any("no day passed the screens" in x for x in texts)
+    assert all(np.isfinite(ax.get_ylim()).all() for ax in fig.axes[:3])

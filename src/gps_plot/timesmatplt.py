@@ -1486,6 +1486,11 @@ def plotTime(
         fig = _reusable_figure()
 
     empty = bool(main_series.meta.get("empty_period"))
+    # epochs in the period, but none passed the screens (σ, outliers, icing,
+    # network days): drawn like an empty period, with the set-aside days,
+    # not a NaN axis limit (SAFH 2026-10-31: σ above --uncert most days)
+    screened_out = not empty and not np.isfinite(np.asarray(data, float)).any()
+    empty = empty or screened_out
     ylabels = None
     if pair is not None:
         from gps_plot.axes import figure_labels
@@ -1511,7 +1516,9 @@ def plotTime(
             ax.text(
                 0.5,
                 0.5,
-                "no data in this period",
+                "no day passed the screens (uncertainty, outliers, icing)"
+                if screened_out
+                else "no data in this period",
                 transform=ax.transAxes,
                 ha="center",
                 va="center",
