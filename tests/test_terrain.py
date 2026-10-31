@@ -70,7 +70,13 @@ def test_pick_dem_prefers_a_2m_grid_that_covers(monkeypatch: pytest.MonkeyPatch,
     two = tmp_path / terrain.DEM_2M_DIR
     two.mkdir(parents=True)
     (two / "area.nc").write_bytes(b"")
-    monkeypatch.setattr(terrain, "_region", lambda path: (0.0, 100.0, 0.0, 100.0))
+    (two / "README.md").write_text("not a grid")  # skipped, never grdinfo'd
+
+    def region(path: str) -> tuple[float, float, float, float]:
+        assert path.endswith(".nc")
+        return 0.0, 100.0, 0.0, 100.0
+
+    monkeypatch.setattr(terrain, "_region", region)
     gis = str(tmp_path)
     assert terrain.pick_dem(gis, (10, 20, 10, 20))[1] == "2m"
     assert terrain.pick_dem(gis, (90, 120, 10, 20))[1] == "5m"  # not inside

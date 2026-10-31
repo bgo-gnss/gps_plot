@@ -24,6 +24,8 @@ DEM_5M = os.path.join("dem", "layers", "iceland_land_5m_isn93.tif")
 #: geoid removed; ISN93), under the GIS directory: used where one holds the
 #: whole window (``res="auto"``/``"2m"``)
 DEM_2M_DIR = os.path.join("dem", "arcticdem_2m")
+#: the grid files read there (a README or script beside them is skipped)
+DEM_2M_SUFFIXES = (".nc", ".tif")
 #: DEM choices: the finest that covers, or one
 DEM_RES = ("auto", "2m", "5m")
 #: ISN93 / Lambert 1993, the DEM's projection
@@ -109,7 +111,8 @@ def pick_dem(
         raise ValueError(f"DEM resolution {res!r}: one of {', '.join(DEM_RES)}")
     if res in ("auto", "2m"):
         folder = os.path.join(root, DEM_2M_DIR)
-        for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else ():
+        names = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+        for name in (n for n in names if n.endswith(DEM_2M_SUFFIXES)):
             path = os.path.join(folder, name)
             w, e, s, n = _region(path)
             if w <= region[0] and region[1] <= e and s <= region[2] and region[3] <= n:
