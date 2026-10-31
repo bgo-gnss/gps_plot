@@ -1042,6 +1042,9 @@ def test_locator_corner_is_exact():
     tr = insets.corner_spot((4.0, 3.0), (15.5, 10.0), "TR")
     assert (bl.x, bl.y) == (MARGIN_CM, BOTTOM_LABELS_CM)  # above the labels
     assert (tr.x, tr.y) == (15.5 - MARGIN_CM - 4.0, 10.0 - MARGIN_CM - 3.0)
+    # clear of a box map's latitude annotations: left corners only
+    assert insets.corner_spot((4.0, 3.0), (15.5, 10.0), "BL", left=1.25).x == 1.25
+    assert insets.corner_spot((4.0, 3.0), (15.5, 10.0), "TR", left=1.25).x == tr.x
     p = gmap.build_parser(config=None)
     args = p.parse_args(["station", "SENG", "--locator-corner", "BL"])
     assert args.locator_corner == "BL"

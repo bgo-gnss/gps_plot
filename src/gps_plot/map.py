@@ -1421,8 +1421,11 @@ def _insets(
         size = insets.locator_size()
         corner = getattr(args, "locator_corner", None)
         if corner is not None:
+            # on a box map clear of the latitude annotations inside the frame
+            left = (None if isinstance(region, maps.CornerRegion)
+                    else layout.BOX_LEFT_LABELS_CM)  # fmt: skip
             spot = insets.corner_spot(
-                size, (width, height), corner, floor=locator_floor
+                size, (width, height), corner, floor=locator_floor, left=left
             )
         else:
             spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
