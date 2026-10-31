@@ -125,7 +125,7 @@ def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
                              panels=panels, dem=dem, half=300.0)  # fmt: skip
     titles = [ax.get_title() for ax in fig.axes]
     if "map" in panels:
-        assert any(t.startswith("terrain, path") for t in titles)
+        assert any(t.startswith("terrain (5m DEM, path") for t in titles)
     if "section" in panels:
         assert "vertical section along the motion" in titles
     with pytest.raises(ValueError, match="unknown panel"):

@@ -113,6 +113,11 @@ def build_parser(
         help=f"half-width of the map panel around the rover [m] (default {MAP_HALF_M:g})",
     )  # fmt: skip
     parser.add_argument(
+        "--dem-res", choices=("auto", "2m", "5m"), default="auto",
+        help="the DEM: auto (default) = a 2 m ArcticDEM area grid where one "
+        "covers (gis_dir dem/arcticdem_2m), else the 5 m DEM",
+    )  # fmt: skip
+    parser.add_argument(
         "--slope-radius", type=float, default=None, metavar="M",
         help="radius of the DEM plane fitted at the rover [m] (default 50)",
     )  # fmt: skip
@@ -431,8 +436,9 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     ax.set_xlabel("East [m]")
     ax.set_ylabel("North [m]")
     ax.legend(loc="lower left", fontsize="small")
-    ax.set_title(f"terrain, paths {scale:g} m per mm" if many
-                 else f"terrain, path {scale:g} m per mm")  # fmt: skip
+    what = "paths" if many else "path"
+    src = f"{dem.source} DEM, " if dem is not None else ""
+    ax.set_title(f"terrain ({src}{what} {scale:g} m per mm)")
     return f"map paths scaled {scale:g} m per mm"
 
 
@@ -602,12 +608,13 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
         radius = args.slope_radius or terrain.SLOPE_RADIUS_M
         try:
             pp.lonlat = terrain.station_lonlat(pp.rover)
-            sl = terrain.slope_at(*pp.lonlat, gis_dir(config), radius=radius)
+            sl = terrain.slope_at(*pp.lonlat, gis_dir(config), radius=radius,
+                                  res=args.dem_res)  # fmt: skip
         except (OSError, ValueError) as exc:
             print(f"{name}: no DEM ({exc})", file=sys.stderr)
         else:
             pp.downslope = (sl.azimuth, sl.dip)
-            note += f", DEM slope over {radius:g} m"
+            note += f", {sl.source} DEM slope over {radius:g} m"
     b0 = apriori(name)
     if b0 is not None:  # the reference, seen from the rover
         pp.ref = (name[5:], float(np.degrees(np.arctan2(-b0[1], -b0[0])) % 360.0),
@@ -616,7 +623,7 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
 
 
 def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
-           map_half: float) -> tuple[Any, float]:  # fmt: skip
+           map_half: float, res: str = "auto") -> tuple[Any, float]:  # fmt: skip
     """Put the rovers on one map: each pair's ``pos`` about their centre, and
     the DEM window holding them all (None without a DEM); its half width."""
     import pyproj
@@ -638,7 +645,7 @@ def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
     to_geo = pyproj.Transformer.from_crs(terrain.ISN93, "EPSG:4326", always_xy=True)
     lon, lat = to_geo.transform(*centre)
     try:
-        return terrain.dem_window(lon, lat, gis_dir(config), half), half
+        return terrain.dem_window(lon, lat, gis_dir(config), half, res=res), half
     except OSError as exc:
         print(f"no DEM for the map ({exc})", file=sys.stderr)
         return None, half
@@ -696,7 +703,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         pairs = [pp for pp, _ in group]
         for pp, (marker, line, slope) in zip(pairs, PAIR_STYLES, strict=False):
             pp.marker, pp.colour, pp.slope_colour = marker, line, slope
-        dem, half = _place(pairs, config, panels, args.map_half)
+        dem, half = _place(pairs, config, panels, args.map_half, args.dem_res)
         note = f"{head}; " + "; ".join(n for _, n in group)
         # one onset for the figure (the earliest): every pair's days from it
         t0 = min(pp.t_on for pp in pairs)
