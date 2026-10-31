@@ -113,8 +113,16 @@ with `pygmt.grdcut` from ArcticDEM v-1 (LMÍ prerelease Aug 2019, ISN93,
 (`nas/luk/gogn/haedarlikon/arcticdem/lmi-prerelease-august-2019/dems/
 Iceland_v-1_ArcticDEM_Mosaic-tile-NN-median.tif`; tile 15 Svínafellsheiði,
 11 Seyðisfjörður), with the area's mean geoid (`dem/layers/geoid_500m_filled.tif`)
-subtracted. A new area: same cut, the stations' box plus ~2 km. No Reykjanes
-grid: 2019 predates the lavas. The `directions:` slopes in station_areas.yaml
+subtracted. A new area: same cut, the stations' box plus ~2 km.
+Reykjanes (2026-10-31): 14 grids `reykjanes-<stations>.nc`, ±1.5 km around
+each station of the area, overlapping boxes merged (one 29 × 15 km grid holds
+Svartsengi, Fagradalsfjall, Krýsuvík; 347 MB in all), from tiles 12/13/18/19
+through a VRT; recipe `gis/dem/arcticdem_2m_reykjanes.py`. They predate the
+2021– lavas (BGÓ: fine, the lava outlines are overlaid); heights agree with the
+5 m DEM to 0.1 m. No grid at ELEY (Eldey: no data in either DEM). Only `.nc` /
+`.tif` files in the folder are read. GMT gotcha: it took a temporary
+`reykjanes-undh.tif` for a GTOPO30 tile by its name — read such a file as
+`name.tif=gd`. The `directions:` slopes in station_areas.yaml
 were measured on the 5 m DEM; at SVIE the 2 m plane agrees (260°/21°).
 
 ## plots.yaml
