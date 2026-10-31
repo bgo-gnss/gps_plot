@@ -238,9 +238,9 @@ def draw_zoom(
     """The map's ``box`` drawn again at ``spot``: its background from the
     base-layer keywords ``base`` (:func:`gps_plot.maps.draw_base`), then
     ``draw(fig, rj)`` for the symbols (stations, vectors, names), ``rj``
-    the inset's GMT ``-R… -J…``. ``dem``: DEM keywords of the inset's own
-    (a 2 m grid fine enough for it: drawn as it is, not smoothed),
-    replacing the map's."""
+    the inset's GMT ``-R… -J…``. ``dem``: base keywords of the inset's own,
+    replacing the map's: a 2 m grid fine enough for it (drawn as it is, not
+    smoothed) and/or its zones (the --steep tint)."""
     import pygmt
 
     from gps_plot import maps
@@ -257,10 +257,10 @@ def draw_zoom(
         )
     ):
         style = {k: v for k, v in base.items() if k in maps.BASE_KEYS}
-        if style.get("dem_grid") is not None and dem:
-            style.update(dem)
-        elif style.get("dem_grid") is not None:
-            style.update(zoom_dem(box, projection, style.get("dem_smooth") or 0.0))
+        if style.get("dem_grid") is not None:
+            if not (dem or {}).get("dem_grid"):  # the map's grid, smoothed
+                style.update(zoom_dem(box, projection, style.get("dem_smooth") or 0.0))
+            style.update(dem or {})
         maps.draw_base(pygmt, fig, region=(w, e, s, n), projection=projection, **style)
         draw(fig, f"-R{w}/{e}/{s}/{n} -J{projection}")
         # the frame over the background (the inset box lies under it)

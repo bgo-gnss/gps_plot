@@ -87,7 +87,12 @@ Maps narrower than 0.1° in longitude get decimal minutes on the frame.
 `--dem-zone`. The slope is taken over the DEM averaged 6 m wide, and
 patches under 1000 m² are left out, otherwise single 2 m cells speckle.
 Meant for landslide zooms (Svínafellsheiði, Seyðisfjörður). It works on
-any DEM, but on the 1″ level it only catches long, steep slopes.
+any DEM, but on the 1″ level it only catches long, steep slopes. With a
+zoom inset it tints the inset only (BGÓ 2026-10-31: on the overview it
+paints whole ice caps), and a track map's legend gets a line for it.
+
+A track map's legend sits 0.5 cm above the bottom annotations
+(`TRACK_LEGEND_GAP_CM`), so it no longer crowds the frame labels.
 
 Glaciers and lakes follow BGÓ's GMT maps (`gogn/gmt_maps/*/volc-systems.gmt`):
 - **Glaciers:** clipped to their outlines, coloured with an all-white CPT

@@ -1013,8 +1013,8 @@ def _style(
                     kw[key] = getattr(choice, key)
             if choice.fine:
                 kw.update(maps.FINE_DEM_SHADING)
-    if getattr(args, "dem_zone", None):
-        kw["zones"] = tuple(args.dem_zone)
+    if map_zones(args):
+        kw["zones"] = tuple(map_zones(args))
     for key in ("glaciers", "lakes"):
         value = getattr(args, key, None)
         if value is not None:
@@ -1072,7 +1072,12 @@ def _zoom_dem(
         )
     except FileNotFoundError:
         return None
-    return {"dem_grid": choice.grid, **maps.FINE_DEM_SHADING} if choice.fine else None
+    kw: dict[str, Any] = {}
+    if choice.fine:
+        kw = {"dem_grid": choice.grid, **maps.FINE_DEM_SHADING}
+    if any(isinstance(z, maps.SteepZone) for z in args.dem_zone or ()):
+        kw["zones"] = tuple(args.dem_zone)  # the steep tint: the inset's only
+    return kw or None
 
 
 def _iceland_dem_built(config: Any) -> bool:
@@ -1135,6 +1140,37 @@ def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) ->
         zones.append(spec)
     if zones:
         args.dem_zone = zones
+
+
+#: the track legend's foot above the bottom annotations [cm] (BGÓ
+#: 2026-10-31: on them it crowded the labels)
+TRACK_LEGEND_GAP_CM = 0.5
+
+
+def map_zones(args: Any) -> list[Any]:
+    """The ``--dem-zone`` zones of the map itself: with a zoom inset the
+    ``--steep`` tint is the inset's only (BGÓ 2026-10-31: on the overview it
+    paints whole ice caps)."""
+    from gps_plot import maps
+
+    zones = list(getattr(args, "dem_zone", None) or ())
+    if getattr(args, "inset", None):
+        zones = [z for z in zones if not isinstance(z, maps.SteepZone)]
+    return zones
+
+
+def steep_key(args: Any) -> tuple[str, str] | None:
+    """The legend line of ``--steep`` (text, colour), or None."""
+    from gps_plot import maps
+
+    zone = next((z for z in getattr(args, "dem_zone", None) or ()
+                 if isinstance(z, maps.SteepZone)), None)  # fmt: skip
+    if zone is None:
+        return None
+    colour = (maps.STEEP_LEGEND_COLOUR if zone.cmap == maps.DEFAULT_STEEP_COLOUR
+              else zone.cmap)  # fmt: skip
+    where = " (inset)" if getattr(args, "inset", None) else ""
+    return f"tinted: ground steeper than {zone.min_slope:g}°{where}", colour
 
 
 def steep_zone(spec: str) -> Any:
@@ -1851,7 +1887,8 @@ def _draw_tracks(
     # annotations at the bottom: the legend sits just above it (BGÓ
     # 2026-10-29), the inset and the locator on the legend
     floor = (BOTTOM_LABELS_CM if isinstance(region, maps.CornerRegion)
-             else BOX_BOTTOM_LABELS_CM)  # fmt: skip
+             else BOX_BOTTOM_LABELS_CM) + TRACK_LEGEND_GAP_CM  # fmt: skip
+    steep = steep_key(args)
     shown = [track.trimmed(tr, args.track_before) for tr in tracks]
     drawn = track.draw_tracks(
         fig, shown, onset=onset, region=region, projection=projection,
@@ -1861,7 +1898,7 @@ def _draw_tracks(
         cmap=args.track_cmap, legend_floor_cm=floor,
         path_days=args.track_path_days,
         note=f"motion relative to {ref_name}" if ref_name else None,
-        up=args.track_up,
+        up=args.track_up, keys=[steep] if steep else (),
     )  # fmt: skip
     span = track.colour_range(shown)  # the map's colour scale
 

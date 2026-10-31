@@ -1059,6 +1059,28 @@ def test_steep_zone_spec():
             steep_zone(bad)
 
 
+def test_steep_tint_is_the_insets_only_and_named_in_the_legend():
+    from gps_plot import maps
+    from gps_plot.map import map_zones, steep_key
+
+    zone = maps.DemZone("glaciers.gmt", "white")
+    steep = maps.SteepZone()
+    plain = types.SimpleNamespace(dem_zone=[zone, steep], inset=None)
+    assert map_zones(plain) == [zone, steep]
+    assert steep_key(plain) == (
+        "tinted: ground steeper than 30°", maps.STEEP_LEGEND_COLOUR
+    )
+    inset = types.SimpleNamespace(dem_zone=[zone, steep], inset=[-16.84, -16.785])
+    assert map_zones(inset) == [zone]
+    assert steep_key(inset) == (
+        "tinted: ground steeper than 30° (inset)", maps.STEEP_LEGEND_COLOUR
+    )
+    red = types.SimpleNamespace(dem_zone=[maps.SteepZone(min_slope=25, cmap="red")],
+                                inset=None)  # fmt: skip
+    assert steep_key(red) == ("tinted: ground steeper than 25°", "red")
+    assert steep_key(types.SimpleNamespace(dem_zone=[zone], inset=None)) is None
+
+
 def test_narrow_maps_get_decimal_minutes():
     from gps_plot.map import Corners, geo_format
 

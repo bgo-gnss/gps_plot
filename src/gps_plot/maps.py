@@ -276,6 +276,8 @@ FINE_DEM_SHADING: dict[str, Any] = {
 #: under STEEP_MIN_AREA_M2 are dropped (single 2 m cells speckle otherwise)
 DEFAULT_STEEP_DEG = 30.0
 DEFAULT_STEEP_COLOUR = "#f0a050"
+#: its legend text: the tint darker, readable on white
+STEEP_LEGEND_COLOUR = "#c86414"
 STEEP_SMOOTH_M = 6.0
 STEEP_MIN_AREA_M2 = 1000.0
 #: metres per degree of latitude (and of longitude at the equator)
