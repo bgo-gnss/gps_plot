@@ -1057,3 +1057,51 @@ on different segments than its committed record.
 deploy lists have to know it — `detrend_params.json` already did, and the
 comment above `NEVER_WRITE` had warned that "safe by omission is precisely
 how such a thing breaks two years later".
+
+## Summary (moved verbatim from CLAUDE.md, 2026-10-31)
+
+The cleaned view, the detrend workbench, segments and both pickers live in
+**[`docs/detrend-lane.md`](docs/detrend-lane.md)** — measured behaviour that
+belongs one level down. Read it before touching any of them.
+
+- **Cleaned view** (`--view cleaned`) — red clean, grey flagged (NaN,
+  removed), **gold provisional** (kept, verdict pending). Loosening
+  `window_n_sigma` is NOT monotonic: zero flagged = the excess-candidate
+  rule ABORTED and you are being served raw data.
+- **Detrend workbench** (`gps-detrend-workbench`) — detrend choice is
+  curation, not computation. The only config-WRITING module in the package:
+  it merge-writes the record (`detrend_params.json`), the declarations
+  (`steps.yaml`, via `--declare-step`) and the `analysis.yaml` keys.
+  `--frame itrf14` (default since 2026-10-22: `.pos` itrf14 +
+  `detrend_params.itrf14.json`); `--frame tot` = the old joined-TOT path.
+- **Segments** (`--segment A:B`, repeatable) — the fit domain is a union of
+  intervals (answers four asks at once); the gates changed meaning per segment.
+- **Qt picker** (`gps-detrend-picker-qt`) — the one GUI, layered ON TOP of
+  the CLI; the invariant is **the emitted command reproduces the figure**,
+  and a `store…` button runs that command in-process — one write path, the
+  workbench's own. Eight catalogued violations, all the same shape: a
+  second place assembling the same decision (lane doc).
+- **The compositional model** (`f(t) = Σ mᵢ(t)`, 2026-08-22) — N stage cards,
+  membership split from assignment, the peel that follows the active stage,
+  `--final joint` and the commit mode the batch forces. The grammar already
+  expressed all of it; this was UI exposure and storage.
+- **Cross-station borrowing** (2026-08-26) — a `store:STA` borrow is
+  RE-ANCHORED to this station's level (`--anchor-window`, default full fit
+  span; window shown in summary + record provenance); `--stage apply:` +
+  holds = the fully-borrowed station (ELDC). Numbers + batch gap: lane doc.
+- **Qt picker, background phase: `or borrow s(t) from:`** (2026-08-26) — the
+  control for a station that has NO clean interval to fit on, so the phase's
+  own question has no answer for it. Emits `borrow_command` (`--stage apply:`
+  + a `store:` hold per group); the terms tickboxes choose which groups are
+  borrowed, and unticking one frees it to be fitted here instead. ONE donor
+  field for all three components on purpose — a secular velocity is one
+  3-vector. Eagerly resolved, so a missing donor or a **plate-frame
+  mismatch** is refused in the panel, not at fit time. **Defaults to
+  seasonal-only** (the legacy detrend-OLAC manoeuvre: no datum and no rate
+  cross), applied once on the transition into borrowing; holding `secular`
+  too is the deliberate choice, for a station whose own trend IS deformation.
+
+**Per-station curation is config, not just a record.** `--commit` writes to
+three places a batch re-run must find — `detrend_params.json` plus two
+`analysis.yaml` keys — because `gps-estimate-detrend` RECOMPUTES the record
+and cannot see a decision that lives only inside it. Detail in the lane doc.

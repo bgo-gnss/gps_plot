@@ -43,6 +43,31 @@ def test_displacement_from_the_onset_level() -> None:
         polar.displacement(t, y * np.nan, np.ones_like(y), onset=2.0, window=4.0)
 
 
+def test_auto_onset_is_the_newest_event_of_a_rovers_area(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import geo_dataread.events as ev
+
+    events = [
+        ev.Event("old", "landslide", dt.date(2025, 5, 1), region="slope"),
+        ev.Event("new", "landslide", dt.date(2026, 9, 23), region="slope"),
+        ev.Event("later", "landslide", dt.date(2026, 11, 2), region="slope"),
+        ev.Event("other", "dike", dt.date(2026, 10, 1), region="reykjanes"),
+    ]
+    monkeypatch.setattr(ev, "read_events", lambda path=None: events)
+    monkeypatch.setattr(
+        ev, "read_station_areas",
+        lambda path=None: {"slope": frozenset({"SVIE"}),
+                           "reykjanes": frozenset({"ELDC"})},
+    )  # fmt: skip
+    end = dt.datetime(2026, 10, 31)
+    got = polar.auto_onset(["SVIE"], dt.datetime(2025, 10, 31), end)
+    assert got == (dt.datetime(2026, 9, 23), "new")  # not "later" (after the end)
+    # an event before the period does not count; nothing in the rover's area
+    assert polar.auto_onset(["SVIE"], dt.datetime(2026, 10, 1), end) is None
+    assert polar.auto_onset(["SKFC"], None, end) is None
+
+
 def test_resolve_onset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert polar.resolve_onset(None) is None
     assert polar.resolve_onset("20260920") == dt.datetime(2026, 9, 20)

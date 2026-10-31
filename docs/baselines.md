@@ -80,9 +80,11 @@ gpsplot polar SVIE-SKFC --onset 20260920 -e 20261029 --save pdf
 gpsplot polar SVIE-SKFC --rtk --special week --save png
 ```
 
-The horizontal displacement since an onset (`--onset` date or events.yaml id,
-default the start of the period; level = median of the first `--window`),
-coloured by time. Panels (`--panels`, default `sector,map,section`):
+The horizontal displacement since an onset, coloured by time. `--onset auto`
+(default): the newest events.yaml event, of any kind, whose region holds one of
+the rovers and whose onset is inside the period (the footnote names it), else
+the start of the period; also a date, an event id, or `start`. Level = median of
+the first `--window` after it. Panels (`--panels`, default `sector,map,section`):
 
 - **sector** — compass azimuth and size; motion direction (red), across
   (blue), DEM downslope. Its limits come from points ≥ 15 % of the largest;
