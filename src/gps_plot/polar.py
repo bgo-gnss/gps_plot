@@ -1,12 +1,15 @@
 """``gpsplot polar``: where a pair's rover went, since an onset.
 
-Two panels side by side, one point per epoch, coloured by the time since
-the onset:
+Panels (``--panels``, default sector,map,section), one point per epoch,
+coloured by the time since the onset:
 
-* a polar sector: the azimuth (compass, clockwise from north) and size of
-  the horizontal displacement since the onset;
-* a hodograph: north against east of the same displacement, with the
-  pair's motion direction (red) and the across direction (blue).
+* sector: the azimuth (compass, clockwise from north) and size of the
+  horizontal displacement, with the motion direction (red), the across
+  direction (blue) and the DEM downslope at the rover;
+* map: the paths on the terrain (slope colour, hillshade, contours, fall
+  lines) around the rover, scaled up to show;
+* section: the displacement along the motion direction against Up;
+* hodograph: north against east (optional).
 
 The displacement is rover − reference, unsigned (where the rover went),
 from its level at the onset (the median of the first ``--window``). The
@@ -60,9 +63,10 @@ def build_parser(
         parser = argparse.ArgumentParser(prog="gpsplot polar")
     parser.description = textwrap.fill(
         "Where each pair's rover went since an onset: a polar sector "
-        "(azimuth, horizontal size) and a hodograph (north against east) "
-        "side by side, coloured by the time since the onset, with the "
-        "pair's motion direction. One figure per pair.",
+        "(azimuth, horizontal size), the paths on the terrain and a "
+        "section along the motion, coloured by the time since the onset, "
+        "with the pair's motion direction and the DEM downslope. One "
+        "figure per pair (--together: one for all).",
         width=78,
     )
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
@@ -101,7 +105,7 @@ def build_parser(
     )  # fmt: skip
     parser.add_argument(
         "--no-dem", action="store_true",
-        help="no DEM downslope line (default: the 5 m DEM's slope at the rover)",
+        help="no DEM (default: the DEM slope at the rover, see --dem-res)",
     )  # fmt: skip
     parser.add_argument(
         "--panels", default=",".join(DEFAULT_PANELS),

@@ -27,10 +27,10 @@ gps_plot/
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
 │   ├── axes.py                       # baseline series on other axes (orient: values/σ/overlays/ends); pair_axes/sign_pair = N/E/U, + = lengthening (sources.gps.fetch signs daily pairs; Orienter for RTK); label_flags
 │   ├── direction.py                  # gpsplot direction: motion direction (gps_analysis.direction) of pairs/stations → a station_areas.yaml directions: line
-│   ├── polar.py                      # gpsplot polar: sector + hodograph of a pair's horizontal displacement since an onset (--onset date|event id), coloured by time; A_B-polar-<period>[-rtk]
-│   ├── terrain.py                    # DEM slope at a station (plane over 50 m of the 5 m ISN93 DEM via pygmt.grdcut): polar downslope line, gpsplot direction --slope-from-dem
+│   ├── polar.py                      # gpsplot polar: sector / terrain map / section of the horizontal displacement since an onset, --together; A_B-polar-<period>[-rtk]
+│   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
-│   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign apart (default)|raw; --axes neu|along|3d (-along/-3d; direction a-priori, RTK vector past 0.5°)
+│   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
 │   ├── map.py                        # gpsplot map: station/velocity/deformation/slip over maps.py
 │   ├── sources/velocity.py           # per-station windowed velocity / displacement / stored secular rate
@@ -184,29 +184,12 @@ three places a batch re-run must find — `detrend_params.json` plus two
 `analysis.yaml` keys — because `gps-estimate-detrend` RECOMPUTES the record
 and cannot see a decision that lives only inside it. Detail in the lane doc.
 
-## Baselines (2026-10-08)
+## Baselines → `docs/baselines.md` 📄
 
-`plot-gps-timeseries VFLN-VFLS` plots the **baseline** A − B instead of one
-station: N/E/U differences on common days (matched within half a day, never
-by float equality), re-zeroed at the first common epoch, σ combined in
-quadrature (conservative — common-mode errors are counted twice).
-**Layering, for reuse:** everything that is not drawing lives in
-`geo_dataread.baseline` (numpy only — parsing, day matching, the difference,
-both ends referenced alike, the mixed-view check), so `gps_api` or a notebook
-forms the same baseline from `read_gps_view` output. gps_plot keeps only
-presentation: titles, `baseline_file_stem`, `add_baseline_ends(fig, labels,
-ends)` (works on any 3-axis figure). Both ends of a plotted baseline go
-through ONE per-station pipeline, `timesmatplt.station_series` (which
-partly duplicates `read_gps_view` — unifying them is a separate refactor).
-Defaults to `--ref plate`; every `--ref`/`--view` works. A **detrended**
-baseline refuses an end without a stored record (it would difference
-detrended against plate). Titles name both stations and both plates when
-they differ; files are `VFLN_VFLS-baseline-<ref>…` (underscore, because the
-publish convention splits on `-`). `--show-ends` also draws both stations'
-own series behind the baseline (A light grey, B dark grey, both zeroed at the
-baseline's first common epoch, so red = their visible gap; files `-ends`).
-The same change made `--view detrended`
-work at all — plotTime used to reject it — and tags its files `-detrended`.
+A-B = rover − reference; + = lengthening per N/E/U (`--sign apart`, default;
+`raw` = old A − B); `--axes neu|along|3d|motion|slope` on ts/stack/rtk;
+station_areas.yaml `directions:`; `gpsplot direction`, `gpsplot polar`, the
+2 m DEM grids, and the daily baseline layering (`geo_dataread.baseline`).
 
 ## Dev-viz → `docs/dev-viz.md` 📄
 
@@ -257,6 +240,8 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
   segments, Qt picker (the deep lane; read before touching any of them)
 - **[`docs/map-lane.md`](docs/map-lane.md)** 📄 — the four PyGMT map functions,
   their `gps_api` inputs, and the GMT install story
+- **[`docs/baselines.md`](docs/baselines.md)** 📄 — baseline sign, rotated axes,
+  directions, `gpsplot direction`/`polar`, terrain DEMs, plots.yaml runs
 - **[`docs/dev-viz.md`](docs/dev-viz.md)** 📄 — `--break-input`, MCMC dev defaults
 - **[`docs/mypy-status.md`](docs/mypy-status.md)** 📄 — the typing gate's scope,
   the 137 → 0 path, and the (now cleared) `gps_analysis` blocker
@@ -267,7 +252,7 @@ station_map(["RHOF", "AKUR"], title="North Iceland", outfile="stations.png")
 
 ---
 
-*Last reviewed: 2026-10-30 — terrain: 2 m ArcticDEM area grids (gis_dir dem/arcticdem_2m, geoid removed) preferred where they cover, polar --dem-res auto|2m|5m; terrain.py DEM slope (polar downslope line + across in the sector, direction --slope-from-dem); plots.yaml areas: per product/run and rtk: run, tool: polar (gpsplot run); gpsplot polar (sector + hodograph since an onset); --axes motion|slope on rtk/ts/stack (station_areas.yaml directions:, --direction/--slope/--direction-from; products.area_directions/directions_table); gpsplot direction (directions: line from robust end levels, daily or --rtk); ts/stack --axes along|3d (pair_orient, .pos direction check, set-aside overlays by priority on mixing axes, figure_labels); rtk --axes along|3d (Orienter.labels/keys, axes.pair_frame); RTK series carry corr (N/E/U pair correlations, rtk_read v2) and orient rotates the full covariance; ts/stack --sign apart (daily baselines signed in sources.gps.fetch, BaselineOptions.sign); rtk --sign apart: N/E/U signed per pair so + = lengthening (geofunc.axes, labels.py); 2026-10-29 — track --track-ref A,B,… (network mean + screening), ts --rate follows --common-mode; 2026-10-28 — area map defaults, captions, --gmt list, --track-ref, guide draft; layer/DEM fallbacks; map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
+*Last reviewed: 2026-10-31 — docs/baselines.md (baseline axes guide, sign-change note; baselines section moved there); 2026-10-30 — terrain: 2 m ArcticDEM area grids (gis_dir dem/arcticdem_2m, geoid removed) preferred where they cover, polar --dem-res auto|2m|5m; terrain.py DEM slope (polar downslope line + across in the sector, direction --slope-from-dem); plots.yaml areas: per product/run and rtk: run, tool: polar (gpsplot run); gpsplot polar (sector + hodograph since an onset); --axes motion|slope on rtk/ts/stack (station_areas.yaml directions:, --direction/--slope/--direction-from; products.area_directions/directions_table); gpsplot direction (directions: line from robust end levels, daily or --rtk); ts/stack --axes along|3d (pair_orient, .pos direction check, set-aside overlays by priority on mixing axes, figure_labels); rtk --axes along|3d (Orienter.labels/keys, axes.pair_frame); RTK series carry corr (N/E/U pair correlations, rtk_read v2) and orient rotates the full covariance; ts/stack --sign apart (daily baselines signed in sources.gps.fetch, BaselineOptions.sign); rtk --sign apart: N/E/U signed per pair so + = lengthening (geofunc.axes, labels.py); 2026-10-29 — track --track-ref A,B,… (network mean + screening), ts --rate follows --common-mode; 2026-10-28 — area map defaults, captions, --gmt list, --track-ref, guide draft; layer/DEM fallbacks; map_layers.yaml catalogue, plots.yaml layers/gmt/gmt_config; track series + colour bar, --layers volcanic/rural; map ts_stations check series, ts --rate-last, stale map files; map station --track; map --locator-corner, scale bar nearest a fifth of the width; map --last FROM:TO (moving windows); 2026-10-27 — plots.yaml map products, map --min-fill/--no-short-tier/--manifest, boxed vector legend; 2026-10-23 — plots.yaml baselines + stacks (area_baselines/area_stacks, stack --label/--manifest); 2026-10-22 — gpsplot run STA ... (station subset); workbench/picker --frame (itrf14 default); gpsplot run: plots.yaml `args:` (free ts options, defaults→product→run→override; checked before the run), `prepare:`; 2026-10-21 — ts --network/--show-network (network days, dark grey); ts active/--strict/--manifest/--legacy-names/--quake, exit status; 2026-10-20 — ts all/--region/--with-record; snow-burial flags + --obstruction umbrella; 2026-10-19 — gpsplot seasonal, ts --rate-segments, --outlier-method running/--outlier-sigma, icing index; 2026-10-16 — velocity maps read the velocity product; regional maps: --layers, --inset, locator, decluttered names, fancy scale; 2026-10-15 — map --tos, --tos-search, --stations-file, --dem iceland; 2026-10-14 — gpsplot subcommand CLI, --model, stack, rtk, map; 2026-10-08 — baselines (AAAA-BBBB) + the --view detrended fix;
 earlier 2026-08-26: cross-station borrow re-anchoring +
 `--anchor-window` + apply-only plans (detail routed to
 `docs/detrend-lane.md`, per the 2026-08-18 rule: measured behaviour lives in
