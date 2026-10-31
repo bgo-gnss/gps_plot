@@ -483,9 +483,36 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     return f"map paths scaled {scale:g} m per mm"
 
 
+#: the 16 compass points, from north clockwise
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")  # fmt: skip
+
+
+def compass(deg: float) -> str:
+    """The compass point (16) of an azimuth [°]."""
+    return COMPASS[int(round((deg % 360.0) / 22.5)) % 16]
+
+
+def _usetex() -> bool:
+    import matplotlib as mpl
+
+    return bool(mpl.rcParams["text.usetex"])
+
+
+def section_heading(motions: Sequence[float]) -> tuple[float, bool]:
+    """The mean of the ``motions`` azimuths [°] and whether the section is
+    drawn mirrored: a westward motion runs to the left, so the section reads
+    as seen from the south (BGÓ 2026-10-31: drawn to the right, a slide
+    going down to the west looked like one going down to the east)."""
+    a = np.radians(np.asarray(motions, dtype=float))
+    mean = float(np.degrees(np.arctan2(np.sin(a).sum(), np.cos(a).sum()))) % 360.0
+    return mean, bool(np.sin(np.radians(mean)) < 0)
+
+
 def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
     """Along each pair's motion against Up [mm], with the terrain's apparent
-    dip along it."""
+    dip along it; mirrored when the motion is westward
+    (:func:`section_heading`), the compass points at the axis ends."""
     many = len(pairs) > 1
     drawn = False
     for pp in pairs:
@@ -511,11 +538,20 @@ def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
         return
     ax.axhline(0.0, color="0.6", lw=0.8)
     ax.axvline(0.0, color="0.6", lw=0.8)
+    mean, mirrored = section_heading([pp.motion for pp in pairs
+                                      if pp.motion is not None])  # fmt: skip
+    if mirrored:
+        ax.invert_xaxis()
     if any(pp.downslope is not None for pp in pairs):
-        ax.legend(loc="upper right", fontsize="small")
+        ax.legend(loc="best", fontsize="small")
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_xlabel("along the motion [mm]" if many
-                  else f"along the motion ({pairs[0].motion:.0f}°) [mm]")  # fmt: skip
+    ahead, back = compass(mean), compass(mean + 180.0)
+    left, right = (ahead, back) if mirrored else (back, ahead)
+    what = ("along the motion [mm]" if many
+            else f"along the motion ({pairs[0].motion:.0f}°) [mm]")  # fmt: skip
+    ax.set_xlabel(rf"{left} $\leftarrow$ \quad {what} \quad $\rightarrow$ {right}"
+                  if _usetex() else
+                  rf"{left} $\leftarrow$   {what}   $\rightarrow$ {right}")  # fmt: skip
     ax.set_ylabel("Up [mm]")
     ax.set_title("vertical section along the motion")
 

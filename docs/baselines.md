@@ -96,6 +96,8 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,section`)
   velocity arrow on a map. BGÓ 2026-10-31, from the 2 m ArcticDEM dots
   experiment; the slope colour field and fall lines went.
 - **section** — along the motion against Up, with the terrain's apparent dip.
+  A westward motion runs to the left (seen from the south), the compass
+  points at the axis ends (BGÓ 2026-10-31).
 - **hodograph** — north against east (optional; redundant with the sector).
 
 `--together` draws all pairs in one figure, one marker per pair (the plots.yaml
