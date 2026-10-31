@@ -1096,3 +1096,28 @@ def test_motion_runs_keep_the_pairs_with_a_direction() -> None:
         ("SVIE-SKFC",),
         ("SVIN-SVIE", "SVIN-SKFC", "SVIE-SKFC"),
     ]
+
+
+def test_station_args_give_a_station_its_own_job_after_each_ts_job() -> None:
+    """SAFH 2026-10-31: its σ is above the shared --uncert most days, so
+    plots.yaml station_args: plots it alone with looser screens."""
+    jobs = [
+        products.Job("standard", None, "std", ("active",), ("--ref", "plate"), True),
+        products.Job("areas", "reykjanes", "rn", ("SENG", "SAFH"), ("-u", "10"), True),
+        products.Job("stacks", "rn", "st", ("SAFH-SENG",), (), False, tool="stack"),
+    ]
+    got = products.with_station_args(jobs, {"safh": "--uncert 25 --show-outliers"})
+    assert [(j.product, j.stations, j.argv) for j in got] == [
+        ("standard", ("active",), ("--ref", "plate")),
+        (
+            "standard",
+            ("SAFH",),
+            ("--ref", "plate", "--uncert", "25", "--show-outliers"),
+        ),
+        ("areas", ("SENG",), ("-u", "10")),
+        ("areas", ("SAFH",), ("-u", "10", "--uncert", "25", "--show-outliers")),
+        ("stacks", ("SAFH-SENG",), ()),
+    ]
+    assert products.with_station_args(jobs, None) == jobs
+    with pytest.raises(ValueError):
+        products.with_station_args(jobs, ["SAFH"])

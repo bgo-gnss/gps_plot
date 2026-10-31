@@ -73,6 +73,9 @@ MAP_RESERVED_OPTIONS: Mapping[str, str] = {
     "--save": "plots.yaml defaults: save:",
 }
 
+#: ``gpsplot ts`` station keywords: the production set, every station
+STATION_KEYWORDS = ("active", "all")
+
 #: ``stations:`` values of a product that read station_areas.yaml: the area
 #: members (ts), every baseline pair of the area (ts), or one stack figure
 #: per stacks: group (``gpsplot stack``)
@@ -584,7 +587,43 @@ def expand(
                             bool(run.get("publish", False)),
                         )
                     )
-    return jobs
+    return with_station_args(jobs, cfg.get("station_args"))
+
+
+def with_station_args(jobs: Sequence[Job], table: Any) -> list[Job]:
+    """plots.yaml ``station_args:`` (``{STA: args}``): a station's own options.
+
+    Every ``ts`` job that plots STA (by name, or through a keyword such as
+    ``active``) gets a copy right after it, for STA alone, with the station's
+    args last (so they win). A named STA leaves the job; a keyword job still
+    plots it, and the copy, run after it, writes the same files over it.
+    For a station whose data the shared screens hide (SAFH, BGÓ 2026-10-31:
+    σ above the 10 mm --uncert on most days).
+
+    Raises:
+        ValueError: ``station_args:`` is not a mapping, or bad args.
+    """
+    if not table:
+        return list(jobs)
+    if not isinstance(table, Mapping):
+        raise ValueError("plots.yaml station_args: a mapping STA: args")
+    own = {str(k).upper(): extra_args(v) for k, v in table.items()}
+    out: list[Job] = []
+    for job in jobs:
+        if job.tool != "ts":
+            out.append(job)
+            continue
+        named = [s for s in job.stations if s.upper() in own]
+        keyword = any(s in STATION_KEYWORDS for s in job.stations)
+        rest = tuple(s for s in job.stations if s.upper() not in own)
+        if rest:
+            out.append(replace(job, stations=rest) if named else job)
+        targets = named or (sorted(own) if keyword else [])
+        for sta in targets:
+            out.append(
+                replace(job, stations=(sta,), argv=(*job.argv, *own[sta.upper()]))
+            )
+    return out
 
 
 def map_option_args(
