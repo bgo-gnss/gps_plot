@@ -232,11 +232,15 @@ def draw_zoom(
     spot: Spot,
     base: dict[str, Any],
     draw: Callable[[Any, str], None],
+    *,
+    dem: dict[str, Any] | None = None,
 ) -> None:
     """The map's ``box`` drawn again at ``spot``: its background from the
     base-layer keywords ``base`` (:func:`gps_plot.maps.draw_base`), then
     ``draw(fig, rj)`` for the symbols (stations, vectors, names), ``rj``
-    the inset's GMT ``-R… -J…``."""
+    the inset's GMT ``-R… -J…``. ``dem``: DEM keywords of the inset's own
+    (a 2 m grid fine enough for it: drawn as it is, not smoothed),
+    replacing the map's."""
     import pygmt
 
     from gps_plot import maps
@@ -253,7 +257,9 @@ def draw_zoom(
         )
     ):
         style = {k: v for k, v in base.items() if k in maps.BASE_KEYS}
-        if style.get("dem_grid") is not None:
+        if style.get("dem_grid") is not None and dem:
+            style.update(dem)
+        elif style.get("dem_grid") is not None:
             style.update(zoom_dem(box, projection, style.get("dem_smooth") or 0.0))
         maps.draw_base(pygmt, fig, region=(w, e, s, n), projection=projection, **style)
         draw(fig, f"-R{w}/{e}/{s}/{n} -J{projection}")

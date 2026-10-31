@@ -257,6 +257,26 @@ ICELAND_LAKES_OVERVIEW = "vector/is50v_lakes_wgs84_overview.gmt"
 ICELAND_GLACIER_CONTOUR_M = 100.0
 #: output pixels coarser than this [deg] take the overview coast
 COAST_OVERVIEW_PIXEL_DEG = 5 / 3600
+#: 2 m ArcticDEM area grids in lon/lat (gis_dir/dem/arcticdem_2m_ll,
+#: build_08_arcticdem_ll.sh; orthometric like the Iceland DEM): a map
+#: whose pixels are finer than the finest Iceland level takes the one
+#: that covers it (a zoom inset on Svínafellsheiði, BGÓ 2026-10-31)
+ARCTICDEM_LL_DIR = "dem/arcticdem_2m_ll"
+#: the hillshade of a 2 m grid: light from two directions and a harder
+#: normalisation, so the slopes stand out (BGÓ 2026-10-31)
+FINE_DEM_SHADING: dict[str, Any] = {
+    "dem_shading_azimuth": "315/45",
+    "dem_shading_normalize": "t1.5",
+}
+#: --steep: ground steeper than this is tinted (deg), in this colour; the
+#: slope is taken over the DEM averaged STEEP_SMOOTH_M wide and patches
+#: under STEEP_MIN_AREA_M2 are dropped (single 2 m cells speckle otherwise)
+DEFAULT_STEEP_DEG = 30.0
+DEFAULT_STEEP_COLOUR = "#f0a050"
+STEEP_SMOOTH_M = 6.0
+STEEP_MIN_AREA_M2 = 1000.0
+#: metres per degree of latitude (and of longitude at the equator)
+M_PER_DEG = 111_320.0
 #: the raster resolution a map is planned for [dpi] (PyGMT's PNG default)
 DEFAULT_RASTER_DPI = 300
 DEFAULT_MAP_WIDTH_CM = 12.0
@@ -653,6 +673,18 @@ class DemZone:
     pen: str | None = DEFAULT_ZONE_PEN
 
 
+@dataclasses.dataclass(frozen=True)
+class SteepZone(DemZone):
+    """The land steeper than ``min_slope`` [deg] recoloured like a
+    :class:`DemZone` (--steep): its cells come from the DEM itself
+    (:func:`steep_mask`), so it has no polygons and no outline."""
+
+    polygons: str = ""
+    cmap: str = DEFAULT_STEEP_COLOUR
+    pen: str | None = None
+    min_slope: float = DEFAULT_STEEP_DEG
+
+
 def overlay_segments(geojson: Mapping[str, Any]) -> tuple[str, str]:
     """``(polygons, lines)`` of a GeoJSON as GMT multisegment text.
 
@@ -918,6 +950,26 @@ class DemChoice:
     glaciers: str | None = None
     lakes: str | None = None
     glacier_contours: float | None = None
+    #: a 2 m area grid (:data:`ARCTICDEM_LL_DIR`), not an Iceland level
+    fine: bool = False
+
+
+def area_dems(
+    gis_dir: str | os.PathLike[str],
+) -> list[tuple[str, float, tuple[float, float, float, float]]]:
+    """(file, lon cell [deg], W/E/S/N) of the 2 m area grids in lon/lat
+    under ``gis_dir`` (:data:`ARCTICDEM_LL_DIR`), by name; none when the
+    folder is not on this host. Reads the headers only (``grdinfo -C``)."""
+    import pygmt
+
+    folder = Path(gis_dir).expanduser() / ARCTICDEM_LL_DIR
+    out = []
+    for path in sorted(folder.glob("*.nc")) if folder.is_dir() else ():
+        # w e s n zmin zmax dx dy nx ny … (PyGMT leaves out the file name)
+        cols = pygmt.grdinfo(str(path), per_column=True, verbose="e").split()
+        w, e, s, n = (float(v) for v in cols[0:4])
+        out.append((str(path), float(cols[6]), (w, e, s, n)))
+    return out
 
 
 def iceland_dem(
@@ -949,8 +1001,15 @@ def iceland_dem(
         if lv[2][0] <= w and e <= lv[2][1] and lv[2][2] <= s and n <= lv[2][3]
     ] or [ICELAND_DEM_LEVELS[-1]]  # fmt: skip
     fitting = [lv for lv in covering if lv[1] <= pixel]
+    fine = None
+    if not fitting:  # finer pixels than every level: a 2 m grid, if one covers
+        fine = next(
+            (path for path, _cell, (gw, ge, gs, gn) in area_dems(base)
+             if gw <= w and e <= ge and gs <= s and n <= gn),
+            None,
+        )  # fmt: skip
     name = (fitting[-1] if fitting else covering[0])[0]
-    grid = base / GIS_DEM / name
+    grid = Path(fine) if fine else base / GIS_DEM / name
     if not grid.is_file():
         raise FileNotFoundError(
             f"{grid} is not built (see build_04_levels.sh in {grid.parent})"
@@ -968,6 +1027,7 @@ def iceland_dem(
         glaciers,
         layer(ICELAND_LAKES, ICELAND_LAKES_OVERVIEW),
         None if overview or glaciers is None else ICELAND_GLACIER_CONTOUR_M,
+        fine=fine is not None,
     )
 
 
@@ -985,7 +1045,7 @@ def _draw_basemap(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
-    dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
+    dem_shading_azimuth: float | str = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
     sea_smooth: float = 0.0,
@@ -1089,7 +1149,7 @@ def _draw_basemap(
             )
     for zone in zones:
         flat = None
-        if dem_grid is None:  # a flat fill: a colour, not a CPT
+        if dem_grid is None and zone.polygons:  # a flat fill: a colour, not a CPT
             from gps_plot import palettes
 
             outline = zone.cmap.lower() == ZONE_OUTLINE_ONLY
@@ -1278,7 +1338,10 @@ def _dem_colours(
         if zone.cmap.lower() == ZONE_OUTLINE_ONLY:
             zone_cells.append(None)
             continue
-        inside = _ice_mask(pygmt_mod, grid, zone.polygons)
+        if isinstance(zone, SteepZone):
+            inside = steep_mask(grid, zone.min_slope)
+        else:
+            inside = _ice_mask(pygmt_mod, grid, zone.polygons)
         cells = None
         if inside is not None:
             cells = inside & ~taken & (grid.values >= 0)
@@ -1337,6 +1400,42 @@ def _dem_colours(
     text = palettes.stitch(parts)
     palettes.check_gaps(text)
     return grid, gradient, _cached_cpt(text), ice_heights
+
+
+def steep_mask(grid: Any, min_slope: float) -> Any | None:
+    """Boolean array of the land cells of a lon/lat ``grid`` steeper than
+    ``min_slope`` [deg], or None when none is: the slope over the grid
+    averaged :data:`STEEP_SMOOTH_M` wide, patches smaller than
+    :data:`STEEP_MIN_AREA_M2` dropped, cells near the grid's NaN edge left
+    out."""
+    from scipy import ndimage
+
+    z = np.asarray(grid.values, dtype=float)
+    ys = grid.coords[grid.dims[0]].values
+    xs = grid.coords[grid.dims[1]].values
+    if z.shape[0] < 3 or z.shape[1] < 3:
+        return None
+    dy = abs(float(ys[1] - ys[0])) * M_PER_DEG
+    dx = (
+        abs(float(xs[1] - xs[0])) * M_PER_DEG * math.cos(math.radians(float(ys.mean())))
+    )
+    ky = max(1, round(STEEP_SMOOTH_M / dy))
+    kx = max(1, round(STEEP_SMOOTH_M / dx))
+    valid = np.isfinite(z)
+    if not valid.any():
+        return None
+    smooth = ndimage.uniform_filter(np.where(valid, z, np.nanmean(z)), size=(ky, kx))
+    gy, gx = np.gradient(smooth, dy, dx)
+    slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+    # the filled NaN cells make false slopes along the edge
+    inside = ndimage.binary_erosion(valid, iterations=max(kx, ky) + 1)
+    mask = (slope > min_slope) & inside & (z >= 0)
+    labels, count = ndimage.label(mask)
+    if count:
+        sizes = ndimage.sum(mask, labels, index=np.arange(1, count + 1)) * dx * dy
+        keep = np.concatenate(([False], sizes >= STEEP_MIN_AREA_M2))
+        mask = keep[labels]
+    return mask if mask.any() else None
 
 
 def _like_grid(arr: Any, grid: Any) -> Any:
@@ -1879,7 +1978,7 @@ def station_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
-    dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
+    dem_shading_azimuth: float | str = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
     sea_smooth: float = 0.0,
@@ -2313,7 +2412,7 @@ def velocity_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
-    dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
+    dem_shading_azimuth: float | str = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
     sea_smooth: float = 0.0,
@@ -2673,7 +2772,7 @@ def deformation_vectors(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
-    dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
+    dem_shading_azimuth: float | str = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
     sea_smooth: float = 0.0,
@@ -3102,7 +3201,7 @@ def slip_map(
     dem_cmap: str = DEFAULT_DEM_CMAP,
     bathymetry_cmap: str | None = None,
     glacier_cmap: str = DEFAULT_GLACIER_FILL,
-    dem_shading_azimuth: float = DEFAULT_DEM_SHADING_AZIMUTH,
+    dem_shading_azimuth: float | str = DEFAULT_DEM_SHADING_AZIMUTH,
     dem_shading_normalize: str = DEFAULT_DEM_SHADING_NORMALIZE,
     dem_smooth: float = 0.0,
     sea_smooth: float = 0.0,

@@ -358,6 +358,13 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "GIS vector/futurevolc_*_closed.gmt, built by build_07_volcanic.sh)",
     )  # fmt: skip
     g.add_argument(
+        "--steep", nargs="?", const="", default=None, metavar="DEG[:COLOUR]",
+        help="tint the land steeper than DEG degrees under the hillshade "
+        "(default 30, orange #f0a050), on top of any --dem-zone; the slope "
+        "over the DEM averaged 6 m wide, patches under 1000 m² left out. "
+        "Meant for 2 m ArcticDEM zooms (landslides), e.g. --steep 30:orange",
+    )  # fmt: skip
+    g.add_argument(
         "--layers", action="append", default=[], metavar="NAME[,NAME…]",
         help="named GIS layers or presets of the layer catalogue "
         "(map_layers.yaml; 'list' prints them, marking files not on this "
@@ -1004,6 +1011,8 @@ def _style(
             for key in ("coastline", "glaciers", "lakes", "glacier_contours"):
                 if getattr(choice, key) is not None:
                     kw[key] = getattr(choice, key)
+            if choice.fine:
+                kw.update(maps.FINE_DEM_SHADING)
     if getattr(args, "dem_zone", None):
         kw["zones"] = tuple(args.dem_zone)
     for key in ("glaciers", "lakes"):
@@ -1044,6 +1053,26 @@ def _style(
             for path in args.overlay
         )  # fmt: skip
     return kw
+
+
+def _zoom_dem(
+    args: Any, config: Any, box: Sequence[float], width_cm: float
+) -> dict[str, Any] | None:
+    """The zoom inset's own DEM keywords under ``--dem iceland``: a 2 m area
+    grid when one covers ``box`` and the inset's pixels are finer than the
+    finest Iceland level (:func:`gps_plot.maps.iceland_dem`), else None:
+    the map's grid, resampled and smoothed (:func:`gps_plot.insets.zoom_dem`)."""
+    from gps_plot import insets, maps
+
+    if str(args.dem or "").lower() != ICELAND_DEM:
+        return None
+    try:
+        choice = maps.iceland_dem(
+            gis_dir(config), box, insets.zoom_projection(width_cm)
+        )
+    except FileNotFoundError:
+        return None
+    return {"dem_grid": choice.grid, **maps.FINE_DEM_SHADING} if choice.fine else None
 
 
 def _iceland_dem_built(config: Any) -> bool:
@@ -1106,6 +1135,25 @@ def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) ->
         zones.append(spec)
     if zones:
         args.dem_zone = zones
+
+
+def steep_zone(spec: str) -> Any:
+    """The :class:`~gps_plot.maps.SteepZone` of a ``--steep DEG[:COLOUR]``
+    value ('' = the defaults).
+
+    Raises:
+        ValueError: DEG is not a number in (0, 90).
+    """
+    from gps_plot import maps
+
+    deg, _, colour = spec.partition(":")
+    try:
+        slope = float(deg) if deg else maps.DEFAULT_STEEP_DEG
+    except ValueError:
+        raise ValueError(f"--steep {spec!r}: DEG must be a number") from None
+    if not 0 < slope < 90:
+        raise ValueError(f"--steep {spec!r}: DEG must be between 0 and 90")
+    return maps.SteepZone(min_slope=slope, cmap=colour or maps.DEFAULT_STEEP_COLOUR)
 
 
 def _resolve_cmap(name: str, flag: str, pygmt_mod: Any, user_dir: str) -> str:
@@ -1323,7 +1371,8 @@ def _insets(
         assert spot is not None  # outside=True always finds a spot
         zoom_spot = spot
         insets.draw_zoom_box(fig, box)
-        insets.draw_zoom(fig, box, spot, style, zoom_symbols)
+        insets.draw_zoom(fig, box, spot, style, zoom_symbols,
+                         dem=_zoom_dem(args, config, box, spot.width))  # fmt: skip
     if locator:
         if args.markers:  # and their names
             sea.block_points([p.lon for p in points], [p.lat for p in points],
@@ -1490,7 +1539,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             pygmt.config(
                 FONT_TITLE=TITLE_FONT,
                 MAP_TITLE_OFFSET="6p",
-                **maps.DEFAULT_GMT_DEFAULTS,
+                **(maps.DEFAULT_GMT_DEFAULTS | geo_format(args.region)),
             )
         )
         try:  # the user's defaults win; GMT checks them on entry
@@ -1502,6 +1551,22 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         stack.enter_context(warnings.catch_warnings())
         warnings.filterwarnings("ignore", "Short-form parameter", SyntaxWarning)
         return _run(args, parser, config, maps)
+
+
+#: a map narrower than this [deg of longitude] has its frame in decimal
+#: minutes: whole minutes repeat on a 2 m ArcticDEM zoom (16°49'W twice)
+DECIMAL_MINUTES_SPAN = 0.1
+
+
+def geo_format(region: Any) -> dict[str, str]:
+    """``FORMAT_GEO_MAP`` in decimal minutes for a ``--region`` narrower
+    than :data:`DECIMAL_MINUTES_SPAN`, else nothing (the defaults')."""
+    try:  # Corners: lon/lat of two corners
+        east = region[2] if isinstance(region, Corners) else region[1]
+        span = abs(float(east) - float(region[0]))
+    except (TypeError, IndexError, ValueError):
+        return {}
+    return {"FORMAT_GEO_MAP": "ddd:mm.xF"} if span < DECIMAL_MINUTES_SPAN else {}
 
 
 def layer_catalogue(args: Any, config: Any) -> Any:
@@ -1572,6 +1637,11 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
             maps.DemZone(os.path.join(gis, z), maps.DEFAULT_ZONE_CMAP, pen=None)
             for z in FISSURE_SWARM_ZONES
         ] + list(args.dem_zone)
+    if args.steep is not None:
+        try:
+            args.dem_zone = list(args.dem_zone) + [steep_zone(args.steep)]
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         import pygmt
 
