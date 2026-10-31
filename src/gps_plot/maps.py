@@ -262,6 +262,9 @@ COAST_OVERVIEW_PIXEL_DEG = 5 / 3600
 #: whose pixels are finer than the finest Iceland level takes the one
 #: that covers it (a zoom inset on Svínafellsheiði, BGÓ 2026-10-31)
 ARCTICDEM_LL_DIR = "dem/arcticdem_2m_ll"
+#: ... and only one with data on (nearly) every cell of the map: the
+#: ISN93 rectangles leave NaN corners in lon/lat, ArcticDEM has voids
+AREA_DEM_MAX_NAN = 0.001
 #: the hillshade of a 2 m grid: light from two directions and a harder
 #: normalisation, so the slopes stand out (BGÓ 2026-10-31)
 FINE_DEM_SHADING: dict[str, Any] = {
@@ -972,6 +975,20 @@ def area_dems(
     return out
 
 
+def _full_on(path: str, region: Sequence[float]) -> bool:
+    """Whether the grid ``path`` has data on all but
+    :data:`AREA_DEM_MAX_NAN` of the cells in ``region`` (its bounding box
+    holding the region is not enough: NaN corners and voids)."""
+    import pygmt
+
+    try:
+        cut = pygmt.grdcut(path, region=list(region[:4]), verbose="e")
+    except pygmt.exceptions.GMTCLibError:
+        return False
+    z = np.asarray(cut.values)
+    return z.size > 0 and float(np.isnan(z).mean()) <= AREA_DEM_MAX_NAN
+
+
 def iceland_dem(
     gis_dir: str | os.PathLike[str],
     region: Sequence[float],
@@ -1005,7 +1022,8 @@ def iceland_dem(
     if not fitting:  # finer pixels than every level: a 2 m grid, if one covers
         fine = next(
             (path for path, _cell, (gw, ge, gs, gn) in area_dems(base)
-             if gw <= w and e <= ge and gs <= s and n <= gn),
+             if gw <= w and e <= ge and gs <= s and n <= gn
+             and _full_on(path, region)),
             None,
         )  # fmt: skip
     name = (fitting[-1] if fitting else covering[0])[0]
@@ -1445,21 +1463,36 @@ def _like_grid(arr: Any, grid: Any) -> Any:
     return arr
 
 
-def _ice_mask(pygmt_mod: Any, grid: Any, glaciers: str) -> Any | None:
-    """Boolean array of ``grid``'s cells inside the ``glaciers`` polygons
-    (outline cells count), or None when no cell is."""
+def _ice_mask(pygmt_mod: Any, grid: Any, polygons: str) -> Any | None:
+    """Boolean array of ``grid``'s cells inside the ``polygons`` (glaciers,
+    zones; outline cells count), or None when no cell is."""
     xs = grid.coords[grid.dims[1]].values
     ys = grid.coords[grid.dims[0]].values
-    # a gridline mask on the grid's cell centres has its shape for either
-    # registration (grdmask has no registration option in PyGMT)
-    mask = pygmt_mod.grdmask(
-        data=glaciers,
-        region=[float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())],
-        spacing=[abs(float(xs[1] - xs[0])), abs(float(ys[1] - ys[0]))],
-        outside=0,
-        edge=1,
-        inside=1,
-    )
+    dx, dy = abs(float(xs[1] - xs[0])), abs(float(ys[1] - ys[0]))
+    region = [float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())]
+    with pygmt_mod.helpers.GMTTempFile(suffix=".gmt") as clipped:
+        # the polygons clipped to the grid first: grdmask tests every cell
+        # against every vertex, and Vatnajökull alone has ~100 000 (9 s ->
+        # 1.6 s on the Öræfi map, 12 s -> 0.4 s on its 2 m inset); the clip
+        # box is a few cells wider, so its own edge stays off the grid
+        pad = [-3 * dx, 3 * dx, -3 * dy, 3 * dy]
+        box = "/".join(f"{v + p:.10g}" for v, p in zip(region, pad, strict=True))
+        with pygmt_mod.clib.Session() as lib:
+            lib.call_module(
+                "spatial", [polygons, "-C", f"-R{box}", f"->{clipped.name}"]
+            )
+        if os.path.getsize(clipped.name) == 0:
+            return None
+        # a gridline mask on the grid's cell centres has its shape for either
+        # registration (grdmask has no registration option in PyGMT)
+        mask = pygmt_mod.grdmask(
+            data=clipped.name,
+            region=region,
+            spacing=[dx, dy],
+            outside=0,
+            edge=1,
+            inside=1,
+        )
     ice = mask.values.astype(bool)
     mys = mask.coords[mask.dims[0]].values
     if (mys[0] < mys[-1]) != (ys[0] < ys[-1]):

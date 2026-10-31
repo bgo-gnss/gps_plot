@@ -958,6 +958,14 @@ def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
     assert not pick(zoom, "M1c").fine
     # sticking out of the area grid: the Iceland DEM
     assert pick((-16.90, -16.85, 63.998, 64.022)).grid.endswith("_1s.nc")
+    # inside its box but over its NaN corner (the ISN93 rectangle's edge in
+    # lon/lat): the Iceland DEM, not a flat patch
+    z = np.full((2090, 2420), 100.0)
+    z[:300, :300] = np.nan  # the south-west corner, ~600 m x 540 m
+    _area_grid(path, -16.86, 63.99, 2420, 2090, z=z)
+    corner = (-16.859, -16.85, 63.9905, 63.995)
+    assert pick(corner).grid.endswith("_1s.nc")
+    assert pick(zoom).fine  # the middle still has data everywhere
     # the whole Öræfi map: an Iceland level
     assert pick((-17.06, -16.38, 63.76, 64.07), "M18c").grid.endswith("_1s.nc")
 
