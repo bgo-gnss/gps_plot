@@ -69,6 +69,7 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "place-labels": ("Figure.text", {"font": "F", "justify": "F"}),
     "leaders": ("Figure.plot", {"pen": "W"}),
     "stations": ("Figure.plot", {"style": "S", "pen": "W", "fill": "G"}),
+    "totals": ("Figure.plot", {"style": "S", "pen": "W", "fill": "G"}),
     "labels": ("Figure.text", {"font": "F", "justify": "F", "fill": "G",
                                "offset": "D"}),
     "vectors": ("Figure.velo", {"spec": "S", "pen": "W", "vector": "A",
