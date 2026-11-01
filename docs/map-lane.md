@@ -174,6 +174,22 @@ smoothed cell stays below −0.5 m, sea-coloured to the coast. Land, ice and
 the coast are untouched. 0.5 km suits the Svartsengi maps. It hides the
 cells; it adds no detail.
 
+### Scales: every symbol whose size means something has one (BGÓ 2026-11-01)
+
+A map that draws a size in mm or mm/yr says, in its legend, how big a
+given number is, drawn with the same pen and colour as the symbols:
+
+- **arrows** (a rate): a reference arrow and `N mm/yr` (`velocity`,
+  `deformation`, the track arrows);
+- **lines** (a length, `--total`'s T lines): a sample T line and `N mm`;
+- **dots** (a position, `--track`): the dot bar and `N mm (dots)`.
+
+N is a 1-2-5 number at or below the size it stands for (the 90th
+percentile arrow, the longest line, the farthest dot). A zoom inset with
+its own scale draws its own. A map with no such symbol (a quiet week)
+draws no scale. Numbers by the station names (`--total`) stay: the scale
+reads the drawing, the label the station.
+
 ### File names: `map_{kind}_{area}_{selection}[_{extras}]`
 
 A map is named after what it shows, not its first station

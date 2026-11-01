@@ -2311,13 +2311,14 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     nothing = (
         [] if kept else [(f"no arrow: no motion above the noise, {days}", "black")]
     )
+    corner: tuple[str, str] | None = None
     if newest is not None:
         # as the track maps: green when the newest day is the map's day or
         # the one before (BGÓ 2026-11-01)
         from gps_plot import track
 
         day = dt.date.fromordinal(int(track.day_key(np.array([newest]))[0]))
-        nothing.append(track.newest_text(day, today=now.date()))
+        corner = track.newest_text(day, today=now.date())
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
@@ -2332,6 +2333,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         quiet=quiet,
         totals=totals,
         notes=nothing,
+        corner_note=corner,
         **zoom_style,
     )
 
@@ -2356,10 +2358,12 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         fig, args, config, style, kept, zoom_symbols,
         # the lines drawn: a window's only when it has an arrow
         legend_lines=len({v.method for v in kept}) + bool(totals) + len(nothing)
+        + bool(corner and not kept)
         + (1.8 if kept else 0.0),
         legend_width_cm=vector_legend_width_cm(
             [*(str(k) for k in colors), f"{args.scale_ref or ref:g} mm/yr",
              *(t for t, _ in nothing),
+             *([f"{args.scale_ref or ref:g} mm/yr        {corner[0]}"] if corner else []),
              *(["100 mm moved since installed"]
                if totals else [])],
             (args.scale_ref or ref) * used_scale,
