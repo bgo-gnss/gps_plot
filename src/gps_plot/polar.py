@@ -311,8 +311,9 @@ def _label(pp: PairPlot, many: bool, text: str) -> str:
 def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             legend_inside: bool = False) -> int:  # fmt: skip
     """The polar sector; returns how many points were drawn at the centre.
-    ``legend_inside``: the legend in the lower right of the panel, not right
-    of it (no room there when the colour bar is not on the side)."""
+    ``legend_inside``: the legend under the sector, not right of it (no room
+    there when the colour bar is not on the side); inside the circle it
+    covered the radius labels."""
     from matplotlib.ticker import FuncFormatter
 
     many = len(pairs) > 1
@@ -369,7 +370,8 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
     ax.set_rlabel_position(lo + 2.0)
     ax.set_title("azimuth, horizontal size [mm]", pad=20)
     if lines and legend_inside:
-        ax.legend(loc="lower right", fontsize="x-small", framealpha=0.85)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.04), ncols=2,
+                  fontsize="x-small", framealpha=0.85)  # fmt: skip
     elif lines:
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize="small")
     return centred
