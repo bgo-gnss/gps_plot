@@ -21,7 +21,7 @@ modules `ignore_errors`, `tests/` out). Scope rationale: `docs/mypy-status.md`.
 ```
 gps_plot/
 ├── src/gps_plot/
-│   ├── cli/                          # gpsplot: dispatcher (ts, stack, seasonal, rtk, map, devviz, workbench, picker); common.py = shared options
+│   ├── cli/                          # gpsplot: dispatcher (ts, stack, seasonal, rtk, map, devviz, workbench, picker); common.py = shared options; --adhoc → adhoc.py (area adhoc/ folder + .json sidecars)
 │   ├── stack.py                      # gpsplot stack: several stations/baselines, patterns ("SEY?-SEYD")
 │   ├── seasonal.py                   # gpsplot seasonal: seasonal folded on one year — data, own, regional LOO
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
@@ -147,4 +147,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-01 — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-01 (--adhoc) — history in `git log --follow CLAUDE.md docs/`.*

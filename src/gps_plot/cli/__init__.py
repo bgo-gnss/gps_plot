@@ -37,7 +37,12 @@ class Command:
     def run(self, argv: list[str]) -> int | None:
         module, func = self.target.split(":")
         runner: Runner = getattr(importlib.import_module(module), func)
-        return runner(f"gpsplot {self.name}", argv)
+        if not any(a == "--adhoc" or a.startswith("--adhoc=") for a in argv):
+            return runner(f"gpsplot {self.name}", argv)
+        # --adhoc: the figure goes to the area's adhoc folder (gps_plot.adhoc)
+        from gps_plot import adhoc
+
+        return adhoc.run(self.name, argv, lambda a: runner(f"gpsplot {self.name}", a))
 
 
 DEFAULT_COMMAND = "ts"
