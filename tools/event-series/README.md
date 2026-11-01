@@ -15,7 +15,7 @@ do. The legend arrow says what each map's scale is.
 ```bash
 tools/event-series/event_series.sh ~/plots/sey-jan2025 2024-12-04 2025-03-05 \
   --region=-14.03/-13.965/65.2455/65.268 --dem iceland --layers seydisfjordur \
-  --steep --sea-smooth 0.15 --locator-corner TR \
+  --steep --sea-smooth 0.15 --locator-corner BL \
   --ref plate --min-fill 0.6 --last 61 --last 7 \
   --vector-ref SEYD --short-step --short-snr 2 --short-downslope \
   --short-coherent 2 --min-snr 1 --total
@@ -24,8 +24,8 @@ tools/event-series/event_series.sh ~/plots/sey-jan2025 2024-12-04 2025-03-05 \
 - blue: the 2 months before each frame's day; red: its last 7 days as a
   step against the 14 days before (`--short-step`), drawn only when it
   stands out of the noise, points downslope and 2 stations agree
-- purple circle and number: how far each station had moved since it was
-  installed, up to that day (`--total`)
+- purple T line and number: how far, and which way, each station had
+  moved since it was installed, up to that day (`--total`)
 - `GPSPLOT="python -m gps_plot.cli"` (or a worktree's) runs another gpsplot
 
 **Check a red week against the series.** A jump that goes back within

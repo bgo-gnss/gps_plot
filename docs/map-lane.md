@@ -552,8 +552,8 @@ slope really moves:
 
 - `--total`: each station's horizontal displacement since its first days
   (median of the first 14 days to the median of the last, on STA-REF with
-  `--vector-ref`): a purple circle under the station (area ~ displacement)
-  and the number by its name. Antenna or equipment steps in the series
+  `--vector-ref`): a purple line the way it moved, ending in a T bar
+  (length ~ displacement, not an arrow), and the number by its name. Antenna or equipment steps in the series
   count too.
 
 With no `--scale` each map picks its own (the 90th-percentile arrow 2 cm):
@@ -561,6 +561,7 @@ in an event week the 7-day arrows set it, in a quiet week the long window's.
 A map with no arrow has no legend arrow; a legend line says nothing moved
 above the noise in its windows. plots.yaml `seydisfjordur_velocity` is the
 daily map; `tools/event-series/` draws the weekly maps of an event.
+`--locator-corner BL` puts the Iceland locator on top of the vector legend.
 
 **The sea under the 2 m ArcticDEM** (`maps.sea_spliced`): the 2 m area
 grids measure the water surface (Seyðisfjörður's fjord is +17 to +42 m) and
