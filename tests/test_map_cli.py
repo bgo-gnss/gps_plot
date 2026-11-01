@@ -1071,12 +1071,14 @@ def test_steep_tint_is_the_insets_only_and_named_in_the_legend():
     plain = types.SimpleNamespace(dem_zone=[zone, steep], inset=None)
     assert map_zones(plain) == [zone, steep]
     assert steep_key(plain) == (
-        "tinted: ground steeper than 30°", maps.STEEP_LEGEND_COLOUR
+        "tinted: ground steeper than 30°",
+        maps.STEEP_LEGEND_COLOUR,
     )
     inset = types.SimpleNamespace(dem_zone=[zone, steep], inset=[-16.84, -16.785])
     assert map_zones(inset) == [zone]
     assert steep_key(inset) == (
-        "tinted: ground steeper than 30° (inset)", maps.STEEP_LEGEND_COLOUR
+        "tinted: ground steeper than 30° (inset)",
+        maps.STEEP_LEGEND_COLOUR,
     )
     red = types.SimpleNamespace(dem_zone=[maps.SteepZone(min_slope=25, cmap="red")],
                                 inset=None)  # fmt: skip
@@ -1095,3 +1097,71 @@ def test_narrow_maps_get_decimal_minutes():
         "FORMAT_GEO_MAP": "ddd:mm.xF"
     }
     assert geo_format(None) == {}
+
+
+def _v(marker, east, north, method, sigma=10.0):
+    return VelocityVector(
+        marker=marker, lon=-14.0, lat=65.26, east=east, north=north,
+        sigma_east=sigma, sigma_north=sigma, method=method,
+    )  # fmt: skip
+
+
+def test_vectors_relative_to_a_reference_station():
+    index = {"year": 0, "week": 1}
+    vs = [_v("SEYD", 5, 5, "year", 3), _v("SEY1", 15, 5, "year", 4),
+          _v("SEY1", 100, 0, "week"), _v("SEY2", 1, 1, "week")]  # fmt: skip
+    notes: list[str] = []
+    out = gmap.relative_to(vs, "SEYD", index, notes, skip={"week"})
+    year = [v for v in out if v.method == "year"]
+    assert [(v.marker, v.east, v.north) for v in year] == [("SEY1", 10, 0)]
+    assert year[0].sigma_east == pytest.approx(5.0)  # 3, 4 in quadrature
+    assert len([v for v in out if v.method == "week"]) == 2  # already relative
+    # no reference rate in a window: its vectors go, with a note
+    assert gmap.relative_to(vs[1:2], "SEYD", index, notes) == []
+    assert "no SEYD rate" in notes[-1]
+
+
+def test_short_window_arrows_show_only_when_they_stand_out():
+    index = {"year": 0, "week": 1}
+    down = {"SEY1": 300.0, "SEY2": 300.0, "SEY3": 300.0}
+    west = (-100.0, 50.0)  # azimuth 297: downslope, |v|/|2σ| = 3.95
+    vs = [_v("SEY1", 1, 1, "year"), _v("SEY1", *west, "week"),
+          _v("SEY2", *west, "week"), _v("SEY3", 5, 5, "week")]  # fmt: skip
+    notes: list[str] = []
+    out = gmap.short_filter(vs, {"week"}, index, 2.0, down, 45.0, 2, notes)
+    assert sorted((v.marker, v.method) for v in out) == [
+        ("SEY1", "week"), ("SEY1", "year"), ("SEY2", "week")]  # fmt: skip
+    assert any("SEY3" in n and "noise" in n for n in notes)
+    # upslope does not pass the downslope test
+    up = [_v("SEY1", 100, -50, "week"), _v("SEY2", 100, -50, "week")]
+    assert gmap.short_filter(up, {"week"}, index, 2.0, down, 45.0, 1, notes) == []
+    # one station alone is not coherent: the window draws nothing
+    one = gmap.short_filter(vs[:2], {"week"}, index, 2.0, down, 45.0, 2, notes)
+    assert [v.method for v in one] == ["year"]
+    assert "fewer than 2" in notes[-1]
+
+
+def test_window_days_counts_both_ends():
+    assert gmap.window_days(dt.datetime(2025, 1, 25), dt.datetime(2025, 1, 31)) == 7
+
+
+def test_total_motion_is_first_days_to_last_days():
+    """--total: |median(last n) - median(first n)| of N, E; the series'
+    first epoch; None when the series is shorter than 2 n."""
+    t = 2021.0 + np.arange(100) / 365.25
+    y = np.zeros((3, 100))
+    y[0, 60:] = 30.0  # 30 mm north
+    y[1, 60:] = -40.0  # 40 mm west
+    y[2, 60:] = 500.0  # the vertical does not count
+    y[:, 5] = np.nan
+    total, first = gmap.total_motion(t, y, n=14)
+    assert total == pytest.approx(50.0) and first == pytest.approx(2021.0)
+    assert gmap.total_motion(t[:20], y[:, :20], n=14) is None
+
+
+def test_track_onset_days_back_moves_with_today():
+    """--track Nd: the onset N days before today, for a daily product."""
+    day, label = gmap.track_onset("365d", today=dt.date(2026, 11, 1))
+    assert day == dt.date(2025, 11, 1) and label == "the last 365 days"
+    day, label = gmap.track_onset("20250121")
+    assert day == dt.date(2025, 1, 21) and label == "2025-01-21"

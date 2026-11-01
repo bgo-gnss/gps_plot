@@ -483,6 +483,48 @@ def test_velocity_map_renders_png(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_velocity_map_draws_quiet_stations_without_arrows(tmp_path: Path) -> None:
+    """A window none of the stations moved in still makes a map: the
+    stations as dots and names (quiet=), no arrow needed."""
+    quiet = (
+        StationCoordinate("STA1", lon=-22.55, lat=63.85),
+        StationCoordinate("STA2", lon=-22.30, lat=63.95),
+    )
+    out = tmp_path / "quiet.png"
+    velocity_map([], quiet=quiet, resolution="crude", outfile=out)
+    assert out.is_file() and os.path.getsize(out) > 1024
+    with pytest.raises(ValueError):
+        velocity_map([], resolution="crude")
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_velocity_map_draws_total_circles(tmp_path: Path) -> None:
+    """totals= draws a circle under each station it names; a station
+    without a total keeps its plain dot."""
+    quiet = (
+        StationCoordinate("STA1", lon=-22.55, lat=63.85),
+        StationCoordinate("STA2", lon=-22.30, lat=63.95),
+    )
+    out = tmp_path / "totals.png"
+    velocity_map([], quiet=quiet, totals={"STA1": 1240.0}, resolution="crude",
+                 scale_ref=None, projection="M10c", outfile=out)  # fmt: skip
+    assert out.is_file() and os.path.getsize(out) > 1024
+
+
+def test_total_sizes_and_text() -> None:
+    """The largest total is TOTAL_MAX_CM wide, the others by the square
+    root of their share; the label says mm below a metre, m above."""
+    from gps_plot import maps
+
+    assert maps.total_sizes([100.0, 25.0, 0.0]) == pytest.approx(
+        [maps.TOTAL_MAX_CM, maps.TOTAL_MAX_CM / 2, 0.0]
+    )
+    assert maps.total_sizes([0.0]) == [0.0]
+    assert maps.total_text(35.4) == "35 mm"
+    assert maps.total_text(1240.0) == "1.24 m"
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
 def test_deformation_vectors_renders_png(tmp_path: Path) -> None:
     """Observed + one model field (pre-computed, NaN row) -> overlay map."""
     stations = (
@@ -968,6 +1010,36 @@ def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
     assert pick(zoom).fine  # the middle still has data everywhere
     # the whole Öræfi map: an Iceland level
     assert pick((-17.06, -16.38, 63.76, 64.07), "M18c").grid.endswith("_1s.nc")
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_sea_spliced_puts_the_sea_floor_off_the_coast(tmp_path, monkeypatch):
+    """ArcticDEM's water surface (+17 m) off the coast polygon takes the
+    Iceland DEM's depth (at most -1 m); land and NaN cells stay; the
+    result is cached and rebuilt when an input is newer."""
+    from gps_plot import maps
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    z = np.full((100, 100), 17.0)
+    z[-3:, -3:] = np.nan  # a void
+    fine = tmp_path / "area.nc"
+    _area_grid(fine, -14.0, 65.26, 100, 100, z=z)  # -14.0..-13.9959, 65.26..65.2618
+    sea = tmp_path / "sea.nc"
+    depth = np.full((20, 20), -30.0)
+    depth[:, 15:] = 5.0  # the coarse grid's own coast sits east of IS 50V's
+    _area_grid(sea, -14.01, 65.25, 20, 20, dlon=1e-3, dlat=1e-3, z=depth)
+    coast = tmp_path / "coast.gmt"  # land: the eastern half of the grid
+    coast.write_text("> land\n-13.998 65.2 \n-13.9 65.2\n-13.9 65.3\n-13.998 65.3\n")
+    out = maps.sea_spliced(str(fine), str(sea), str(coast))
+    assert out.endswith("area-sea.nc")
+    import xarray as xr
+
+    g = xr.load_dataarray(out, engine="gmt", raster_kind="grid")
+    v, lon = g.values, g.coords[g.dims[1]].values
+    assert (v[:, lon < -13.9985] == -30.0).all()  # off the coast: the depth
+    assert (v[:-3, lon > -13.9975] == 17.0).all()  # land stays
+    assert np.isnan(v[-1, -1])  # the void stays
+    assert maps.sea_spliced(str(fine), str(sea), str(coast)) == out  # cached
 
 
 def test_steep_mask_finds_the_slope_and_drops_specks():
