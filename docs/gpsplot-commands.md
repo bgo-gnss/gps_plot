@@ -61,3 +61,33 @@ refuses), a missing Iceland DEM draws `@earth_relief_15s` (no SRTM north of
 Planned: seismic panels (on ice) — the staged plan and BGÓ's
 decisions are in the design doc. Every step is gated by
 `bin/check_cli_variants.py` (byte-identical PNGs vs a `main` export).
+
+## Ad hoc figures (`--adhoc`, 2026-11-01)
+
+One-off figures for an area or event, kept out of the production tree
+(`adhoc.py`, hooked in the dispatcher, so every figure tool has it: ts,
+stack, rtk, seasonal, polar, map; run/rtk-run/direction refuse it):
+
+```
+gpsplot polar SVIN-SKFC SVIE-SKFC --together --panels profile --adhoc --note "plunge vs. ground"
+gpsplot ts SKFC --adhoc oraefajokull/jokulhlaup-2026 --save pdf
+```
+
+- Folder, area first: `<plots_dir>/locations/<root>/<area>/adhoc/<label>/`.
+  `--adhoc [AREA][/LABEL]` (or `--adhoc=AREA/LABEL`): AREA a cdn slug of
+  station_areas.yaml; LABEL a folder name, default today `YYYY-MM-DD` (the
+  same command twice in a day overwrites; give a label to keep both).
+- AREA left out: the area holding all the command's stations; when several
+  do (SVIN/SVIE/SKFC are Öræfajökull members too), the one listing the
+  command's baselines (`baselines:`/`stacks:`, either way round). Still
+  ambiguous or none → refused with the candidates; give AREA.
+- `-d`/`--figDir` with `--adhoc` is refused; no `--save` → `--save png`.
+  A map's KIND comes before `--adhoc` (a bare lower-case word after it is
+  read as the AREA).
+- Beside every figure written: `<figure>.json` — the command as typed, argv,
+  area, label, note, UTC time, user, gps_plot commit (`git describe`, else
+  the installed version). Re-run = the `command`; a figure that became
+  regular moves into plots.yaml.
+- Out of production: `gpsplot run`'s stale sweep reads only its products'
+  own folders (not subfolders), `publish.manifest` never lists `adhoc/`, so
+  nothing is published to the CDN and aflogun does not show them.
