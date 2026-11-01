@@ -550,8 +550,17 @@ slope really moves:
   `--short-snr` a map with no arrows is still made (a weekly series needs
   every frame).
 
+- `--total`: each station's horizontal displacement since its first days
+  (median of the first 14 days to the median of the last, on STA-REF with
+  `--vector-ref`): a purple circle under the station (area ~ displacement)
+  and the number by its name. Antenna or equipment steps in the series
+  count too.
+
 With no `--scale` each map picks its own (the 90th-percentile arrow 2 cm):
 in an event week the 7-day arrows set it, in a quiet week the long window's.
+A map with no arrow has no legend arrow; a legend line says nothing moved
+above the noise in its windows. plots.yaml `seydisfjordur_velocity` is the
+daily map; `tools/event-series/` draws the weekly maps of an event.
 
 **The sea under the 2 m ArcticDEM** (`maps.sea_spliced`): the 2 m area
 grids measure the water surface (Seyðisfjörður's fjord is +17 to +42 m) and
@@ -584,7 +593,10 @@ EVENT|DATE` (`track.py`, numbers apart from drawing):
   reference and the dot scale on top, a line per number in the arrow's
   colour; the Iceland locator sits on it (`--locator-corner BL` implied).
 - The onset is an `events.yaml` id (or a unique part of it), so a
-  plots.yaml product redraws itself with every new solution.
+  plots.yaml product redraws itself with every new solution; or `Nd`, N
+  days before today (`--track 365d`: a daily map whose window moves with
+  it, plots.yaml `seydisfjordur_track`, with `--track-trend keep` because
+  the slope's creep is the signal).
 - 7 days was tried and dropped (2026-10-28): all of SE Iceland moved
   together over 21-27 Oct 2026 (~600 mm/yr at SKFC/SLEC, not in the
   network common mode), so a 7-day rate showed that, not the slope.

@@ -1143,3 +1143,25 @@ def test_short_window_arrows_show_only_when_they_stand_out():
 
 def test_window_days_counts_both_ends():
     assert gmap.window_days(dt.datetime(2025, 1, 25), dt.datetime(2025, 1, 31)) == 7
+
+
+def test_total_motion_is_first_days_to_last_days():
+    """--total: |median(last n) - median(first n)| of N, E; the series'
+    first epoch; None when the series is shorter than 2 n."""
+    t = 2021.0 + np.arange(100) / 365.25
+    y = np.zeros((3, 100))
+    y[0, 60:] = 30.0  # 30 mm north
+    y[1, 60:] = -40.0  # 40 mm west
+    y[2, 60:] = 500.0  # the vertical does not count
+    y[:, 5] = np.nan
+    total, first = gmap.total_motion(t, y, n=14)
+    assert total == pytest.approx(50.0) and first == pytest.approx(2021.0)
+    assert gmap.total_motion(t[:20], y[:, :20], n=14) is None
+
+
+def test_track_onset_days_back_moves_with_today():
+    """--track Nd: the onset N days before today, for a daily product."""
+    day, label = gmap.track_onset("365d", today=dt.date(2026, 11, 1))
+    assert day == dt.date(2025, 11, 1) and label == "the last 365 days"
+    day, label = gmap.track_onset("20250121")
+    assert day == dt.date(2025, 1, 21) and label == "2025-01-21"

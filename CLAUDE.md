@@ -51,6 +51,7 @@ gps_plot/
 ├── tests/                            # dev_viz, maps (GMT-gated), workbench, pickers
 ├── bin/timesmatplt-test.py           # smoke test (legacy)
 ├── tools/local-plot/                 # local figure workflow + TOT join procedure (README)
+├── tools/event-series/               # weekly velocity maps of an event, after the fact (README)
 ├── logos/                            # Veður logos used in plot output
 └── pyproject.toml
 ```
@@ -138,10 +139,11 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 - **[`docs/mypy-status.md`](docs/mypy-status.md)** 📄 — the typing gate's scope,
   the 137 → 0 path, and the (now cleared) `gps_analysis` blocker
 - `tools/local-plot/README.md` — local figure workflow, TOT join, epoch/shell traps
+- `tools/event-series/README.md` — weekly event maps + contact sheet (the SEY set)
 - `.interrogate-detrend-workbench.md` — workbench destination doc (gitignored)
 - `../PLAN-analysis-lane.md` — thread C / task L5 (dev-viz), task H6 (speed pass)
 - Vault hub: `/home/bgo/notes/bgovault/2.Areas/VI_GPS_Library/1776347706-gps-library-ecosystem-hub.md`
 
 ---
 
-*Last reviewed: 2026-10-31 — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-01 — history in `git log --follow CLAUDE.md docs/`.*

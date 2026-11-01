@@ -26,6 +26,7 @@ import dataclasses
 import datetime as dt
 import fnmatch
 import math
+import re
 import os
 import sys
 import textwrap
@@ -495,9 +496,10 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         "arrows with 1-sigma ellipses and in the legend",
     )
     g.add_argument(
-        "--track", default=None, metavar="EVENT|DATE",
+        "--track", default=None, metavar="EVENT|DATE|Nd",
         help="the onset: an events.yaml event (its id, or a unique part of "
-        "it) or YYYYMMDD; turns the tracks on",
+        "it), YYYYMMDD or Nd (N days before today: a daily map whose tracks "
+        "move with it); turns the tracks on",
     )  # fmt: skip
     g.add_argument(
         "--track-events", default=None, metavar="FILE",
@@ -586,10 +588,17 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
     )  # fmt: skip
 
 
-def track_onset(spec: str, events_file: str | None = None) -> tuple[dt.date, str]:
-    """``--track``: a date, or an events.yaml event's onset; and its label."""
+def track_onset(
+    spec: str, events_file: str | None = None, today: dt.date | None = None
+) -> tuple[dt.date, str]:
+    """``--track``: a date, ``Nd`` (N days before ``today``, so a daily
+    product's tracks move with it), or an events.yaml event's onset; and
+    its label."""
     from geo_dataread.products.period import find_event, parse_date
 
+    if re.fullmatch(r"\d+d", spec):
+        day = (today or dt.date.today()) - dt.timedelta(days=int(spec[:-1]))
+        return day, f"the last {spec[:-1]} days"
     try:
         day = parse_date(spec)
     except ValueError:
@@ -782,6 +791,14 @@ def build_parser(
         help="with --short-snr: draw the short window's arrows only when at "
         "least N stations pass (default 1; 2 or 3 = several stations move "
         "together, one noisy station alone does not show)",
+    )  # fmt: skip
+    p.add_argument(
+        "--total", action="store_true",
+        help="each station's horizontal displacement since its first days "
+        f"(median of the first {TOTAL_END_DAYS} days to the median of the "
+        "last, up to --end; with --vector-ref on the daily baseline "
+        "STA-REF): a purple circle under the station, its area by the "
+        "displacement, and the number by its name",
     )  # fmt: skip
     p.add_argument(
         "--min-epochs", type=int, default=None,
@@ -2238,10 +2255,22 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     zoomed = _in_inset(args, kept, maps)
     zoom_style = _unlabel_inset(style, args)
     avoid = maps.overlay_label_points(style.get("overlays", ()))
+    totals: dict[str, float] = {}
+    if args.total:
+        said: list[str] = []
+        totals = total_displacements(args, parser, config, stations, ref_sta, now, said)
+        for line in said:
+            print(line, file=sys.stderr)
+    # a week nothing moved in still says which days it looked at
+    days = ", ".join(f"{s:%d.%m.}-{e:%d.%m.%Y}" for s, e in windows)
+    nothing = (
+        [] if kept else [(f"no arrow: nothing moved above the noise, {days}", "black")]
+    )
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
-        scale_ref=args.scale_ref or ref,
+        # no arrow drawn (a quiet week of a series): no legend arrow either
+        scale_ref=(args.scale_ref or ref) if kept else None,
         method_colors=colors,
         ellipse_pen=ELLIPSE_PEN,
         labels=args.labels,
@@ -2249,6 +2278,8 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         unlabelled={v.marker for v in zoomed},
         scale_vertical=bool(args.vertical),
         quiet=quiet,
+        totals=totals,
+        notes=nothing,
         **zoom_style,
     )
 
@@ -2614,6 +2645,65 @@ def step_vectors(
             notes.append(f"{spec} {label}: too few days for a step")
             continue
         out.append(_vector(maps, c, _Rate(r.rate, r.rate_sigma), comp, label))
+    return out
+
+
+#: --total: the median of this many days at either end of the series
+TOTAL_END_DAYS = 14
+#: --total: the series starts no earlier than this
+TOTAL_FIRST = dt.datetime(1995, 1, 1)
+
+
+def total_motion(t: Any, y: Any, n: int = TOTAL_END_DAYS) -> tuple[float, float] | None:
+    """The horizontal displacement from a series' first ``n`` epochs to its
+    last ``n``: ``(|median(last) - median(first)|, first epoch)`` of rows
+    N, E of ``y`` (its units; epochs [yr]); None with fewer than ``2 n``
+    epochs (NaN epochs left out)."""
+    tv = np.asarray(t, dtype=np.float64)
+    a = np.asarray(y, dtype=np.float64)[:2]
+    order = np.argsort(tv)
+    tv, a = tv[order], a[:, order]
+    ok = np.isfinite(tv) & np.isfinite(a).all(axis=0)
+    tv, a = tv[ok], a[:, ok]
+    if tv.size < 2 * n:
+        return None
+    d = np.median(a[:, -n:], axis=1) - np.median(a[:, :n], axis=1)
+    return float(np.hypot(d[0], d[1])), float(tv[0])
+
+
+def total_displacements(
+    args: Any,
+    parser: Any,
+    config: Any,
+    stations: Sequence[Any],
+    ref: str | None,
+    end: dt.datetime,
+    notes: list[str],
+) -> dict[str, float]:
+    """``--total``: each station's :func:`total_motion` [mm] up to
+    ``end``, on the daily baseline STA-``ref`` when ``ref`` is given
+    (``ref`` itself has none)."""
+    from gps_plot.sources import gps as gps_source
+
+    day_end = dt.datetime.combine(end.date(), dt.time()) + dt.timedelta(days=1)
+    req = _request(args, parser, config, TOTAL_FIRST, day_end)
+    opts = gps_source.BaselineOptions(sign="raw")
+    out = {}
+    for c in stations:
+        if c.marker == ref:
+            continue
+        spec = f"{c.marker}-{ref}" if ref else c.marker
+        try:
+            s = gps_source.fetch(spec, req, opts)
+        except Exception as exc:
+            notes.append(f"{spec} total: {exc}")
+            continue
+        r = total_motion(s.t, s.y)
+        if r is None:
+            notes.append(f"{spec} total: too few days")
+            continue
+        out[c.marker] = r[0]
+        notes.append(f"{spec} total: {r[0]:.0f} mm since {r[1]:.2f}")
     return out
 
 
