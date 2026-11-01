@@ -84,7 +84,7 @@ The horizontal displacement since an onset, coloured by time. `--onset auto`
 (default): the newest events.yaml event, of any kind, whose region holds one of
 the rovers and whose onset is inside the period (the footnote names it), else
 the start of the period; also a date, an event id, or `start`. Level = median of
-the first `--window` after it. Panels (`--panels`, default `sector,map,section`):
+the first `--window` after it. Panels (`--panels`, default `sector,map,profile`):
 
 - **sector** — compass azimuth and size; motion direction (red), across
   (blue), DEM downslope. Its limits come from points ≥ 15 % of the largest;
@@ -95,10 +95,32 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,section`)
   scaled up (title: m per mm; a dot scale bar) — the same convention as a
   velocity arrow on a map. BGÓ 2026-10-31, from the 2 m ArcticDEM dots
   experiment; the slope colour field and fall lines went.
-- **section** — along the motion against Up, with the terrain's apparent dip.
-  A westward motion runs to the left (seen from the south), the compass
-  points at the axis ends (BGÓ 2026-10-31).
+- **profile** (`profile.py`; default since BGÓ 2026-11-01, in place of the
+  section) — one sub-panel per pair: the DEM ground along its motion,
+  ±250 m through the rover (its own DEM window, wider than the map's), true
+  heights with equal axes so the angles are true, all sub-panels one width
+  and their heights following the ground. The rover stands on the ground;
+  its daily points hang from it scaled up (m per mm, the same in both
+  directions; a 10 mm-ish dot bar). Drawn with it:
+  - the 50 m plane's apparent dip along the motion (dashed);
+  - weekly medians (diamonds, a week needs ≥ 3 days);
+  - the **plunge**: a line through the rover fitted to the daily points
+    with their σ, errors in both directions (effective variance), with a 1σ
+    wedge, scaled up by the misfit only when χ²/dof > 1. Days are not
+    independent, so read it as a rough interval.
+  RTK points are reduced to daily medians first, so weeks and the fit count
+  days. A westward motion runs to the left, as in the section. Without a
+  DEM the heights are from the rover. `--panels profile` alone gives a
+  profile-only figure (13 in wide, the colour bar in the first sub-panel).
+- **section** — (optional) along the motion against Up [mm], with the
+  terrain's apparent dip. A westward motion runs to the left (seen from the
+  south), the compass points at the axis ends (BGÓ 2026-10-31).
 - **hodograph** — north against east (optional; redundant with the sector).
+
+The colour bar (days since the onset) sits inside the map, else inside the
+profile, as on the other maps; only a figure with neither has it on the side.
+The footnote is wrapped to the figure's width (a longer line widened the
+tight-cropped PNG).
 
 `--together` draws all pairs in one figure, one marker per pair (the plots.yaml
 `polar` product does this per `stacks:` group). Files: `A_B-polar-<period>`

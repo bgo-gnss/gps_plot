@@ -27,7 +27,8 @@ gps_plot/
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
 │   ├── axes.py                       # baseline series on other axes (orient: values/σ/overlays/ends); pair_axes/sign_pair = N/E/U, + = lengthening (sources.gps.fetch signs daily pairs; Orienter for RTK); label_flags
 │   ├── direction.py                  # gpsplot direction: motion direction (gps_analysis.direction) of pairs/stations → a station_areas.yaml directions: line
-│   ├── polar.py                      # gpsplot polar: sector / terrain map / section of the horizontal displacement since an onset, --together; A_B-polar-<period>[-rtk]
+│   ├── polar.py                      # gpsplot polar: sector / terrain map / profile (or section) of the displacement since an onset, --together; A_B-polar-<period>[-rtk]
+│   ├── profile.py                    # polar's profile panel: DEM ground along the motion, points scaled on it, weekly medians, plunge fit (σ both ways)
 │   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
