@@ -991,6 +991,56 @@ def _full_on(path: str, region: Sequence[float]) -> bool:
     return z.size > 0 and float(np.isnan(z).mean()) <= AREA_DEM_MAX_NAN
 
 
+def sea_spliced(fine: str, sea: str, coast: str) -> str:
+    """A 2 m area grid with its sea from the Iceland DEM, cached.
+
+    ArcticDEM measures the water surface, ~+17 m in Seyðisfjörður, so its
+    fjords are land to the colours and the hillshade. Cells off the
+    ``coast`` polygons (the IS 50V coast, land inside) take the depth of
+    ``sea`` (the 1″ topo-bathymetry, bilinear), at most -1 m; land and NaN
+    cells stay. Written once to ``$XDG_CACHE_HOME/gps_plot/dem/`` and
+    rebuilt when any input is newer (BGÓ 2026-11-01)."""
+    import pygmt
+
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    out = Path(base) / "gps_plot" / "dem" / f"{Path(fine).stem}-sea.nc"
+    sources = [Path(fine), Path(sea), Path(coast)]
+    if out.is_file() and all(out.stat().st_mtime > p.stat().st_mtime for p in sources):
+        return str(out)
+    region = _grid_region(fine)
+    grid = pygmt.grdcut(fine, region=region, verbose="e")
+    ydim, xdim = grid.dims
+    land = _ice_mask(pygmt, grid, coast)  # land is inside the coast polygons
+    if land is None:
+        land = np.zeros(grid.shape, dtype=bool)
+    if land.shape != grid.shape:
+        return fine  # the mask must lie on the grid's cells; refuse to guess
+    pad = 0.01
+    w, e, s, n = region
+    floor = pygmt.grdcut(sea, region=[w - pad, e + pad, s - pad, n + pad], verbose="e")
+    floor = floor.rename({floor.dims[0]: ydim, floor.dims[1]: xdim})
+    depth = np.asarray(
+        floor.interp({ydim: grid.coords[ydim], xdim: grid.coords[xdim]}).values,
+        dtype=np.float64,
+    )
+    z = np.asarray(grid.values, dtype=np.float64)
+    wet = ~land & np.isfinite(z)
+    z = np.where(wet, np.minimum(np.nan_to_num(depth, nan=-1.0), -1.0), z)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    part = out.with_name(f".part-{out.name}")
+    pygmt.grdcut(_as_grid_of(grid.copy(data=z), grid), region=region, outgrid=str(part))
+    part.replace(out)
+    return str(out)
+
+
+def _grid_region(path: str) -> list[float]:
+    """W/E/S/N of a grid file (its header)."""
+    import pygmt
+
+    cols = pygmt.grdinfo(path, per_column=True, verbose="e").split()
+    return [float(v) for v in cols[0:4]]
+
+
 def iceland_dem(
     gis_dir: str | os.PathLike[str],
     region: Sequence[float],
@@ -1029,6 +1079,9 @@ def iceland_dem(
             None,
         )  # fmt: skip
     name = (fitting[-1] if fitting else covering[0])[0]
+    sea, coast = base / GIS_DEM / ICELAND_DEM_LEVELS[0][0], base / ICELAND_COAST
+    if fine and sea.is_file() and coast.is_file():
+        fine = sea_spliced(fine, str(sea), str(coast))
     grid = Path(fine) if fine else base / GIS_DEM / name
     if not grid.is_file():
         raise FileNotFoundError(
@@ -1449,7 +1502,9 @@ def steep_mask(grid: Any, min_slope: float) -> Any | None:
     slope = np.degrees(np.arctan(np.hypot(gx, gy)))
     # the filled NaN cells make false slopes along the edge
     inside = ndimage.binary_erosion(valid, iterations=max(kx, ky) + 1)
-    mask = (slope > min_slope) & inside & (z >= 0)
+    # ... and so does the step at the coast of a sea-spliced 2 m grid
+    dry = ndimage.binary_erosion(valid & (z >= 0), iterations=max(kx, ky) + 1)
+    mask = (slope > min_slope) & inside & dry
     labels, count = ndimage.label(mask)
     if count:
         sizes = ndimage.sum(mask, labels, index=np.arange(1, count + 1)) * dx * dy
@@ -2352,10 +2407,13 @@ def draw_velocity_vectors(
     label_offset: str = DEFAULT_LABEL_OFFSET,
     rj: str | None = None,
     avoid: Sequence[tuple[float, float, str, str]] = (),
+    quiet: Sequence[Any] = (),
 ) -> list[tuple[str, str]]:
     """The arrows, ellipses, station dots and names of
     :func:`velocity_map` (also drawn in a zoom inset); its legend entries,
-    ``(label, colour)`` per method in first-appearance order."""
+    ``(label, colour)`` per method in first-appearance order. ``quiet``
+    (``lon``/``lat``/``marker``) are stations without an arrow: a dot and
+    a name only."""
     lons = np.array([v.lon for v in vectors], dtype=np.float64)
     lats = np.array([v.lat for v in vectors], dtype=np.float64)
     # One velo layer per estimator tag, first-appearance order preserved.
@@ -2398,13 +2456,14 @@ def draw_velocity_vectors(
         fig.plot(
             **layer_kw(
                 "stations",
-                x=lons, y=lats, style=station_style, fill=station_fill,
-                pen=station_pen,
+                x=[*lons, *(c.lon for c in quiet)],
+                y=[*lats, *(c.lat for c in quiet)],
+                style=station_style, fill=station_fill, pen=station_pen,
             )
         )  # fmt: skip
     if labels and markers:
         _draw_station_labels(
-            fig, vectors, unlabelled, label_font, label_offset, rj, avoid
+            fig, [*vectors, *quiet], unlabelled, label_font, label_offset, rj, avoid
         )
     return legend_entries
 
@@ -2442,6 +2501,7 @@ def velocity_map(
     legend_font: str = DEFAULT_LEGEND_FONT,
     legend_anchor: tuple[float, float] = DEFAULT_LEGEND_ANCHOR,
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
+    quiet: Sequence[Any] = (),
     scale_vertical: bool = False,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
@@ -2511,6 +2571,8 @@ def velocity_map(
             region from the SW corner.
         legend_line_spacing: Legend line spacing as a fraction of the N-S
             extent.
+        quiet: Stations without an arrow (``lon``/``lat``/``marker``),
+            drawn as a dot and a name (a window none of them moved in).
         scale_vertical: The vectors are vertical rates drawn north: the
             legend's reference arrow points up too.
         dem_grid: Optional DEM grid for a hillshade background.
@@ -2549,13 +2611,13 @@ def velocity_map(
 
     Raises:
         ImportError: When PyGMT / the GMT C library is unavailable.
-        ValueError: When ``vectors`` is empty.
+        ValueError: When ``vectors`` and ``quiet`` are both empty.
     """
-    if not vectors:
+    if not vectors and not quiet:
         raise ValueError("velocity_map needs at least one velocity vector")
 
-    lons = np.array([v.lon for v in vectors], dtype=np.float64)
-    lats = np.array([v.lat for v in vectors], dtype=np.float64)
+    lons = np.array([v.lon for v in [*vectors, *quiet]], dtype=np.float64)
+    lats = np.array([v.lat for v in [*vectors, *quiet]], dtype=np.float64)
     if region is None:
         region = _region_of_points(lons.tolist(), lats.tolist(), margin)
 
@@ -2597,6 +2659,7 @@ def velocity_map(
         station_pen=station_pen, markers=markers, labels=labels,
         unlabelled=unlabelled, label_font=label_font, label_offset=label_offset,
         rj=map_rj(region, projection), avoid=overlay_label_points(overlays),
+        quiet=quiet,
     )  # fmt: skip
 
     if legend:

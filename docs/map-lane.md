@@ -528,6 +528,38 @@ numbers (BGÓ 2026-10-16; design in memory `velocity-product`).
   product reads the 24 h `.pos`; 8 h is deferred). The secular map (no
   window) still reads the detrend records (phase 2 of the product).
 
+### Landslide slopes: relative arrows, short windows that only show when the ground moves (2026-11-01)
+
+Made for the Seyðisfjörður slope stations (SEY?-SEYD). A line through one
+week of daily solutions has a rate σ of a few hundred mm/yr, so a 7-day
+arrow is noise most weeks. These options make it appear only when the
+slope really moves:
+
+- `--vector-ref STA`: every arrow relative to STA's rate in the same window
+  (σ in quadrature); STA itself draws none.
+- `--short-step`: a window of at most 31 days is the step of its days
+  against the 14 before them (two medians,
+  `gps_analysis.recent_step`), as a rate. With `--vector-ref` it is
+  measured on the daily baseline STA-REF.
+- `--short-snr R`: a short window draws an arrow only when |v|/|2σ| >= R.
+- `--short-downslope [DEG]`: it must also point within DEG (default 45) of
+  the DEM downslope at the station.
+- `--short-coherent N`: and at least N stations must pass, or the window
+  draws nothing.
+- Stations without an arrow are drawn as a dot and their name. With
+  `--short-snr` a map with no arrows is still made (a weekly series needs
+  every frame).
+
+With no `--scale` each map picks its own (the 90th-percentile arrow 2 cm):
+in an event week the 7-day arrows set it, in a quiet week the long window's.
+
+**The sea under the 2 m ArcticDEM** (`maps.sea_spliced`): the 2 m area
+grids measure the water surface (Seyðisfjörður's fjord is +17 to +42 m) and
+drew the fjord as land. Cells off the IS 50V coast now take the 1″
+topo-bathy depth (at most −1 m). The spliced grid is cached as
+`~/.cache/gps_plot/dem/<grid>-sea.nc` and rebuilt when an input is newer.
+`--steep` leaves out the cells next to the sea.
+
 ## Station tracks since an event: `map station --track` (2026-10-28)
 
 BGÓ's design for the Svínafellsheiði landslide (after the time-coloured

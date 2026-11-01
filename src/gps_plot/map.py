@@ -749,6 +749,41 @@ def build_parser(
         "0.75); default 0 = keep all",
     )  # fmt: skip
     p.add_argument(
+        "--vector-ref", default=None, metavar="STA",
+        help="every arrow relative to STA's rate in the same window (σ in "
+        "quadrature), e.g. SEYD for the SEY? slope stations: what they "
+        "share with their reference drops out; STA itself draws no arrow",
+    )  # fmt: skip
+    p.add_argument(
+        "--short-snr", type=float, default=None, metavar="R",
+        help=f"a window of at most {SHORT_WINDOW_DAYS} days (e.g. --last 7) "
+        "draws an arrow only when |v| / |2σ| >= R (2 = clearly above the "
+        "noise); its arrows are noise most weeks and show only when the "
+        "ground moves",
+    )  # fmt: skip
+    p.add_argument(
+        "--short-step", action="store_true",
+        help=f"a window of at most {SHORT_WINDOW_DAYS} days is drawn as the "
+        "station's step against the 14 days before it (median of the "
+        "window's days minus median of those before, over the time between "
+        "them, gps_analysis.recent_step) instead of a line through its few "
+        "days: a slip of a week stands out of it, a line would not show it. "
+        "With --vector-ref, on the daily baseline STA-REF",
+    )  # fmt: skip
+    p.add_argument(
+        "--short-downslope", type=float, nargs="?", const=45.0, default=None,
+        metavar="DEG",
+        help="with --short-snr: the short window's arrow must also point "
+        "within DEG (default 45) of the DEM downslope azimuth at the "
+        "station (gpsplot direction's slope, 2 m/5 m DEM over 50 m)",
+    )  # fmt: skip
+    p.add_argument(
+        "--short-coherent", type=int, default=1, metavar="N",
+        help="with --short-snr: draw the short window's arrows only when at "
+        "least N stations pass (default 1; 2 or 3 = several stations move "
+        "together, one noisy station alone does not show)",
+    )  # fmt: skip
+    p.add_argument(
         "--min-epochs", type=int, default=None,
         help="fewest epochs in a window for a rate (default 5, the velocity "
         "product's gate)",
@@ -1718,6 +1753,11 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
         parser.error(str(exc))
     _report(dropped)
     if args.kind == "velocity":
+        ref = (getattr(args, "vector_ref", None) or "").upper()
+        if ref and ref not in {c.marker for c in stations}:
+            # the reference's rates are needed even off the map (a zoom on
+            # the slope without SEYD); it draws no arrow (relative_to)
+            stations = [*stations, *coords([ref])]
         return _run_velocity(args, parser, config, maps, stations)
     return _run_deformation(args, parser, config, maps, stations)
 
@@ -2130,11 +2170,51 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 dropped.append(f"{c.marker}: {exc}")
                 continue
             vectors.append(_vector(maps, c, _Rate(sr.rate, sr.sigma), comp, "secular"))
+    index = window_index(groups)
+    short = {
+        label for label, k in index.items()
+        if k < len(windows) and window_days(*windows[k]) <= SHORT_WINDOW_DAYS
+    }  # fmt: skip
+    ref_sta = args.vector_ref.upper() if args.vector_ref else None
+    if args.short_step:
+        if not short:
+            parser.error(f"--short-step: no window of at most {SHORT_WINDOW_DAYS} days")
+        vectors = [v for v in vectors if v.method not in short]
+        for label in sorted(short, key=lambda s: index[s]):
+            if label.endswith((FALLBACK_SUFFIX, NO_SEASONAL_SUFFIX)):
+                continue
+            start, end = windows[index[label]]
+            vectors += step_vectors(
+                args, parser, config, maps, stations, ref_sta, start, end,
+                label, comp, notes,
+            )  # fmt: skip
+    if ref_sta:
+        vectors = relative_to(
+            vectors, ref_sta, index, notes,
+            skip=short if args.short_step else set(),
+        )  # fmt: skip
+    if args.short_snr is not None:
+        if not short:
+            parser.error(f"--short-snr: no window of at most {SHORT_WINDOW_DAYS} days")
+        down: dict[str, float] = {}
+        if args.short_downslope is not None:
+            down = downslope_azimuths(
+                [c for c in stations if c.marker in {v.marker for v in vectors}],
+                config, notes,
+            )  # fmt: skip
+        vectors = short_filter(
+            vectors, short, index, args.short_snr, down,
+            args.short_downslope, args.short_coherent, notes,
+        )  # fmt: skip
     kept = [v for v in vectors if snr(v) >= args.min_snr]
     notes += [f"{v.marker} {v.method}: |v|/|2σ| = {snr(v):.2f} < {args.min_snr:g}"
               for v in vectors if snr(v) < args.min_snr]  # fmt: skip
     _report(dropped + notes)
-    if not kept:
+    # the map's stations without an arrow: a dot and a name; with
+    # --short-snr a week none of them moved in is a map too (a series)
+    moved = {v.marker for v in kept}
+    quiet = [c for c in stations if c.marker not in moved]
+    if not kept and (args.short_snr is None or not quiet):
         print("nothing plotted", file=sys.stderr)
         return 1
     no_record = sum("no stored detrend record" in d for d in dropped)
@@ -2168,6 +2248,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         markers=args.markers,
         unlabelled={v.marker for v in zoomed},
         scale_vertical=bool(args.vertical),
+        quiet=quiet,
         **zoom_style,
     )
 
@@ -2435,6 +2516,173 @@ def snr(v: Any) -> float:
     s = 2.0 * math.hypot(v.sigma_east, v.sigma_north)
     m = math.hypot(v.east, v.north)
     return math.inf if s == 0 else m / s
+
+
+#: a window of at most this many days is "short": --short-snr filters it
+SHORT_WINDOW_DAYS = 31
+
+
+def window_days(start: dt.datetime, end: dt.datetime) -> int:
+    """A window's length in whole days, both ends included."""
+    return (end.date() - start.date()).days + 1
+
+
+def relative_to(
+    vectors: Sequence[Any],
+    ref: str,
+    index: dict[str, int],
+    notes: list[str],
+    skip: set[str] = frozenset(),  # type: ignore[assignment]
+) -> list[Any]:
+    """Each vector minus ``ref``'s vector of the same window (its legend
+    group's :func:`window_index`), σ in quadrature (the correlation of the
+    two rates is not known, so the ellipse is if anything too big). A
+    window without a ``ref`` rate keeps none of its vectors; ``ref``'s own
+    vectors (zero by definition) are dropped. Vectors of the groups in
+    ``skip`` are already relative (:func:`step_vectors` on baselines)."""
+    refs = {index.get(v.method, 0): v for v in vectors if v.marker == ref}
+    out = []
+    for v in vectors:
+        if v.method in skip:
+            out.append(v)
+            continue
+        if v.marker == ref:
+            continue
+        r = refs.get(index.get(v.method, 0))
+        if r is None:
+            notes.append(f"{v.marker} {v.method}: no {ref} rate in the window")
+            continue
+        out.append(
+            dataclasses.replace(
+                v,
+                east=v.east - r.east,
+                north=v.north - r.north,
+                sigma_east=math.hypot(v.sigma_east, r.sigma_east),
+                sigma_north=math.hypot(v.sigma_north, r.sigma_north),
+                correlation_en=0.0,
+            )
+        )
+    return out
+
+
+#: --short-step: days of series read before a short window (the noise)
+STEP_NOISE_DAYS = 365
+
+
+def step_vectors(
+    args: Any,
+    parser: Any,
+    config: Any,
+    maps: Any,
+    stations: Sequence[Any],
+    ref: str | None,
+    start: dt.datetime,
+    end: dt.datetime,
+    label: str,
+    comp: int | None,
+    notes: list[str],
+) -> list[Any]:
+    """Each station's step over a short window as a vector
+    (:func:`gps_analysis.recent_step.recent_step`: the window's days against
+    the 14 before it, as a rate in mm/yr), on the daily baseline STA-``ref``
+    when ``ref`` is given (``ref`` itself draws none). The day-to-day noise
+    comes from the year of series before the window's end."""
+    from gps_analysis.recent_step import recent_step
+
+    from gps_plot.sources import gps as gps_source
+
+    day_end = dt.datetime.combine(end.date(), dt.time()) + dt.timedelta(days=1)
+    req = _request(
+        args, parser, config, day_end - dt.timedelta(days=STEP_NOISE_DAYS), day_end
+    )
+    opts = gps_source.BaselineOptions(sign="raw")
+    out = []
+    for c in stations:
+        if c.marker == ref:
+            continue
+        spec = f"{c.marker}-{ref}" if ref else c.marker
+        try:
+            s = gps_source.fetch(spec, req, opts)
+        except Exception as exc:
+            notes.append(f"{spec} {label}: {exc}")
+            continue
+        r = recent_step(
+            s.t, np.asarray(s.y)[:3], _yearf(day_end) - 1e-9,
+            window_days=window_days(start, end),
+        )  # fmt: skip
+        if r is None:
+            notes.append(f"{spec} {label}: too few days for a step")
+            continue
+        out.append(_vector(maps, c, _Rate(r.rate, r.rate_sigma), comp, label))
+    return out
+
+
+def angle_between(a: float, b: float) -> float:
+    """The smaller angle between two azimuths [deg], 0..180."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def short_filter(
+    vectors: Sequence[Any],
+    short: set[str],
+    index: dict[str, int],
+    min_snr: float,
+    downslope: dict[str, float],
+    tolerance: float | None,
+    min_count: int,
+    notes: list[str],
+) -> list[Any]:
+    """Keep a short window's vector (its legend group in ``short``) only
+    when it stands out of the noise: ``|v|/|2σ| >= min_snr``; with a
+    ``tolerance`` also pointing within it of the station's ``downslope``
+    azimuth (a station without one is not tested); and with at least
+    ``min_count`` stations of that window passing — otherwise the window
+    draws no arrows. Longer windows pass unchanged."""
+    passed: dict[int, list[Any]] = {}
+    out = []
+    for v in vectors:
+        if v.method not in short:
+            out.append(v)
+            continue
+        r = snr(v)
+        if r < min_snr:
+            notes.append(f"{v.marker} {v.method}: noise, |v|/|2σ| = {r:.2f}")
+            continue
+        if tolerance is not None and v.marker in downslope:
+            az = math.degrees(math.atan2(v.east, v.north)) % 360.0
+            off = angle_between(az, downslope[v.marker])
+            if off > tolerance:
+                notes.append(
+                    f"{v.marker} {v.method}: {az:.0f}° is {off:.0f}° off "
+                    f"downslope ({downslope[v.marker]:.0f}°)"
+                )
+                continue
+        passed.setdefault(index.get(v.method, 0), []).append(v)
+    for k, vs in passed.items():
+        if len(vs) >= min_count:
+            out += vs
+        else:
+            notes.append(
+                f"window {k + 1}: {len(vs)} station(s) moved, fewer than "
+                f"{min_count}: no arrows"
+            )
+    return out
+
+
+def downslope_azimuths(
+    stations: Sequence[Any], config: Any, notes: list[str]
+) -> dict[str, float]:
+    """The DEM downslope azimuth at each station (:func:`terrain.slope_at`);
+    a station off the DEM is left out (and so not tested)."""
+    from gps_plot import terrain
+
+    out = {}
+    for c in stations:
+        try:
+            out[c.marker] = terrain.slope_at(c.lon, c.lat, gis_dir(config)).azimuth
+        except (FileNotFoundError, ValueError) as exc:
+            notes.append(f"{c.marker}: no downslope ({exc})")
+    return out
 
 
 #: what a windowed velocity map's vectors are relative to, by --ref
