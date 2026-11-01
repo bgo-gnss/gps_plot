@@ -797,8 +797,8 @@ def build_parser(
         help="each station's horizontal displacement since its first days "
         f"(median of the first {TOTAL_END_DAYS} days to the median of the "
         "last, up to --end; with --vector-ref on the daily baseline "
-        "STA-REF): a purple circle under the station, its area by the "
-        "displacement, and the number by its name",
+        "STA-REF): a purple line the way it moved, ending in a T bar, its "
+        "length by the displacement, and the number by its name",
     )  # fmt: skip
     p.add_argument(
         "--min-epochs", type=int, default=None,
@@ -1433,6 +1433,9 @@ def _insets(
     if legend_lines:
         box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
         sea.reserve(box)  # type: ignore[arg-type]
+        corner = getattr(args, "locator_corner", None)
+        if locator_floor is None and corner in ("BL", "LB"):
+            locator_floor = box[3]  # a bottom-left locator sits on the legend
     for b in reserve:
         sea.reserve(b)
     if block is not None:
@@ -2255,16 +2258,20 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     zoomed = _in_inset(args, kept, maps)
     zoom_style = _unlabel_inset(style, args)
     avoid = maps.overlay_label_points(style.get("overlays", ()))
-    totals: dict[str, float] = {}
+    totals: dict[str, tuple[float, float]] = {}
     if args.total:
         said: list[str] = []
         totals = total_displacements(args, parser, config, stations, ref_sta, now, said)
         for line in said:
             print(line, file=sys.stderr)
     # a week nothing moved in still says which days it looked at
-    days = ", ".join(f"{s:%d.%m.}-{e:%d.%m.%Y}" for s, e in windows)
+    days = (
+        f"{min(s for s, _ in windows):%d.%m.}-{max(e for _, e in windows):%d.%m.%Y}"
+        if windows
+        else ""
+    )
     nothing = (
-        [] if kept else [(f"no arrow: nothing moved above the noise, {days}", "black")]
+        [] if kept else [(f"no arrow: no motion above the noise, {days}", "black")]
     )
     fig = maps.velocity_map(
         kept,
@@ -2654,11 +2661,13 @@ TOTAL_END_DAYS = 14
 TOTAL_FIRST = dt.datetime(1995, 1, 1)
 
 
-def total_motion(t: Any, y: Any, n: int = TOTAL_END_DAYS) -> tuple[float, float] | None:
+def total_motion(
+    t: Any, y: Any, n: int = TOTAL_END_DAYS
+) -> tuple[float, float, float] | None:
     """The horizontal displacement from a series' first ``n`` epochs to its
-    last ``n``: ``(|median(last) - median(first)|, first epoch)`` of rows
-    N, E of ``y`` (its units; epochs [yr]); None with fewer than ``2 n``
-    epochs (NaN epochs left out)."""
+    last ``n``: ``(east, north, first epoch)``, median(last) − median(first)
+    of rows N, E of ``y`` (its units; epochs [yr]); None with fewer than
+    ``2 n`` epochs (NaN epochs left out)."""
     tv = np.asarray(t, dtype=np.float64)
     a = np.asarray(y, dtype=np.float64)[:2]
     order = np.argsort(tv)
@@ -2668,7 +2677,7 @@ def total_motion(t: Any, y: Any, n: int = TOTAL_END_DAYS) -> tuple[float, float]
     if tv.size < 2 * n:
         return None
     d = np.median(a[:, -n:], axis=1) - np.median(a[:, :n], axis=1)
-    return float(np.hypot(d[0], d[1])), float(tv[0])
+    return float(d[1]), float(d[0]), float(tv[0])
 
 
 def total_displacements(
@@ -2679,8 +2688,8 @@ def total_displacements(
     ref: str | None,
     end: dt.datetime,
     notes: list[str],
-) -> dict[str, float]:
-    """``--total``: each station's :func:`total_motion` [mm] up to
+) -> dict[str, tuple[float, float]]:
+    """``--total``: each station's :func:`total_motion` (east, north [mm]) up to
     ``end``, on the daily baseline STA-``ref`` when ``ref`` is given
     (``ref`` itself has none)."""
     from gps_plot.sources import gps as gps_source
@@ -2702,8 +2711,11 @@ def total_displacements(
         if r is None:
             notes.append(f"{spec} total: too few days")
             continue
-        out[c.marker] = r[0]
-        notes.append(f"{spec} total: {r[0]:.0f} mm since {r[1]:.2f}")
+        out[c.marker] = (r[0], r[1])
+        notes.append(
+            f"{spec} total: {math.hypot(r[0], r[1]):.0f} mm toward "
+            f"{math.degrees(math.atan2(r[0], r[1])) % 360:.0f}° since {r[2]:.2f}"
+        )
     return out
 
 
