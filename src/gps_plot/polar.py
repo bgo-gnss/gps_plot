@@ -1,6 +1,6 @@
 """``gpsplot polar``: where a pair's rover went, since an onset.
 
-Panels (``--panels``, default sector,map,section), one point per epoch,
+Panels (``--panels``, default sector,map,profile), one point per epoch,
 coloured by the time since the onset:
 
 * sector: the azimuth (compass, clockwise from north) and size of the
@@ -8,8 +8,14 @@ coloured by the time since the onset:
   direction (blue) and the DEM downslope at the rover;
 * map: the paths on the terrain (grey hillshade, ground steeper than 30°
   tinted orange, contours) around the rover, scaled up to show;
-* section: the displacement along the motion direction against Up;
+* profile: the ground along each rover's motion (DEM), the rover on it and
+  its daily points scaled up, with weekly medians and the fitted plunge
+  (:mod:`gps_plot.profile`);
+* section: the displacement along the motion direction against Up [mm]
+  (optional; the profile without the ground);
 * hodograph: north against east (optional).
+
+The colour bar sits inside the map (else the profile) when there is one.
 
 The displacement is rover − reference, unsigned (where the rover went),
 from its level at the onset (the median of the first ``--window``). The
@@ -72,8 +78,8 @@ def build_parser(
         parser = argparse.ArgumentParser(prog="gpsplot polar")
     parser.description = textwrap.fill(
         "Where each pair's rover went since an onset: a polar sector "
-        "(azimuth, horizontal size), the paths on the terrain and a "
-        "section along the motion, coloured by the time since the onset, "
+        "(azimuth, horizontal size), the paths on the terrain and the "
+        "ground profile along the motion, coloured by the time since the onset, "
         "with the pair's motion direction and the DEM downslope. One "
         "figure per pair (--together: one for all).",
         width=78,
@@ -200,9 +206,10 @@ def resolve_span(args: argparse.Namespace, now: dt.datetime) -> tuple[Any, Any, 
 
 def displacement(
     t: Any, y: Any, sigma: Any, onset: float, window: float
-) -> tuple[Any, Any]:
-    """(t, d) from ``onset`` on: ``y`` less its robust level over the first
-    ``window`` after the onset (:func:`gps_analysis.direction.end_level`).
+) -> tuple[Any, Any, Any]:
+    """(t, d, σ) from ``onset`` on: ``y`` less its robust level over the
+    first ``window`` after the onset (:func:`gps_analysis.direction.end_level`),
+    and the points' own σ.
 
     Raises:
         ValueError: no samples within ``window`` of the onset.
@@ -211,12 +218,13 @@ def displacement(
 
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
     keep = t >= onset
     first = keep & (t <= onset + window)
-    level, _, n = end_level(y[:, first], np.asarray(sigma, dtype=float)[:, first])
+    level, _, n = end_level(y[:, first], sigma[:, first])
     if n == 0 or not np.isfinite(level).all():
         raise ValueError("no data at the onset")
-    return t[keep], y[:, keep] - level[:, None]
+    return t[keep], y[:, keep] - level[:, None], sigma[:, keep]
 
 
 def sector_limits(azimuth_deg: Any, pad: float = 15.0) -> tuple[float, float]:
@@ -240,8 +248,9 @@ def sector_limits(azimuth_deg: Any, pad: float = 15.0) -> tuple[float, float]:
 
 
 #: the panels of the figure, left to right (``--panels``)
-PANELS = ("sector", "map", "section", "hodograph")
-DEFAULT_PANELS = ("sector", "map", "section")
+PANELS = ("sector", "map", "profile", "section", "hodograph")
+#: BGÓ 2026-11-01: the profile replaces the section in production
+DEFAULT_PANELS = ("sector", "map", "profile")
 #: half-width [m] of the map panel's DEM window around the rover
 MAP_HALF_M = 120.0
 #: the map panel is this much wider than the others
@@ -262,7 +271,8 @@ class PairPlot:
     ``since`` days since the onset, ``d`` (3, N) mm since the onset (finite
     horizontal only), ``motion``/``downslope`` [°] or None, ``lonlat`` the
     rover, ``pos`` (x, y) [m] of the rover in the map (set by the figure),
-    ``ref`` (name, azimuth from the rover [°], distance [m]) or None.
+    ``ref`` (name, azimuth from the rover [°], distance [m]) or None,
+    ``sig`` (3, N) the points' σ [mm] or None.
     """
 
     name: str
@@ -278,6 +288,7 @@ class PairPlot:
     slope_colour: str = "saddlebrown"
     #: the onset epoch of ``since`` [days since 1970]
     t_on: float = 0.0
+    sig: Any = None
 
     @property
     def rover(self) -> str:
@@ -297,8 +308,11 @@ def _label(pp: PairPlot, many: bool, text: str) -> str:
     return f"{pp.rover}: {text}" if many else text
 
 
-def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> int:
-    """The polar sector; returns how many points were drawn at the centre."""
+def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
+            legend_inside: bool = False) -> int:  # fmt: skip
+    """The polar sector; returns how many points were drawn at the centre.
+    ``legend_inside``: the legend in the lower right of the panel, not right
+    of it (no room there when the colour bar is not on the side)."""
     from matplotlib.ticker import FuncFormatter
 
     many = len(pairs) > 1
@@ -354,7 +368,9 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> int:
     ax.set_rmax(rmax)
     ax.set_rlabel_position(lo + 2.0)
     ax.set_title("azimuth, horizontal size [mm]", pad=20)
-    if lines:
+    if lines and legend_inside:
+        ax.legend(loc="lower right", fontsize="x-small", framealpha=0.85)
+    elif lines:
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize="small")
     return centred
 
@@ -556,6 +572,46 @@ def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
     ax.set_title("vertical section along the motion")
 
 
+#: the stacked figure with a profile: the map's width against the right
+#: column's, and the profile's row height against the sector's
+PROFILE_MAP_WIDTH = 1.45
+PROFILE_ROW = 1.5
+#: a profile-only figure: its width, the axes' width and the gap between
+#: the sub-panels [in] (BGÓ 2026-11-01: closer together)
+PROFILE_ALONE_W = 13.0
+PROFILE_ALONE_AX_W = 11.6
+PROFILE_GAP_IN = 0.85
+#: its margins [in]: left, top (the title and the status line), bottom (the note)
+PROFILE_ALONE_LEFT = 0.9
+PROFILE_ALONE_TOP = 1.6
+PROFILE_ALONE_BOTTOM = 1.05
+#: characters of the figure note per inch of the figure (x-small type)
+NOTE_CHARS_PER_IN = 17.5
+
+
+def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> None:
+    """A horizontal colour bar inside ``ax`` at ``loc``, on a white box of
+    a fixed size in inches so the label, the bar and its ticks always sit
+    inside it; ``borderpad`` as a legend's, so it lines up with one."""
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # type: ignore[import-untyped]
+
+    box = inset_axes(ax, width="36%", height=0.62, loc=loc, borderpad=0.5)
+    box.set_facecolor((1.0, 1.0, 1.0, 0.85))
+    box.set_zorder(20)
+    box.set_xticks([])
+    box.set_yticks([])
+    for side in box.spines.values():
+        side.set_edgecolor("0.5")
+    cax = inset_axes(box, width="90%", height=0.13, loc="center",
+                     bbox_to_anchor=(0.0, 0.02, 1.0, 1.0),
+                     bbox_transform=box.transAxes, borderpad=0)  # fmt: skip
+    cax.set_zorder(21)  # over its box
+    bar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+    bar.ax.tick_params(labelsize="xx-small", length=2, pad=1)
+    bar.ax.xaxis.set_label_position("top")
+    bar.set_label(label, fontsize="x-small", labelpad=2)
+
+
 def polar_figure(
     pairs: Sequence[PairPlot],
     *,
@@ -568,6 +624,8 @@ def polar_figure(
     dem: Any = None,
     half: float = MAP_HALF_M,
     path_half: float = MAP_HALF_M,
+    profile_dem: Any = None,
+    profile_half: float | None = None,
 ) -> Any:
     """The figure of one pair or several (``--together``), one panel per
     ``panels`` entry (:data:`PANELS`); with a map, it is large on the left
@@ -575,28 +633,52 @@ def polar_figure(
 
     ``dem`` (:class:`gps_plot.terrain.DemWindow`, metres about the map's
     centre, ``half`` its half width) for the map; each pair's ``pos`` is its
-    rover in that frame.
+    rover in that frame. ``profile_dem``: the same about the same centre,
+    wide enough for the profiles (``profile_half`` [m] either side of each
+    rover; default :data:`gps_plot.profile.PROFILE_HALF_M`).
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
     from matplotlib import cm
 
+    from gps_plot import profile as prf
     from gps_plot import timesmatplt as tplt
 
     tplt.init_plot_style()
+    p_half = prf.PROFILE_HALF_M if profile_half is None else profile_half
     others = [p for p in panels if p != "map"]
     stacked = "map" in panels and bool(others)
+    alone = tuple(panels) == ("profile",)
     size = (21.0, 14.0) if stacked else (8.0 * len(panels) + 1.5, 9.0)
+    heights: list[float] = []
+    if alone:  # one width, the heights following the ground (equal axes)
+        heights = [PROFILE_ALONE_AX_W * sp / (2 * p_half)
+                   for sp in prf.spans(pairs, profile_dem, p_half)]  # fmt: skip
+        size = (
+            PROFILE_ALONE_W,
+            sum(heights)
+            + PROFILE_GAP_IN * (len(heights) - 1)
+            + PROFILE_ALONE_TOP
+            + PROFILE_ALONE_BOTTOM,
+        )
     if interactive:
         fig = plt.figure(figsize=size)
     else:  # no pyplot (and no GUI backend) for a saved figure
         from matplotlib.figure import Figure
 
         fig = Figure(figsize=size)
-    right = 1.0 - 1.2 / size[0]
+    # the colour bar inside the map (else the profile), as on the other maps
+    inside = "map" in panels or "profile" in panels
+    right = 0.985 if inside else 1.0 - 1.2 / size[0]
     top = 0.89 if stacked else 0.84
-    fig.subplots_adjust(left=0.05, right=right, bottom=0.07, top=top,
-                        wspace=0.18, hspace=0.3)  # fmt: skip
+    if alone:
+        left = PROFILE_ALONE_LEFT / size[0]
+        fig.subplots_adjust(left=left, right=left + PROFILE_ALONE_AX_W / size[0],
+                            bottom=PROFILE_ALONE_BOTTOM / size[1],
+                            top=1.0 - PROFILE_ALONE_TOP / size[1])  # fmt: skip
+    else:
+        fig.subplots_adjust(left=0.05, right=right, bottom=0.07, top=top,
+                            wspace=0.1 if inside else 0.18, hspace=0.3)  # fmt: skip
     vmax = max(
         (float(np.max(pp.since)) for pp in pairs if np.size(pp.since)), default=1.0
     )
@@ -605,18 +687,29 @@ def polar_figure(
     style = {"cmap": cmap, "norm": norm}
     centred = 0
     if stacked:
-        grid = fig.add_gridspec(len(others), 2, width_ratios=[MAP_WIDTH, 1.0])
+        widths = [PROFILE_MAP_WIDTH if "profile" in others else MAP_WIDTH, 1.0]
+        rows = [PROFILE_ROW if p == "profile" else 1.0 for p in others]
+        grid = fig.add_gridspec(len(others), 2, width_ratios=widths, height_ratios=rows)
         where = {"map": grid[:, 0], **{p: grid[k, 1] for k, p in enumerate(others)}}
     else:
         grid = fig.add_gridspec(1, len(panels))
         where = {p: grid[k] for k, p in enumerate(panels)}
+    holder = None  # the panel the colour bar goes in
     for panel in panels:
         if panel == "sector":
             ax = fig.add_subplot(where[panel], projection="polar")
-            centred = _sector(ax, pairs, style)
+            centred = _sector(ax, pairs, style, legend_inside=inside)
         elif panel == "map":
-            note += "; " + _map(fig.add_subplot(where[panel]), pairs, style, dem,
-                                half, path_half)  # fmt: skip
+            holder = fig.add_subplot(where[panel])
+            note += "; " + _map(holder, pairs, style, dem, half, path_half)
+        elif panel == "profile":
+            gap = (PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
+            axes, part = prf.panel(fig, where[panel], pairs, style, profile_dem,
+                                   p_half, small=not alone, hspace=gap)  # fmt: skip
+            if part:
+                note += ";\n" + part
+            if "map" not in panels:
+                holder = axes[0]
         elif panel == "section":
             _section(fig.add_subplot(where[panel]), pairs, style)
         elif panel == "hodograph":
@@ -624,27 +717,42 @@ def polar_figure(
         else:
             raise ValueError(f"unknown panel {panel!r}: one of {', '.join(PANELS)}")
 
-    cax = fig.add_axes((right + 0.015, 0.14, 0.012, 0.62))
-    bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
-    bar.set_label(f"days since {onset:%Y-%m-%d %H:%M}")
+    label = f"days since {onset:%Y-%m-%d %H:%M}"
+    if holder is not None:
+        _inner_colorbar(fig, holder, cm.ScalarMappable(norm=norm, cmap=cmap), label,
+                        "lower center" if "map" in panels else "upper left")  # fmt: skip
+    else:
+        cax = fig.add_axes((right + 0.015, 0.14, 0.012, 0.62))
+        bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
+        bar.set_label(label)
 
     rovers = ", ".join(pp.rover for pp in pairs)
     refs = sorted({pp.name[5:] for pp in pairs})
     fig.suptitle(
         rf"\Huge {rovers} -- {', '.join(refs)} \ \Large where {rovers} went since "
         rf"{onset:%Y-%m-%d}",
-        y=0.975 if stacked else 0.96,
+        y=1.0 - 0.12 / size[1] if alone else 0.975 if stacked else 0.96,
     )
     if title_status is not None:
-        fig.text(0.5, 0.94 if stacked else 0.905, title_status, ha="center",
-                 fontsize="large", color=status_color)  # fmt: skip
+        fig.text(0.5, 1.0 - 1.0 / size[1] if alone else 0.94 if stacked else 0.905,
+                 title_status, ha="center", fontsize="large",
+                 color=status_color)  # fmt: skip
     if centred:
         note += (
             # no "%": the figure text goes through TeX, where it starts a comment
             f"; {centred} point(s) under {100 * SECTOR_FRACTION:.0f} per cent of the "
             "largest displacement and outside the sector drawn at the centre"
         )
-    fig.text(0.01, 0.015, note, fontsize="x-small", color="0.3")
+    # wrapped to the figure: a longer line widens the saved (tight) figure
+    width = int(NOTE_CHARS_PER_IN * size[0])
+    note = "\n".join(textwrap.fill(line, width) for line in note.split("\n"))
+    fig.text(
+        0.01,
+        0.015 if not alone else 0.1 / size[1],
+        note,
+        fontsize="x-small",
+        color="0.3",
+    )
     return fig
 
 
@@ -664,7 +772,7 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     first = float(np.asarray(t)[have].min())
     t_on = max(first if onset is None else dr_days(onset), first)
     when = dt.datetime(1970, 1, 1) + dt.timedelta(days=t_on)
-    td, d = displacement(t, y, s, t_on, window)
+    td, d, sd = displacement(t, y, s, t_on, window)
     motion = (directions.get(name.upper()) or {}).get("motion")
     how = "config/option"
     if motion is None:
@@ -676,7 +784,7 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
             how = "no significant motion over the plot"
     ok = np.isfinite(d[0]) & np.isfinite(d[1])
     pp = PairPlot(name, (np.asarray(td) - t_on)[ok], np.asarray(d)[:, ok], motion,
-                  t_on=t_on)  # fmt: skip
+                  t_on=t_on, sig=np.asarray(sd)[:, ok])  # fmt: skip
     note = how if motion is None else f"motion {motion:.0f} deg ({how})"
     if not args.no_dem:
         from gps_plot import terrain
@@ -793,6 +901,12 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         for pp, (marker, line, slope) in zip(pairs, PAIR_STYLES, strict=False):
             pp.marker, pp.colour, pp.slope_colour = marker, line, slope
         dem, half = _place(pairs, config, panels, args.map_half, args.dem_res)
+        profile_dem = None
+        if "profile" in panels:  # its own window: the profiles reach past the map
+            from gps_plot.profile import PROFILE_HALF_M
+
+            profile_dem, _ = _place(pairs, config, ["map"], PROFILE_HALF_M + 30.0,
+                                    args.dem_res)  # fmt: skip
         note = f"{head}; " + "; ".join(n for _, n in group)
         # one onset for the figure (the earliest): every pair's days from it
         t0 = min(pp.t_on for pp in pairs)
@@ -812,7 +926,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         fig = polar_figure(pairs, onset=when, note=note,
                            title_status=status, status_color=colour,
                            interactive=not args.save, panels=panels, dem=dem,
-                           half=half, path_half=args.map_half)  # fmt: skip
+                           half=half, path_half=args.map_half,
+                           profile_dem=profile_dem)  # fmt: skip
         tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
         if not args.save:
             import matplotlib.pyplot as plt

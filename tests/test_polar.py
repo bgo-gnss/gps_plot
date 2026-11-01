@@ -35,7 +35,8 @@ def test_displacement_from_the_onset_level() -> None:
     t = np.arange(20.0)
     y = np.vstack([t, -t, np.zeros(20)]) + 5.0
     y[0, 3] = 999.0  # an outlier in the onset window: the median ignores it
-    td, d = polar.displacement(t, y, np.ones_like(y), onset=2.0, window=4.0)
+    td, d, sd = polar.displacement(t, y, np.ones_like(y), onset=2.0, window=4.0)
+    assert sd.shape == d.shape
     assert td[0] == 2.0 and len(td) == 18
     # the onset level: the median over t = 2..6 (N: 7, 999, 9, 10, 11 → 10)
     np.testing.assert_allclose(d[:, -1], [14.0, -15.0, 0.0])
@@ -132,7 +133,14 @@ def _pair(name: str, motion: float, **kw: object) -> polar.PairPlot:
 
 
 @pytest.mark.parametrize(
-    "panels", [("sector", "map", "section"), ("sector", "hodograph"), ("map",)]
+    "panels",
+    [
+        ("sector", "map", "section"),
+        ("sector", "map", "profile"),
+        ("sector", "hodograph"),
+        ("map",),
+        ("profile",),
+    ],
 )
 @pytest.mark.parametrize("together", [False, True])
 def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
