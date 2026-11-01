@@ -2411,15 +2411,15 @@ def draw_velocity_vectors(
     rj: str | None = None,
     avoid: Sequence[tuple[float, float, str, str]] = (),
     quiet: Sequence[Any] = (),
-    totals: Mapping[str, float] | None = None,
+    totals: Mapping[str, tuple[float, float]] | None = None,
 ) -> list[tuple[str, str]]:
     """The arrows, ellipses, station dots and names of
     :func:`velocity_map` (also drawn in a zoom inset); its legend entries,
     ``(label, colour)`` per method in first-appearance order. ``quiet``
     (``lon``/``lat``/``marker``) are stations without an arrow: a dot and
-    a name only. ``totals`` (marker → mm) draws each station's total
-    displacement as a circle under it (:func:`draw_totals`), the number
-    by its name."""
+    a name only. ``totals`` (marker → east, north [mm]) draws each
+    station's total displacement as a line ending in a T bar
+    (:func:`draw_totals`), the number by its name."""
     lons = np.array([v.lon for v in vectors], dtype=np.float64)
     lats = np.array([v.lat for v in vectors], dtype=np.float64)
     if totals:
@@ -2472,16 +2472,17 @@ def draw_velocity_vectors(
     if labels and markers:
         _draw_station_labels(
             fig, [*vectors, *quiet], unlabelled, label_font, label_offset, rj,
-            avoid, texts={m: f"{m} {total_text(d)}" for m, d in (totals or {}).items()},
+            avoid,
+            texts={m: f"{m} {total_text(math.hypot(*d))}" for m, d in (totals or {}).items()},
         )  # fmt: skip
     return legend_entries
 
 
-#: --total: the circle of the station that moved most is this wide [cm]
-#: (the others by the square root of theirs: area ~ displacement)
-TOTAL_MAX_CM = 0.8
-TOTAL_PEN = "1.0p,purple"
-TOTAL_FILL = "purple@80"
+#: --total: the line of the station that moved most is this long [cm]
+#: (the others in proportion: a vector, not an arrow — it ends in a T bar)
+TOTAL_MAX_CM = 1.2
+TOTAL_PEN = "1.6p,purple"
+TOTAL_BAR = "0.25c"
 TOTAL_COLOR = "purple"
 
 
@@ -2490,29 +2491,37 @@ def total_text(mm: float) -> str:
     return f"{mm:.0f} mm" if mm < 1000 else f"{mm / 1000:.2f} m"
 
 
-def total_sizes(totals: Sequence[float], max_cm: float = TOTAL_MAX_CM) -> list[float]:
-    """Circle diameters [cm]: the largest total ``max_cm``, the others by
-    the square root of their share (the circle's area follows the
-    displacement)."""
+def total_lengths(totals: Sequence[float], max_cm: float = TOTAL_MAX_CM) -> list[float]:
+    """Line lengths [cm]: the largest total ``max_cm``, the others in
+    proportion."""
     top = max(totals, default=0.0)
     if top <= 0:
         return [0.0 for _ in totals]
-    return [max_cm * math.sqrt(max(t, 0.0) / top) for t in totals]
+    return [max_cm * max(t, 0.0) / top for t in totals]
 
 
-def draw_totals(fig: Any, points: Sequence[Any], totals: Mapping[str, float]) -> None:
-    """A circle under each point (``lon``/``lat``/``marker``) in ``totals``
-    (marker → displacement [mm]), sized by :func:`total_sizes`."""
+def draw_totals(
+    fig: Any, points: Sequence[Any], totals: Mapping[str, tuple[float, float]]
+) -> None:
+    """A line from each point (``lon``/``lat``/``marker``) in ``totals``
+    (marker → east, north [mm]) the way it moved, ending in a T bar (GMT
+    vector, terminal head), its length by :func:`total_lengths`."""
     first = {p.marker: p for p in reversed(points) if p.marker in totals}
     if not first:
         return
     pts = list(first.values())
+    east = np.array([totals[p.marker][0] for p in pts], dtype=np.float64)
+    north = np.array([totals[p.marker][1] for p in pts], dtype=np.float64)
+    length = total_lengths(np.hypot(east, north).tolist())
+    # angle counter-clockwise from east, as the map's Cartesian vector reads
+    # it (the local Mercator maps keep angles)
+    angle = np.degrees(np.arctan2(north, east))
     fig.plot(
         **layer_kw(
             "totals",
-            x=[p.lon for p in pts], y=[p.lat for p in pts],
-            size=total_sizes([totals[p.marker] for p in pts]),
-            style="cc", fill=TOTAL_FILL, pen=TOTAL_PEN,
+            data=np.column_stack([[p.lon for p in pts], [p.lat for p in pts],
+                                  angle, length]),
+            style=f"v{TOTAL_BAR}+et", pen=TOTAL_PEN, fill=TOTAL_COLOR,
         )
     )  # fmt: skip
 
@@ -2551,7 +2560,7 @@ def velocity_map(
     legend_anchor: tuple[float, float] = DEFAULT_LEGEND_ANCHOR,
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
     quiet: Sequence[Any] = (),
-    totals: Mapping[str, float] | None = None,
+    totals: Mapping[str, tuple[float, float]] | None = None,
     notes: Sequence[tuple[str, str]] = (),
     scale_vertical: bool = False,
     dem_grid: Any | None = None,
@@ -2624,9 +2633,9 @@ def velocity_map(
             extent.
         quiet: Stations without an arrow (``lon``/``lat``/``marker``),
             drawn as a dot and a name (a window none of them moved in).
-        totals: Marker → total displacement [mm]: a circle under the
-            station (:func:`draw_totals`), the number by its name, a
-            legend line.
+        totals: Marker → total displacement east, north [mm]: a line
+            ending in a T bar (:func:`draw_totals`), the number by its
+            name, a legend line.
         notes: More legend lines, ``(text, colour)``, after the others.
         scale_vertical: The vectors are vertical rates drawn north: the
             legend's reference arrow points up too.
@@ -2717,7 +2726,7 @@ def velocity_map(
         quiet=quiet, totals=totals,
     )  # fmt: skip
     if totals:
-        legend_entries.append(("circle and number: moved since installed", TOTAL_COLOR))
+        legend_entries.append(("T line and number: moved since installed", TOTAL_COLOR))
     legend_entries += notes
 
     if legend:

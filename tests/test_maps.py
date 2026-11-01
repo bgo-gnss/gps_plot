@@ -499,27 +499,27 @@ def test_velocity_map_draws_quiet_stations_without_arrows(tmp_path: Path) -> Non
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
 def test_velocity_map_draws_total_circles(tmp_path: Path) -> None:
-    """totals= draws a circle under each station it names; a station
+    """totals= draws a T-ended line from each station it names; a station
     without a total keeps its plain dot."""
     quiet = (
         StationCoordinate("STA1", lon=-22.55, lat=63.85),
         StationCoordinate("STA2", lon=-22.30, lat=63.95),
     )
     out = tmp_path / "totals.png"
-    velocity_map([], quiet=quiet, totals={"STA1": 1240.0}, resolution="crude",
+    velocity_map([], quiet=quiet, totals={"STA1": (-900.0, 850.0)}, resolution="crude",
                  scale_ref=None, projection="M10c", outfile=out)  # fmt: skip
     assert out.is_file() and os.path.getsize(out) > 1024
 
 
-def test_total_sizes_and_text() -> None:
-    """The largest total is TOTAL_MAX_CM wide, the others by the square
-    root of their share; the label says mm below a metre, m above."""
+def test_total_lengths_and_text() -> None:
+    """The largest total is TOTAL_MAX_CM long, the others in proportion;
+    the label says mm below a metre, m above."""
     from gps_plot import maps
 
-    assert maps.total_sizes([100.0, 25.0, 0.0]) == pytest.approx(
-        [maps.TOTAL_MAX_CM, maps.TOTAL_MAX_CM / 2, 0.0]
+    assert maps.total_lengths([100.0, 25.0, 0.0]) == pytest.approx(
+        [maps.TOTAL_MAX_CM, maps.TOTAL_MAX_CM / 4, 0.0]
     )
-    assert maps.total_sizes([0.0]) == [0.0]
+    assert maps.total_lengths([0.0]) == [0.0]
     assert maps.total_text(35.4) == "35 mm"
     assert maps.total_text(1240.0) == "1.24 m"
 
