@@ -1653,6 +1653,8 @@ def _draw_vector_legend(
     line_spacing: float,
     projection: str | None = None,
     vertical: bool = False,
+    t_lines: Mapping[int, float] | None = None,
+    corner: tuple[str, str] | None = None,
 ) -> None:
     """Scale-reference arrow + color-coded legend lines (SW corner block).
 
@@ -1663,14 +1665,24 @@ def _draw_vector_legend(
     With ``projection`` the block sits in a white box
     (:func:`vector_legend_box`), as the station legends do. ``vertical``:
     the reference arrow points north (up, as the map's vertical rates),
-    its label beside it.
+    its label beside it. ``t_lines`` (entry index → length [cm]): that
+    entry starts with a sample T line that long (``--total``'s scale), its
+    text after it. ``corner`` (text, colour): right-adjusted on the
+    legend's top row (the "last datapoint" of the track maps' legends).
     """
+    t_lines = dict(t_lines or {})
+    entries = list(entries)
 
     def at(line: float) -> tuple[float, float]:
         return region_point(region, anchor[0], anchor[1] + line * line_spacing)
 
     boxed = projection is not None and not isinstance(region, CornerRegion)
     vertical = vertical and boxed and scale_ref is not None
+    if corner is not None and (not boxed or vertical):
+        entries.append(corner)  # no box to adjust it in: a line of its own
+        corner = None
+    elif corner is not None and scale_ref is None:
+        entries.append(("", "black"))  # no arrow label to share: its own row
     ref_text = "" if scale_ref is None else f"{scale_ref:g} {scale_unit}"
     arrow_cm = 0.0 if scale_ref is None else float(scale_ref) * scale
     if boxed:
@@ -1685,15 +1697,37 @@ def _draw_vector_legend(
         elif scale_ref is not None:
             texts.append(ref_text)
             lines += 1.8
+        if corner is not None:  # the top row holds its own text and the corner's
+            texts[-1] += CORNER_GAP + corner[0]
         box = vector_legend_box(region, projection, anchor, line_spacing,
-                                lines, texts, font, arrow_cm)  # fmt: skip
+                                lines, texts, font, arrow_cm,
+                                indents=_t_indents(t_lines))  # fmt: skip
         fig.plot(
             **layer_kw("legend", x=box[0], y=box[1], fill=LEGEND_BOX_FILL,
                        pen=LEGEND_BOX_PEN, close=True)
         )  # fmt: skip
 
+    if corner is not None and boxed:
+        assert projection is not None
+        map_width_cm = _map_size_cm(region, projection)[0]
+        row = len(entries) + 0.8 if scale_ref is not None else len(entries) - 1
+        _, y = at(row)
+        x = box[0][1] - 2 * LEGEND_BOX_PAD_CM / map_width_cm * (region[1] - region[0])
+        fig.text(x=x, y=y, text=corner[0], font=f"{font},{corner[1]}", justify="RM")
+    map_width = _map_size_cm(region, projection)[0] if t_lines and projection else 0.0
     for i, (label, color) in enumerate(entries):
         x, y = at(i)
+        if i in t_lines and map_width:
+            cm = t_lines[i]
+            fig.plot(
+                **layer_kw(
+                    "totals",
+                    data=np.array([[x, y, 0.0, cm]]),
+                    style=f"v{TOTAL_BAR}+et", pen=TOTAL_PEN, fill=color,
+                )
+            )  # fmt: skip
+            w, e = region[0], region[1]
+            x += (cm + T_LINE_GAP_CM) / map_width * (e - w)
         fig.text(x=x, y=y, text=label, font=f"{font},{color}", justify="LM")
     if vertical:
         assert projection is not None and scale_ref is not None
@@ -1750,13 +1784,18 @@ def vector_legend_box(
     texts: Sequence[str],
     font: str,
     arrow_cm: float = 0.0,
+    indents: Mapping[int, float] | None = None,
 ) -> tuple[list[float], list[float]]:
     """The white box behind a vector legend block: ``(lons, lats)`` of its
     corners, around ``lines`` rows from ``anchor`` (region fractions) and
-    as wide as the longest of ``texts`` or the reference arrow."""
+    as wide as the longest of ``texts`` (each moved right by its
+    ``indents`` entry [cm], by index) or the reference arrow."""
     width, height = _map_size_cm(region, projection)
     pad = LEGEND_BOX_PAD_CM
-    wide = max([arrow_cm + 0.3, *(text_width_cm(t, font) for t in texts)])
+    shift = indents or {}
+    wide = max([arrow_cm + 0.3,
+                *(text_width_cm(t, font) + shift.get(i, 0.0)
+                  for i, t in enumerate(texts))])  # fmt: skip
     x0 = anchor[0] - pad / width
     x1 = anchor[0] + (wide + pad) / width
     y0 = anchor[1] - 0.5 * line_spacing - pad / height
@@ -2484,6 +2523,29 @@ TOTAL_MAX_CM = 1.2
 TOTAL_PEN = "1.6p,purple"
 TOTAL_BAR = "0.25c"
 TOTAL_COLOR = "purple"
+#: the space between a legend row's text and its right-adjusted corner text
+CORNER_GAP = " " * 8
+#: the gap between a legend's sample T line and its text [cm]
+T_LINE_GAP_CM = 0.3
+
+
+def _t_indents(t_lines: Mapping[int, float]) -> dict[int, float]:
+    """Each legend entry's text shift [cm] after its sample T line."""
+    return {i: cm + T_LINE_GAP_CM for i, cm in t_lines.items()}
+
+
+def total_reference(
+    totals: Sequence[float], max_cm: float = TOTAL_MAX_CM
+) -> tuple[float, float]:
+    """``(mm, cm)``: a round legend length (1-2-5, at or below the largest
+    total) and its T line's length on the map, the scale of
+    :func:`total_lengths`."""
+    top = max(totals, default=0.0)
+    if top <= 0:
+        return 0.0, 0.0
+    k = math.floor(math.log10(top))
+    ref = next((m * 10.0**k for m in (5, 2, 1) if m * 10.0**k <= top), 10.0**k)
+    return ref, max_cm * ref / top
 
 
 def total_text(mm: float) -> str:
@@ -2562,6 +2624,7 @@ def velocity_map(
     quiet: Sequence[Any] = (),
     totals: Mapping[str, tuple[float, float]] | None = None,
     notes: Sequence[tuple[str, str]] = (),
+    corner_note: tuple[str, str] | None = None,
     scale_vertical: bool = False,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
@@ -2636,7 +2699,9 @@ def velocity_map(
         totals: Marker → total displacement east, north [mm]: a line
             ending in a T bar (:func:`draw_totals`), the number by its
             name, a legend line.
-        notes: More legend lines, ``(text, colour)``, after the others.
+        notes: More legend lines, ``(text, colour)``, under the others.
+        corner_note: ``(text, colour)`` right-adjusted on the legend's top
+            row (the "last datapoint").
         scale_vertical: The vectors are vertical rates drawn north: the
             legend's reference arrow points up too.
         dem_grid: Optional DEM grid for a hillshade background.
@@ -2725,9 +2790,14 @@ def velocity_map(
         rj=map_rj(region, projection), avoid=overlay_label_points(overlays),
         quiet=quiet, totals=totals,
     )  # fmt: skip
+    # bottom-up: the notes, the windows, the T line's scale on top (under
+    # the reference arrow; with no arrow it shares its row with corner_note)
+    legend_entries = [*notes, *legend_entries]
+    t_lines: dict[int, float] = {}
     if totals:
-        legend_entries.append(("T line and number: moved since installed", TOTAL_COLOR))
-    legend_entries += notes
+        ref_mm, ref_cm = total_reference([math.hypot(*d) for d in totals.values()])
+        t_lines[len(legend_entries)] = ref_cm
+        legend_entries.append((f"{ref_mm:g} mm moved since installed", TOTAL_COLOR))
 
     if legend:
         _draw_vector_legend(
@@ -2745,6 +2815,8 @@ def velocity_map(
             line_spacing=legend_line_spacing,
             projection=projection,
             vertical=scale_vertical,
+            t_lines=t_lines,
+            corner=corner_note,
         )
 
     _draw_frame(fig, _frame_args(frame, title))

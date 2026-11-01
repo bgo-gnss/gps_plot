@@ -1154,9 +1154,9 @@ def test_total_motion_is_first_days_to_last_days():
     y[1, 60:] = -40.0  # 40 mm west
     y[2, 60:] = 500.0  # the vertical does not count
     y[:, 5] = np.nan
-    east, north, first = gmap.total_motion(t, y, n=14)
+    east, north, first, last = gmap.total_motion(t, y, n=14)
     assert (east, north) == pytest.approx((-40.0, 30.0))
-    assert first == pytest.approx(2021.0)
+    assert first == pytest.approx(2021.0) and last == pytest.approx(t[-1])
     assert gmap.total_motion(t[:20], y[:, :20], n=14) is None
 
 
