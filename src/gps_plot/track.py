@@ -1197,7 +1197,9 @@ def draw_tracks(
                       height - CBAR_BOX_HEIGHT_CM, height))  # fmt: skip
 
     moved = any(tr.moved and tr.since is not None for tr in tracks)
-    entries = legend_entries(tracks, onset, recent_days, up=up)
+    # each line's numbers belong to an arrow: no arrows, no lines (BGÓ
+    # 2026-11-01: SEY9's lone "34 mm/yr" line on the SEY dot map)
+    entries = legend_entries(tracks, onset, recent_days, up=up) if arrows else []
     if arrows and any(tr.moved and tr.since is not None and tr.recent is not None
                       for tr in tracks):  # fmt: skip
         entries = [(recent_key(recent_days, tracks), RECENT_COLOR), *entries]
