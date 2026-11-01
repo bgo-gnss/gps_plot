@@ -1166,3 +1166,19 @@ def test_track_onset_days_back_moves_with_today():
     assert day == dt.date(2025, 11, 1) and label == "the last 365 days"
     day, label = gmap.track_onset("20250121")
     assert day == dt.date(2025, 1, 21) and label == "2025-01-21"
+
+
+def test_portrait_legend_only_on_a_tall_mercator_map():
+    """A map taller than wide keeps its legend's size in cm: the anchor
+    and spacing scale by width/height; a wide map or another projection
+    is left alone."""
+    from gps_plot import maps
+
+    tall = gmap.portrait_legend(
+        {"region": (-14.03, -13.965, 65.2455, 65.2832), "projection": "M15.5c"}, maps
+    )
+    assert 0.5 < tall["legend_line_spacing"] / maps.DEFAULT_LEGEND_LINE_SPACING < 0.9
+    wide = {"region": (-14.03, -13.965, 65.2455, 65.268), "projection": "M15.5c"}
+    assert gmap.portrait_legend(wide, maps) == {}
+    tall_other = {"region": (-14.03, -13.965, 65.2455, 65.2832), "projection": "X10c"}
+    assert gmap.portrait_legend(tall_other, maps) == {}

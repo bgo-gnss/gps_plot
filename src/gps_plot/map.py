@@ -1365,17 +1365,21 @@ def portrait_legend(style: dict[str, Any], maps: Any) -> dict[str, Any]:
     spacing (region fractions of its height) follow its width instead, so
     the legend is as tall in cm as on a square map (a tall Seyðisfjörður
     map, SEYD north of the fjord); nothing on any other map."""
-    from gps_plot import insets
-
     region = style.get("region")
+    projection = str(style.get("projection", maps.DEFAULT_PROJECTION))
     if region is None or isinstance(region, maps.CornerRegion):
         return {}
-    width, height = insets.size_cm(
-        region, style.get("projection", maps.DEFAULT_PROJECTION)
-    )
-    if height <= width:
+    if not projection.upper().startswith("M"):
+        return {}  # the shape below is Mercator's
+    w, e, s, n = (float(v) for v in region[:4])
+
+    def merc(lat: float) -> float:
+        return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+
+    # width over height of a Mercator map, no GMT needed
+    k = math.radians(e - w) / (merc(n) - merc(s))
+    if k >= 1.0:
         return {}
-    k = width / height
     fx, fy = maps.DEFAULT_LEGEND_ANCHOR
     return {
         "legend_anchor": (fx, fy * k),
