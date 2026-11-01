@@ -561,7 +561,11 @@ in an event week the 7-day arrows set it, in a quiet week the long window's.
 A map with no arrow has no legend arrow; a legend line says nothing moved
 above the noise in its windows. plots.yaml `seydisfjordur_velocity` is the
 daily map; `tools/event-series/` draws the weekly maps of an event.
-`--locator-corner BL` puts the Iceland locator on top of the vector legend.
+`--locator-corner BL` puts the Iceland locator on top of the vector legend
+(as on a track map's), at the map's left edge. The legend has a sample T
+line with its length (`--total`'s scale) and, with `--total`, the "last
+datapoint" line of the track maps (green: the map's day or the one
+before). On a map taller than wide the legend keeps its size in cm.
 
 **The sea under the 2 m ArcticDEM** (`maps.sea_spliced`): the 2 m area
 grids measure the water surface (Seyðisfjörður's fjord is +17 to +42 m) and

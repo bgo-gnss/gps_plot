@@ -1342,7 +1342,7 @@ def _in_inset(args: Any, points: Sequence[Any], maps: Any) -> list[Any]:
 
 
 def legend_box_cm(
-    fig: Any, style: dict[str, Any], lines: int, width_cm: float = LEGEND_WIDTH_CM
+    fig: Any, style: dict[str, Any], lines: float, width_cm: float = LEGEND_WIDTH_CM
 ) -> tuple[float, ...]:
     """The vector legend's box (x0, x1, y0, y1) [cm], bottom left: ``lines``
     rows at the map functions' anchor and spacing (region fractions),
@@ -1353,9 +1353,34 @@ def legend_box_cm(
     width, height = insets.size_cm(
         region, style.get("projection", maps.DEFAULT_PROJECTION)
     )
-    fx, fy = maps._legend_anchor(maps.DEFAULT_LEGEND_ANCHOR, region)
-    top = (fy + lines * maps.DEFAULT_LEGEND_LINE_SPACING) * height + 0.3
+    anchor = style.get("legend_anchor", maps.DEFAULT_LEGEND_ANCHOR)
+    spacing = style.get("legend_line_spacing", maps.DEFAULT_LEGEND_LINE_SPACING)
+    fx, fy = maps._legend_anchor(anchor, region)
+    top = (fy + lines * spacing) * height + 0.3
     return (0.0, fx * width + width_cm, 0.0, top)
+
+
+def portrait_legend(style: dict[str, Any], maps: Any) -> dict[str, Any]:
+    """On a map taller than wide the vector legend's anchor and line
+    spacing (region fractions of its height) follow its width instead, so
+    the legend is as tall in cm as on a square map (a tall Seyðisfjörður
+    map, SEYD north of the fjord); nothing on any other map."""
+    from gps_plot import insets
+
+    region = style.get("region")
+    if region is None or isinstance(region, maps.CornerRegion):
+        return {}
+    width, height = insets.size_cm(
+        region, style.get("projection", maps.DEFAULT_PROJECTION)
+    )
+    if height <= width:
+        return {}
+    k = width / height
+    fx, fy = maps.DEFAULT_LEGEND_ANCHOR
+    return {
+        "legend_anchor": (fx, fy * k),
+        "legend_line_spacing": maps.DEFAULT_LEGEND_LINE_SPACING * k,
+    }
 
 
 def vector_legend_width_cm(labels: Sequence[str], arrow_cm: float) -> float:
@@ -1400,7 +1425,7 @@ def _insets(
     style: dict[str, Any],
     points: Sequence[Any],
     zoom_symbols: Any,
-    legend_lines: int = 0,
+    legend_lines: float = 0,
     legend_width_cm: float = LEGEND_WIDTH_CM,
     arrows: float | None = None,
     locator_floor: float | None = None,
@@ -1430,12 +1455,15 @@ def _insets(
     width, height = sea.width, sea.height
     sea.reserve((0.0, LOGO_BOX_CM[0], height - LOGO_BOX_CM[1], height))
     sea.reserve((width - SCALE_BOX_CM[0], width, 0.0, SCALE_BOX_CM[1]))
+    on_legend = False
     if legend_lines:
         box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
         sea.reserve(box)  # type: ignore[arg-type]
         corner = getattr(args, "locator_corner", None)
         if locator_floor is None and corner in ("BL", "LB"):
-            locator_floor = box[3]  # a bottom-left locator sits on the legend
+            # a bottom-left locator sits on the legend
+            locator_floor = box[3] - layout.MARGIN_CM
+            on_legend = True
     for b in reserve:
         sea.reserve(b)
     if block is not None:
@@ -1477,7 +1505,12 @@ def _insets(
         corner = getattr(args, "locator_corner", None)
         if corner is not None:
             # on a box map clear of the latitude annotations inside the frame
-            left = (None if isinstance(region, maps.CornerRegion)
+            # on a legend (a vector or track map's): at the left edge, as
+            # far left and down as it goes (BGÓ 2026-11-01)
+            on_legend = on_legend or (
+                corner in ("BL", "LB") and locator_floor is not None
+            )
+            left = (None if isinstance(region, maps.CornerRegion) or on_legend
                     else layout.BOX_LEFT_LABELS_CM)  # fmt: skip
             spot = insets.corner_spot(
                 size, (width, height), corner, floor=locator_floor, left=left
@@ -2255,16 +2288,21 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
             kept, window_index(groups), region,
             style.get("projection", maps.DEFAULT_PROJECTION),
         )  # fmt: skip
+    style.update(portrait_legend(style, maps))
     zoomed = _in_inset(args, kept, maps)
     zoom_style = _unlabel_inset(style, args)
     avoid = maps.overlay_label_points(style.get("overlays", ()))
     totals: dict[str, tuple[float, float]] = {}
+    newest: float | None = None
     if args.total:
         said: list[str] = []
-        totals = total_displacements(args, parser, config, stations, ref_sta, now, said)
+        totals, newest = total_displacements(
+            args, parser, config, stations, ref_sta, now, said
+        )
         for line in said:
             print(line, file=sys.stderr)
-    # a week nothing moved in still says which days it looked at
+    # more legend lines: a week nothing moved in says which days it looked
+    # at; --total says how new its newest day is
     days = (
         f"{min(s for s, _ in windows):%d.%m.}-{max(e for _, e in windows):%d.%m.%Y}"
         if windows
@@ -2273,6 +2311,13 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     nothing = (
         [] if kept else [(f"no arrow: no motion above the noise, {days}", "black")]
     )
+    if newest is not None:
+        # as the track maps: green when the newest day is the map's day or
+        # the one before (BGÓ 2026-11-01)
+        from gps_plot import track
+
+        day = dt.date.fromordinal(int(track.day_key(np.array([newest]))[0]))
+        nothing.append(track.newest_text(day, today=now.date()))
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
@@ -2309,11 +2354,16 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     used_scale = args.scale or scale
     _insets(
         fig, args, config, style, kept, zoom_symbols,
-        legend_lines=len(colors) + 2,
+        # the lines drawn: a window's only when it has an arrow
+        legend_lines=len({v.method for v in kept}) + bool(totals) + len(nothing)
+        + (1.8 if kept else 0.0),
         legend_width_cm=vector_legend_width_cm(
-            [*(str(k) for k in colors), f"{args.scale_ref or ref:g} mm/yr"],
+            [*(str(k) for k in colors), f"{args.scale_ref or ref:g} mm/yr",
+             *(t for t, _ in nothing),
+             *(["100 mm moved since installed"]
+               if totals else [])],
             (args.scale_ref or ref) * used_scale,
-        ),
+        ) + (maps.TOTAL_MAX_CM + maps.T_LINE_GAP_CM if totals else 0.0),
         arrows=used_scale,
     )  # fmt: skip
     # dict.fromkeys: a transient set's dates share one fit window
@@ -2663,9 +2713,9 @@ TOTAL_FIRST = dt.datetime(1995, 1, 1)
 
 def total_motion(
     t: Any, y: Any, n: int = TOTAL_END_DAYS
-) -> tuple[float, float, float] | None:
+) -> tuple[float, float, float, float] | None:
     """The horizontal displacement from a series' first ``n`` epochs to its
-    last ``n``: ``(east, north, first epoch)``, median(last) − median(first)
+    last ``n``: ``(east, north, first epoch, last epoch)``, median(last) − median(first)
     of rows N, E of ``y`` (its units; epochs [yr]); None with fewer than
     ``2 n`` epochs (NaN epochs left out)."""
     tv = np.asarray(t, dtype=np.float64)
@@ -2677,7 +2727,7 @@ def total_motion(
     if tv.size < 2 * n:
         return None
     d = np.median(a[:, -n:], axis=1) - np.median(a[:, :n], axis=1)
-    return float(d[1]), float(d[0]), float(tv[0])
+    return float(d[1]), float(d[0]), float(tv[0]), float(tv[-1])
 
 
 def total_displacements(
@@ -2688,8 +2738,9 @@ def total_displacements(
     ref: str | None,
     end: dt.datetime,
     notes: list[str],
-) -> dict[str, tuple[float, float]]:
-    """``--total``: each station's :func:`total_motion` (east, north [mm]) up to
+) -> tuple[dict[str, tuple[float, float]], float | None]:
+    """``--total``: each station's :func:`total_motion` (east, north [mm]),
+    and the newest epoch of them all [yr] (None: no series), up to
     ``end``, on the daily baseline STA-``ref`` when ``ref`` is given
     (``ref`` itself has none)."""
     from gps_plot.sources import gps as gps_source
@@ -2698,6 +2749,7 @@ def total_displacements(
     req = _request(args, parser, config, TOTAL_FIRST, day_end)
     opts = gps_source.BaselineOptions(sign="raw")
     out = {}
+    newest: float | None = None
     for c in stations:
         if c.marker == ref:
             continue
@@ -2712,11 +2764,12 @@ def total_displacements(
             notes.append(f"{spec} total: too few days")
             continue
         out[c.marker] = (r[0], r[1])
+        newest = r[3] if newest is None else max(newest, r[3])
         notes.append(
             f"{spec} total: {math.hypot(r[0], r[1]):.0f} mm toward "
             f"{math.degrees(math.atan2(r[0], r[1])) % 360:.0f}° since {r[2]:.2f}"
         )
-    return out
+    return out, newest
 
 
 def angle_between(a: float, b: float) -> float:
