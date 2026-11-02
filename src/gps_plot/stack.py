@@ -10,9 +10,10 @@ SEYD-SEYD is dropped). Quote patterns: an unquoted ``?`` is the shell's.
 
 Each series is zeroed at its own first epoch. A series that starts later
 than the others is put on the common start instead (:func:`backcast_late_starts`,
-BGÓ 2026-10-23): its rate over its first stretch of data is extended back to
-the stack's first epoch and the series is shifted so that line is zero there;
-the figure draws that line dashed. Too little data to fit a rate leaves the
+BGÓ 2026-10-23): its own data from before the window give its level and
+rate at the window start (BGÓ 2026-11-02), else its rate over its first
+stretch of data is extended back to the stack's first epoch; the series is
+shifted so that line is zero there, and the figure draws that line dashed. Too little data to fit a rate leaves the
 series zeroed at its start, and the legend says so.
 """
 
@@ -245,6 +246,11 @@ BACKCAST_MIN_SPAN_DAYS = 30.0
 _DAYS_PER_YEAR = 365.25
 
 
+#: a late series is read this far before the window too: its own data
+#: before the gap give its level and rate at the window start
+BACKCAST_HISTORY_YEARS = 1.0
+
+
 #: the backcast line rejects epochs whose residual exceeds this many robust
 #: σ (1.4826·MAD), refitting until the kept set settles
 BACKCAST_CLIP_SIGMA = 4.0
@@ -291,7 +297,59 @@ def _rate_line(
     return fit
 
 
-def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[bool]]:
+def late_series(series: Sequence[Series]) -> list[bool]:
+    """Per series, whether it starts more than :data:`BACKCAST_MIN_GAP_DAYS`
+    after the earliest one (the ones :func:`backcast_late_starts` moves)."""
+    starts = [float(np.nanmin(np.asarray(s.t, dtype=float))) for s in series]
+    t0 = min(starts)
+    return [(t1 - t0) * _DAYS_PER_YEAR > BACKCAST_MIN_GAP_DAYS for t1 in starts]
+
+
+def _from_history(s: Series, history: Series, t0: float) -> tuple[Any, Any] | None:
+    """(shift, line at t1) of a late series ``s`` from its own data before
+    ``t0`` (``history``: the same series read from earlier on, zeroed
+    elsewhere): a line through its last :data:`BACKCAST_FIT_DAYS` before
+    ``t0`` (all of its data before ``t0`` when that holds too few epochs)
+    gives its level at ``t0`` and its rate; the two reads are tied
+    by the median difference over their common days. None when there is
+    too little before ``t0`` or nothing in common."""
+    th = np.asarray(history.t, dtype=float)
+    yh = np.asarray(history.y, dtype=float)
+    sh = np.asarray(history.sigma, dtype=float)
+    t = np.asarray(s.t, dtype=float)
+    t1 = float(np.nanmin(t))
+    before = th < t0
+    if not before.any():
+        return None
+    last = float(th[before].max())
+    stretch = before & (th >= last - BACKCAST_FIT_DAYS / _DAYS_PER_YEAR)
+    if stretch.sum() < BACKCAST_MIN_POINTS:  # sparse (SVIN: a day a week or less)
+        stretch = before
+    days_h = np.round(th * _DAYS_PER_YEAR).astype(int)
+    days_s = np.round(t * _DAYS_PER_YEAR).astype(int)
+    common, ih, is_ = np.intersect1d(days_h, days_s, return_indices=True)
+    if common.size == 0:
+        return None
+    shift, at_t1 = [], []
+    for c in range(yh.shape[0]):
+        ok = stretch & np.isfinite(yh[c])
+        span = (th[ok].max() - th[ok].min()) * _DAYS_PER_YEAR if ok.any() else 0.0
+        if ok.sum() < BACKCAST_MIN_POINTS or span < BACKCAST_MIN_SPAN_DAYS:
+            return None
+        line = _rate_line(th[ok], yh[c][ok], sh[c][ok], t0)
+        tie = np.nanmedian(yh[c][ih] - np.asarray(s.y, dtype=float)[c][is_])
+        if line is None or not np.isfinite(tie):
+            return None
+        level, rate = line
+        # the window series in the history's frame is y + tie; zero at t0
+        shift.append(level - tie)
+        at_t1.append(rate * (t1 - t0))
+    return np.array(shift), np.array(at_t1)
+
+
+def backcast_late_starts(
+    series: Sequence[Series], history: Sequence[Series | None] | None = None
+) -> tuple[list[Series], list[bool]]:
     """Put series that start late on the stack's common zero (best effort).
 
     Every series arrives zeroed at its own first epoch. One that starts more
@@ -305,6 +363,14 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
     :data:`BACKCAST_MIN_POINTS` epochs (or :data:`BACKCAST_MIN_SPAN_DAYS`) in
     the fit stretch is left as it is.
 
+    ``history``: per series, the same series read from
+    :data:`BACKCAST_HISTORY_YEARS` before the window (or None). A late series
+    with data there is placed by its own past instead (:func:`_from_history`):
+    its level and rate before the gap, not the rate of its first data in
+    the window, which an event may have set (SVIN 2026: seen again weekly
+    only after the Svínafellsheiði onset, its in-window rate drew a slope
+    back to the window start where it had hardly moved; BGÓ 2026-11-02).
+
     Returns the series and, per series, whether it was left zeroed at its
     own start although it starts late.
     """
@@ -312,7 +378,7 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
     t0 = min(starts)
     out: list[Series] = []
     unfitted: list[bool] = []
-    for s, t1 in zip(series, starts, strict=True):
+    for k, (s, t1) in enumerate(zip(series, starts, strict=True)):
         gap = (t1 - t0) * _DAYS_PER_YEAR
         if gap <= BACKCAST_MIN_GAP_DAYS:
             out.append(s)
@@ -321,6 +387,13 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
         t = np.asarray(s.t, dtype=float)
         y = np.asarray(s.y, dtype=float)
         sigma = np.asarray(s.sigma, dtype=float)
+        past = history[k] if history is not None else None
+        placed = _from_history(s, past, t0) if past is not None else None
+        if placed is not None:
+            at_t0, at_t1_rel = placed
+            out.append(_shifted(s, at_t0, (t0, t1, at_t1_rel), "history"))
+            unfitted.append(False)
+            continue
         stretch = (t >= t1) & (t <= t1 + max(gap, BACKCAST_FIT_DAYS) / _DAYS_PER_YEAR)
         lines = []
         for c in range(y.shape[0]):
@@ -337,26 +410,30 @@ def backcast_late_starts(series: Sequence[Series]) -> tuple[list[Series], list[b
         # value of each line at t0 (the shift) and at t1 (where it meets the data)
         at_t0 = np.array([lv + r * (t0 - t1) for lv, r in lines])  # type: ignore[misc]
         at_t1 = np.array([lv for lv, _ in lines])  # type: ignore[misc]
-
-        def moved(overlay: Any) -> Any:  # an overlay moves with its series
-            if overlay is None:
-                return None
-            oy, ody = overlay
-            return (np.asarray(oy, dtype=float) - at_t0[:, None], ody)
-
-        out.append(
-            dataclasses.replace(
-                s,
-                y=y - at_t0[:, None],
-                outliers=moved(s.outliers),
-                iced=moved(s.iced),
-                buried=moved(s.buried),
-                netday=moved(s.netday),
-                meta={**s.meta, "backcast": (t0, t1, at_t1 - at_t0)},
-            )
-        )
+        out.append(_shifted(s, at_t0, (t0, t1, at_t1 - at_t0), "forward"))
         unfitted.append(False)
     return out, unfitted
+
+
+def _shifted(s: Series, at_t0: Any, backcast: tuple[Any, ...], how: str) -> Series:
+    """``s`` moved down by ``at_t0`` (per component), overlays with it, and
+    the dashed line (``meta["backcast"]``) recorded."""
+
+    def moved(overlay: Any) -> Any:  # an overlay moves with its series
+        if overlay is None:
+            return None
+        oy, ody = overlay
+        return (np.asarray(oy, dtype=float) - at_t0[:, None], ody)
+
+    return dataclasses.replace(
+        s,
+        y=np.asarray(s.y, dtype=float) - at_t0[:, None],
+        outliers=moved(s.outliers),
+        iced=moved(s.iced),
+        buried=moved(s.buried),
+        netday=moved(s.netday),
+        meta={**s.meta, "backcast": backcast, "backcast_from": how},
+    )
 
 
 def _is_pattern(code: str) -> bool:
@@ -599,6 +676,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         ),
     )
     got, labels, dropped = [], [], []
+    specs_got: list[str] = []
     for spec in series_specs:
         try:
             with warnings.catch_warnings(record=True) as caught:
@@ -620,13 +698,26 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             label += " (not detrended)"
         got.append(s)
         labels.append(label)
+        specs_got.append(spec)
     for line in dropped:
         print(f"dropped {line}", file=sys.stderr)
     if not got:
         print("nothing plotted", file=sys.stderr)
         return 1
 
-    got, unfitted = backcast_late_starts(got)
+    history: list[Series | None] = [None] * len(got)
+    if fstart is not None:  # a late series: read it from before the window too
+        early = dataclasses.replace(request, fstart=fstart - BACKCAST_HISTORY_YEARS)
+        for k, late in enumerate(late_series(got) if got else []):
+            if not late:
+                continue
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    history[k] = source.fetch(specs_got[k], early, bl_opts)
+            except Exception as exc:  # the forward fit is the fallback
+                print(f"warning: {specs_got[k]}: no history ({exc})", file=sys.stderr)
+    got, unfitted = backcast_late_starts(got, history)
     labels = [
         f"{label} (zeroed at its start)" if late else label
         for label, late in zip(labels, unfitted, strict=True)

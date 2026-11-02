@@ -379,3 +379,33 @@ def test_stack_figure_draws_icing_and_network_days_edged_in_the_series_colour():
     legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
     assert "network day (ring: its series' colour)" in legend
     assert fig.axes[0].get_ylim()[1] >= 7.0
+
+
+def test_a_late_series_with_history_is_placed_by_its_past_not_its_event():
+    # SVIN 2026: still before the gap, seen again only after an onset when it
+    # moves fast; the in-window rate must not be drawn back to the start
+    early = _ramp("A", 2026.0, 300, 0.0)
+    past = _ramp("B", 2025.2, 300, 0.0)  # flat, its own zero
+    gap_end = 2026.5
+    t = gap_end + np.arange(60) / 365.25
+    fast = np.vstack([-80.0 * (t - gap_end) - 10.0] * 3)  # 10 mm moved in the gap
+    late = Series("B", t, fast - fast[:, :1], np.ones((3, 60)))  # zeroed at its start
+    hist = Series("B", np.concatenate([past.t, t]),
+                  np.hstack([past.y, fast]), np.ones((3, 360)))  # fmt: skip
+    out, unfitted = stk.backcast_late_starts([early, late], [None, hist])
+    assert unfitted == [False, False]
+    b = out[1]
+    assert b.meta["backcast_from"] == "history"
+    np.testing.assert_allclose(b.meta["backcast"][2], 0.0, atol=1e-6)  # flat line
+    np.testing.assert_allclose(b.y[:, 0], -10.0, atol=1e-6)  # moved in the gap
+    # without history: the old forward fit, sloped by the fast motion
+    out, _ = stk.backcast_late_starts([early, late])
+    assert out[1].meta["backcast_from"] == "forward"
+    assert abs(out[1].meta["backcast"][2][0]) > 20.0
+
+
+def test_a_late_series_without_data_before_the_window_falls_back():
+    early = _ramp("A", 2025.0, 365, 10.0)
+    late = _ramp("B", 2025.5, 180, 10.0)
+    out, _ = stk.backcast_late_starts([early, late], [None, late])
+    assert out[1].meta["backcast_from"] == "forward"
