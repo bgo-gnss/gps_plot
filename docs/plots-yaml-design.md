@@ -159,6 +159,23 @@ event (an `end:`) or its age drops it. A map product counts by its
 `area:`. The run prints `watch: <slug> first (<why>)`; `--dry-run` lists
 the jobs in run order.
 
+Only what changed: `--changed` (BGÓ 2026-11-02; `gps_plot.changed`). A
+whole run (no `--product`/`--area`/stations) that ends without a failure
+saves `<plots_dir>/_runs/.fingerprints.json`: a fingerprint of every
+station's `STA.*` files in pos_dir (.pos in every frame/session, the
+autcln indices) and one of the setup (plots.yaml, events, areas, detrend
+and outlier config files, the stations.cfg time stamp, gps_plot's code).
+`--changed` then draws only the jobs touching a changed station: a ts
+job keeps those stations (a pair by either end, `active` through
+stations.cfg), a stack or polar figure runs whole, a map with a station
+list when one of them changed, a map of a region on any change. A changed
+setup, or no state, draws everything; nothing changed draws nothing. The
+network lists (`network_days`, `network_cm`) are left out: a new day
+changes them for everyone, but only on a day a station without it does
+not plot. A plot is drawn relative to its day (title colour, windows), so
+the nightly whole run without `--changed` sets the baseline; the daytime
+timer runs use `--changed`.
+
 ## Free ts options: `args:` (2026-10-22)
 
 Any `gpsplot ts` option can be given as `args:` — a string or a list of
