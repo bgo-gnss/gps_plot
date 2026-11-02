@@ -1099,3 +1099,58 @@ def test_steep_zone_recolours_the_steep_land(tmp_path, monkeypatch):
     assert (shifted[steep] == maps.GLACIER_Z_OFFSET + maps.ZONE_Z_OFFSET).all()
     assert (shifted[~steep] == 0).all()
     assert "240/160/80" in open(cpt).read()
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_fine_on_map_resamples_and_fills_the_sea_and_the_rest(tmp_path, monkeypatch):
+    """--dem arcticdem: the 2 m grid box-filtered onto the map's lattice;
+    land off its box from the Iceland DEM, sea from the Iceland depth (at
+    most -1 m, ArcticDEM's +17 m water surface gone); cached."""
+    import xarray as xr
+
+    from gps_plot import maps
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    fine = tmp_path / "area.nc"
+    # 2 m-ish cells over -14.000..-13.992, 65.260..65.266: 200 m everywhere
+    _area_grid(fine, -14.0, 65.26, 196, 334, z=np.full((334, 196), 200.0))
+    sea = tmp_path / "sea.nc"
+    depth = np.full((40, 40), 50.0)  # land 50 m off the fine grid ...
+    depth[:, :10] = -30.0  # ... and sea in the west
+    _area_grid(sea, -14.02, 65.25, 40, 40, dlon=1e-3, dlat=5e-4, z=depth)
+    coast = tmp_path / "coast.gmt"  # land east of -14.005
+    coast.write_text("> land\n-14.005 65.2\n-13.9 65.2\n-13.9 65.3\n-14.005 65.3\n")
+    region = (-14.012, -13.988, 65.258, 65.268)  # sticks out of the fine grid
+    out = maps.fine_on_map(str(fine), str(sea), str(coast), region, 2e-4)
+    g = xr.load_dataarray(out, engine="gmt", raster_kind="grid")
+    v, lon = g.values, g.coords[g.dims[1]].values
+    lat = g.coords[g.dims[0]].values
+    assert abs(float(lon[1] - lon[0]) - 2e-4) < 1e-9  # the lattice spacing
+    in_box = (lon > -13.9995) & (lon < -13.9925)
+    rows = (lat > 65.2605) & (lat < 65.2655)
+    assert np.allclose(v[np.ix_(rows, in_box)], 200.0)  # ArcticDEM on land
+    assert np.allclose(v[:, lon > -13.990], 50.0, atol=1.0)  # land off its box
+    assert (v[:, lon < -14.007] <= -1.0).all()  # off the coast: the sea
+    assert maps.fine_on_map(str(fine), str(sea), str(coast), region, 2e-4) == out
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_smooth_sea_on_a_fine_lattice_keeps_the_grid_and_the_land():
+    """Cells far finer than the filter: block-averaged, filtered, put back;
+    same shape, land untouched, the sea below the shallowest level."""
+    import pygmt
+    import xarray as xr
+
+    from gps_plot import maps
+
+    lon = -22.5 + 1.5e-4 * np.arange(400)
+    lat = 63.8 + 6.6e-5 * np.arange(300)
+    z = np.where(lon[None, :] < -22.47, -20.0 + 5 * np.sin(lat[:, None] * 3e3), 30.0)
+    grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+    grid.gmt.registration, grid.gmt.gtype = 0, 1
+    out = maps.smooth_sea(pygmt, grid, 0.5)  # 0.5 km on ~7.3 m cells
+    v = np.asarray(out.values)
+    assert v.shape == z.shape
+    assert (v[z > 0] == 30.0).all()
+    assert (v[z < 0] <= maps.SEA_SMOOTH_SHALLOWEST).all()
+    assert v[z < 0].std() < z[z < 0].std()  # smoother

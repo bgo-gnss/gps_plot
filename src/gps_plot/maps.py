@@ -1033,6 +1033,92 @@ def sea_spliced(fine: str, sea: str, coast: str) -> str:
     return str(out)
 
 
+#: --dem arcticdem: a 2 m area grid is used for a whole map when its box
+#: covers at least this share of the map; the rest comes from the Iceland DEM
+AREA_DEM_MIN_SHARE = 0.75
+
+
+def fine_on_map(
+    fine: str,
+    sea: str,
+    coast: str,
+    region: Sequence[float],
+    spacing: float,
+) -> str:
+    """A 2 m area grid for a whole map: box-filtered onto a lattice of
+    ``spacing`` degrees of longitude (square cells) over ``region``, its sea
+    and whatever lies outside it from the Iceland DEM ``sea``, cached.
+
+    Land inside the ``coast`` polygons takes ArcticDEM where it has data,
+    else ``sea`` (the 1″ topo-bathymetry); off the coast every cell takes
+    the depth of ``sea``, at most -1 m (ArcticDEM measures the water
+    surface; :func:`sea_spliced`). The Svartsengi maps, 0.55° wide, then
+    shade with ArcticDEM as the Seyðisfjörður zoom does (BGÓ 2026-11-02)
+    without hillshading 124 M cells for 15 m pixels. Written once to
+    ``$XDG_CACHE_HOME/gps_plot/dem/`` and rebuilt when an input is newer."""
+    import hashlib
+
+    import pygmt
+    import xarray as xr
+
+    w, e, s, n = (float(v) for v in region[:4])
+    dx = float(spacing)
+    dy = dx * math.cos(math.radians((s + n) / 2))
+    key = hashlib.sha1(f"{w:.6f}/{e:.6f}/{s:.6f}/{n:.6f}/{dx:.3e}".encode()).hexdigest()
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    out = Path(base) / "gps_plot" / "dem" / f"{Path(fine).stem}-map-{key[:10]}.nc"
+    sources = [Path(fine), Path(sea), Path(coast)]
+    if out.is_file() and all(out.stat().st_mtime > p.stat().st_mtime for p in sources):
+        return str(out)
+    lon = w + dx * np.arange(int(math.floor((e - w) / dx)) + 1)
+    lat = s + dy * np.arange(int(math.floor((n - s) / dy)) + 1)
+    lattice = xr.DataArray(
+        np.zeros((lat.size, lon.size), dtype=np.float32),
+        coords={"lat": lat, "lon": lon}, dims=("lat", "lon"),
+    )  # fmt: skip
+    lattice.gmt.registration, lattice.gmt.gtype = 0, 1  # gridline, geographic
+    land = _ice_mask(pygmt, lattice, coast)
+    if land is None:
+        land = np.zeros(lattice.shape, dtype=bool)
+    if land.shape != lattice.shape:
+        return fine  # the mask must lie on the lattice; refuse to guess
+
+    def onto(grid: Any) -> Any:
+        g = grid.rename({grid.dims[0]: "lat", grid.dims[1]: "lon"})
+        return np.asarray(g.interp(lat=lat, lon=lon).values, dtype=np.float32)
+
+    pad = 0.01
+    floor = onto(pygmt.grdcut(sea, region=[w - pad, e + pad, s - pad, n + pad],
+                              verbose="e"))  # fmt: skip
+    fw, fe, fs, fn = _grid_region(fine)
+    inner = [max(w, fw), min(e, fe), max(s, fs), min(n, fn)]
+    top = np.full(lattice.shape, np.nan, dtype=np.float32)
+    if inner[0] < inner[1] and inner[2] < inner[3]:
+        # a box filter one lattice cell wide [km] (GMT takes no Cartesian
+        # width on a geographic grid): each cell the mean of its ~2 m cells
+        # (a plain resample would alias the 2 m detail)
+        width_km = dy * M_PER_DEG / 1000.0
+        boxed = pygmt.grdfilter(
+            grid=fine, filter=f"b{width_km:.6g}", distance="geo_flatearth1",
+            region=inner, spacing=f"{dx:.10g}/{dy:.10g}", nans="i",
+            coltypes="g", verbose="e",  # lon/lat even when the file says not
+        )  # fmt: skip
+        top = onto(boxed)
+    z = np.where(
+        land,
+        np.where(np.isfinite(top), top, floor),
+        np.minimum(np.nan_to_num(floor, nan=-1.0), -1.0),
+    ).astype(np.float32)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    part = out.with_name(f".part-{out.name}")
+    grid = lattice.copy(data=z)
+    grid.gmt.registration, grid.gmt.gtype = 0, 1
+    pygmt.grdcut(grid, region=[float(lon[0]), float(lon[-1]), float(lat[0]),
+                               float(lat[-1])], outgrid=str(part))  # fmt: skip
+    part.replace(out)
+    return str(out)
+
+
 def _grid_region(path: str) -> list[float]:
     """W/E/S/N of a grid file (its header)."""
     import pygmt
@@ -1047,6 +1133,7 @@ def iceland_dem(
     projection: str = DEFAULT_PROJECTION,
     *,
     dpi: int = DEFAULT_RASTER_DPI,
+    prefer_fine: bool = False,
 ) -> DemChoice:
     """The Iceland DEM level for a map, from the GIS directory ``gis_dir``:
     no finer than the output pixels.
@@ -1058,6 +1145,11 @@ def iceland_dem(
     the IS 50V lakes when present: the overview coast and lakes for pixels
     coarser than :data:`COAST_OVERVIEW_PIXEL_DEG`, glacier contours
     (:data:`ICELAND_GLACIER_CONTOUR_M`) only on finer ones.
+
+    ``prefer_fine`` (``--dem arcticdem``): a 2 m area grid whose box covers
+    :data:`AREA_DEM_MIN_SHARE` of the map, even when an Iceland level would
+    fit, resampled to the map's pixels with the sea and the rest from the
+    Iceland DEM (:func:`fine_on_map`); none covers: as without.
 
     Raises:
         FileNotFoundError: the chosen level is not built.
@@ -1082,6 +1174,17 @@ def iceland_dem(
     sea, coast = base / GIS_DEM / ICELAND_DEM_LEVELS[0][0], base / ICELAND_COAST
     if fine and sea.is_file() and coast.is_file():
         fine = sea_spliced(fine, str(sea), str(coast))
+    elif prefer_fine and sea.is_file() and coast.is_file():
+        area = (e - w) * (n - s)
+        best = max(
+            ((max(0.0, min(e, ge) - max(w, gw)) * max(0.0, min(n, gn) - max(s, gs))
+              / area, path, cell)
+             for path, cell, (gw, ge, gs, gn) in area_dems(base)),
+            default=None,
+        )  # fmt: skip
+        if best is not None and best[0] >= AREA_DEM_MIN_SHARE:
+            spacing = max(pixel / 2, best[2])
+            fine = fine_on_map(best[1], str(sea), str(coast), region, spacing)
     grid = Path(fine) if fine else base / GIS_DEM / name
     if not grid.is_file():
         raise FileNotFoundError(
@@ -1327,6 +1430,10 @@ def _grid_cells(grid: Any) -> tuple[float, float] | None:
     return float(abs(x[1] - x[0])), float(abs(y[1] - y[0]))
 
 
+#: smooth_sea filters on cells no finer than its width / this
+SEA_SMOOTH_MAX_CELLS = 20.0
+
+
 def smooth_sea(pygmt_mod: Any, grid: Any, km: float) -> Any:
     """``grid`` with its sea floor (z < 0) smoothed by a Gaussian filter
     ``km`` wide; land and NaN cells unchanged. Land counts as sea level in
@@ -1334,9 +1441,30 @@ def smooth_sea(pygmt_mod: Any, grid: Any, km: float) -> Any:
     stays below :data:`SEA_SMOOTH_SHALLOWEST` (sea-coloured to the coast)."""
     z = np.asarray(grid.values, dtype=np.float64)
     flat = _as_grid_of(grid.copy(data=np.where(z > 0, 0.0, z)), grid)  # land at 0
-    smoothed = pygmt_mod.grdfilter(
-        **layer_kw("sea-smooth", grid=flat, filter=f"g{km:g}", distance=2)
-    )
+    ys, xs = grid.coords[grid.dims[0]].values, grid.coords[grid.dims[1]].values
+    dy_km = abs(float(ys[1] - ys[0])) * M_PER_DEG / 1000.0 if ys.size > 1 else km
+    if km / dy_km > SEA_SMOOTH_MAX_CELLS:
+        # cells far finer than the filter (a 7.5 m ArcticDEM map lattice: the
+        # Gaussian ran minutes): block-average down to cells about
+        # km/SEA_SMOOTH_MAX_CELLS wide, filter those, interpolate back (the
+        # sea floor here is the 1" DEM anyway)
+        f = max(1, int(km / SEA_SMOOTH_MAX_CELLS / dy_km))
+        coarse = flat.coarsen({grid.dims[0]: f, grid.dims[1]: f}, boundary="trim")
+        coarse = _as_grid_of(coarse.mean(), grid)
+        filtered = pygmt_mod.grdfilter(
+            **layer_kw("sea-smooth", grid=coarse, filter=f"g{km:g}", distance=2)
+        )
+        filtered = filtered.rename({filtered.dims[0]: grid.dims[0],
+                                    filtered.dims[1]: grid.dims[1]})  # fmt: skip
+        # cubic: a linear interpolation leaves kinks the hillshade streaks
+        smoothed = filtered.interp(
+            {grid.dims[0]: ys, grid.dims[1]: xs}, method="cubic",
+            kwargs={"fill_value": None},
+        )  # fmt: skip
+    else:
+        smoothed = pygmt_mod.grdfilter(
+            **layer_kw("sea-smooth", grid=flat, filter=f"g{km:g}", distance=2)
+        )
     sm = np.minimum(np.asarray(smoothed.values, dtype=np.float64),
                     SEA_SMOOTH_SHALLOWEST)  # fmt: skip
     if sm.shape != z.shape:  # the filter keeps the grid; refuse to guess
