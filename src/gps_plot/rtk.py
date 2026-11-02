@@ -449,8 +449,9 @@ def _stack(
             0.01, 0.02, what + "; ".join(notes), transform=fig.axes[2].transAxes,
             fontsize="x-small", color="0.3", va="bottom",
         )  # fmt: skip
-    # the plot-time line, green while the RTK stream is current (as --classic)
-    rtk_classic.now_line(fig.axes[:3], now=now, last=last, fontsize=12)
+    # the plot-time line, green while the RTK stream is current (as --classic);
+    # at -e for a past window (else the axis ran on to today)
+    rtk_classic.now_line(fig.axes[:3], now=min(now, end), last=last, fontsize=12)
     if events:
         tplt.addEvent(events, fig)
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
@@ -569,7 +570,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         fig = rtk_classic.classic_figure(
             series,
             title=rtk_classic.classic_title([s.label for s in series], special),
-            start=start, end=end, now=now, last=last, interactive=not args.save,
+            start=start, end=end, now=min(now, end), last=last,
+            interactive=not args.save,
             names=baselines,
             ylabels=orient.labels("is", "cm"),
         )  # fmt: skip

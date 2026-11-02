@@ -349,3 +349,31 @@ def test_now_line_marks_plot_time_on_every_panel():
     last = now - dt.timedelta(hours=2)
     assert rtk_classic.now_line([stale], now=now, last=last) == rtk_classic.STALE_COLOR
     assert stale.texts[-1].get_text().endswith("(last 2026-10-30 08:00)")
+
+
+def test_a_past_window_draws_its_time_line_at_the_end(monkeypatch, tmp_path):
+    """-e in the past: the plot-time line (and so the axis) stops at -e, not
+    today (a 2023 window ran its axis on to now: ~1100 days of ticks)."""
+    import geo_dataread.rtk_read as rr
+
+    from gps_plot import rtk_classic
+
+    def read(name, start, end, **kw):
+        t = _minutes(600, "2023-11-10T08:00")
+        return rr.RtkBaseline(name, t, np.zeros((3, 600)), np.full((3, 600), 0.001),
+                              np.ones(600, int), "60s")  # fmt: skip
+
+    monkeypatch.setattr(rr, "list_baselines", lambda root=None: DIRS)
+    monkeypatch.setattr(rr, "read_rtk_baseline", read)
+    seen = {}
+
+    def line(axes, *, now, last, **kw):
+        seen["now"] = now
+        return rtk_classic.CURRENT_COLOR
+
+    monkeypatch.setattr(rtk_classic, "now_line", line)
+    parser = rtk.build_parser(config=_Config())
+    args = parser.parse_args(["SEY1-SEYD", "--special", "12h", "-e", "20231110-18:00",
+                              "--save", "png", "-d", str(tmp_path)])  # fmt: skip
+    rtk.run(args, parser, _Config())
+    assert seen["now"] == dt.datetime(2023, 11, 10, 18, 0)
