@@ -32,6 +32,7 @@ gps_plot/
 │   ├── profile.py                    # polar's profile panel: DEM ground along the motion, points scaled on it, weekly medians, plunge fit (σ both ways)
 │   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
+│   ├── rtk_map.py                    # gpsplot rtk-map: last hours of RTK motion on a map, pair network in its own frame (no net motion)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
 │   ├── map.py                        # gpsplot map: station/velocity/deformation/slip over maps.py

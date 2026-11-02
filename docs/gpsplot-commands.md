@@ -33,7 +33,13 @@ noisy, epoch — the Svínafellsheiði stacks, BGÓ 2026-11-02. Baselines to one
 reference are titled `A, B -- REF baselines`. And a detrended series is
 zeroed on its first clean samples (`sources.gps.first_clean`): one undetected
 outlier at the start no longer sets the zero (OLAC, July 2021). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
-RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
+RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot rtk-map
+--pairs A-B,... --stations S,... --region W/E/S/N` draws the last `--hours`
+(12) of RTK motion on a map: each pair's change (last 60 min median minus
+first), the pairs solved as one network in its own frame (no net motion of
+its stations; `--anchors` holds stations at zero instead, but far anchors'
+long float links trended 20-50 mm in 12 h, BGÓ 2026-11-02), vertical in the
+labels; the operational Reykjanes map every 5 min (`rtk_map.py`). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
 window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
 plots.yaml `tool: map` products run maps through `gpsplot run` (Svartsengi
