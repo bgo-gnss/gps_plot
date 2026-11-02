@@ -179,6 +179,14 @@ def build_parser(
         "palette colour of their name",
     )
     parser.add_argument(
+        "--zero-before",
+        default=None,
+        metavar="YYYYMMDD|event",
+        help="zero each series on its median before this date instead of on "
+        "its first epoch (event: the latest --events date in the window); "
+        "a series with fewer than 2 epochs before it stays as it is",
+    )
+    parser.add_argument(
         "--label",
         default=None,
         metavar="NAME",
@@ -395,7 +403,7 @@ def backcast_late_starts(
             unfitted.append(False)
             continue
         stretch = (t >= t1) & (t <= t1 + max(gap, BACKCAST_FIT_DAYS) / _DAYS_PER_YEAR)
-        lines = []
+        lines: list[tuple[float, float] | None] = []
         for c in range(y.shape[0]):
             ok = stretch & np.isfinite(y[c])
             span = (t[ok].max() - t[ok].min()) * _DAYS_PER_YEAR if ok.any() else 0.0
@@ -415,9 +423,12 @@ def backcast_late_starts(
     return out, unfitted
 
 
-def _shifted(s: Series, at_t0: Any, backcast: tuple[Any, ...], how: str) -> Series:
+def _shifted(
+    s: Series, at_t0: Any, backcast: tuple[Any, ...] | None, how: str
+) -> Series:
     """``s`` moved down by ``at_t0`` (per component), overlays with it, and
-    the dashed line (``meta["backcast"]``) recorded."""
+    the dashed line (``meta["backcast"]``) recorded; ``backcast`` None drops
+    the line (the level then comes from the data)."""
 
     def moved(overlay: Any) -> Any:  # an overlay moves with its series
         if overlay is None:
@@ -432,8 +443,92 @@ def _shifted(s: Series, at_t0: Any, backcast: tuple[Any, ...], how: str) -> Seri
         iced=moved(s.iced),
         buried=moved(s.buried),
         netday=moved(s.netday),
-        meta={**s.meta, "backcast": backcast, "backcast_from": how},
+        meta=(
+            {**s.meta, "backcast": backcast, "backcast_from": how}
+            if backcast is not None
+            else {
+                k: v
+                for k, v in s.meta.items()
+                if k not in ("backcast", "backcast_from")
+            }
+            | {"zeroed": how}
+        ),  # fmt: skip
     )
+
+
+#: --zero-before: a series needs this many epochs before the date
+ZERO_MIN_POINTS = 2
+
+
+def zero_before(
+    series: Sequence[Series], t_cut: float
+) -> tuple[list[Series], list[bool]]:
+    """Each series moved so its median before ``t_cut`` (decimal year) is
+    zero, per component (BGÓ 2026-11-02: every baseline at zero before an
+    event's onset, not at its first, noisy, epoch); the backcast line goes.
+    A series with fewer than :data:`ZERO_MIN_POINTS` epochs before
+    ``t_cut`` is left as it is. Returns the series and, per series, whether
+    it was left."""
+    out: list[Series] = []
+    left: list[bool] = []
+    for s in series:
+        t = np.asarray(s.t, dtype=float)
+        y = np.asarray(s.y, dtype=float)
+        before = t < t_cut
+        counts = [int((before & np.isfinite(y[c])).sum()) for c in range(y.shape[0])]
+        if min(counts) < ZERO_MIN_POINTS:
+            out.append(s)
+            left.append(True)
+            continue
+        med = np.array([float(np.nanmedian(y[c][before])) for c in range(y.shape[0])])
+        out.append(_shifted(s, med, None, "before"))
+        left.append(False)
+    return out, left
+
+
+def zero_date(value: str, events: Mapping[str, Any], fstart: float | None,
+              fend: float | None) -> float:  # fmt: skip
+    """``--zero-before``: YYYYMMDD, or ``event`` = the latest ``--events``
+    date inside the plotted window; as a decimal year.
+
+    Raises:
+        ValueError: not a date, or no event in the window.
+    """
+    import datetime as dt
+
+    from gtimes.timefunc import currYearfDate
+
+    def year(day: str) -> float:
+        return float(currYearfDate(refday=dt.datetime.strptime(day, "%Y%m%d")))
+
+    if value != "event":
+        try:
+            return year(value)
+        except ValueError as exc:
+            raise ValueError(f"--zero-before {value!r}: YYYYMMDD or event") from exc
+    inside = [
+        year(d) for d in events
+        if (fstart is None or year(d) >= fstart) and (fend is None or year(d) <= fend)
+    ]  # fmt: skip
+    if not inside:
+        raise ValueError("--zero-before event: no --events date in the window")
+    return max(inside)
+
+
+def _main_title(specs: Sequence[str], n: int, label: str | None, ref: str) -> str:
+    """The stack's main title: baselines to one reference read
+    ``SVIN, SVIE -- SKFC baselines`` (BGÓ 2026-11-02, rovers in the
+    order given); else the label (or nothing) and the series count."""
+    from geo_dataread.baseline import split_baseline
+
+    pairs = [split_baseline(x) for x in specs]
+    refs = {p[1] for p in pairs if p}
+    if pairs and all(pairs) and len(refs) == 1:
+        rovers = ", ".join(dict.fromkeys(p[0] for p in pairs if p))
+        return r"\Huge %s -- %s baselines \ \Large %s" % (rovers, refs.pop(), ref)
+    if label:
+        return r"\Huge %s \ \Large %d series, %s" % (label.replace("_", r"\_"), n, ref)
+    return r"\Huge %d series \ \Large %s" % (n, ref)
 
 
 def _is_pattern(code: str) -> bool:
@@ -718,6 +813,14 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             except Exception as exc:  # the forward fit is the fallback
                 print(f"warning: {specs_got[k]}: no history ({exc})", file=sys.stderr)
     got, unfitted = backcast_late_starts(got, history)
+    if args.zero_before:
+        try:
+            t_cut = zero_date(args.zero_before, events, fstart, fend)
+        except ValueError as exc:
+            parser.error(str(exc))
+        got, left = zero_before(got, t_cut)
+        # zeroed before the date: no longer "zeroed at its start"
+        unfitted = [u and kept for u, kept in zip(unfitted, left, strict=True)]
     labels = [
         f"{label} (zeroed at its start)" if late else label
         for label, late in zip(labels, unfitted, strict=True)
@@ -732,12 +835,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     )
     status = tplt.make_title(series_specs[0], last, ref=title_text)
     title = tplt.StationTitle(
-        main=(
-            r"\Huge %s \ \Large %d series, %s"
-            % (args.label.replace("_", r"\_"), len(got), title_text)
-            if args.label
-            else r"\Huge %d series \ \Large %s" % (len(got), title_text)
-        ),
+        main=_main_title(specs_got, len(got), args.label, title_text),
         status=status.status,
         created=status.created,
         status_color=status.status_color,
