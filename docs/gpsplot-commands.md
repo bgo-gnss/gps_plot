@@ -23,7 +23,10 @@ and view (they default to plate-periodic + cleaned; `ts` follows the plot). `--r
 (patterns match stations.cfg). `--events YYYYMMDD[,COLOR] …` / `--eventf FILE` draw event lines on every
 panel in `ts`, `stack` and `rtk` alike (`cli/common.add_event_options`; not
 `seasonal`, which folds onto one year). A late-starting stack series is backcast
-along a robust line (MAD-clipped, `stack._rate_line`) and a detrended series is
+from its own data before the window when it has some (read a year back:
+level and rate before the gap, `stack._from_history`; SVIN 2026, whose
+in-window rate was the landslide's), else along a robust line through its
+first data (MAD-clipped, `stack._rate_line`); and a detrended series is
 zeroed on its first clean samples (`sources.gps.first_clean`): one undetected
 outlier at the start no longer sets the zero (OLAC, July 2021). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
