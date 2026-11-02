@@ -243,11 +243,14 @@ def _title(
     last: dt.datetime,
     now: dt.datetime,
     longterm: str | None = None,
+    at: dt.datetime | None = None,
 ) -> Any:
+    """The stack title; the status is current when ``last`` is within an
+    hour of ``at`` (the window's end, for a past window; default ``now``)."""
     from gps_plot import timesmatplt as tplt
 
     status_color = (
-        tplt.STATUS_CURRENT_COLOR if now - last < dt.timedelta(hours=1)
+        tplt.STATUS_CURRENT_COLOR if (at or now) - last < dt.timedelta(hours=1)
         else tplt.STATUS_STALE_COLOR
     )  # fmt: skip
     base = f"base {next(iter(bases))}" if len(bases) == 1 else "mixed bases"
@@ -424,6 +427,7 @@ def _stack(
             last,
             now,
             args.longterm,
+            at=min(now, end),
         ),
         labels=labels,
         start=plot_start,

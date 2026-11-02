@@ -280,6 +280,8 @@ def stack_figure(
         fontsize="medium",
         markerscale=2.0,
         numpoints=1,  # one dot per key, not two joined
+        # a line's key needs length (the ts style sets 0 for its dot keys)
+        handlelength=2.0 if "line" in styles else None,
         ncol=max(1, (len(series) + 5) // 6),
         framealpha=0.85,
     )
