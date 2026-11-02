@@ -324,7 +324,7 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
     rtop = max((float(r.max()) for r in rs if r.size), default=0.0)
     # the sector holds the points that carry a direction: past SECTOR_FRACTION
     # of the largest displacement (and MIN_RADIUS_MM); a smaller point outside
-    # it is drawn at the centre (counted in the note), never hidden
+    # it is drawn at the centre, never hidden
     floor = max(MIN_RADIUS_MM, SECTOR_FRACTION * rtop)
     lines: list[float] = []
     for pp in pairs:
@@ -583,12 +583,10 @@ PROFILE_ROW = 1.5
 PROFILE_ALONE_W = 13.0
 PROFILE_ALONE_AX_W = 11.6
 PROFILE_GAP_IN = 0.85
-#: its margins [in]: left, top (the title and the status line), bottom (the note)
+#: its margins [in]: left, top (the title and the status line), bottom
 PROFILE_ALONE_LEFT = 0.9
 PROFILE_ALONE_TOP = 1.6
 PROFILE_ALONE_BOTTOM = 1.05
-#: characters of the figure note per inch of the figure (x-small type)
-NOTE_CHARS_PER_IN = 17.5
 
 
 def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> None:
@@ -618,7 +616,6 @@ def polar_figure(
     pairs: Sequence[PairPlot],
     *,
     onset: dt.datetime,
-    note: str,
     title_status: Any = None,
     status_color: Any = "k",
     interactive: bool = False,
@@ -687,7 +684,6 @@ def polar_figure(
     cmap = mpl.colormaps[CMAP]
     norm = mpl.colors.Normalize(vmin=0.0, vmax=max(vmax, 1e-9))
     style = {"cmap": cmap, "norm": norm}
-    centred = 0
     if stacked:
         widths = [PROFILE_MAP_WIDTH if "profile" in others else MAP_WIDTH, 1.0]
         rows = [PROFILE_ROW if p == "profile" else 1.0 for p in others]
@@ -700,16 +696,14 @@ def polar_figure(
     for panel in panels:
         if panel == "sector":
             ax = fig.add_subplot(where[panel], projection="polar")
-            centred = _sector(ax, pairs, style, legend_inside=inside)
+            _sector(ax, pairs, style, legend_inside=inside)
         elif panel == "map":
             holder = fig.add_subplot(where[panel])
             _map(holder, pairs, style, dem, half, path_half)  # scale in its title
         elif panel == "profile":
             gap = (PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
-            axes, part = prf.panel(fig, where[panel], pairs, style, profile_dem,
-                                   p_half, small=not alone, hspace=gap)  # fmt: skip
-            if part:
-                note += ";\n" + part
+            axes, _ = prf.panel(fig, where[panel], pairs, style, profile_dem,
+                                p_half, small=not alone, hspace=gap)  # fmt: skip
             if "map" not in panels:
                 holder = axes[0]
         elif panel == "section":
@@ -738,24 +732,7 @@ def polar_figure(
         fig.text(0.5, 1.0 - 1.0 / size[1] if alone else 0.94 if stacked else 0.905,
                  title_status, ha="center", fontsize="large",
                  color=status_color)  # fmt: skip
-    if centred:
-        note += (
-            # no "%": the figure text goes through TeX, where it starts a comment
-            f"; {centred} point(s) under {100 * SECTOR_FRACTION:.0f} per cent of the "
-            "largest displacement and outside the sector drawn at the centre"
-        )
-    if "map" in panels:  # no footnote on a map figure (BGÓ 2026-11-02: skip it)
-        return fig
-    # wrapped to the figure: a longer line widens the saved (tight) figure
-    width = int(NOTE_CHARS_PER_IN * size[0])
-    note = "\n".join(textwrap.fill(line, width) for line in note.split("\n"))
-    fig.text(
-        0.01,
-        0.015 if not alone else 0.1 / size[1],
-        note,
-        fontsize="x-small",
-        color="0.3",
-    )
+    # no footnote (BGÓ 2026-11-02): run() prints it to the log
     return fig
 
 
@@ -926,7 +903,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         else:
             title = tplt.make_title(pairs[0].name, last)
             status, colour = title.status, title.status_color
-        fig = polar_figure(pairs, onset=when, note=note,
+        print(note)
+        fig = polar_figure(pairs, onset=when,
                            title_status=status, status_color=colour,
                            interactive=not args.save, panels=panels, dem=dem,
                            half=half, path_half=args.map_half,

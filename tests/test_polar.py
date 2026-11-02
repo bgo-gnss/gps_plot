@@ -154,7 +154,7 @@ def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
     if together:
         pairs.append(_pair("SVIN-SKFC", 292.0, marker="^", colour="magenta",
                            pos=(-150.0, 0.0)))  # fmt: skip
-    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30),
                              panels=panels, dem=dem, half=300.0)  # fmt: skip
     titles = [ax.get_title() for ax in fig.axes]
     if "map" in panels:
@@ -162,7 +162,7 @@ def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
     if "section" in panels:
         assert "vertical section along the motion" in titles
     with pytest.raises(ValueError, match="unknown panel"):
-        polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30), note="n",
+        polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30),
                            panels=("pie",))  # fmt: skip
 
 
