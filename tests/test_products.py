@@ -1121,3 +1121,46 @@ def test_station_args_give_a_station_its_own_job_after_each_ts_job() -> None:
     assert products.with_station_args(jobs, None) == jobs
     with pytest.raises(ValueError):
         products.with_station_args(jobs, ["SAFH"])
+
+
+def test_watched_areas_from_plots_yaml_and_open_recent_events() -> None:
+    areas = products.area_table(AREAS_DOC)
+    today = dt.date(2026, 11, 2)
+    events = [
+        {"id": "new", "region": "hengill", "onset": dt.date(2026, 9, 23), "end": None},
+        {"id": "old", "region": "reykjanes", "onset": "2020-05-30", "end": None},
+        {
+            "id": "shut",
+            "region": "reykjanes",
+            "onset": "2026-10-01",
+            "end": dt.date(2026, 10, 5),
+        },  # fmt: skip
+        {"id": "far", "region": "hekla", "onset": "2026-10-30", "end": None},
+    ]
+    assert products.watched_areas({}, events, areas, today) == {
+        "hengill": "open event new"
+    }
+    # watch: first; a longer watch_days takes the 2020 event too
+    got = products.watched_areas({"watch": ["reykjanes"]}, events, areas, today)
+    assert list(got) == ["reykjanes", "hengill"]
+    assert got["reykjanes"] == "plots.yaml watch:"
+    assert "reykjanes" in products.watched_areas(
+        {"watch_days": 3000}, events, areas, today
+    )
+    with pytest.raises(ValueError, match="watch: nowhere"):
+        products.watched_areas({"watch": "nowhere"}, events, areas, today)
+
+
+def test_watch_first_moves_the_watched_jobs_ahead_in_order() -> None:
+    areas = products.area_table(AREAS_DOC)
+    jobs = products.expand(CFG, areas=areas, events=EVENTS)
+    out = products.watch_first(jobs, CFG, {"hengill"})
+    assert sorted(out, key=id) == sorted(jobs, key=id)
+    assert [j.area for j in out[:1]] == ["hengill"]
+    assert [j for j in out if j.area != "hengill"] == [
+        j for j in jobs if j.area != "hengill"
+    ]
+    # a map product counts by its area:
+    cfg = {"products": {"m": {"tool": "map", "area": "hengill"}}}
+    job = products.Job("m", None, "d", (), (), False, tool="map")
+    assert products.job_area(job, cfg) == "hengill"

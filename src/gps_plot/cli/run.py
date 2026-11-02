@@ -11,6 +11,10 @@ Run order: the ``prepare:`` steps of plots.yaml run first, in their order
 (``network_days`` = ``gps-network-days``: the network-day and common-mode
 lists the cleaned view reads), then the products. ``--no-prepare`` skips
 them (a quick re-run of one area); a failed step ends the run.
+Watched areas go first (:func:`products.watched_areas`): plots.yaml
+``watch:`` slugs and the region of every events.yaml event with no
+``end`` whose onset is under ``watch_days:`` (90) old; within each part
+the plots.yaml order holds.
 ``--update-pos [SCRIPT]`` first brings the .pos series up to date (the
 laptop's ``update_pos.sh``: new days from okada; plots.yaml
 ``update_pos:`` names it); when it fails or is missing, the run goes on
@@ -235,6 +239,7 @@ def run(prog: str, argv: list[str]) -> int:
             area=_names(args.area),
         )
         configured = products.expand(cfg, areas=areas, events=events)
+        watched = products.watched_areas(cfg, events, areas)
     except ValueError as exc:
         print(f"{prog}: {plots_path}: {exc}")
         return 2
@@ -256,6 +261,11 @@ def run(prog: str, argv: list[str]) -> int:
             + (f", stations={' '.join(wanted)})" if wanted else ")")
         )
         return 1
+    jobs = products.watch_first(jobs, cfg, watched)
+    have = {products.job_area(j, cfg) for j in jobs}
+    for slug, why in watched.items():
+        if slug in have:
+            print(f"watch: {slug} first ({why})")
     root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
     steps = [] if args.no_prepare else list(cfg.get("prepare") or [])
     unknown = [s for s in steps if s not in PREPARE_STEPS]

@@ -893,6 +893,63 @@ def _ts_check_argv(
     return [*_TS_REF[ref], *argv], days
 
 
+#: an open events.yaml event (no ``end``) makes its region watched for
+#: this many days from its onset (plots.yaml ``watch_days:`` overrides)
+WATCH_DAYS = 90
+
+
+def watched_areas(
+    cfg: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]],
+    areas: Mapping[str, Any],
+    today: dt.date | None = None,
+) -> dict[str, str]:
+    """The areas a run plots first, each with why: plots.yaml ``watch:``
+    (area slugs), then the ``region`` of every events.yaml event with no
+    ``end`` whose onset is under ``watch_days:`` (:data:`WATCH_DAYS`) old.
+    An unknown slug in ``watch:`` is a ValueError; an event region that is
+    no area is left out."""
+    today = today or dt.date.today()
+    days = int(cfg.get("watch_days", WATCH_DAYS))
+    named = [str(a) for a in _as_list(cfg.get("watch") or [])]
+    if missing := set(named) - set(areas):
+        raise ValueError(
+            f"plots.yaml watch: {', '.join(sorted(missing))} is no cdn slug of "
+            "station_areas.yaml"
+        )
+    out = {a: "plots.yaml watch:" for a in named}
+    for ev in events:
+        region, onset = ev.get("region"), ev.get("onset")
+        if ev.get("end") is not None or region not in areas or region in out:
+            continue
+        if isinstance(onset, str):
+            onset = dt.date.fromisoformat(onset[:10])
+        if isinstance(onset, dt.datetime):
+            onset = onset.date()
+        if isinstance(onset, dt.date) and 0 <= (today - onset).days < days:
+            out[str(region)] = f"open event {ev.get('id')}"
+    return out
+
+
+def job_area(job: Job, cfg: Mapping[str, Any]) -> str | None:
+    """The area a job plots: its own, else its map product's ``area:``."""
+    if job.area is not None:
+        return job.area
+    spec = (cfg.get("products") or {}).get(job.product) or {}
+    area = spec.get("area")
+    return None if area is None else str(area)
+
+
+def watch_first(
+    jobs: Sequence[Job], cfg: Mapping[str, Any], watched: Collection[str]
+) -> list[Job]:
+    """``jobs`` with those of the ``watched`` areas first, each part in
+    its plots.yaml order (BGÓ 2026-11-02: an active area should not wait
+    for the whole run)."""
+    first = [j for j in jobs if job_area(j, cfg) in watched]
+    return first + [j for j in jobs if job_area(j, cfg) not in watched]
+
+
 def _picked(
     value: str | Sequence[str] | None, known: Mapping[str, Any], what: str
 ) -> set[str] | None:

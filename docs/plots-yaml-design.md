@@ -150,6 +150,15 @@ current before a plot is drawn. A failed step ends the run with no plots;
 `--no-prepare` skips the steps (a quick re-run of one area); `--dry-run`
 lists them.
 
+Watched areas first (BGÓ 2026-11-02): after the prepare steps, the jobs of
+the watched areas run before the rest, each part in plots.yaml order, so an
+active area does not wait for the whole run. Watched = plots.yaml
+`watch: [slug, …]` plus the `region` of every events.yaml event with no
+`end` whose onset is under `watch_days:` (default 90) old — closing the
+event (an `end:`) or its age drops it. A map product counts by its
+`area:`. The run prints `watch: <slug> first (<why>)`; `--dry-run` lists
+the jobs in run order.
+
 ## Free ts options: `args:` (2026-10-22)
 
 Any `gpsplot ts` option can be given as `args:` — a string or a list of
