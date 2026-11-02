@@ -119,8 +119,11 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
 
 The colour bar (days since the onset) sits inside the map, else inside the
 profile, as on the other maps; only a figure with neither has it on the side.
-The footnote is wrapped to the figure's width (a longer line widened the
-tight-cropped PNG).
+Title: `A, B -- C movement since <onset>` (BGÓ 2026-11-02). With a map, the
+footnote sits in small type in a box in the map's top corner (left or right,
+the one with fewer rovers), not under the figure; the map scale is in the map
+title only. Without a map it stays under the figure, wrapped to its width (a
+longer line widened the tight-cropped PNG).
 
 `--together` draws all pairs in one figure, one marker per pair (the plots.yaml
 `polar` product does this per `stacks:` group). Files: `A_B-polar-<period>`
