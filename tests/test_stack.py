@@ -84,7 +84,7 @@ def test_stack_figure_offsets_series_k_by_k_times_offset():
         assert len(drawn) == 3
         for k, ln in enumerate(drawn):
             np.testing.assert_allclose(ln.get_ydata(), comp + 10.0 * k)
-    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    legend = [t.get_text() for t in fig.axes[2].get_legend().get_texts()]
     assert legend == ["A", "B (+10 mm)", "C (+20 mm)"]
 
 
@@ -144,7 +144,7 @@ def test_run_labels_a_series_that_was_not_detrended(monkeypatch, tmp_path):
         return Series(s.label, s.t, s.y, s.sigma, detrend_applied=spec != "HOFN")
 
     def capture(self, *a, **k):
-        seen["legend"] = [t.get_text() for t in self.axes[0].get_legend().get_texts()]
+        seen["legend"] = [t.get_text() for t in self.axes[2].get_legend().get_texts()]
 
     monkeypatch.setattr(matplotlib.figure.Figure, "savefig", capture)
     assert _run(["SEY1", "HOFN", "--ref", "detrend"], monkeypatch, fetch, tmp_path) == 0
@@ -235,7 +235,7 @@ def test_stack_figure_draws_outliers_in_the_series_colour_with_a_black_outline()
     assert flagged[0].get_markerfacecolor() == compose.series_colors(["A-B", "C-D"])[0]
     np.testing.assert_allclose(np.asarray(flagged[0].get_ydata())[[5, 20]], 9.0)
     assert ax.get_ylim()[1] >= 9.0  # the axis keeps them in view
-    legend = [t.get_text() for t in ax.get_legend().get_texts()]
+    legend = [t.get_text() for t in fig.axes[2].get_legend().get_texts()]
     assert "outlier (filled: its series' colour)" in legend
 
 
@@ -376,7 +376,7 @@ def test_stack_figure_draws_icing_and_network_days_edged_in_the_series_colour():
         [s], title=title, show_obstruction=0, show_network=0, fig=Figure()
     )
     assert {tplt.ICING_FACE_COLOR, tplt.NETWORK_FACE_COLOR} <= faces(fig)
-    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    legend = [t.get_text() for t in fig.axes[2].get_legend().get_texts()]
     assert "network day (ring: its series' colour)" in legend
     assert fig.axes[0].get_ylim()[1] >= 7.0
 
