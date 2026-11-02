@@ -115,7 +115,7 @@ def test_profile_figures(dem: bool) -> None:
     pairs[1].name, pairs[1].marker = "SVIN-SKFC", "^"
     pairs.append(polar.PairPlot("XXXX-SKFC", np.arange(3.0), np.zeros((3, 3)), None))
     for panels in (("profile",), ("sector", "map", "profile")):
-        fig = polar.polar_figure(pairs, onset=dt.datetime(2026, 9, 23), note="n",
+        fig = polar.polar_figure(pairs, onset=dt.datetime(2026, 9, 23),
                                  panels=panels, dem=_dem() if dem else None,
                                  half=300.0, profile_dem=_dem() if dem else None)  # fmt: skip
         titles = [ax.get_title() for ax in fig.axes]
@@ -125,17 +125,14 @@ def test_profile_figures(dem: bool) -> None:
         assert not any("XXXX" in t for t in titles)
         # the colour bar is inside a panel: no side axes past the panels
         assert max(ax.get_position().x1 for ax in fig.axes) <= 0.99
-        # the note: under the figure, none on a map figure
-        if "map" in panels:
-            assert not any("plunge" in t.get_text() for t in fig.texts)
-            assert "movement since 2026-09-23" in fig.texts[0].get_text()
-        else:
-            assert "plunge" in fig.texts[-1].get_text()
+        # no footnote (BGÓ 2026-11-02)
+        assert not any("plunge" in t.get_text() for t in fig.texts)
+        assert "movement since 2026-09-23" in fig.texts[0].get_text()
 
 
 def test_no_motion_at_all() -> None:
     pairs = [polar.PairPlot("XXXX-SKFC", np.arange(3.0), np.zeros((3, 3)), None)]
-    fig = polar.polar_figure(pairs, onset=dt.datetime(2026, 9, 23), note="n",
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2026, 9, 23),
                              panels=("sector", "profile"))  # fmt: skip
     assert any(t.get_text() == "no motion direction" for ax in fig.axes
                for t in ax.texts)  # fmt: skip
