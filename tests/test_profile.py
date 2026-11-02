@@ -6,7 +6,6 @@ import datetime as dt
 
 import numpy as np
 import pytest
-from matplotlib.offsetbox import AnchoredText
 
 from gps_plot import polar
 from gps_plot import profile as prf
@@ -126,11 +125,9 @@ def test_profile_figures(dem: bool) -> None:
         assert not any("XXXX" in t for t in titles)
         # the colour bar is inside a panel: no side axes past the panels
         assert max(ax.get_position().x1 for ax in fig.axes) <= 0.99
-        # the note: under the figure, else in the map's top corner
+        # the note: under the figure, none on a map figure
         if "map" in panels:
-            notes = [a.txt._text.get_text() for ax in fig.axes for a in ax.artists
-                     if isinstance(a, AnchoredText)]  # fmt: skip
-            assert len(notes) == 1 and "plunge" in notes[0]
+            assert not any("plunge" in t.get_text() for t in fig.texts)
             assert "movement since 2026-09-23" in fig.texts[0].get_text()
         else:
             assert "plunge" in fig.texts[-1].get_text()

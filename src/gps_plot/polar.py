@@ -589,8 +589,6 @@ PROFILE_ALONE_TOP = 1.6
 PROFILE_ALONE_BOTTOM = 1.05
 #: characters of the figure note per inch of the figure (x-small type)
 NOTE_CHARS_PER_IN = 17.5
-#: characters per line of the note inside the map (xx-small type)
-MAP_NOTE_CHARS = 95
 
 
 def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> None:
@@ -746,8 +744,7 @@ def polar_figure(
             f"; {centred} point(s) under {100 * SECTOR_FRACTION:.0f} per cent of the "
             "largest displacement and outside the sector drawn at the centre"
         )
-    if "map" in panels and holder is not None:  # in the map, out of the way
-        _map_note(holder, pairs, note)
+    if "map" in panels:  # no footnote on a map figure (BGÓ 2026-11-02: skip it)
         return fig
     # wrapped to the figure: a longer line widens the saved (tight) figure
     width = int(NOTE_CHARS_PER_IN * size[0])
@@ -760,28 +757,6 @@ def polar_figure(
         color="0.3",
     )
     return fig
-
-
-def _map_note(ax: Any, pairs: Sequence[PairPlot], note: str) -> None:
-    """The figure note in small type in the map's top corner (left or right)
-    holding fewer of the plotted points (BGÓ 2026-11-02: not under the
-    figure)."""
-    from matplotlib.offsetbox import AnchoredText
-
-    x0, x1 = ax.get_xlim()
-    y0, y1 = ax.get_ylim()
-    xs = np.concatenate([np.atleast_1d(pp.pos[0]) for pp in pairs])
-    ys = np.concatenate([np.atleast_1d(pp.pos[1]) for pp in pairs])
-    top = ys > y0 + 0.6 * (y1 - y0)
-    left = int(np.sum(top & (xs < x0 + 0.5 * (x1 - x0))))
-    loc = "upper right" if left > int(np.sum(top)) - left else "upper left"
-    text = "\n".join(textwrap.fill(line, MAP_NOTE_CHARS) for line in note.split("\n"))
-    box = AnchoredText(text, loc=loc, prop={"fontsize": "xx-small", "color": "0.25"},
-                       frameon=True, borderpad=0.5)  # fmt: skip
-    box.patch.set_facecolor((1.0, 1.0, 1.0, 0.8))
-    box.patch.set_edgecolor("0.5")
-    box.set_zorder(20)
-    ax.add_artist(box)
 
 
 def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
