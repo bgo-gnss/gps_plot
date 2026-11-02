@@ -72,6 +72,9 @@ CMAP_OPTIONS = ("dem_cmap", "bathymetry_cmap", "glacier_cmap")
 LIST = "list"
 #: --dem iceland: the spliced Iceland DEM, at the level the map needs
 ICELAND_DEM = "iceland"
+#: --dem arcticdem: the Iceland DEM, and a 2 m ArcticDEM area grid (resampled
+#: to the map, its sea spliced) where one covers most of the map
+ARCTIC_DEM = "arcticdem"
 #: the local GIS directory (dem/, vector/, cpt/): gis_dir in postprocess.cfg
 DEFAULT_GIS_DIR = "~/gps-data/gis"
 #: station maps label their stations by default only up to this many
@@ -298,7 +301,9 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
     g.add_argument(
         "--dem", default=None, metavar="GRID",
         help="hillshade background: 'iceland' (the Iceland topo-bathymetry "
-        "DEM, the level the map needs, with the IS 50V coast), a grid file, "
+        "DEM, the level the map needs, with the IS 50V coast), 'arcticdem' "
+        "(iceland, with a 2 m ArcticDEM area grid where one covers most of "
+        "the map: resampled to the map, its sea from the Iceland DEM), a grid file, "
         "or a GMT remote grid such as @earth_relief_15s (default on a "
         "full-Iceland overview: iceland, when built; 'none' = flat land)",
     )  # fmt: skip
@@ -1043,6 +1048,9 @@ def _style(
             kw[key] = getattr(args, opt)
     if str(kw.get("dem_grid", "")).lower() == "none":
         kw.pop("dem_grid")
+    fine_dem = str(kw.get("dem_grid", "")).lower() == ARCTIC_DEM
+    if fine_dem:  # the Iceland DEM, with a 2 m area grid where one covers
+        kw["dem_grid"] = ICELAND_DEM
     if str(kw.get("dem_grid", "")).lower() == ICELAND_DEM:
         from gps_plot import maps
 
@@ -1052,7 +1060,8 @@ def _style(
         extent = extent or maps.ICELAND_DEM_LEVELS[-1][2]
         projection = kw.get("projection", maps.DEFAULT_PROJECTION)
         try:
-            choice = maps.iceland_dem(gis_dir(config), extent, projection)
+            choice = maps.iceland_dem(gis_dir(config), extent, projection,
+                                      prefer_fine=fine_dem)  # fmt: skip
         except FileNotFoundError as exc:
             # not on this host (it is not in git): GMT's own relief and coast
             kw["dem_grid"] = maps.earth_relief_fallback(extent, projection)

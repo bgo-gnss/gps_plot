@@ -171,8 +171,24 @@ them as blocks. `--sea-smooth KM` filters the sea floor alone, colours and
 shading (`maps.smooth_sea`, Gaussian, step `sea-smooth`): land counts as
 sea level inside the filter, so no land height spills offshore, and a
 smoothed cell stays below −0.5 m, sea-coloured to the coast. Land, ice and
-the coast are untouched. 0.5 km suits the Svartsengi maps. It hides the
-cells; it adds no detail.
+the coast are untouched. It hides the cells; it adds no detail. On a
+lattice far finer than the filter (the `--dem arcticdem` maps) it
+block-averages first, filters, and puts the result back cubically
+(`SEA_SMOOTH_MAX_CELLS`): the full Gaussian on 7.5 m cells took ~2 min.
+
+### ArcticDEM on a whole map: `--dem arcticdem` (BGÓ 2026-11-02)
+
+`--dem iceland` takes a 2 m ArcticDEM area grid only when the output pixels
+are finer than the 1″ level (zooms, insets). `--dem arcticdem` takes one for
+a whole map too, when its box covers `AREA_DEM_MIN_SHARE` (75 %) of the map
+(`maps.fine_on_map`): box-filtered onto a lattice of half an output pixel
+(~7.5 m on the Svartsengi maps, not 124 M cells), land inside the IS 50V coast
+from ArcticDEM where it has data, else the 1″ Iceland DEM (the strip south
+of the Reykjanes grid), the sea from the Iceland depth (≤ −1 m; ArcticDEM
+measures the water surface). Cached in `~/.cache/gps_plot/dem/`
+(`<grid>-map-<hash>.nc`), with the fine-grid shading. The Svartsengi maps
+use it with `--sea-smooth 2`: the harder 2 m hillshade otherwise draws the
+shelf's ridges as bands; 2 km gives the calm sea of the Seyðisfjörður map.
 
 ### Scales: every symbol whose size means something has one (BGÓ 2026-11-01)
 

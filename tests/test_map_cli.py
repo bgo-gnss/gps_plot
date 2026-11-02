@@ -843,7 +843,7 @@ def test_overview_defaults_to_the_iceland_dem(fake_maps, monkeypatch, tmp_path):
     keeps flat land; without the DEM on the host, no DEM."""
     from gps_plot import maps
 
-    def choice(gis, region, proj):
+    def choice(gis, region, proj, **kw):
         return maps.DemChoice("dem.nc", None)
 
     monkeypatch.setattr(maps, "iceland_dem", choice)
