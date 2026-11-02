@@ -409,3 +409,35 @@ def test_a_late_series_without_data_before_the_window_falls_back():
     late = _ramp("B", 2025.5, 180, 10.0)
     out, _ = stk.backcast_late_starts([early, late], [None, late])
     assert out[1].meta["backcast_from"] == "forward"
+
+
+def test_zero_before_puts_each_series_median_before_the_date_at_zero():
+    a = _ramp("A", 2026.0, 100, 0.0)
+    a = Series("A", a.t, a.y + 3.0, a.sigma)  # sits at 3 before the date
+    b = _ramp("B", 2026.0, 1, 0.0)  # too few epochs before the date
+    out, left = stk.zero_before([a, b], 2026.2)
+    np.testing.assert_allclose(out[0].y[:, 0], 0.0)
+    assert left == [False, True] and out[1] is b
+    assert out[0].meta["zeroed"] == "before" and "backcast" not in out[0].meta
+
+
+def test_zero_date_takes_a_date_or_the_latest_event_in_the_window():
+    events = {"20260923": ["saddlebrown"], "20250101": [], "20270101": []}
+    assert stk.zero_date("event", events, 2026.5, 2026.9) == pytest.approx(
+        2026.727, abs=0.003
+    )
+    assert stk.zero_date("20260101", {}, None, None) == pytest.approx(2026.0, abs=0.003)
+    with pytest.raises(ValueError, match="no --events date"):
+        stk.zero_date("event", {"20250101": []}, 2026.5, 2026.9)
+    with pytest.raises(ValueError, match="YYYYMMDD or event"):
+        stk.zero_date("2026-09-23", {}, None, None)
+
+
+def test_main_title_names_the_rovers_and_their_one_reference():
+    assert stk._main_title(["SVIN-SKFC", "SVIE-SKFC"], 2, "skfc", "Plate") == (
+        r"\Huge SVIN, SVIE -- SKFC baselines \ \Large Plate"
+    )
+    # mixed references or stations: the label and the count, as before
+    assert stk._main_title(["SVIN-SKFC", "HOFN"], 2, "x", "P").startswith(
+        r"\Huge x \ \Large 2 series"
+    )

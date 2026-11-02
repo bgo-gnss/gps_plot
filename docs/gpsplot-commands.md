@@ -26,7 +26,11 @@ panel in `ts`, `stack` and `rtk` alike (`cli/common.add_event_options`; not
 from its own data before the window when it has some (read a year back:
 level and rate before the gap, `stack._from_history`; SVIN 2026, whose
 in-window rate was the landslide's), else along a robust line through its
-first data (MAD-clipped, `stack._rate_line`); and a detrended series is
+first data (MAD-clipped, `stack._rate_line`). `--zero-before YYYYMMDD|event`
+zeroes each stack series on its median before that date (`event`: the newest
+`--events` line in the window; at least 2 epochs) instead of on its first,
+noisy, epoch — the Svínafellsheiði stacks, BGÓ 2026-11-02. Baselines to one
+reference are titled `A, B -- REF baselines`. And a detrended series is
 zeroed on its first clean samples (`sources.gps.first_clean`): one undetected
 outlier at the start no longer sets the zero (OLAC, July 2021). `gpsplot seasonal NYLA` folds a station's seasonal onto one year: data, own, regional LOO (design doc). `gpsplot rtk "SEY?-SEYD" [--daily]` plots the
 RTK baselines of rtk.vedur.is (+ the daily GLOBK ones). `gpsplot map velocity
