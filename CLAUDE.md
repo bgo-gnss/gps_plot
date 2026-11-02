@@ -22,6 +22,7 @@ modules `ignore_errors`, `tests/` out). Scope rationale: `docs/mypy-status.md`.
 gps_plot/
 ├── src/gps_plot/
 │   ├── cli/                          # gpsplot: dispatcher (ts, stack, seasonal, rtk, map, devviz, workbench, picker); common.py = shared options; --adhoc → adhoc.py (area adhoc/ folder + .json sidecars)
+│   ├── changed.py                    # gpsplot run --changed: per-station + setup fingerprints (_runs/.fingerprints.json), which jobs to redraw
 │   ├── stack.py                      # gpsplot stack: several stations/baselines, patterns ("SEY?-SEYD")
 │   ├── seasonal.py                   # gpsplot seasonal: seasonal folded on one year — data, own, regional LOO
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)

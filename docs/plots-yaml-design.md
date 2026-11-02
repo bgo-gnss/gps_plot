@@ -150,6 +150,32 @@ current before a plot is drawn. A failed step ends the run with no plots;
 `--no-prepare` skips the steps (a quick re-run of one area); `--dry-run`
 lists them.
 
+Watched areas first (BGÓ 2026-11-02): after the prepare steps, the jobs of
+the watched areas run before the rest, each part in plots.yaml order, so an
+active area does not wait for the whole run. Watched = plots.yaml
+`watch: [slug, …]` plus the `region` of every events.yaml event with no
+`end` whose onset is under `watch_days:` (default 90) old — closing the
+event (an `end:`) or its age drops it. A map product counts by its
+`area:`. The run prints `watch: <slug> first (<why>)`; `--dry-run` lists
+the jobs in run order.
+
+Only what changed: `--changed` (BGÓ 2026-11-02; `gps_plot.changed`). A
+whole run (no `--product`/`--area`/stations) that ends without a failure
+saves `<plots_dir>/_runs/.fingerprints.json`: a fingerprint of every
+station's `STA.*` files in pos_dir (.pos in every frame/session, the
+autcln indices) and one of the setup (plots.yaml, events, areas, detrend
+and outlier config files, the stations.cfg time stamp, gps_plot's code).
+`--changed` then draws only the jobs touching a changed station: a ts
+job keeps those stations (a pair by either end, `active` through
+stations.cfg), a stack or polar figure runs whole, a map with a station
+list when one of them changed, a map of a region on any change. A changed
+setup, or no state, draws everything; nothing changed draws nothing. The
+network lists (`network_days`, `network_cm`) are left out: a new day
+changes them for everyone, but only on a day a station without it does
+not plot. A plot is drawn relative to its day (title colour, windows), so
+the nightly whole run without `--changed` sets the baseline; the daytime
+timer runs use `--changed`.
+
 ## Free ts options: `args:` (2026-10-22)
 
 Any `gpsplot ts` option can be given as `args:` — a string or a list of

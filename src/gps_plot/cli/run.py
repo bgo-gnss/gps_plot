@@ -11,6 +11,12 @@ Run order: the ``prepare:`` steps of plots.yaml run first, in their order
 (``network_days`` = ``gps-network-days``: the network-day and common-mode
 lists the cleaned view reads), then the products. ``--no-prepare`` skips
 them (a quick re-run of one area); a failed step ends the run.
+Watched areas go first (:func:`products.watched_areas`): plots.yaml
+``watch:`` slugs and the region of every events.yaml event with no
+``end`` whose onset is under ``watch_days:`` (90) old; within each part
+the plots.yaml order holds. ``--changed`` draws only the jobs touching a
+station whose files changed since the last whole run
+(:mod:`gps_plot.changed`).
 ``--update-pos [SCRIPT]`` first brings the .pos series up to date (the
 laptop's ``update_pos.sh``: new days from okada; plots.yaml
 ``update_pos:`` names it); when it fails or is missing, the run goes on
@@ -40,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from gps_plot import plot_gps_timeseries as driver
-from gps_plot import products
+from gps_plot import changed, products
 
 DEFAULT_KEEP_RUNS = 14
 
@@ -198,6 +204,12 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         "series as they are",
     )
     p.add_argument(
+        "--changed",
+        action="store_true",
+        help="redraw only the plots of stations whose data changed since the "
+        "last whole run (everything when the setup or gpsplot changed)",
+    )
+    p.add_argument(
         "--no-prepare",
         action="store_true",
         help="skip the plots.yaml prepare: steps (e.g. gps-network-days)",
@@ -235,6 +247,7 @@ def run(prog: str, argv: list[str]) -> int:
             area=_names(args.area),
         )
         configured = products.expand(cfg, areas=areas, events=events)
+        watched = products.watched_areas(cfg, events, areas)
     except ValueError as exc:
         print(f"{prog}: {plots_path}: {exc}")
         return 2
@@ -256,6 +269,11 @@ def run(prog: str, argv: list[str]) -> int:
             + (f", stations={' '.join(wanted)})" if wanted else ")")
         )
         return 1
+    jobs = products.watch_first(jobs, cfg, watched)
+    have = {products.job_area(j, cfg) for j in jobs}
+    for slug, why in watched.items():
+        if slug in have:
+            print(f"watch: {slug} first ({why})")
     root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
     steps = [] if args.no_prepare else list(cfg.get("prepare") or [])
     unknown = [s for s in steps if s not in PREPARE_STEPS]
@@ -265,11 +283,14 @@ def run(prog: str, argv: list[str]) -> int:
         )
         return 2
     update = update_script(args.update_pos, cfg)
+    whole = not (args.product or args.area or wanted)
     if args.dry_run:
         if update is not None:
             print(f"update: {update}")
         for step in steps:
             print(f"prepare: {step}")
+        if args.changed and str(root):
+            jobs, _ = _changed_jobs(jobs, config, root, prog, narrow=True)
         for job in jobs:
             who = (
                 f"{len(job.stations)} stations: {' '.join(job.stations[:12])}"
@@ -297,6 +318,12 @@ def run(prog: str, argv: list[str]) -> int:
         if PREPARE_STEPS[step](args.workers):
             print(f"{prog}: prepare step {step} failed; no plots made")
             return 1
+    # after the update and the prepare steps: the data as it will be plotted
+    jobs, state = _changed_jobs(jobs, config, root, prog,
+                                measure=whole or args.changed, narrow=args.changed)  # fmt: skip
+    if args.changed and not jobs:
+        print(f"{prog}: no station changed since the last whole run, nothing drawn")
+        return 0
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = root / "_runs" / stamp
@@ -356,6 +383,8 @@ def run(prog: str, argv: list[str]) -> int:
         if stale:
             print(f"{prog}: deleted {len(stale)} plot(s) the config no longer has:")
             print("".join(f"  {f}\n" for f in stale), end="")
+    if whole and status == 0 and state:  # the baseline the next --changed compares with
+        changed.save_state(root / changed.STATE_FILE, state)
     print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
     return status
 
@@ -440,6 +469,57 @@ def _split_targets(targets: list[str]) -> tuple[list[str], list[str]]:
         else:
             stations += [s.strip().upper() for s in word.split(",") if s.strip()]
     return plots, stations
+
+
+def _changed_jobs(
+    jobs: list[products.Job],
+    config: Any,
+    root: Path,
+    prog: str,
+    *,
+    measure: bool = True,
+    narrow: bool,
+) -> tuple[list[products.Job], dict[str, Any]]:
+    """(the jobs to run, the new state to save). ``narrow`` (``--changed``):
+    only the jobs touching a station whose files changed since the saved
+    state (:mod:`gps_plot.changed`); all of them when the setup changed or
+    there is no state. ``measure`` False: the jobs as they are, no state."""
+    if not measure:
+        return jobs, {}
+    from gps_plot.cli.common import config_dir
+
+    import gps_plot
+
+    old = changed.load_state(root / changed.STATE_FILE)
+    cache = dict(old.get("files") or {})
+    pos = config_dir(config, "pos_dir", None)
+    if not pos or not Path(pos).is_dir():
+        print(f"{prog}: --changed: no pos_dir; drawing everything")
+        return jobs, {}
+    stations = changed.station_prints(Path(pos), cache)
+    setup = changed.setup_print(
+        Path(config.config_path).expanduser(), Path(gps_plot.__file__).parent, cache
+    )
+    state: dict[str, Any] = {"setup": setup, "stations": stations, "files": cache}
+    if not narrow:
+        return jobs, state
+    if not old:
+        print(f"{prog}: --changed: no saved state yet, drawing everything")
+    elif old.get("setup") != setup:
+        print(f"{prog}: --changed: the setup or gpsplot changed, drawing everything")
+    else:
+        moved = changed.changed_stations(old.get("stations") or {}, stations)
+        jobs = changed.narrow(jobs, moved, {"active": _active(config), "all": None})
+        print(
+            f"{prog}: --changed: {len(moved)} station(s) changed"
+            + (
+                f" ({' '.join(sorted(moved)[:20])}{' …' if len(moved) > 20 else ''})"
+                if moved
+                else ""
+            )  # fmt: skip
+            + f", {len(jobs)} job(s) to draw"
+        )
+    return jobs, state
 
 
 def _active(config: Any) -> list[str]:
