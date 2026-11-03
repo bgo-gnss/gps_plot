@@ -92,6 +92,10 @@ def test_resolve_span() -> None:
     assert (end - start).days == 7 and name == "week" and end == now
     args = parser.parse_args(["A-B", "-s", "20260101", "-e", "20260301"])
     assert polar.resolve_span(args, now)[2] == "20260101-20260301"
+    # a fixed start running on to today keeps one name day after day
+    args = parser.parse_args(["A-B", "-s", "20260923"])
+    start, end, name = polar.resolve_span(args, now)
+    assert name == "since20260923" and end == dt.datetime(2026, 10, 30)
 
 
 def test_run_saves_one_figure_per_pair(

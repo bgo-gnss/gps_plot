@@ -126,6 +126,10 @@ directions, DEM) to the run log instead.
 `--together` draws all pairs in one figure, one marker per pair (the plots.yaml
 `polar` product does this per `stacks:` group). Files: `A_B-polar-<period>`
 (`-rtk`); together, the rovers then the references: `SVIN_SVIE_SKFC-polar-90d`.
+A fixed start (`-s`, plots.yaml `fixedstart:`) without `-e` is
+`since<YYYYMMDD>`, one file redrawn daily: the Svínafellsheiði product is
+`SVIN_SVIE_SKFC-polar-since20260923` (BGÓ 2026-11-03; it was 90d + year). The
+logo sits left of the title (`tplt.inpLogo(top_left=…)`).
 
 ## Terrain (`terrain.py`)
 
