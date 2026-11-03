@@ -2739,23 +2739,31 @@ def convIcelCh(string):
 LOGO = "IMO-Logo-IS-01-Blue.png"  # one-line "Veðurstofa Íslands", in assets/
 
 
-def inpLogo(fig, Logo=None, width=0.38):
+def inpLogo(fig, Logo=None, width=0.38, top_left=None):
     """The Veðurstofa logo in the top-left corner of the first (North) panel.
 
     ``Logo`` overrides the packaged logo; ``width`` is its share of the
     panel's width, the height follows the image's own aspect.
+    ``top_left=(x, y, height_in)`` instead puts it at that figure-fraction
+    corner, ``height_in`` inches tall (polar: the band beside the title).
     """
     from importlib import resources
 
     ref = Path(Logo) if Logo else resources.files("gps_plot").joinpath("assets", LOGO)
     with resources.as_file(ref) as path:
         im = image.imread(path)
-    box = fig.axes[0].get_position()
     fig_w, fig_h = fig.get_size_inches()
-    xlen = box.width * width
-    ylen = xlen * im.shape[0] / im.shape[1] * fig_w / fig_h
-    xpos = box.xmin + 0.01 * box.width
-    ypos = box.ymax - ylen - 0.02 * box.height
+    if top_left is not None:
+        xpos, ytop, height_in = top_left
+        ylen = height_in / fig_h
+        xlen = height_in * im.shape[1] / im.shape[0] / fig_w
+        ypos = ytop - ylen
+    else:
+        box = fig.axes[0].get_position()
+        xlen = box.width * width
+        ylen = xlen * im.shape[0] / im.shape[1] * fig_w / fig_h
+        xpos = box.xmin + 0.01 * box.width
+        ypos = box.ymax - ylen - 0.02 * box.height
 
     aximage = fig.add_axes(
         [xpos, ypos, xlen, ylen], frameon=False, xticks=[], yticks=[]

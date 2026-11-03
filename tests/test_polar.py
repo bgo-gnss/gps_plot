@@ -107,7 +107,7 @@ def test_run_saves_one_figure_per_pair(
     monkeypatch.setattr(dr, "config_directions", lambda config: {})
     saved: list[str] = []
     monkeypatch.setattr(tplt, "saveFig", lambda fn, ft, fig: saved.append(fn))
-    monkeypatch.setattr(tplt, "inpLogo", lambda fig: None)
+    monkeypatch.setattr(tplt, "inpLogo", lambda fig, **kw: None)
     parser = polar.build_parser()
     args = parser.parse_args(
         ["SVIE-SKFC", "-s", "20250801", "-e", "20251001", "--save", "png",

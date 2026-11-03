@@ -722,6 +722,12 @@ def polar_figure(
         bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
         bar.set_label(label)
 
+    # the logo in the band above the panels, left of the title (BGÓ 2026-11-03):
+    # at most half the band high and a fifth of the figure wide (the logo is
+    # 0.186 as high as wide), so a narrow profile-only figure keeps its title
+    band = (1.0 - fig.subplotpars.top) * size[1]
+    high = min(0.75, 0.5 * band, 0.18 * size[0] * 0.186)
+    tplt.inpLogo(fig, top_left=(0.01, 1.0 - 0.1 * band / size[1], high))  # type: ignore[no-untyped-call]
     rovers = ", ".join(pp.rover for pp in pairs)
     refs = sorted({pp.name[5:] for pp in pairs})
     fig.suptitle(
