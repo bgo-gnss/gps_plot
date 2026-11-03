@@ -909,7 +909,6 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                            interactive=not args.save, panels=panels, dem=dem,
                            half=half, path_half=args.map_half,
                            profile_dem=profile_dem)  # fmt: skip
-        tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
         if not args.save:
             import matplotlib.pyplot as plt
 

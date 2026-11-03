@@ -275,14 +275,19 @@ def stack_figure(
                 xb, [k * float(offset), at_t1[i] + k * float(offset)],
                 color=colors[k], linestyle="--", linewidth=1.0,
             )  # fmt: skip
-    axes[0].legend(
-        loc="upper left",
+    # the legend sits at the foot of the Up panel; the top-left corner of the
+    # North panel is the logo's (BGÓ 2026-11-02)
+    handles, keys = axes[0].get_legend_handles_labels()
+    axes[2].legend(
+        handles,
+        keys,
+        loc="lower center",
         fontsize="medium",
         markerscale=2.0,
         numpoints=1,  # one dot per key, not two joined
         # a line's key needs length (the ts style sets 0 for its dot keys)
         handlelength=2.0 if "line" in styles else None,
-        ncol=max(1, (len(series) + 5) // 6),
+        ncol=max(1, min(len(keys), 3)),
         framealpha=0.85,
     )
     return fig
