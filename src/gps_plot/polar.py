@@ -197,7 +197,11 @@ def resolve_span(args: argparse.Namespace, now: dt.datetime) -> tuple[Any, Any, 
     """(start, end, the period's name for the file) of the plotted span."""
     end = args.end or (now if args.rtk else dt.datetime.combine(now.date(), dt.time()))
     if args.start is not None and args.special is None:
-        return args.start, end, f"{args.start:%Y%m%d}-{end:%Y%m%d}"
+        # a fixed start running on to today keeps one name (since<start>),
+        # so the daily product overwrites itself; an -e window names both ends
+        name = (f"since{args.start:%Y%m%d}" if args.end is None
+                else f"{args.start:%Y%m%d}-{end:%Y%m%d}")  # fmt: skip
+        return args.start, end, name
     special = args.special or ("week" if args.rtk else "year")
     days = {"90d": 91, "year": 366, "week": 7, "month": 31}.get(special)
     start = None if days is None else end - dt.timedelta(days=days)
@@ -722,6 +726,12 @@ def polar_figure(
         bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
         bar.set_label(label)
 
+    # the logo in the band above the panels, left of the title (BGÓ 2026-11-03):
+    # at most half the band high and a fifth of the figure wide (the logo is
+    # 0.186 as high as wide), so a narrow profile-only figure keeps its title
+    band = (1.0 - fig.subplotpars.top) * size[1]
+    high = min(0.75, 0.5 * band, 0.18 * size[0] * 0.186)
+    tplt.inpLogo(fig, top_left=(0.01, 1.0 - 0.1 * band / size[1], high))  # type: ignore[no-untyped-call]
     rovers = ", ".join(pp.rover for pp in pairs)
     refs = sorted({pp.name[5:] for pp in pairs})
     fig.suptitle(

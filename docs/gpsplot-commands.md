@@ -31,7 +31,8 @@ zeroes each stack series on its median before that date (`event`: the newest
 `--events` line in the window; at least 2 epochs) instead of on its first,
 noisy, epoch — the Svínafellsheiði stacks, BGÓ 2026-11-02. Baselines to one
 reference are titled `A, B -- REF baselines`. `ts`, `stack` and `rtk`
-carry the Veðurstofa logo top left of the North panel (`tplt.inpLogo`,
+carry the Veðurstofa logo top left of the North panel, `polar` in the band
+left of its title (`tplt.inpLogo`,
 `assets/IMO-Logo-IS-01-Blue.png`); the stack/rtk legend sits at the foot of
 the Up panel (BGÓ 2026-11-02). And a detrended series is
 zeroed on its first clean samples (`sources.gps.first_clean`): one undetected
