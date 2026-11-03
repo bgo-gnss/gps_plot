@@ -852,8 +852,11 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             onset = resolve_onset(args.onset)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
-    if onset is not None and start is not None and onset < start:
-        start = onset
+    # read from a day before the onset: a start on the onset day itself
+    # (plots.yaml fixedstart:) would otherwise move the zero to the first
+    # daily epoch (11:58), half a day after the events.yaml onset
+    if onset is not None and start is not None and onset <= start:
+        start = onset - dt.timedelta(days=1)
     if not args.save:
         mpl.use("WebAgg")
     window = args.window or (1.0 / 24.0 if args.rtk else 7.0)
