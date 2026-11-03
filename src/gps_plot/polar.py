@@ -257,8 +257,6 @@ PANELS = ("sector", "map", "profile", "section", "hodograph")
 DEFAULT_PANELS = ("sector", "map", "profile")
 #: half-width [m] of the map panel's DEM window around the rover
 MAP_HALF_M = 120.0
-#: the map panel is this much wider than the others
-MAP_WIDTH = 1.6
 #: per pair of a --together figure: marker, motion colour, downslope colour
 PAIR_STYLES = (
     ("o", "red", "saddlebrown"),
@@ -578,9 +576,8 @@ def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
     ax.set_title("vertical section along the motion")
 
 
-#: the stacked figure with a profile: the map's width against the right
-#: column's, and the profile's row height against the sector's
-PROFILE_MAP_WIDTH = 1.45
+#: the stacked figure with a profile: the profile's row height against the
+#: sector's (the map's width follows from the height, _square_map_ratio)
 PROFILE_ROW = 1.5
 #: a profile-only figure: its width, the axes' width and the gap between
 #: the sub-panels [in] (BGÓ 2026-11-01: closer together)
@@ -591,6 +588,55 @@ PROFILE_GAP_IN = 0.85
 PROFILE_ALONE_LEFT = 0.9
 PROFILE_ALONE_TOP = 1.6
 PROFILE_ALONE_BOTTOM = 1.05
+
+
+#: the band over the map of a stacked figure (title, status line), inches
+STACKED_TOP_IN = 1.05
+
+
+def _square_map_ratio(size: tuple[float, float], pars: Any) -> float:
+    """The map column's width ratio that makes its cell square, so the map
+    fills it top to bottom and the column beside it can match its height."""
+    high = (pars.top - pars.bottom) * size[1]
+    total = (pars.right - pars.left) * size[0] / (1.0 + pars.wspace / 2.0)
+    return float(np.clip(high / max(total - high, 1e-9), 1.2, 2.2))
+
+
+def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
+                  status: str | None, status_color: str) -> None:  # fmt: skip
+    """A stacked figure framed on its map (BGÓ 2026-11-03): no map title, the
+    figure title and status line centred over the map, the logo in its top
+    left corner, and the panels beside it fitted to it: the top title on
+    its top edge, the lowest frame on its bottom edge (x labels in line)."""
+    import matplotlib as mpl
+
+    from gps_plot import timesmatplt as tplt
+
+    mapax.set_title("")
+    renderer = fig._get_renderer()
+    mapax.apply_aspect()
+    box = mapax.get_position()
+    to_fig = fig.transFigure.inverted()
+    for _ in range(3):  # the labels keep their size in inches: converge
+        tight = [a.get_tightbbox(renderer).transformed(to_fig) for a in column]
+        frames = [a.get_position(original=True) for a in column]
+        lo, hi = min(f.y0 for f in frames), max(f.y1 for f in frames)
+        above = max(t.y1 for t in tight) - hi
+        scale = (box.y1 - above - box.y0) / (hi - lo)
+        for a, f in zip(column, frames, strict=True):
+            a.set_position((f.x0, box.y0 + (f.y0 - lo) * scale,
+                            f.width, f.height * scale))  # fmt: skip
+            a.apply_aspect()
+    h = fig.get_size_inches()[1]
+    middle = (box.x0 + box.x1) / 2.0
+    if status is not None:
+        fig.text(middle, box.y1 + 0.08 / h, status, ha="center", va="bottom",
+                 fontsize="large", color=status_color)  # fmt: skip
+    fig.text(middle, box.y1 + 0.42 / h, title, ha="center", va="bottom",
+             fontsize=mpl.rcParams["figure.titlesize"])  # fmt: skip
+    wide = box.width * fig.get_size_inches()[0]
+    tplt.inpLogo(fig, top_left=(box.x0 + 0.006, box.y1 - 0.008, 0.3 * wide * 0.186),  # type: ignore[no-untyped-call]
+                 backdrop=True)  # fmt: skip
 
 
 def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> None:
@@ -673,7 +719,7 @@ def polar_figure(
     # the colour bar inside the map (else the profile), as on the other maps
     inside = "map" in panels or "profile" in panels
     right = 0.985 if inside else 1.0 - 1.2 / size[0]
-    top = 0.89 if stacked else 0.84
+    top = 1.0 - STACKED_TOP_IN / size[1] if stacked else 0.84
     if alone:
         left = PROFILE_ALONE_LEFT / size[0]
         fig.subplots_adjust(left=left, right=left + PROFILE_ALONE_AX_W / size[0],
@@ -689,7 +735,7 @@ def polar_figure(
     norm = mpl.colors.Normalize(vmin=0.0, vmax=max(vmax, 1e-9))
     style = {"cmap": cmap, "norm": norm}
     if stacked:
-        widths = [PROFILE_MAP_WIDTH if "profile" in others else MAP_WIDTH, 1.0]
+        widths = [_square_map_ratio(size, fig.subplotpars), 1.0]
         rows = [PROFILE_ROW if p == "profile" else 1.0 for p in others]
         grid = fig.add_gridspec(len(others), 2, width_ratios=widths, height_ratios=rows)
         where = {"map": grid[:, 0], **{p: grid[k, 1] for k, p in enumerate(others)}}
@@ -717,6 +763,7 @@ def polar_figure(
         else:
             raise ValueError(f"unknown panel {panel!r}: one of {', '.join(PANELS)}")
 
+    column = [a for a in fig.axes if a is not holder]  # the panels beside the map
     label = f"days since {onset:%Y-%m-%d %H:%M}"
     if holder is not None:
         _inner_colorbar(fig, holder, cm.ScalarMappable(norm=norm, cmap=cmap), label,
@@ -726,16 +773,20 @@ def polar_figure(
         bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
         bar.set_label(label)
 
+    rovers = ", ".join(pp.rover for pp in pairs)
+    refs = sorted({pp.name[5:] for pp in pairs})
+    title = rf"\Huge {rovers} -- {', '.join(refs)} movement since {onset:%Y-%m-%d}"
+    if stacked and holder is not None:
+        _frame_on_map(fig, holder, column, title, title_status, status_color)
+        return fig
     # the logo in the band above the panels, left of the title (BGÓ 2026-11-03):
     # at most half the band high and a fifth of the figure wide (the logo is
     # 0.186 as high as wide), so a narrow profile-only figure keeps its title
     band = (1.0 - fig.subplotpars.top) * size[1]
     high = min(0.75, 0.5 * band, 0.18 * size[0] * 0.186)
     tplt.inpLogo(fig, top_left=(0.01, 1.0 - 0.1 * band / size[1], high))  # type: ignore[no-untyped-call]
-    rovers = ", ".join(pp.rover for pp in pairs)
-    refs = sorted({pp.name[5:] for pp in pairs})
     fig.suptitle(
-        rf"\Huge {rovers} -- {', '.join(refs)} movement since {onset:%Y-%m-%d}",
+        title,
         y=1.0 - 0.12 / size[1] if alone else 0.975 if stacked else 0.96,
     )
     if title_status is not None:
