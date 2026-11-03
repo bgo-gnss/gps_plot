@@ -628,7 +628,7 @@ def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
                             f.width, f.height * scale))  # fmt: skip
             a.apply_aspect()
     h = fig.get_size_inches()[1]
-    middle = (box.x0 + box.x1) / 2.0
+    middle = 0.5  # the title on the whole figure (BGÓ 2026-11-03)
     if status is not None:
         fig.text(middle, box.y1 + 0.08 / h, status, ha="center", va="bottom",
                  fontsize="large", color=status_color)  # fmt: skip
