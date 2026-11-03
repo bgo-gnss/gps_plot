@@ -161,8 +161,11 @@ def test_figure_panels(panels: tuple[str, ...], together: bool) -> None:
     fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30),
                              panels=panels, dem=dem, half=300.0)  # fmt: skip
     titles = [ax.get_title() for ax in fig.axes]
-    if "map" in panels:
+    if panels == ("map",):
         assert any(t.startswith("terrain (5m DEM, path") for t in titles)
+    elif "map" in panels:  # stacked: no map title, the figure's over the map
+        assert not any(t.startswith("terrain") for t in titles)
+        assert not fig.get_suptitle()
     if "section" in panels:
         assert "vertical section along the motion" in titles
     with pytest.raises(ValueError, match="unknown panel"):

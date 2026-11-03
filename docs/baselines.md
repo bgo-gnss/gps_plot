@@ -128,8 +128,14 @@ directions, DEM) to the run log instead.
 (`-rtk`); together, the rovers then the references: `SVIN_SVIE_SKFC-polar-90d`.
 A fixed start (`-s`, plots.yaml `fixedstart:`) without `-e` is
 `since<YYYYMMDD>`, one file redrawn daily: the Svínafellsheiði product is
-`SVIN_SVIE_SKFC-polar-since20260923` (BGÓ 2026-11-03; it was 90d + year). The
-logo sits left of the title (`tplt.inpLogo(top_left=…)`).
+`SVIN_SVIE_SKFC-polar-since20260923` (BGÓ 2026-11-03; it was 90d + year).
+The stacked figure (map + column) is framed on its map (`_frame_on_map`): no
+map title, the figure title and status line just over the map (centred on
+the figure), the logo
+in its top-left corner on a white box, the column fitted to the map's height
+(sector title on its top edge, lowest profile frame on its bottom edge); the
+map column is as wide as the figure is high (`_square_map_ratio`). Other
+layouts keep the title on top, the logo left of it.
 
 ## Terrain (`terrain.py`)
 

@@ -2739,13 +2739,14 @@ def convIcelCh(string):
 LOGO = "IMO-Logo-IS-01-Blue.png"  # one-line "Veðurstofa Íslands", in assets/
 
 
-def inpLogo(fig, Logo=None, width=0.38, top_left=None):
+def inpLogo(fig, Logo=None, width=0.38, top_left=None, backdrop=False):
     """The Veðurstofa logo in the top-left corner of the first (North) panel.
 
     ``Logo`` overrides the packaged logo; ``width`` is its share of the
     panel's width, the height follows the image's own aspect.
     ``top_left=(x, y, height_in)`` instead puts it at that figure-fraction
     corner, ``height_in`` inches tall (polar: the band beside the title).
+    ``backdrop`` sets it on a white box (over a map).
     """
     from importlib import resources
 
@@ -2766,8 +2767,13 @@ def inpLogo(fig, Logo=None, width=0.38, top_left=None):
         ypos = box.ymax - ylen - 0.02 * box.height
 
     aximage = fig.add_axes(
-        [xpos, ypos, xlen, ylen], frameon=False, xticks=[], yticks=[]
+        [xpos, ypos, xlen, ylen], frameon=backdrop, xticks=[], yticks=[]
     )
+    if backdrop:
+        aximage.set_facecolor((1.0, 1.0, 1.0, 0.8))
+        for side in aximage.spines.values():
+            side.set_visible(False)
+        aximage.set_zorder(20)
     aximage.imshow(im, aspect="auto", interpolation="antialiased")
 
 
