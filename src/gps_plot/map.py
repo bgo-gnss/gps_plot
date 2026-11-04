@@ -733,6 +733,13 @@ def build_parser(
         "<name>-nearest.csv (or --nearest-csv)",
     )  # fmt: skip
     p.add_argument(
+        "--nearest-from", default=None, metavar="FILE",
+        help="draw the links of a nearest list instead of finding them: a CSV "
+        "with name, lon, lat and nearest columns (what 'gpscoord nearest' "
+        "writes, e.g. with --data-before/--join); a moved station A+B links to "
+        "its last mark B",
+    )  # fmt: skip
+    p.add_argument(
         "--nearest-csv", default=None, metavar="FILE",
         help="write the --nearest list here instead (e.g. under ~/gps-data/data/), "
         "with or without --save",
@@ -1895,6 +1902,8 @@ def _nearest_links(
     """``--nearest``: each file point's link to the nearest of ``stations``
     (the map's selection without its region: a station just off the map
     still counts), with that :class:`geofunc.points.Neighbour`."""
+    if getattr(args, "nearest_from", None):
+        return _links_from(args, parser, stations, maps)
     if not getattr(args, "nearest", False):
         return []
     from geofunc.points import nearest
@@ -1909,6 +1918,43 @@ def _nearest_links(
         lon, lat = by_marker[nb.id]
         link = maps.MapLink(c.lon, c.lat, lon, lat, f"{nb.distance / 1000:.1f} km")
         out.append((link, (c.marker, nb)))
+    return out
+
+
+def _links_from(
+    args: Any, parser: Any, stations: Sequence[Any], maps: Any
+) -> list[tuple[Any, Any]]:
+    """``--nearest-from``: the links of a nearest list (``gpscoord nearest``),
+    rank 1 rows only; distances measured again (geodesic) for the labels."""
+    import csv
+
+    from geofunc.points import nearest
+
+    path = os.path.expanduser(args.nearest_from)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = list(csv.DictReader(ln for ln in fh if not ln.startswith("#")))
+    except OSError as exc:
+        parser.error(f"--nearest-from: {exc}")
+    by_marker = {c.marker: (c.lon, c.lat) for c in stations}
+    out = []
+    for r in rows:
+        if r.get("rank", "1") not in ("1", ""):
+            continue
+        try:
+            name, lon, lat = r["name"], float(r["lon"]), float(r["lat"])
+            target = r["nearest"].strip().upper()
+        except (KeyError, ValueError):
+            parser.error(
+                f"--nearest-from {path}: needs name, lon, lat and nearest columns"
+            )
+        mark = target.split("+")[-1]  # a moved station: its last mark
+        if mark not in by_marker:
+            parser.error(f"--nearest-from: {mark} is not among the stations chosen")
+        (nb,) = nearest((lon, lat), [(target, *by_marker[mark])])
+        slon, slat = by_marker[mark]
+        link = maps.MapLink(lon, lat, slon, slat, f"{nb.distance / 1000:.1f} km")
+        out.append((link, (name, nb)))
     return out
 
 
@@ -2122,7 +2168,7 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         except ValueError as exc:
             parser.error(str(exc))
         _report(dropped)
-        if getattr(args, "nearest", False):
+        if getattr(args, "nearest", False) or getattr(args, "nearest_from", None):
             try:
                 pool, _ = select_stations(
                     specs or ["*"], names, coords, region=None, exclude=args.exclude

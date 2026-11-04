@@ -86,3 +86,21 @@ def test_isn93_table_from_its_header(tmp_path):
         for c in sf.read_stations(tsv, "B", maps, frame="isn93")
     ]
     assert (lon2, lat2) == pytest.approx((lon, lat))
+
+
+def test_nearest_from_list(tmp_path):
+    """--nearest-from: a gpscoord nearest list; A+B links to its last mark."""
+    import argparse
+
+    from gps_plot import map as gmap
+
+    f = tmp_path / "naesta.csv"
+    f.write_text("name,lon,lat,rank,nearest\n"
+                 "SVAK-20,-22.3722,63.9228,1,LISK+LISF\nX,-22.3722,63.9228,2,SENG\n")  # fmt: skip
+    st = [maps.StationCoordinate("LISK", -22.3727, 63.9223),
+          maps.StationCoordinate("LISF", -22.3670, 63.9232)]  # fmt: skip
+    args = argparse.Namespace(nearest_from=str(f))
+    ((link, (name, nb)),) = gmap._links_from(args, argparse.ArgumentParser(), st, maps)
+    assert name == "SVAK-20" and nb.id == "LISK+LISF"
+    assert (link.lon1, link.lat1) == (-22.3670, 63.9232)  # LISF, the last mark
+    assert link.label == "0.3 km"
