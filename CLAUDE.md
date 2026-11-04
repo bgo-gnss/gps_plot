@@ -35,7 +35,7 @@ gps_plot/
 │   ├── rtk_map.py                    # gpsplot rtk-map: last hours of RTK motion on a map, pair network in its own frame (no net motion)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
-│   ├── map.py                        # gpsplot map: station/velocity/deformation/slip over maps.py
+│   ├── map.py                        # gpsplot map: station/velocity/deformation/slip over maps.py; station --stations-file (any frame via geofunc.points) --nearest
 │   ├── sources/velocity.py           # per-station windowed velocity / displacement / stored secular rate
 │   ├── plot_gps_timeseries.py        # time-series driver: build_parser + run (gpsplot ts)
 │   ├── series.py                     # Series: what every source returns, plots draw
@@ -149,4 +149,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-01 (--adhoc) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*

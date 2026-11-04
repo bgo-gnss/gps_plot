@@ -717,6 +717,26 @@ def build_parser(
         "Alone they are the whole map; with stations, --tos or --tos-search "
         "they are drawn beside them",
     )  # fmt: skip
+    p.add_argument(
+        "--stations-frame", default=None, metavar="FRAME",
+        help="the frame of the --stations-file coordinates: wgs84 (lon/lat), "
+        "isn93, isn2004, isn2016, … (geofunc.coords); default lon/lat, or the "
+        "frame a table's header names ('X (ISN93) [m]'). Such tables are read "
+        "by geofunc.points: tab, ; or space separated, decimal commas",
+    )  # fmt: skip
+    p.add_argument(
+        "--nearest", action="store_true",
+        help="a thin arrow from each --stations-file point to the nearest "
+        "station (stations.cfg, --tos …; the stations chosen, on the map or "
+        "just off it), its distance along it; the "
+        "list printed and, with --save, written beside the map as "
+        "<name>-nearest.csv (or --nearest-csv)",
+    )  # fmt: skip
+    p.add_argument(
+        "--nearest-csv", default=None, metavar="FILE",
+        help="write the --nearest list here instead (e.g. under ~/gps-data/data/), "
+        "with or without --save",
+    )  # fmt: skip
     _add_track_options(p)
     _add_map_options(p, config)
 
@@ -1859,11 +1879,64 @@ def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
     out = []
     for spec in args.stations_file:
         try:
-            out += station_files.read_stations(*station_files.split_spec(spec), maps)
-        except (OSError, ValueError) as exc:
+            out += station_files.read_stations(
+                *station_files.split_spec(spec), maps,
+                frame=getattr(args, "stations_frame", None),
+            )  # fmt: skip
+        except (OSError, ValueError, KeyError) as exc:
             parser.error(f"--stations-file: {exc}")
     kept: list[Any] = maps.within(args.region, out)
     return kept
+
+
+def _nearest_links(
+    args: Any, parser: Any, files: Sequence[Any], stations: Sequence[Any], maps: Any
+) -> list[tuple[Any, Any]]:
+    """``--nearest``: each file point's link to the nearest of ``stations``
+    (the map's selection without its region: a station just off the map
+    still counts), with that :class:`geofunc.points.Neighbour`."""
+    if not getattr(args, "nearest", False):
+        return []
+    from geofunc.points import nearest
+
+    cands = [(c.marker, c.lon, c.lat) for c in stations]
+    if not files or not cands:
+        parser.error("--nearest needs --stations-file points and stations to link to")
+    by_marker = {m: (lon, lat) for m, lon, lat in cands}
+    out = []
+    for c in files:
+        (nb,) = nearest((c.lon, c.lat), cands)
+        lon, lat = by_marker[nb.id]
+        link = maps.MapLink(c.lon, c.lat, lon, lat, f"{nb.distance / 1000:.1f} km")
+        out.append((link, (c.marker, nb)))
+    return out
+
+
+def _write_nearest(
+    links: Sequence[tuple[Any, Any]], saved: Sequence[str], path: str | None = None
+) -> None:
+    """The ``--nearest`` list: printed, and written to ``path`` (default
+    beside the saved map as ``<name>-nearest.csv``)."""
+    import csv
+
+    rows = [
+        (m, f"{k.lon0:.6f}", f"{k.lat0:.6f}", nb.id, f"{nb.distance / 1000:.2f}",
+         f"{nb.azimuth:.0f}")
+        for k, (m, nb) in links
+    ]  # fmt: skip
+    head = ("point", "lon", "lat", "nearest", "distance_km", "azimuth_deg")
+    for r in rows:
+        print(f"{r[0]:<10} -> {r[3]:<5} {r[4]:>6} km  az {r[5]:>3}°")
+    if path is None and saved:
+        path = os.path.splitext(saved[0])[0] + "-nearest.csv"
+    if path:
+        path = os.path.expanduser(path)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(head)
+            w.writerows(rows)
+        print(path)
 
 
 def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
@@ -2033,6 +2106,7 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
     use_tos = args.tos or args.tos_search is not None
     files = _file_stations(args, parser, maps)
     stations: list[Any] = []
+    pool: list[Any] = []  # --nearest searches these, on the map or off it
     if use_tos or args.Stations or not (files or not args.markers):
         names: Sequence[str]
         if use_tos:
@@ -2048,6 +2122,13 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         except ValueError as exc:
             parser.error(str(exc))
         _report(dropped)
+        if getattr(args, "nearest", False):
+            try:
+                pool, _ = select_stations(
+                    specs or ["*"], names, coords, region=None, exclude=args.exclude
+                )
+            except ValueError as exc:
+                parser.error(str(exc))
         if files and not any(c.status for c in stations):
             stations = [
                 dataclasses.replace(c, status=STATIONS_CFG_GROUP) for c in stations
@@ -2069,6 +2150,10 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         stations, labels=labels, markers=args.markers,
         unlabelled={c.marker for c in zoomed}, **zoom_style,
     )  # fmt: skip
+
+    links = _nearest_links(args, parser, files, pool, maps)
+    maps.draw_links(fig, [k for k, _ in links],
+                    projection=style.get("projection") or maps.DEFAULT_PROJECTION)  # fmt: skip
 
     def zoom_symbols(f: Any, rj: str) -> None:
         maps.draw_station_symbols(f, zoomed, markers=args.markers,
@@ -2102,8 +2187,11 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         stations,
         *(["track"] if drawn is not None else []),
     )
-    for p in _save(fig, args, config, stem):
+    saved = _save(fig, args, config, stem)
+    for p in saved:
         print(p)
+    if links:
+        _write_nearest(links, saved, args.nearest_csv)
     for marker, sfig in series:
         for p in _save_series(sfig, args, config, f"{args.name or stem}-{marker}"):
             print(p)

@@ -65,3 +65,24 @@ def test_split_spec(tmp_path):
     odd = tmp_path / "x:y.txt"
     odd.write_text("")
     assert sf.split_spec(str(odd)) == (str(odd), "x:y")
+
+
+def test_isn93_table_from_its_header(tmp_path):
+    """A borehole list as ÍSOR gives it: ISN93 X/Y, decimal commas, tabs."""
+    pytest.importorskip("geofunc.points")
+    tsv = tmp_path / "borholur.tsv"
+    tsv.write_text(
+        "Auðkenni\tStaðarnr.\tX (ISN93) [m]\tY (ISN93) [m]\n"
+        "HSK-06\tB16606\t329637,4\t383731,4\n",
+        encoding="utf-8",
+    )
+    ((marker, lon, lat, name, status),) = read(tsv, "Borholur")
+    assert (marker, name, status) == ("HSK-06", None, "Borholur")
+    assert (lon, lat) == pytest.approx((-22.47253, 63.91508), abs=1e-5)
+    # the frame given: the same table without the frame in its header
+    tsv.write_text("id\tx\ty\nHSK-06\t329637,4\t383731,4\n", encoding="utf-8")
+    ((_, lon2, lat2, _, _),) = [
+        (c.marker, c.lon, c.lat, c.name, c.status)
+        for c in sf.read_stations(tsv, "B", maps, frame="isn93")
+    ]
+    assert (lon2, lat2) == pytest.approx((lon, lat))

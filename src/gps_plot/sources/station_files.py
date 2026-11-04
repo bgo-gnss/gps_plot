@@ -10,6 +10,9 @@ Three layouts, told apart by the file:
   ``lat`` (or ``latitude``/``y``) and optionally ``name``.
 - **Text**: one station per line, ``MARKER LON LAT [NAME …]``, blank
   lines and ``#`` comments skipped.
+- **A table in another frame** (``frame``, or a header that names one,
+  e.g. ``X (ISN93) [m]``): read by :func:`geofunc.points.read_points`
+  (tab/;/comma/space, decimal commas, any header) and converted to lon/lat.
 
 Every station of one file carries the file's legend label as its map
 group (``StationCoordinate.status``).
@@ -105,9 +108,28 @@ def _text(path: Path, text: str) -> list[Row]:
     return rows
 
 
-def read_stations(path: str | Path, label: str, maps: Any) -> list[Any]:
+def _projected(path: Path, frame: str | None) -> list[Row] | None:
+    """The rows of a table in a frame other than lon/lat (``frame``, else
+    the one its header names), converted; None for a lon/lat file."""
+    from geofunc import points
+
+    if frame is None:
+        text = path.read_text(encoding="utf-8-sig")
+        first = next((ln for ln in text.splitlines() if ln.strip()), "")
+        frame = points.guess_frame([first])
+    if frame in (None, "wgs84"):
+        return None
+    pts = points.to_frame(points.read_points(path, frame=frame), "wgs84")
+    return [(p.name, p.x, p.y, None) for p in pts]
+
+
+def read_stations(
+    path: str | Path, label: str, maps: Any, frame: str | None = None
+) -> list[Any]:
     """The stations of one file as ``maps.StationCoordinate``, grouped
-    under ``label``.
+    under ``label``; ``frame`` the coordinates' frame (a
+    :mod:`geofunc.coords` name, e.g. ``isn93``; default lon/lat, or the
+    frame the table's header names).
 
     Raises:
         FileNotFoundError: no such file.
@@ -116,6 +138,8 @@ def read_stations(path: str | Path, label: str, maps: Any) -> list[Any]:
     path = Path(path).expanduser()
     if path.suffix.lower() in GEOJSON_SUFFIXES:
         rows = _geojson(path)
+    elif (converted := _projected(path, frame)) is not None:
+        rows = converted
     else:
         text = path.read_text(encoding="utf-8")
         first = next((ln for ln in text.splitlines() if ln.strip()), "")

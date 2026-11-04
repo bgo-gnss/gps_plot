@@ -455,6 +455,17 @@ Station maps label their stations only up to 60 stations; `--labels` and
   GeoJSON points (`sources/station_files.py`). Each file is one legend
   group. Alone, the files are the whole map; beside stations, `--tos` or
   `--tos-search`, they are drawn with them, inside `--region`.
+  A table in another frame (`--stations-frame isn93`, or a header that
+  names one, e.g. `X (ISN93) [m]`) is read by `geofunc.points` — tab, `;`
+  or space separated, decimal commas, any header — and converted to lon/lat.
+- **`--nearest`** links each `--stations-file` point to the nearest
+  station (stations.cfg, `--tos` …, the chosen ones, on the map or just
+  off it): a thin arrow, its geodesic
+  distance along it (white halo, upright), links shorter than the station
+  symbol skipped. The list is printed and written to `--nearest-csv FILE`,
+  else beside the saved map as `<name>-nearest.csv`
+  (`maps.draw_links` / `maps.MapLink`; `geofunc nearest` does the same
+  from the command line against any candidate table).
 - **`--no-stations`** draws no station symbols or names, on station,
   velocity and deformation maps; the stations still set the extent.
   `gpsplot map base` is a station map without stations, Iceland when no
@@ -465,6 +476,10 @@ gpsplot map station --tos-search "--epos" --dem iceland --save pdf
 gpsplot map station --tos-search "'subtype = [GPS stöð, SIL stöð]'" --save pdf
 gpsplot map station --tos-search "--active-gps" --group-by continuity --save pdf
 gpsplot map station --tos --stations-file planned.txt:Planned --save pdf
+gpsplot map station "*" --region=-22.76/-22.07/63.80/63.975 --labels \
+    --stations-file ~/gps-data/data/reykjanes-borholur/borholur.tsv:Borholur \
+    --nearest --nearest-csv ~/gps-data/data/reykjanes-borholur/borholur-naesta-gnss.csv \
+    --dem arcticdem -d ~/gps-data/fig/reykjanes-borholur --save pdf,png
 gpsplot map base --dem iceland --dem-smooth 2 --save pdf
 ```
 

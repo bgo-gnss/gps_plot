@@ -2018,6 +2018,71 @@ def draw_scale_arrow(
              justify="LM", fill="white")  # fmt: skip
 
 
+@dataclasses.dataclass(frozen=True)
+class MapLink:
+    """A labelled line from one point to another, e.g. a borehole to its
+    nearest GNSS station (``gpsplot map station --nearest``)."""
+
+    lon0: float
+    lat0: float
+    lon1: float
+    lat1: float
+    label: str
+
+
+DEFAULT_LINK_PEN = "0.4p,black"
+DEFAULT_LINK_FONT = "5p,Helvetica,black=~1p,white"  # white halo over the hillshade
+#: the arrow stops this short of its end point, clear of the station symbol
+DEFAULT_LINK_GAP_CM = 0.15
+
+
+def draw_links(
+    fig: Any,
+    links: Sequence[MapLink],
+    *,
+    projection: str = DEFAULT_PROJECTION,
+    pen: str = DEFAULT_LINK_PEN,
+    font: str = DEFAULT_LINK_FONT,
+    gap_cm: float = DEFAULT_LINK_GAP_CM,
+) -> None:
+    """Thin arrows from each link's start to its end on ``fig`` (drawn
+    after the base map), the head ``gap_cm`` short of the end, the label
+    at the middle along the line, kept upright (angle in map coordinates,
+    from the figure's region in ``projection``)."""
+    if not links:
+        return
+    w, e, s, n = (float(v) for v in fig.region)
+    rj = f"-R{w:.10g}/{e:.10g}/{s:.10g}/{n:.10g} -J{projection}"
+    a = _mapproject(rj, [k.lon0 for k in links], [k.lat0 for k in links])[:, :2]
+    b = _mapproject(rj, [k.lon1 for k in links], [k.lat1 for k in links])[:, :2]
+    d = b - a
+    length = np.hypot(d[:, 0], d[:, 1])
+    keep = length > 2 * gap_cm
+    if not keep.any():
+        return
+    end = a + d * ((length - gap_cm) / np.where(length > 0, length, 1.0))[:, None]
+    mid = a + d / 2
+    xy = _mapproject(
+        rj + " -I", np.r_[end[:, 0], mid[:, 0]], np.r_[end[:, 1], mid[:, 1]]
+    )
+    ends, mids = xy[: len(links), :2], xy[len(links) :, :2]
+    rows = [
+        [k.lon0, k.lat0, ends[i, 0], ends[i, 1]] for i, k in enumerate(links) if keep[i]
+    ]
+    fig.plot(data=np.array(rows), style="v0.16c+s+e+a35+h0.5", pen=pen,
+             fill=pen.split(",")[-1])  # fmt: skip
+    for i, k in enumerate(links):
+        if not keep[i] or not k.label:
+            continue
+        angle = math.degrees(math.atan2(d[i, 1], d[i, 0]))
+        if angle > 90:
+            angle -= 180
+        elif angle <= -90:
+            angle += 180
+        fig.text(x=mids[i, 0], y=mids[i, 1], text=k.label, angle=angle,
+                 font=font, justify="CB", offset="0/0.03c")  # fmt: skip
+
+
 def _draw_status_markers(
     fig: Any,
     coordinates: Sequence[StationCoordinate],
