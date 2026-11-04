@@ -1171,3 +1171,33 @@ def test_draw_links_on_a_station_map(tmp_path: Path) -> None:
     out = tmp_path / "links.png"
     fig.savefig(out)
     assert os.path.getsize(out) > 1024
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_fine_on_map_grid_covering_part_of_the_map(tmp_path: Path, monkeypatch) -> None:
+    """A 2 m grid over part of the map, its edges off the map's lattice:
+    grdfilter once refused it ("Output grid domain incompatible")."""
+    import numpy as np
+    import pygmt
+    import xarray as xr
+
+    from gps_plot.maps import fine_on_map
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    def grid(path: Path, w: float, e: float, s: float, n: float, d: float, z: float) -> str:
+        lon = np.arange(w, e + d / 2, d)
+        lat = np.arange(s, n + d / 2, d)
+        g = xr.DataArray(np.full((lat.size, lon.size), z, dtype=np.float32),
+                         coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))  # fmt: skip
+        pygmt.grdcut(g, region=[w, e, s, n], outgrid=str(path))
+        return str(path)
+
+    fine = grid(tmp_path / "fine.nc", -22.5111315, -22.3476332, 63.8517079, 63.9031599, 0.0005, 50.0)
+    sea = grid(tmp_path / "sea.nc", -22.8, -22.0, 63.75, 64.05, 0.005, 10.0)
+    coast = tmp_path / "coast.txt"
+    coast.write_text("-22.8 63.75\n-22.0 63.75\n-22.0 64.05\n-22.8 64.05\n-22.8 63.75\n")
+    out = fine_on_map(fine, sea, str(coast), (-22.76, -22.07, 63.80, 63.975), 0.0016)
+    z = pygmt.grdtrack(points=np.array([[-22.43, 63.88], [-22.70, 63.82]]), grid=out,
+                       output_type="numpy")[:, 2]  # fmt: skip
+    assert z.tolist() == pytest.approx([50.0, 10.0], abs=1.0)  # 2 m grid / Iceland DEM
