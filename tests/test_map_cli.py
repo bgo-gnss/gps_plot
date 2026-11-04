@@ -570,6 +570,14 @@ def test_deformation_with_vertical_adds_a_coloured_up_field(
         _run(argv + ["--vertical"], tmp_path)
 
 
+def test_end_lag_marks_only_stations_behind_the_newest():
+    from gps_plot import map as gmap
+
+    assert gmap._end_lag(("steps_in_period", "end_early:24d")) == 24.0
+    assert gmap._end_lag(()) == 0.0
+    assert gmap.ENDED_DAYS == 30
+
+
 def test_gpsplot_help_lists_map_without_pygmt():
     code = (
         "import sys; from gps_plot.cli import main; main(['--help']); "

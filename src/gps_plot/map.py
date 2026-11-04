@@ -3062,6 +3062,10 @@ def _run_deformation(
     dropped: list[str] = []
     late: list[str] = []
     early: list[str] = []
+    # ended = its data stops ENDED_DAYS before the newest station's (a series
+    # that lags today alike, the gamit-p01 finals, marks nobody)
+    lags = {r.station: _end_lag(getattr(r, "flags", ())) for r in rs if r.accepted}
+    newest = min(lags.values(), default=0.0)
     for r in rs:
         if r.accepted:
             coord = by_marker[r.station]
@@ -3070,7 +3074,7 @@ def _run_deformation(
             if starts:  # --late-start: from its own first days
                 late.append(f"{r.station} from {starts[0].split(':', 1)[1]}")
                 coord = dataclasses.replace(coord, marker=f"{coord.marker}*")
-            if any(f.startswith("end_early:") for f in flags):  # stopped: to its last
+            if lags[r.station] - newest > ENDED_DAYS:  # stopped: to its last data
                 early.append(r.station)
                 coord = dataclasses.replace(coord, marker=f"{coord.marker}†")
             got.append((coord, _Rate(np.asarray(r.displacement), np.asarray(r.sigma))))
@@ -3152,6 +3156,19 @@ def _run_deformation(
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
+
+
+#: a deformation station is drawn STA† when its data ends this many days
+#: before the newest station's
+ENDED_DAYS = 30
+
+
+def _end_lag(flags: Sequence[str]) -> float:
+    """Days a displacement's data ends before the period (``end_early:Nd``)."""
+    for f in flags:
+        if f.startswith("end_early:"):
+            return float(f.split(":", 1)[1].rstrip("d"))
+    return 0.0
 
 
 #: colour of the vertical arrows on a horizontal deformation map
