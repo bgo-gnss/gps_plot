@@ -537,6 +537,39 @@ def test_deformation_values_and_late_start(fake_maps, monkeypatch, tmp_path):
     assert kw["value_labels"] == {"SENG": "+1.32 m", "SKSH*": "+1.32 m"}
 
 
+def test_deformation_with_vertical_adds_a_coloured_up_field(
+    fake_maps, monkeypatch, tmp_path
+):
+    import types
+
+    import geo_dataread.products as gprod
+
+    from gps_plot import map as gmap
+
+    def displacements(stations, period, settings):
+        return [
+            types.SimpleNamespace(station=sta, accepted=True, refused=None, flags=(),
+                                  displacement=(1330.0, -2547.0, -40.0),
+                                  sigma=(1.0, 1.0, 3.0))
+            for sta in stations
+        ]  # fmt: skip
+
+    monkeypatch.setattr(gprod, "estimate_displacements", displacements)
+    argv = ["deformation", "SENG", "SKSH", "-s", "20231101", "-e", "20231115",
+            "--with-vertical", "--values", "SKSH"]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    args, kw = fake_maps["deformation_vectors"]
+    (field,) = args[3]
+    assert field.color == gmap.VERTICAL_COLOR
+    np.testing.assert_allclose(field.east, [0.0, 0.0])
+    np.testing.assert_allclose(field.north, [-40.0, -40.0])  # subsidence: south
+    assert kw["field_values"] == {field.name: {"SKSH": "−40 mm"}}
+    assert kw["value_labels"] == {"SKSH": "2.87 m"}
+    assert fake_maps["fig"].saved[0].endswith("_with-vertical.png")
+    with pytest.raises(SystemExit):
+        _run(argv + ["--vertical"], tmp_path)
+
+
 def test_gpsplot_help_lists_map_without_pygmt():
     code = (
         "import sys; from gps_plot.cli import main; main(['--help']); "

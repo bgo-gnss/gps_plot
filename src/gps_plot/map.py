@@ -884,6 +884,12 @@ def build_parser(
         "uplift (as map velocity --vertical); no --mogi",
     )  # fmt: skip
     p.add_argument(
+        "--with-vertical", action="store_true",
+        help="the vertical too, on the same map: an arrow pointing north for "
+        f"uplift (south for subsidence) in {VERTICAL_COLOR}, at the "
+        "horizontal arrows' scale; --values writes it in that colour",
+    )  # fmt: skip
+    p.add_argument(
         "--values", default=None, metavar="STA[,STA...]|all",
         help="write these stations' displacement at their arrow tips (2.87 m; "
         "with --vertical signed, +1.32 m); name a few on a crowded map",
@@ -3077,6 +3083,9 @@ def _run_deformation(
     coords = [c for c, _ in got]
     if args.vertical and args.mogi:
         parser.error("--vertical: a Mogi field is horizontal; drop --mogi")
+    if args.vertical and args.with_vertical:
+        parser.error("--with-vertical adds the vertical to a horizontal map; "
+                     "drop --vertical")  # fmt: skip
     if args.vertical:  # uplift drawn north, as map velocity --vertical
         east = np.zeros(len(got))
         north = np.array([r.neu[2] for _, r in got])
@@ -3098,7 +3107,19 @@ def _run_deformation(
         )  # fmt: skip
         for k, m in enumerate(args.mogi or ())
     ]
-    scale, ref = auto_scale(np.hypot(east, north))
+    up = np.array([r.neu[2] for _, r in got])
+    field_values: dict[str, dict[str, str]] = {}
+    if args.with_vertical:  # its own colour, the horizontal arrows' scale
+        name = "vertical (north = up)"
+        models.append(maps.VectorField(name, np.zeros(len(got)), up,
+                                       color=VERTICAL_COLOR))  # fmt: skip
+        field_values[name] = (
+            _value_labels(args.values, coords, np.zeros(len(got)), up, True, maps) or {}
+        )
+    sizes = np.hypot(east, north)
+    if args.with_vertical:
+        sizes = np.concatenate([sizes, np.abs(up)])
+    scale, ref = auto_scale(sizes)
     style = _style(args, args.region, config=config, points=coords)
     notes = (["* from its first data"] if late else []) + (
         ["† to its last data"] if early else []
@@ -3117,18 +3138,24 @@ def _run_deformation(
         observed_label=window_label(args.start, end),
         value_labels=_value_labels(args.values, coords, east, north, args.vertical,
                                    maps),
+        field_values=field_values,
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
         scale_vertical=args.vertical,
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
     _finish(fig, args)
     _insets(fig, args, config, style, coords, None, legend_lines=len(models) + 3)
+    tag = ("mogi" if args.mogi else "vertical" if args.vertical
+           else "with-vertical" if args.with_vertical else "")  # fmt: skip
     stem = _stem(args, "deformation", coords,
-                 f"{args.start:%Y%m%d}-{end:%Y%m%d}",
-                 "mogi" if models else "vertical" if args.vertical else "")  # fmt: skip
+                 f"{args.start:%Y%m%d}-{end:%Y%m%d}", tag)  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
+
+
+#: colour of the vertical arrows on a horizontal deformation map
+VERTICAL_COLOR = "30/90/200"
 
 
 def _value_labels(

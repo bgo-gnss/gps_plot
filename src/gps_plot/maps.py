@@ -3254,6 +3254,7 @@ def deformation_vectors(
     scale_vertical: bool = False,
     value_labels: Mapping[str, str] | None = None,
     value_font: str = DEFAULT_VALUE_FONT,
+    field_values: Mapping[str, Mapping[str, str]] | None = None,
     legend_font: str = DEFAULT_LEGEND_FONT,
     legend_anchor: tuple[float, float] = DEFAULT_LEGEND_ANCHOR,
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
@@ -3330,6 +3331,9 @@ def deformation_vectors(
             by marker (e.g. its total, ``2.87 m``); stations left out get
             none, so a crowded map can name just a few.
         value_font: Font of ``value_labels`` (a white halo by default).
+        field_values: The same for the model fields, by field name, written
+            in each field's own colour (the vertical arrows of
+            ``gpsplot map deformation --with-vertical``).
         legend_font: Legend font (color appended per entry).
         legend_anchor: Legend anchor (region fractions from SW corner).
         legend_line_spacing: Legend line spacing (fraction of N-S extent).
@@ -3457,6 +3461,12 @@ def deformation_vectors(
     if value_labels:
         _draw_value_labels(fig, coordinates, obs_e, obs_n, value_labels,
                            scale=scale, font=value_font)  # fmt: skip
+    for field, fe, fn in fields:
+        texts = (field_values or {}).get(field.name)
+        if texts:
+            size, face = value_font.split(",")[:2]
+            _draw_value_labels(fig, coordinates, fe, fn, texts, scale=scale,
+                               font=f"{size},{face},{field.color}=~1p,white")  # fmt: skip
 
     if markers:
         fig.plot(
