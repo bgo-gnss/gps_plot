@@ -1091,7 +1091,16 @@ def fine_on_map(
     floor = onto(pygmt.grdcut(sea, region=[w - pad, e + pad, s - pad, n + pad],
                               verbose="e"))  # fmt: skip
     fw, fe, fs, fn = _grid_region(fine)
-    inner = [max(w, fw), min(e, fe), max(s, fs), min(n, fn)]
+    # the part of the lattice inside the 2 m grid, on lattice nodes: grdfilter
+    # refuses an output box that is not a whole number of cells or reaches
+    # past its input ("Output grid domain incompatible"), as when the grid
+    # covers only part of the map (its own edges are no lattice nodes)
+    inner = [
+        float(lon[np.searchsorted(lon, fw - 1e-9)]) if fw > w else w,
+        float(lon[np.searchsorted(lon, fe + 1e-9) - 1]) if fe < e else float(lon[-1]),
+        float(lat[np.searchsorted(lat, fs - 1e-9)]) if fs > s else s,
+        float(lat[np.searchsorted(lat, fn + 1e-9) - 1]) if fn < n else float(lat[-1]),
+    ] if fw < lon[-1] and fe > w and fs < lat[-1] and fn > s else [w, w, s, s]  # fmt: skip
     top = np.full(lattice.shape, np.nan, dtype=np.float32)
     if inner[0] < inner[1] and inner[2] < inner[3]:
         # a box filter one lattice cell wide [km] (GMT takes no Cartesian
