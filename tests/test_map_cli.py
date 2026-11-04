@@ -565,7 +565,10 @@ def test_deformation_with_vertical_adds_a_coloured_up_field(
     np.testing.assert_allclose(field.north, [-40.0, -40.0])  # subsidence: south
     assert kw["field_values"] == {field.name: {"SKSH": "−40 mm"}}
     assert kw["value_labels"] == {"SKSH": "2.87 m"}
+    assert kw["label_only"] is None
     assert fake_maps["fig"].saved[0].endswith("_with-vertical.png")
+    assert _run(argv + ["--label-stations", "seng"], tmp_path) == 0
+    assert fake_maps["deformation_vectors"][1]["label_only"] == {"SENG"}
     with pytest.raises(SystemExit):
         _run(argv + ["--vertical"], tmp_path)
 

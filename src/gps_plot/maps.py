@@ -3243,6 +3243,7 @@ def deformation_vectors(
     station_fill: str = DEFAULT_VECTOR_STATION_FILL,
     station_pen: str = DEFAULT_VECTOR_STATION_PEN,
     labels: bool = False,
+    label_only: Collection[str] | None = None,
     markers: bool = True,
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
@@ -3330,6 +3331,8 @@ def deformation_vectors(
         value_labels: Text written at the tip of a station's observed arrow,
             by marker (e.g. its total, ``2.87 m``); stations left out get
             none, so a crowded map can name just a few.
+        label_only: With ``labels``, name only these stations (markers
+            without their ``*``/``†`` marks); None names every station.
         value_font: Font of ``value_labels`` (a white halo by default).
         field_values: The same for the model fields, by field name, written
             in each field's own colour (the vertical arrows of
@@ -3476,13 +3479,17 @@ def deformation_vectors(
                 pen=station_pen,
             )
         )  # fmt: skip
-    if labels and markers:
+    named = [
+        k for k, c in enumerate(coordinates)
+        if label_only is None or c.marker.rstrip("*†").upper() in label_only
+    ]  # fmt: skip
+    if labels and markers and named:
         fig.text(
             **layer_kw(
                 "labels",
-                x=lons,
-                y=lats,
-                text=[c.marker for c in coordinates],
+                x=[lons[k] for k in named],
+                y=[lats[k] for k in named],
+                text=[coordinates[k].marker for k in named],
                 font=label_font,
                 justify="BL",
                 fill="white",

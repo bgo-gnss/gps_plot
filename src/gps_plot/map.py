@@ -901,6 +901,11 @@ def build_parser(
         "horizontal arrows' scale; --values writes it in that colour",
     )  # fmt: skip
     p.add_argument(
+        "--label-stations", default=None, metavar="STA[,STA...]",
+        help="name only these stations (the rest keep their symbol and "
+        "arrows), e.g. SENG,SKSH on a crowded map",
+    )  # fmt: skip
+    p.add_argument(
         "--values", default=None, metavar="STA[,STA...]|all",
         help="write these stations' displacement at their arrow tips (2.87 m; "
         "with --vertical signed, +1.32 m); name a few on a crowded map",
@@ -3164,6 +3169,11 @@ def _run_deformation(
         value_labels=_value_labels(args.values, coords, east, north, args.vertical,
                                    maps),
         field_values=field_values,
+        label_only=(
+            {x.strip().upper() for x in args.label_stations.split(",") if x.strip()}
+            if args.label_stations
+            else None
+        ),
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
         scale_vertical=args.vertical,
         labels=args.labels, markers=args.markers, **style,
