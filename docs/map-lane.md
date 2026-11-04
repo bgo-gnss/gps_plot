@@ -466,6 +466,10 @@ Station maps label their stations only up to 60 stations; `--labels` and
   else beside the saved map as `<name>-nearest.csv`
   (`maps.draw_links` / `maps.MapLink`; `geofunc nearest` does the same
   from the command line against any candidate table).
+- **`--nearest-from FILE`** draws the links of a list made elsewhere
+  instead (`gpscoord nearest`, e.g. `--data-before 20231110 --join
+  LISK+LISF`: stations with data from before the dike, a moved station as
+  one); a moved station `A+B` links to its last mark.
 - **`--no-stations`** draws no station symbols or names, on station,
   velocity and deformation maps; the stations still set the extent.
   `gpsplot map base` is a station map without stations, Iceland when no
