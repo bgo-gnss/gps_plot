@@ -1154,3 +1154,20 @@ def test_smooth_sea_on_a_fine_lattice_keeps_the_grid_and_the_land():
     assert (v[z > 0] == 30.0).all()
     assert (v[z < 0] <= maps.SEA_SMOOTH_SHALLOWEST).all()
     assert v[z < 0].std() < z[z < 0].std()  # smoother
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+def test_draw_links_on_a_station_map(tmp_path: Path) -> None:
+    """--nearest's arrows: drawn on the figure's region, short ones skipped."""
+    from gps_plot.maps import MapLink, StationCoordinate, draw_links
+
+    sta = [StationCoordinate("SENG", -22.4250, 63.8794),
+           StationCoordinate("HSK6", -22.4725, 63.9151, None, "Borholur")]  # fmt: skip
+    fig = station_map(sta, resolution="crude", margin=0.05)
+    draw_links(fig, [
+        MapLink(-22.4725, 63.9151, -22.4250, 63.8794, "4.6 km"),
+        MapLink(-22.4250, 63.8794, -22.4250, 63.87941, "0.0 km"),  # skipped
+    ])  # fmt: skip
+    out = tmp_path / "links.png"
+    fig.savefig(out)
+    assert os.path.getsize(out) > 1024
