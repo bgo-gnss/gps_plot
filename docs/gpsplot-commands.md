@@ -45,7 +45,8 @@ its stations; `--anchors` holds stations at zero instead, but far anchors'
 long float links trended 20-50 mm in 12 h, BGÓ 2026-11-02), vertical in the
 labels; the operational Reykjanes map every 5 min (`rtk_map.py`). `gpsplot map velocity
 --region W/E/S/N --window A:B --window C:D` draws windowed velocity fits per
-window (BGÓ's Reykjanes maps); also `station`, `deformation`, `slip`.
+window (BGÓ's Reykjanes maps); also `station`, `deformation` (`--vertical`,
+`--values STA,…|all` at the arrow tips, `--late-start`; docs/map-lane.md), `slip`.
 plots.yaml `tool: map` products run maps through `gpsplot run` (Svartsengi
 year + 3 months on one map, `--min-fill 0.6` per window, vertical arrows of
 the windows side by side; `--last FROM:TO` = a window FROM to TO days back,

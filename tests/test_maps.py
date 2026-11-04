@@ -524,6 +524,15 @@ def test_total_lengths_and_text() -> None:
     assert maps.total_text(1240.0) == "1.24 m"
 
 
+def test_scale_text_switches_to_metres_from_a_metre():
+    from gps_plot import maps
+
+    assert maps.scale_text(500.0, "mm") == "500 mm"
+    assert maps.scale_text(2000.0, "mm") == "2 m"
+    assert maps.scale_text(1500.0, "mm") == "1.5 m"
+    assert maps.scale_text(2000.0, "mm/yr") == "2000 mm/yr"  # rates unchanged
+
+
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
 def test_deformation_vectors_renders_png(tmp_path: Path) -> None:
     """Observed + one model field (pre-computed, NaN row) -> overlay map."""

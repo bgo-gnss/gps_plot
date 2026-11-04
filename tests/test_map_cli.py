@@ -482,6 +482,61 @@ def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
     )
 
 
+def test_deformation_vertical_draws_up_north(fake_maps, monkeypatch, tmp_path):
+    import types
+
+    import geo_dataread.products as gprod
+
+    def displacements(stations, period, settings):
+        return [
+            types.SimpleNamespace(station=sta, accepted=True, refused=None,
+                                  displacement=(1.0, 2.0, 30.0), sigma=(1.0, 1.0, 3.0))
+            for sta in stations
+        ]  # fmt: skip
+
+    monkeypatch.setattr(gprod, "estimate_displacements", displacements)
+    argv = ["deformation", "SENG", "SKSH", "-s", "20231101", "-e", "20231115",
+            "--vertical"]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    args, kw = fake_maps["deformation_vectors"]
+    np.testing.assert_allclose(args[1], [0.0, 0.0])  # east: none
+    np.testing.assert_allclose(args[2], [30.0, 30.0])  # north = up
+    assert kw["scale_vertical"] is True
+    assert kw["title"].startswith("Vertical displacement")
+    assert fake_maps["fig"].saved[0].endswith("_20231101-20231115_vertical.png")
+    with pytest.raises(SystemExit):  # a Mogi field is horizontal
+        _run(argv + ["--mogi", "-22.46,63.87,4.5,1.2e7"], tmp_path)
+
+
+def test_deformation_values_and_late_start(fake_maps, monkeypatch, tmp_path):
+    import types
+
+    import geo_dataread.products as gprod
+
+    def displacements(stations, period, settings):
+        assert settings.late_start is True
+        flags = {"SKSH": ("start_at:2023-11-02",)}
+        return [
+            types.SimpleNamespace(station=sta, accepted=True, refused=None,
+                                  flags=flags.get(sta, ()),
+                                  displacement=(1330.0, -2547.0, 1318.0),
+                                  sigma=(1.0, 1.0, 3.0))
+            for sta in stations
+        ]  # fmt: skip
+
+    monkeypatch.setattr(gprod, "estimate_displacements", displacements)
+    argv = ["deformation", "SENG", "SKSH", "-s", "20231101", "-e", "20231115",
+            "--late-start", "--values", "seng"]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    args, kw = fake_maps["deformation_vectors"]
+    assert [c.marker for c in args[0]] == ["SENG", "SKSH*"]
+    assert kw["value_labels"] == {"SENG": "2.87 m"}  # only the one named
+    assert kw["observed_label"].endswith("(* from its first data)")
+    assert _run(argv[:-1] + ["all", "--vertical"], tmp_path) == 0
+    _, kw = fake_maps["deformation_vectors"]
+    assert kw["value_labels"] == {"SENG": "+1.32 m", "SKSH*": "+1.32 m"}
+
+
 def test_gpsplot_help_lists_map_without_pygmt():
     code = (
         "import sys; from gps_plot.cli import main; main(['--help']); "

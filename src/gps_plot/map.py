@@ -878,6 +878,21 @@ def build_parser(
         metavar="LON,LAT,DEPTH_KM,DV_M3",
         help="add a Mogi model field (repeatable)"
     )  # fmt: skip
+    p.add_argument(
+        "--vertical", action="store_true",
+        help="the vertical displacement, drawn as an arrow pointing north for "
+        "uplift (as map velocity --vertical); no --mogi",
+    )  # fmt: skip
+    p.add_argument(
+        "--values", default=None, metavar="STA[,STA...]|all",
+        help="write these stations' displacement at their arrow tips (2.87 m; "
+        "with --vertical signed, +1.32 m); name a few on a crowded map",
+    )  # fmt: skip
+    p.add_argument(
+        "--late-start", action="store_true",
+        help="a station installed after -s is measured from its first days "
+        "instead of left out; marked STA* and the legend says so",
+    )  # fmt: skip
     p.add_argument("--scale", type=float, default=None, metavar="CM_PER_MM",
                    help="arrow length per mm [cm] (default: automatic)")  # fmt: skip
     p.add_argument("--scale-ref", type=float, default=None, metavar="MM",
@@ -3031,20 +3046,23 @@ def _run_deformation(
     # the displacement product (gpsprod displacement, method ends): the level
     # of the 5 days at each end, honest σ (gpsprod step 6)
     settings = _displacement_settings(args, parser, config)
+    if args.late_start:
+        settings = dataclasses.replace(settings, late_start=True)
     by_marker = {c.marker: c for c in stations}
     rs = estimate_displacements(
         list(by_marker), window_bounds(args.start.date(), end.date()), settings
     )
     got: list[tuple[Any, Any]] = []
     dropped: list[str] = []
+    late: list[str] = []
     for r in rs:
         if r.accepted:
-            got.append(
-                (
-                    by_marker[r.station],
-                    _Rate(np.asarray(r.displacement), np.asarray(r.sigma)),
-                )
-            )
+            coord = by_marker[r.station]
+            starts = [f for f in getattr(r, "flags", ()) if f.startswith("start_at:")]
+            if starts:  # --late-start: from its own first days
+                late.append(f"{r.station} from {starts[0].split(':', 1)[1]}")
+                coord = dataclasses.replace(coord, marker=f"{coord.marker}*")
+            got.append((coord, _Rate(np.asarray(r.displacement), np.asarray(r.sigma))))
         else:
             dropped.append(f"{r.station}: {r.refused}")
     _report(dropped)
@@ -3052,8 +3070,14 @@ def _run_deformation(
         print("nothing plotted", file=sys.stderr)
         return 1
     coords = [c for c, _ in got]
-    east = np.array([r.neu[1] for _, r in got])
-    north = np.array([r.neu[0] for _, r in got])
+    if args.vertical and args.mogi:
+        parser.error("--vertical: a Mogi field is horizontal; drop --mogi")
+    if args.vertical:  # uplift drawn north, as map velocity --vertical
+        east = np.zeros(len(got))
+        north = np.array([r.neu[2] for _, r in got])
+    else:
+        east = np.array([r.neu[1] for _, r in got])
+        north = np.array([r.neu[0] for _, r in got])
     lon = np.array([c.lon for c in coords])
     lat = np.array([c.lat for c in coords])
     models = [
@@ -3072,20 +3096,55 @@ def _run_deformation(
     scale, ref = auto_scale(np.hypot(east, north))
     style = _style(args, args.region, config=config, points=coords)
     if args.title is None:
-        style["title"] = f"Displacement {window_label(args.start, end)}"
+        what = "Vertical displacement" if args.vertical else "Displacement"
+        style["title"] = f"{what} {window_label(args.start, end)}"
+    if late:
+        print("late start: " + "; ".join(late), file=sys.stderr)
+    observed = window_label(args.start, end) + (
+        " (* from its first data)" if late else ""
+    )
     fig = maps.deformation_vectors(
         coords, east, north, models,
-        observed_label=window_label(args.start, end),
+        observed_label=observed,
+        value_labels=_value_labels(args.values, coords, east, north, args.vertical,
+                                   maps),
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
+        scale_vertical=args.vertical,
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
     _finish(fig, args)
     _insets(fig, args, config, style, coords, None, legend_lines=len(models) + 3)
     stem = _stem(args, "deformation", coords,
-                 f"{args.start:%Y%m%d}-{end:%Y%m%d}", "mogi" if models else "")  # fmt: skip
+                 f"{args.start:%Y%m%d}-{end:%Y%m%d}",
+                 "mogi" if models else "vertical" if args.vertical else "")  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
+
+
+def _value_labels(
+    spec: str | None,
+    coords: Sequence[Any],
+    east: Any,
+    north: Any,
+    vertical: bool,
+    maps: Any,
+) -> dict[str, str] | None:
+    """``--values``: the text at each named station's arrow tip, by marker —
+    its horizontal total, or with ``--vertical`` the signed Up (``+1.32 m``).
+    Names match with or without a late-start ``*``."""  # fmt: skip
+    if not spec:
+        return None
+    wanted = {s.strip().upper() for s in spec.split(",") if s.strip()}
+    out: dict[str, str] = {}
+    for c, e, n in zip(coords, east, north, strict=True):
+        if "ALL" not in wanted and c.marker.rstrip("*").upper() not in wanted:
+            continue
+        if vertical:
+            out[c.marker] = ("+" if n >= 0 else "−") + maps.total_text(abs(float(n)))
+        else:
+            out[c.marker] = maps.total_text(math.hypot(float(e), float(n)))
+    return out
 
 
 def _run_geojson(args: Any, config: Any, maps: Any) -> int:

@@ -30,6 +30,16 @@ hardcoding — `DEFAULT_*` params, lazy pygmt guard, returns `pygmt.Figure`,
   Mogi params match the `gps_api` `DeformationResult` product) or pass
   pre-computed mm arrays. `examples/mogi_vector_comparison.py` (Svartsengi
   observed vs two Mogi models + sample PNG) is now a thin caller of this.
+  `scale_vertical=True` draws vertical displacements north (uplift up) with
+  a north-pointing reference arrow; `value_labels={marker: text}` writes a
+  text just past each named arrow's tip (`_draw_value_labels`, GMT step
+  `values`). A reference arrow of 1000 mm or more is labelled in metres
+  (`scale_text`: `2 m`, not `2000 mm`; rates keep mm/yr).
+  `gpsplot map deformation` (BGÓ 2026-11-04, the Blue Lagoon maps):
+  `--vertical`, `--values STA,…|all` (the total, `2.87 m`; signed with
+  `--vertical`, `+1.32 m`) and `--late-start` (gpsprod
+  `DisplacementSettings.late_start`: a station installed after `-s` is
+  measured from its first days, drawn `STA*`, the legend says so).
 - `slip_map(slip, ...)` — Okada distributed slip as colored fault patches +
   colorbar. Consumes the `gps_api` `SlipDistributionResult` mapping
   (`models/<region>_slip.json`; corners from per-patch lon/lat + plane
