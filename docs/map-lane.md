@@ -39,7 +39,8 @@ hardcoding — `DEFAULT_*` params, lazy pygmt guard, returns `pygmt.Figure`,
   `--vertical`, `--values STA,…|all` (the total, `2.87 m`; signed with
   `--vertical`, `+1.32 m`) and `--late-start` (gpsprod
   `DisplacementSettings.late_start`: a station installed after `-s` is
-  measured from its first days, drawn `STA*`, the legend says so).
+  measured from its first days, drawn `STA*`); a station whose data ends
+  before `-e` (`end_early` flag) is drawn `STA†`; both notes go in the title.
 - `slip_map(slip, ...)` — Okada distributed slip as colored fault patches +
   colorbar. Consumes the `gps_api` `SlipDistributionResult` mapping
   (`models/<region>_slip.json`; corners from per-patch lon/lat + plane

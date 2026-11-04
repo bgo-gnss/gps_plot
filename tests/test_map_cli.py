@@ -531,7 +531,7 @@ def test_deformation_values_and_late_start(fake_maps, monkeypatch, tmp_path):
     args, kw = fake_maps["deformation_vectors"]
     assert [c.marker for c in args[0]] == ["SENG", "SKSH*"]
     assert kw["value_labels"] == {"SENG": "2.87 m"}  # only the one named
-    assert kw["observed_label"].endswith("(* from its first data)")
+    assert kw["title"].endswith("(* from its first data)")
     assert _run(argv[:-1] + ["all", "--vertical"], tmp_path) == 0
     _, kw = fake_maps["deformation_vectors"]
     assert kw["value_labels"] == {"SENG": "+1.32 m", "SKSH*": "+1.32 m"}

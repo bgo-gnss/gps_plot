@@ -3055,13 +3055,18 @@ def _run_deformation(
     got: list[tuple[Any, Any]] = []
     dropped: list[str] = []
     late: list[str] = []
+    early: list[str] = []
     for r in rs:
         if r.accepted:
             coord = by_marker[r.station]
-            starts = [f for f in getattr(r, "flags", ()) if f.startswith("start_at:")]
+            flags = getattr(r, "flags", ())
+            starts = [f for f in flags if f.startswith("start_at:")]
             if starts:  # --late-start: from its own first days
                 late.append(f"{r.station} from {starts[0].split(':', 1)[1]}")
                 coord = dataclasses.replace(coord, marker=f"{coord.marker}*")
+            if any(f.startswith("end_early:") for f in flags):  # stopped: to its last
+                early.append(r.station)
+                coord = dataclasses.replace(coord, marker=f"{coord.marker}†")
             got.append((coord, _Rate(np.asarray(r.displacement), np.asarray(r.sigma))))
         else:
             dropped.append(f"{r.station}: {r.refused}")
@@ -3095,17 +3100,21 @@ def _run_deformation(
     ]
     scale, ref = auto_scale(np.hypot(east, north))
     style = _style(args, args.region, config=config, points=coords)
+    notes = (["* from its first data"] if late else []) + (
+        ["† to its last data"] if early else []
+    )
     if args.title is None:
         what = "Vertical displacement" if args.vertical else "Displacement"
-        style["title"] = f"{what} {window_label(args.start, end)}"
+        style["title"] = f"{what} {window_label(args.start, end)}" + (
+            f" ({', '.join(notes)})" if notes else ""
+        )
     if late:
         print("late start: " + "; ".join(late), file=sys.stderr)
-    observed = window_label(args.start, end) + (
-        " (* from its first data)" if late else ""
-    )
+    if early:
+        print("ended before -e: " + ", ".join(early), file=sys.stderr)
     fig = maps.deformation_vectors(
         coords, east, north, models,
-        observed_label=observed,
+        observed_label=window_label(args.start, end),
         value_labels=_value_labels(args.values, coords, east, north, args.vertical,
                                    maps),
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
@@ -3132,13 +3141,13 @@ def _value_labels(
 ) -> dict[str, str] | None:
     """``--values``: the text at each named station's arrow tip, by marker —
     its horizontal total, or with ``--vertical`` the signed Up (``+1.32 m``).
-    Names match with or without a late-start ``*``."""  # fmt: skip
+    Names match without the ``*`` (late start) and ``†`` (ended) marks."""  # fmt: skip
     if not spec:
         return None
     wanted = {s.strip().upper() for s in spec.split(",") if s.strip()}
     out: dict[str, str] = {}
     for c, e, n in zip(coords, east, north, strict=True):
-        if "ALL" not in wanted and c.marker.rstrip("*").upper() not in wanted:
+        if "ALL" not in wanted and c.marker.rstrip("*†").upper() not in wanted:
             continue
         if vertical:
             out[c.marker] = ("+" if n >= 0 else "−") + maps.total_text(abs(float(n)))
