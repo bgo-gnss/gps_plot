@@ -469,6 +469,17 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--no-scale-bar", dest="scale_bar", action="store_false",
         help="no distance scale bar",
     )  # fmt: skip
+    g.add_argument(
+        "--scale-bar-at", default="BR", type=_corner_code, metavar="CODE",
+        help="where the distance scale bar sits: a GMT justification inside "
+        "the map, BR (default), BL, BC, TL, TC, TR, ML, MC, MR",
+    )  # fmt: skip
+    g.add_argument(
+        "--legend-at", default=None, type=_fractions, metavar="X,Y",
+        help="the vector legend's lower-left corner as fractions of the map "
+        "from its SW corner (default 0.03,0.09: bottom left), e.g. 0.4,0.7 "
+        "to put it on open sea (velocity and deformation maps)",
+    )  # fmt: skip
     out = p.add_argument_group("output")
     out.add_argument(
         "--save", nargs="?", default=None, const="pdf",
@@ -878,6 +889,32 @@ def build_parser(
         metavar="LON,LAT,DEPTH_KM,DV_M3",
         help="add a Mogi model field (repeatable)"
     )  # fmt: skip
+    p.add_argument(
+        "--vertical", action="store_true",
+        help="the vertical displacement, drawn as an arrow pointing north for "
+        "uplift (as map velocity --vertical); no --mogi",
+    )  # fmt: skip
+    p.add_argument(
+        "--with-vertical", action="store_true",
+        help="the vertical too, on the same map: an arrow pointing north for "
+        f"uplift (south for subsidence) in {VERTICAL_COLOR}, at the "
+        "horizontal arrows' scale; --values writes it in that colour",
+    )  # fmt: skip
+    p.add_argument(
+        "--label-stations", default=None, metavar="STA[,STA...]",
+        help="name only these stations (the rest keep their symbol and "
+        "arrows), e.g. SENG,SKSH on a crowded map",
+    )  # fmt: skip
+    p.add_argument(
+        "--values", default=None, metavar="STA[,STA...]|all",
+        help="write these stations' displacement at their arrow tips (2.87 m; "
+        "with --vertical signed, +1.32 m); name a few on a crowded map",
+    )  # fmt: skip
+    p.add_argument(
+        "--late-start", action="store_true",
+        help="a station installed after -s is measured from its first days "
+        "instead of left out; marked STA* and the legend says so",
+    )  # fmt: skip
     p.add_argument("--scale", type=float, default=None, metavar="CM_PER_MM",
                    help="arrow length per mm [cm] (default: automatic)")  # fmt: skip
     p.add_argument("--scale-ref", type=float, default=None, metavar="MM",
@@ -1131,6 +1168,8 @@ def _style(
             gis_layers.expand(args.layers, cat), gis_dir(config), cat,
             strict=args.strict_layers,
         )  # fmt: skip
+    if getattr(args, "legend_at", None) is not None:
+        kw["legend_anchor"] = args.legend_at
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -1393,6 +1432,10 @@ def legend_box_cm(
     spacing = style.get("legend_line_spacing", maps.DEFAULT_LEGEND_LINE_SPACING)
     fx, fy = maps._legend_anchor(anchor, region)
     top = (fy + lines * spacing) * height + 0.3
+    if "legend_anchor" in style and anchor != maps.DEFAULT_LEGEND_ANCHOR:
+        # --legend-at: the box where it was put, not the bottom-left corner
+        x0, y0 = max(0.0, fx * width - 0.3), max(0.0, fy * height - 0.3)
+        return (x0, fx * width + width_cm, y0, top)
     return (0.0, fx * width + width_cm, 0.0, top)
 
 
@@ -1403,6 +1446,8 @@ def portrait_legend(style: dict[str, Any], maps: Any) -> dict[str, Any]:
     map, SEYD north of the fjord); nothing on any other map."""
     region = style.get("region")
     projection = str(style.get("projection", maps.DEFAULT_PROJECTION))
+    if "legend_anchor" in style:
+        return {}  # --legend-at: the user's place stands
     if region is None or isinstance(region, maps.CornerRegion):
         return {}
     if not projection.upper().startswith("M"):
@@ -1594,7 +1639,9 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         # vector legend, the logo is top left, the status legend top right
         from pygmt.params import Position
 
-        position = Position("BR", cstype="inside", offset=("0.4c", foot))
+        corner = getattr(args, "scale_bar_at", "BR")
+        position = Position(corner, cstype="inside",
+                            offset=("0.4c", foot if corner[0] == "B" else "0.4c"))  # fmt: skip
         style = args.scale_style or ("plain" if oblique else "fancy")
         fancy = style == "fancy"
         import pygmt
@@ -3031,20 +3078,32 @@ def _run_deformation(
     # the displacement product (gpsprod displacement, method ends): the level
     # of the 5 days at each end, honest σ (gpsprod step 6)
     settings = _displacement_settings(args, parser, config)
+    if args.late_start:
+        settings = dataclasses.replace(settings, late_start=True)
     by_marker = {c.marker: c for c in stations}
     rs = estimate_displacements(
         list(by_marker), window_bounds(args.start.date(), end.date()), settings
     )
     got: list[tuple[Any, Any]] = []
     dropped: list[str] = []
+    late: list[str] = []
+    early: list[str] = []
+    # ended = its data stops ENDED_DAYS before the newest station's (a series
+    # that lags today alike, the gamit-p01 finals, marks nobody)
+    lags = {r.station: _end_lag(getattr(r, "flags", ())) for r in rs if r.accepted}
+    newest = min(lags.values(), default=0.0)
     for r in rs:
         if r.accepted:
-            got.append(
-                (
-                    by_marker[r.station],
-                    _Rate(np.asarray(r.displacement), np.asarray(r.sigma)),
-                )
-            )
+            coord = by_marker[r.station]
+            flags = getattr(r, "flags", ())
+            starts = [f for f in flags if f.startswith("start_at:")]
+            if starts:  # --late-start: from its own first days
+                late.append(f"{r.station} from {starts[0].split(':', 1)[1]}")
+                coord = dataclasses.replace(coord, marker=f"{coord.marker}*")
+            if lags[r.station] - newest > ENDED_DAYS:  # stopped: to its last data
+                early.append(r.station)
+                coord = dataclasses.replace(coord, marker=f"{coord.marker}†")
+            got.append((coord, _Rate(np.asarray(r.displacement), np.asarray(r.sigma))))
         else:
             dropped.append(f"{r.station}: {r.refused}")
     _report(dropped)
@@ -3052,8 +3111,17 @@ def _run_deformation(
         print("nothing plotted", file=sys.stderr)
         return 1
     coords = [c for c, _ in got]
-    east = np.array([r.neu[1] for _, r in got])
-    north = np.array([r.neu[0] for _, r in got])
+    if args.vertical and args.mogi:
+        parser.error("--vertical: a Mogi field is horizontal; drop --mogi")
+    if args.vertical and args.with_vertical:
+        parser.error("--with-vertical adds the vertical to a horizontal map; "
+                     "drop --vertical")  # fmt: skip
+    if args.vertical:  # uplift drawn north, as map velocity --vertical
+        east = np.zeros(len(got))
+        north = np.array([r.neu[2] for _, r in got])
+    else:
+        east = np.array([r.neu[1] for _, r in got])
+        north = np.array([r.neu[0] for _, r in got])
     lon = np.array([c.lon for c in coords])
     lat = np.array([c.lat for c in coords])
     models = [
@@ -3069,23 +3137,121 @@ def _run_deformation(
         )  # fmt: skip
         for k, m in enumerate(args.mogi or ())
     ]
-    scale, ref = auto_scale(np.hypot(east, north))
+    up = np.array([r.neu[2] for _, r in got])
+    field_values: dict[str, dict[str, str]] = {}
+    if args.with_vertical:  # its own colour, the horizontal arrows' scale
+        name = "vertical (north = up)"
+        models.append(maps.VectorField(name, np.zeros(len(got)), up,
+                                       color=VERTICAL_COLOR))  # fmt: skip
+        field_values[name] = (
+            _value_labels(args.values, coords, np.zeros(len(got)), up, True, maps) or {}
+        )
+    sizes = np.hypot(east, north)
+    if args.with_vertical:
+        sizes = np.concatenate([sizes, np.abs(up)])
+    scale, ref = auto_scale(sizes)
     style = _style(args, args.region, config=config, points=coords)
+    notes = (["* from its first data"] if late else []) + (
+        ["† to its last data"] if early else []
+    )
     if args.title is None:
-        style["title"] = f"Displacement {window_label(args.start, end)}"
+        what = "Vertical displacement" if args.vertical else "Displacement"
+        style["title"] = f"{what} {window_label(args.start, end)}" + (
+            f" ({', '.join(notes)})" if notes else ""
+        )
+    if late:
+        print("late start: " + "; ".join(late), file=sys.stderr)
+    if early:
+        print("ended before -e: " + ", ".join(early), file=sys.stderr)
     fig = maps.deformation_vectors(
         coords, east, north, models,
         observed_label=window_label(args.start, end),
+        value_labels=_value_labels(args.values, coords, east, north, args.vertical,
+                                   maps),
+        field_values=field_values,
+        label_only=(
+            {x.strip().upper() for x in args.label_stations.split(",") if x.strip()}
+            if args.label_stations
+            else None
+        ),
         scale=args.scale or scale, scale_ref=args.scale_ref or ref,
+        scale_vertical=args.vertical,
         labels=args.labels, markers=args.markers, **style,
     )  # fmt: skip
     _finish(fig, args)
     _insets(fig, args, config, style, coords, None, legend_lines=len(models) + 3)
+    tag = ("mogi" if args.mogi else "vertical" if args.vertical
+           else "with-vertical" if args.with_vertical else "")  # fmt: skip
     stem = _stem(args, "deformation", coords,
-                 f"{args.start:%Y%m%d}-{end:%Y%m%d}", "mogi" if models else "")  # fmt: skip
+                 f"{args.start:%Y%m%d}-{end:%Y%m%d}", tag)  # fmt: skip
     for p in _save(fig, args, config, stem):
         print(p)
     return 0
+
+
+#: a deformation station is drawn STA† when its data ends this many days
+#: before the newest station's
+ENDED_DAYS = 30
+
+
+def _end_lag(flags: Sequence[str]) -> float:
+    """Days a displacement's data ends before the period (``end_early:Nd``)."""
+    for f in flags:
+        if f.startswith("end_early:"):
+            return float(f.split(":", 1)[1].rstrip("d"))
+    return 0.0
+
+
+#: colour of the vertical arrows on a horizontal deformation map
+VERTICAL_COLOR = "30/90/200"
+
+
+def _corner_code(value: str) -> str:
+    """``--scale-bar-at``: a GMT two-letter justification (BR, TC, …)."""
+    v = value.strip().upper()
+    if len(v) != 2 or v[0] not in "BMT" or v[1] not in "LCR":
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: a GMT justification such as BR, BL, TC, ML"
+        )
+    return v
+
+
+def _fractions(value: str) -> tuple[float, float]:
+    """``--legend-at X,Y``: two map fractions in [0, 1]."""
+    try:
+        x, y = (float(p) for p in value.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: X,Y fractions, e.g. 0.4,0.7"
+        ) from None
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise argparse.ArgumentTypeError(f"{value!r}: fractions between 0 and 1")
+    return (x, y)
+
+
+def _value_labels(
+    spec: str | None,
+    coords: Sequence[Any],
+    east: Any,
+    north: Any,
+    vertical: bool,
+    maps: Any,
+) -> dict[str, str] | None:
+    """``--values``: the text at each named station's arrow tip, by marker —
+    its horizontal total, or with ``--vertical`` the signed Up (``+1.32 m``).
+    Names match without the ``*`` (late start) and ``†`` (ended) marks."""  # fmt: skip
+    if not spec:
+        return None
+    wanted = {s.strip().upper() for s in spec.split(",") if s.strip()}
+    out: dict[str, str] = {}
+    for c, e, n in zip(coords, east, north, strict=True):
+        if "ALL" not in wanted and c.marker.rstrip("*†").upper() not in wanted:
+            continue
+        if vertical:
+            out[c.marker] = ("+" if n >= 0 else "−") + maps.total_text(abs(float(n)))
+        else:
+            out[c.marker] = maps.total_text(math.hypot(float(e), float(n)))
+    return out
 
 
 def _run_geojson(args: Any, config: Any, maps: Any) -> int:

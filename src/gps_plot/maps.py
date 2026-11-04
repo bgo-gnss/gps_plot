@@ -1820,7 +1820,7 @@ def _draw_vector_legend(
         corner = None
     elif corner is not None and scale_ref is None:
         entries.append(("", "black"))  # no arrow label to share: its own row
-    ref_text = "" if scale_ref is None else f"{scale_ref:g} {scale_unit}"
+    ref_text = "" if scale_ref is None else scale_text(scale_ref, scale_unit)
     arrow_cm = 0.0 if scale_ref is None else float(scale_ref) * scale
     if boxed:
         assert projection is not None
@@ -1900,7 +1900,7 @@ def _draw_vector_legend(
         fig.text(
             x=x_label,
             y=y_label,
-            text=f"{scale_ref:g} {scale_unit}",
+            text=scale_text(scale_ref, scale_unit),
             font=f"{font},black",
             justify="LM",
         )
@@ -2023,7 +2023,7 @@ def draw_scale_arrow(
         pen_width=DEFAULT_VECTOR_PEN_WIDTH,
     )  # fmt: skip
     xl, yl = region_point(region, anchor[0], anchor[1] + 0.07)
-    fig.text(x=xl, y=yl, text=f"{scale_ref:g} {unit}", font=f"{font},black",
+    fig.text(x=xl, y=yl, text=scale_text(scale_ref, unit), font=f"{font},black",
              justify="LM", fill="white")  # fmt: skip
 
 
@@ -2750,6 +2750,53 @@ def total_reference(
     return ref, max_cm * ref / top
 
 
+#: font of the values written at the arrow tips (deformation --values)
+DEFAULT_VALUE_FONT = "7p,Helvetica-Bold,black=~1p,white"
+#: gap between an arrow's tip and its value [cm]
+VALUE_GAP_CM = 0.12
+
+
+def _draw_value_labels(
+    fig: Any,
+    coordinates: Sequence[StationCoordinate],
+    east: Any,
+    north: Any,
+    texts: Mapping[str, str],
+    *,
+    scale: float,
+    font: str,
+) -> None:
+    """Each named station's text just beyond its arrow's tip, on the side
+    the arrow points (GMT text offset in cm: arrow length = value × scale)."""
+    for c, e, n in zip(coordinates, east, north, strict=True):
+        text = texts.get(c.marker)
+        if not text or not (np.isfinite(e) and np.isfinite(n)):
+            continue
+        dx, dy = float(e) * scale, float(n) * scale
+        size = math.hypot(dx, dy)
+        ux, uy = (dx / size, dy / size) if size > 0 else (0.0, 1.0)
+        dx += VALUE_GAP_CM * ux
+        dy += VALUE_GAP_CM * uy
+        if abs(ux) >= abs(uy):
+            justify = "LM" if ux > 0 else "RM"
+        else:
+            justify = "CB" if uy > 0 else "CT"
+        fig.text(
+            **layer_kw(
+                "values", x=[c.lon], y=[c.lat], text=[text], font=font,
+                justify=justify, offset=f"{dx:.3f}c/{dy:.3f}c",
+            )
+        )  # fmt: skip
+
+
+def scale_text(ref: float, unit: str) -> str:
+    """A reference arrow's label: ``500 mm``, but ``2 m`` from 1000 mm up
+    (BGÓ 2026-11-04: the Svartsengi totals are metres); rates unchanged."""
+    if unit == "mm" and ref >= 1000:
+        return f"{ref / 1000:g} m"
+    return f"{ref:g} {unit}"
+
+
 def total_text(mm: float) -> str:
     """A total displacement for a map label: ``35 mm``, ``1.24 m``."""
     return f"{mm:.0f} mm" if mm < 1000 else f"{mm / 1000:.2f} m"
@@ -3196,6 +3243,7 @@ def deformation_vectors(
     station_fill: str = DEFAULT_VECTOR_STATION_FILL,
     station_pen: str = DEFAULT_VECTOR_STATION_PEN,
     labels: bool = False,
+    label_only: Collection[str] | None = None,
     markers: bool = True,
     label_font: str = DEFAULT_LABEL_FONT,
     label_offset: str = DEFAULT_LABEL_OFFSET,
@@ -3204,6 +3252,10 @@ def deformation_vectors(
     legend: bool = True,
     scale_ref: float | None = 50.0,
     scale_unit: str = "mm",
+    scale_vertical: bool = False,
+    value_labels: Mapping[str, str] | None = None,
+    value_font: str = DEFAULT_VALUE_FONT,
+    field_values: Mapping[str, Mapping[str, str]] | None = None,
     legend_font: str = DEFAULT_LEGEND_FONT,
     legend_anchor: tuple[float, float] = DEFAULT_LEGEND_ANCHOR,
     legend_line_spacing: float = DEFAULT_LEGEND_LINE_SPACING,
@@ -3274,6 +3326,17 @@ def deformation_vectors(
         scale_ref: Scale-reference arrow magnitude [``scale_unit``];
             None omits it.
         scale_unit: Unit label of the reference arrow (default mm).
+        scale_vertical: The vectors are vertical displacements drawn north
+            (uplift up): the legend's reference arrow points north too.
+        value_labels: Text written at the tip of a station's observed arrow,
+            by marker (e.g. its total, ``2.87 m``); stations left out get
+            none, so a crowded map can name just a few.
+        label_only: With ``labels``, name only these stations (markers
+            without their ``*``/``†`` marks); None names every station.
+        value_font: Font of ``value_labels`` (a white halo by default).
+        field_values: The same for the model fields, by field name, written
+            in each field's own colour (the vertical arrows of
+            ``gpsplot map deformation --with-vertical``).
         legend_font: Legend font (color appended per entry).
         legend_anchor: Legend anchor (region fractions from SW corner).
         legend_line_spacing: Legend line spacing (fraction of N-S extent).
@@ -3398,6 +3461,16 @@ def deformation_vectors(
         pen_width=pen_width,
     )
 
+    if value_labels:
+        _draw_value_labels(fig, coordinates, obs_e, obs_n, value_labels,
+                           scale=scale, font=value_font)  # fmt: skip
+    for field, fe, fn in fields:
+        texts = (field_values or {}).get(field.name)
+        if texts:
+            size, face = value_font.split(",")[:2]
+            _draw_value_labels(fig, coordinates, fe, fn, texts, scale=scale,
+                               font=f"{size},{face},{field.color}=~1p,white")  # fmt: skip
+
     if markers:
         fig.plot(
             **layer_kw(
@@ -3406,13 +3479,17 @@ def deformation_vectors(
                 pen=station_pen,
             )
         )  # fmt: skip
-    if labels and markers:
+    named = [
+        k for k, c in enumerate(coordinates)
+        if label_only is None or c.marker.rstrip("*†").upper() in label_only
+    ]  # fmt: skip
+    if labels and markers and named:
         fig.text(
             **layer_kw(
                 "labels",
-                x=lons,
-                y=lats,
-                text=[c.marker for c in coordinates],
+                x=[lons[k] for k in named],
+                y=[lats[k] for k in named],
+                text=[coordinates[k].marker for k in named],
                 font=label_font,
                 justify="BL",
                 fill="white",
@@ -3446,6 +3523,7 @@ def deformation_vectors(
             anchor=_legend_anchor(legend_anchor, region),
             line_spacing=legend_line_spacing,
             projection=projection,
+            vertical=scale_vertical,
         )
 
     _draw_frame(fig, _frame_args(frame, title))
