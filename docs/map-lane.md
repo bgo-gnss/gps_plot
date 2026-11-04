@@ -44,6 +44,9 @@ hardcoding — `DEFAULT_*` params, lazy pygmt guard, returns `pygmt.Figure`,
   `--with-vertical`: the Up as a second arrow (north = uplift) in
   `VERTICAL_COLOR` at the horizontal scale, its own legend entry, its
   `--values` in that colour (`field_values`).
+  `--legend-at X,Y` (the vector legend's lower-left corner, map fractions from
+  SW; velocity + deformation) and `--scale-bar-at CODE` (GMT justification,
+  default BR) move them off the arrows, e.g. onto open sea.
 - `slip_map(slip, ...)` — Okada distributed slip as colored fault patches +
   colorbar. Consumes the `gps_api` `SlipDistributionResult` mapping
   (`models/<region>_slip.json`; corners from per-patch lon/lat + plane

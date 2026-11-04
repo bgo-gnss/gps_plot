@@ -578,6 +578,19 @@ def test_end_lag_marks_only_stations_behind_the_newest():
     assert gmap.ENDED_DAYS == 30
 
 
+def test_legend_at_and_scale_bar_at_parse():
+    from gps_plot import map as gmap
+
+    p = gmap.build_parser(config=None)
+    a = p.parse_args(["deformation", "-s", "20231101", "--legend-at", "0.4,0.7",
+                      "--scale-bar-at", "tc"])  # fmt: skip
+    assert a.legend_at == (0.4, 0.7) and a.scale_bar_at == "TC"
+    assert gmap._style(a, None)["legend_anchor"] == (0.4, 0.7)
+    for bad in (["--legend-at", "1.5,0.2"], ["--scale-bar-at", "XX"]):
+        with pytest.raises(SystemExit):
+            p.parse_args(["deformation", "-s", "20231101", *bad])
+
+
 def test_gpsplot_help_lists_map_without_pygmt():
     code = (
         "import sys; from gps_plot.cli import main; main(['--help']); "

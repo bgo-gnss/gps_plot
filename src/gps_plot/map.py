@@ -469,6 +469,17 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "--no-scale-bar", dest="scale_bar", action="store_false",
         help="no distance scale bar",
     )  # fmt: skip
+    g.add_argument(
+        "--scale-bar-at", default="BR", type=_corner_code, metavar="CODE",
+        help="where the distance scale bar sits: a GMT justification inside "
+        "the map, BR (default), BL, BC, TL, TC, TR, ML, MC, MR",
+    )  # fmt: skip
+    g.add_argument(
+        "--legend-at", default=None, type=_fractions, metavar="X,Y",
+        help="the vector legend's lower-left corner as fractions of the map "
+        "from its SW corner (default 0.03,0.09: bottom left), e.g. 0.4,0.7 "
+        "to put it on open sea (velocity and deformation maps)",
+    )  # fmt: skip
     out = p.add_argument_group("output")
     out.add_argument(
         "--save", nargs="?", default=None, const="pdf",
@@ -1152,6 +1163,8 @@ def _style(
             gis_layers.expand(args.layers, cat), gis_dir(config), cat,
             strict=args.strict_layers,
         )  # fmt: skip
+    if getattr(args, "legend_at", None) is not None:
+        kw["legend_anchor"] = args.legend_at
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -1414,6 +1427,10 @@ def legend_box_cm(
     spacing = style.get("legend_line_spacing", maps.DEFAULT_LEGEND_LINE_SPACING)
     fx, fy = maps._legend_anchor(anchor, region)
     top = (fy + lines * spacing) * height + 0.3
+    if "legend_anchor" in style and anchor != maps.DEFAULT_LEGEND_ANCHOR:
+        # --legend-at: the box where it was put, not the bottom-left corner
+        x0, y0 = max(0.0, fx * width - 0.3), max(0.0, fy * height - 0.3)
+        return (x0, fx * width + width_cm, y0, top)
     return (0.0, fx * width + width_cm, 0.0, top)
 
 
@@ -1424,6 +1441,8 @@ def portrait_legend(style: dict[str, Any], maps: Any) -> dict[str, Any]:
     map, SEYD north of the fjord); nothing on any other map."""
     region = style.get("region")
     projection = str(style.get("projection", maps.DEFAULT_PROJECTION))
+    if "legend_anchor" in style:
+        return {}  # --legend-at: the user's place stands
     if region is None or isinstance(region, maps.CornerRegion):
         return {}
     if not projection.upper().startswith("M"):
@@ -1615,7 +1634,9 @@ def _finish(fig: Any, args: argparse.Namespace) -> None:
         # vector legend, the logo is top left, the status legend top right
         from pygmt.params import Position
 
-        position = Position("BR", cstype="inside", offset=("0.4c", foot))
+        corner = getattr(args, "scale_bar_at", "BR")
+        position = Position(corner, cstype="inside",
+                            offset=("0.4c", foot if corner[0] == "B" else "0.4c"))  # fmt: skip
         style = args.scale_style or ("plain" if oblique else "fancy")
         fancy = style == "fancy"
         import pygmt
@@ -3173,6 +3194,29 @@ def _end_lag(flags: Sequence[str]) -> float:
 
 #: colour of the vertical arrows on a horizontal deformation map
 VERTICAL_COLOR = "30/90/200"
+
+
+def _corner_code(value: str) -> str:
+    """``--scale-bar-at``: a GMT two-letter justification (BR, TC, …)."""
+    v = value.strip().upper()
+    if len(v) != 2 or v[0] not in "BMT" or v[1] not in "LCR":
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: a GMT justification such as BR, BL, TC, ML"
+        )
+    return v
+
+
+def _fractions(value: str) -> tuple[float, float]:
+    """``--legend-at X,Y``: two map fractions in [0, 1]."""
+    try:
+        x, y = (float(p) for p in value.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: X,Y fractions, e.g. 0.4,0.7"
+        ) from None
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        raise argparse.ArgumentTypeError(f"{value!r}: fractions between 0 and 1")
+    return (x, y)
 
 
 def _value_labels(
