@@ -691,6 +691,68 @@ def test_overlay_options_reach_the_map(fake_maps, tmp_path):
     assert "overlays" not in fake_maps["station_map"][1]
 
 
+AREAS = {
+    "reykjanes": {
+        "baselines": ["SENG-ELDC", "ELDC-SENG"],
+        "stacks": {"yfirlit": ["SENG-KAST", "GEVK-SUDV"], "eldc": ["SENG-ELDC"]},
+    }
+}
+
+
+def test_resolve_baselines_pairs_groups_and_areas():
+    assert gmap.resolve_baselines(["seng-kast,GEVK-SUDV"], dict) == [
+        "SENG-KAST", "GEVK-SUDV",
+    ]  # fmt: skip
+    assert gmap.resolve_baselines(["reykjanes/yfirlit"], lambda: AREAS) == [
+        "SENG-KAST", "GEVK-SUDV",
+    ]  # fmt: skip
+    # the whole area, each baseline once (a reversed repeat is the same one)
+    assert gmap.resolve_baselines(["reykjanes", "KAST-SENG"], lambda: AREAS) == [
+        "SENG-ELDC", "SENG-KAST", "GEVK-SUDV",
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("spec", "words"),
+    [("nowhere/yfirlit", "reykjanes"), ("reykjanes/nogroup", "eldc, yfirlit")],
+)
+def test_resolve_baselines_names_what_exists(spec, words):
+    with pytest.raises(ValueError, match=words):
+        gmap.resolve_baselines([spec], lambda: AREAS)
+
+
+def test_baseline_overlay_is_a_line_per_pair():
+    from gps_plot import maps
+
+    coords = [
+        maps.StationCoordinate("SENG", -22.4, 63.9),
+        maps.StationCoordinate("KAST", -22.2, 63.9),
+    ]
+    ov = maps.baseline_overlay(["SENG-KAST"], coords)
+    assert (ov.pen, ov.fill, ov.step) == (maps.DEFAULT_BASELINE_PEN, None, "baselines")
+    _polys, lines = maps.overlay_segments(ov.geojson)
+    assert "-22.4" in lines and "-22.2" in lines
+
+
+def test_baselines_pick_the_stations_of_a_station_map(fake_maps, tmp_path):
+    argv = ["station", "--baselines", "SEY1-SEY2,SEY2-HOFN", "--logo", "none",
+            "--baseline-pen", "2p,blue"]  # fmt: skip
+    assert _run(argv, tmp_path) == 0
+    args, kw = fake_maps["station_map"]
+    assert sorted(c.marker for c in args[0]) == ["HOFN", "SEY1", "SEY2"]
+    (ov,) = kw["overlays"]
+    assert ov.pen == "2p,blue"
+    assert len(ov.geojson["features"]) == 2
+
+
+def test_baselines_keep_the_stations_named(fake_maps, tmp_path):
+    argv = ["station", "SEY1", "--baselines", "SEY2-HOFN", "--logo", "none"]
+    assert _run(argv, tmp_path) == 0
+    args, kw = fake_maps["station_map"]
+    assert [c.marker for c in args[0]] == ["SEY1"]
+    assert len(kw["overlays"]) == 1
+
+
 def _tos_fleet():
     from gps_plot.sources.tos import TosStation
 

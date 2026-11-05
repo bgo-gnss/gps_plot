@@ -54,6 +54,7 @@ LAYERS: dict[str, tuple[str, dict[str, str]]] = {
     "lakes": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "coastline": ("Figure.plot", {"pen": "W"}),
     "overlay": ("Figure.plot", {"pen": "W", "fill": "G"}),
+    "baselines": ("Figure.plot", {"pen": "W"}),
     # the named --layers (gps_plot.gis_layers), one step each
     "roads": ("Figure.plot", {"pen": "W", "fill": "G"}),
     "towns": ("Figure.plot", {"pen": "W", "fill": "G"}),

@@ -452,6 +452,22 @@ it. TOS attributes are dated, and the current value is the open period
 Station maps label their stations only up to 60 stations; `--labels` and
 `--no-labels` override this.
 
+### Baselines on any map: `--baselines` (BGÓ 2026-11-05)
+
+```bash
+gpsplot map station --baselines reykjanes/yfirlit --dem arcticdem --layers reykjanes --save png
+gpsplot map deformation --region reykjanes -s 20231109 --baselines SENG-KAST,GEVK-SUDV --save png
+```
+
+`--baselines` (repeatable, every map kind) draws straight lines between the
+stations of pairs `A-B`, of an area of `station_areas.yaml` (its cdn slug: all
+its baselines and `stacks:` pairs) or of `AREA/GROUP` (one `stacks:` group). A
+reversed repeat B-A is the same baseline. The lines go over the background and
+GIS layers, under the stations (step `baselines`; `--baseline-pen`, default
+`1.5p,gray25`). With no station named a station map shows just the baselines'
+stations (with `--margin` 0.03 unless given); the other kinds do so without
+`--region`, and with one keep every station inside it.
+
 ### Which stations: `--tos-search`, `--stations-file`, `--no-stations`
 
 - **`--tos-search "SEARCH"`** selects TOS stations with a `tos search`
