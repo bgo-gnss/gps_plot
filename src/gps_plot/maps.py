@@ -658,6 +658,8 @@ class MapOverlay:
     #: a lon/lat box (W, E, S, N) whose labels are left out: a zoom
     #: inset's, which names them itself
     unlabelled_box: tuple[float, float, float, float] | None = None
+    #: the GeoJSON itself, for a layer made on the fly (``path`` unread)
+    geojson: Mapping[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -813,8 +815,11 @@ def _draw_overlays(
                 ov.font,
             )  # fmt: skip
             continue
-        with open(ov.path, encoding="utf-8") as fh:
-            geojson = json.load(fh)
+        if ov.geojson is not None:
+            geojson = ov.geojson
+        else:
+            with open(ov.path, encoding="utf-8") as fh:
+                geojson = json.load(fh)
         polys, lines = overlay_segments(geojson)
         with tempfile.TemporaryDirectory() as tmp:
             for text, closed in ((polys, True), (lines, False)):
@@ -2040,9 +2045,35 @@ class MapLink:
 
 
 DEFAULT_LINK_PEN = "0.4p,black"
+DEFAULT_BASELINE_PEN = "1.5p,gray25"
 DEFAULT_LINK_FONT = "5p,Helvetica,black=~1p,white"  # white halo over the hillshade
 #: the arrow stops this short of its end point, clear of the station symbol
 DEFAULT_LINK_GAP_CM = 0.15
+
+
+def baseline_overlay(
+    pairs: Sequence[str],
+    coordinates: Sequence[StationCoordinate],
+    pen: str = DEFAULT_BASELINE_PEN,
+) -> MapOverlay:
+    """The baselines ``pairs`` (``A-B``) as straight lines between their
+    stations, a layer over the background and under the stations."""
+    at = {c.marker: [c.lon, c.lat] for c in coordinates}
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"baseline": pair},
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [at[m] for m in pair.split("-")],
+            },
+        }
+        for pair in pairs
+    ]
+    return MapOverlay(
+        "baselines", pen=pen, fill=None, step="baselines",
+        geojson={"type": "FeatureCollection", "features": features},
+    )  # fmt: skip
 
 
 def draw_links(

@@ -30,7 +30,7 @@ import re
 import os
 import sys
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +79,10 @@ ARCTIC_DEM = "arcticdem"
 DEFAULT_GIS_DIR = "~/gps-data/gis"
 #: station maps label their stations by default only up to this many
 LABEL_LIMIT = 60
+#: a --baselines pair, A-B
+BASELINE_PAIR = re.compile(r"[A-Z0-9]{4}-[A-Z0-9]{4}")
+#: the padding around a map of baselines alone: the lines fill the map
+BASELINE_MARGIN_DEG = 0.03
 #: a map with no stations and no --region (``gpsplot map base``): Iceland
 DEFAULT_BASE_REGION = (-24.6, -13.2, 63.2, 66.7)
 #: --fissure-swarms: the FutureVolc zones under the GIS directory
@@ -434,6 +438,19 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "glaciers:pen=0.3p,blue, dem:t=20, calderas:pen=2p,red (repeatable; "
         "'--gmt list' prints every step, its PyGMT call and its options; "
         "every --layers layer is a step of its own name)",
+    )  # fmt: skip
+    g.add_argument(
+        "--baselines", action="append", default=[], metavar="SPEC[,SPEC…]",
+        help="draw baselines as lines between their stations, on any map "
+        "kind (repeatable): pairs A-B, an area of station_areas.yaml (cdn "
+        "slug: all its baselines) or AREA/GROUP (one stacks: group, e.g. "
+        "reykjanes/yfirlit). With no station given a station map shows just "
+        "their stations, as does any map without --region (--margin then "
+        "defaults to 0.03)",
+    )  # fmt: skip
+    g.add_argument(
+        "--baseline-pen", default=None, metavar="PEN",
+        help="pen of the --baselines lines (default 1.5p,gray25)",
     )  # fmt: skip
     g.add_argument(
         "--strict-layers", action="store_true",
@@ -954,6 +971,78 @@ def _patterns(specs: Sequence[str], stations: Sequence[str]) -> list[str]:
     return out
 
 
+def resolve_baselines(
+    specs: Sequence[str], areas: Callable[[], Mapping[str, Mapping[str, Any]]]
+) -> list[str]:
+    """The ``--baselines`` pairs, each once in the order written (a reversed
+    repeat B-A is the same baseline). A spec is a pair ``A-B``, an area's cdn
+    slug (all its baselines and stacks: pairs) or ``AREA/GROUP`` (one stacks:
+    group); ``areas()`` gives the area table, read only when one is named.
+
+    Raises:
+        ValueError: an unknown area or group, or no pair at all.
+    """
+    from gps_plot.products import area_pairs
+
+    pairs: list[str] = []
+    for spec in (x.strip() for text in specs for x in text.split(",")):
+        if not spec:
+            continue
+        if BASELINE_PAIR.fullmatch(spec.upper()):
+            pairs.append(spec.upper())
+            continue
+        table = areas()
+        slug, _, group = spec.partition("/")
+        if slug not in table:
+            raise ValueError(
+                f"--baselines {spec}: neither a pair A-B nor an area "
+                f"({', '.join(sorted(table))})"
+            )
+        stacks = table[slug].get("stacks") or {}
+        if group and group not in stacks:
+            raise ValueError(
+                f"--baselines {spec}: no such group in {slug} "
+                f"({', '.join(sorted(stacks)) or 'it has none'})"
+            )
+        pairs += (
+            stacks[group]
+            if group
+            else area_pairs({"": table[slug].get("baselines") or [], **stacks})
+        )
+    out = area_pairs({"": pairs})
+    if not out:
+        raise ValueError("--baselines: no baseline given")
+    return out
+
+
+def _baselines(args: Any, parser: Any, maps: Any, coords: Any) -> None:
+    """Resolve ``--baselines`` into ``args.baseline_overlay`` (:func:`_style`
+    draws it). Stations left unnamed become the baselines' own: always on a
+    station map, on the others when no --region selects them either."""
+    specs = getattr(args, "baselines", None)
+    if not specs:
+        return
+    from gps_plot.adhoc import load_areas_and_root
+
+    try:
+        pairs = resolve_baselines(specs, lambda: load_areas_and_root()[0])
+        members = list(dict.fromkeys(m for p in pairs for m in p.split("-")))
+        coordinates = [c for m in members for c in coords([m])]
+    except (KeyError, ValueError) as exc:
+        parser.error(f"--baselines: {exc}")
+    args.baseline_overlay = maps.baseline_overlay(
+        pairs, coordinates, args.baseline_pen or maps.DEFAULT_BASELINE_PEN
+    )
+    other = any(getattr(args, o, None) for o in ("tos", "tos_search", "stations_file"))
+    if (
+        hasattr(args, "Stations") and not args.Stations and not other
+        and (args.kind in ("station", BASE) or args.region is None)
+    ):  # fmt: skip
+        args.Stations = members
+        if args.region is None and args.margin is None:
+            args.margin = BASELINE_MARGIN_DEG
+
+
 def select_stations(
     specs: Sequence[str],
     stations: Sequence[str],
@@ -1170,6 +1259,8 @@ def _style(
         )  # fmt: skip
     if getattr(args, "legend_at", None) is not None:
         kw["legend_anchor"] = args.legend_at
+    if getattr(args, "baseline_overlay", None) is not None:
+        kw["overlays"] = (*kw.get("overlays", ()), args.baseline_overlay)
     if args.overlay:
         from gps_plot.maps import DEFAULT_OVERLAY_FILL, DEFAULT_OVERLAY_PEN, MapOverlay
 
@@ -1874,6 +1965,7 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
     def coords(markers: Sequence[str]) -> Any:
         return maps.station_coordinates(markers, parser=config)
 
+    _baselines(args, parser, maps, coords)
     if args.inset is not None and args.kind not in ("station", "velocity"):
         parser.error("--inset draws on station and velocity maps only")
     if args.kind in ("station", BASE):
