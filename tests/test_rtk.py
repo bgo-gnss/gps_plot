@@ -327,6 +327,26 @@ def test_classic_keeps_a_silent_station_in_the_legend():
     assert fig.axes[0].lines[1].get_color() == "#ff7f0e"
 
 
+def test_classic_eleven_lines_do_not_repeat_a_colour():
+    from gps_plot import rtk_classic
+
+    t = _minutes(60, "2026-10-29T21:00")
+    series = [
+        Series(f"S{i:03d}-ELDC", t, np.ones((3, 60)), np.ones((3, 60)))
+        for i in range(11)
+    ]
+    now = dt.datetime(2026, 10, 29, 22, 0)
+    fig = rtk_classic.classic_figure(
+        series, title="t", start=now - dt.timedelta(hours=6), end=now, now=now,
+        last=now,
+    )  # fmt: skip
+    ax = fig.axes[0]
+    lines = [line for line in ax.lines if line.get_label() in {s.label[:4] for s in series}]
+    assert len({line.get_color() for line in lines}) == 11
+    assert lines[0].get_color() == "#1f77b4"  # the first ten keep their colours
+    assert ax.get_legend()._ncols == 2
+
+
 def test_now_line_marks_plot_time_on_every_panel():
     from matplotlib import dates as mdates
     from matplotlib.figure import Figure

@@ -105,7 +105,7 @@ def classic_figure(
     its colour slot, so colours stay put when a station drops out.
     A plain ``Figure`` (no pyplot, no GUI backend) unless ``interactive``.
     """
-    from matplotlib import image
+    from matplotlib import image, rcParams
     from matplotlib.figure import Figure
     from matplotlib.ticker import AutoMinorLocator
 
@@ -119,6 +119,8 @@ def classic_figure(
         fig = Figure(figsize=(13, 20))
     axs = fig.subplots(nrows=3, ncols=1)
     names = list(names or [s.label for s in series])
+    for ax in axs:  # an 11th line must not repeat the first colour
+        ax.set_prop_cycle(color=[*rcParams["axes.prop_cycle"].by_key()["color"], "k"])
     by_name = {s.label: s for s in series}
     for name, label in zip(names, line_labels(names), strict=True):
         s = by_name.get(name)
@@ -142,7 +144,8 @@ def classic_figure(
         ax.set_xlim(start, end)
     now_line(axs, now=now, last=last, start=start, stale="síðast")
     axs[0].set_title(title, fontdict={"fontsize": 30, "verticalalignment": "bottom"})
-    axs[0].legend(loc="lower left", fontsize=16)
+    # two columns once one would reach up to the logo
+    axs[0].legend(loc="lower left", fontsize=16, ncol=2 if len(names) > 8 else 1)
     logo = resources.files("gps_plot").joinpath("assets", LOGO)
     with resources.as_file(logo) as path:
         box = axs[0].get_position()
