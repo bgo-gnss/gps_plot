@@ -58,6 +58,9 @@ CMAP = "turbo"
 #: the map: ground steeper than this [°] tinted in this colour (BGÓ
 #: 2026-10-31, the 2 m ArcticDEM dots map), lit from the north-west
 STEEP_DEG = 30.0
+#: the Iceland coast of the map's locator (under the GIS dir's ``vector/``),
+#: the one the GMT maps' overview uses
+COAST_FILE = "is50v_coast_wgs84_overview.gmt"
 STEEP_CMAP = "Oranges"
 SHADE_AZIMUTH, SHADE_ALTITUDE = 315.0, 45.0
 
@@ -404,11 +407,101 @@ def _hodograph(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> Non
     ax.set_title("north against east [mm]")
 
 
+def iceland_outline(gis: str) -> list[Any]:
+    """The Iceland coast (lon, lat) segments for the map's locator, from the
+    GMT maps' overview coast (``vector/is50v_coast_wgs84_overview.gmt``);
+    empty when it is missing."""
+    segments: list[Any] = []
+    points: list[tuple[float, float]] = []
+    try:
+        with open(os.path.join(gis, "vector", COAST_FILE)) as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    if points:
+                        segments.append(np.array(points))
+                    points = []
+                elif line.strip() and not line.startswith("#"):
+                    lon, lat = line.split()[:2]
+                    points.append((float(lon), float(lat)))
+    except OSError:
+        return []
+    if points:
+        segments.append(np.array(points))
+    return segments
+
+
+def degmin(value: float, pos: str, neg: str) -> str:
+    """``64°00.62'N``: degrees and minutes, as the GMT maps write them."""
+    deg, minutes = divmod(round(abs(value) * 60.0, 2), 60.0)
+    return f"{deg:.0f}°{minutes:05.2f}'{pos if value >= 0 else neg}"
+
+
+def _metres(pos: str, neg: str) -> Any:
+    """Tick labels ``200 m E`` / ``200 m W`` (``0`` at the centre)."""
+    from matplotlib.ticker import FuncFormatter
+
+    return FuncFormatter(
+        lambda v, _: "0" if abs(v) < 1e-9 else f"{abs(v):g} m {pos if v > 0 else neg}"
+    )
+
+
+def _gmt_look(ax: Any, half: float, centre: tuple[float, float] | None,
+              outline: Sequence[Any]) -> None:  # fmt: skip
+    """The map panel dressed as the GMT maps (BGÓ 2026-11-08): the tick
+    labels inside the frame (``200 m E``, ``400 m N``), the centre marked
+    with its coordinates, and an Iceland locator with the map on it."""
+    import matplotlib.patheffects as pe
+    from matplotlib.ticker import MaxNLocator
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # type: ignore[import-untyped]
+
+    halo = [pe.withStroke(linewidth=2.5, foreground="w")]
+    for axis, pos, neg, side in ((ax.xaxis, "E", "W", "x"), (ax.yaxis, "N", "S", "y")):
+        axis.set_major_locator(MaxNLocator(6, steps=[1, 2, 5, 10]))
+        axis.set_major_formatter(_metres(pos, neg))
+        ax.tick_params(axis=side, direction="in", pad=-5, labelsize="medium")
+        ticks = [t for t in axis.get_major_locator()() if abs(t) < 0.95 * half]
+        axis.set_ticks(ticks)
+        for tick in axis.get_major_ticks():
+            label = tick.label1
+            label.set_path_effects(halo)
+            if side == "x":
+                label.set_verticalalignment("bottom")
+            else:
+                label.set_horizontalalignment("left")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.plot(0, 0, marker="+", ms=10, mew=1.2, color="k", zorder=2)
+    if centre is not None:
+        lon, lat = centre
+        ax.annotate(f"0, 0: {degmin(lat, 'N', 'S')} {degmin(lon, 'E', 'W')}",
+                    xy=(0.99, 0.99), xycoords="axes fraction", ha="right",
+                    va="top", fontsize="small", zorder=21,
+                    bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
+    if centre is None or not outline:
+        return
+    box = inset_axes(ax, width=1.9, height=1.3, loc="upper right",
+                     bbox_to_anchor=(0.0, 0.0, 1.0, 0.95),
+                     bbox_transform=ax.transAxes, borderpad=0.4)  # fmt: skip
+    box.set_zorder(20)
+    box.set_facecolor((0.83, 0.92, 0.96))  # the sea, as the GMT locator
+    for seg in outline:
+        box.fill(seg[:, 0], seg[:, 1], fc="w", ec="k", lw=0.3)
+    box.plot(*centre, marker="s", ms=6, mfc="none", mec="red", mew=1.5)
+    box.set_xlim(-24.7, -13.3)
+    box.set_ylim(63.2, 66.7)
+    box.set_aspect(1.0 / np.cos(np.radians(65.0)))
+    box.set_xticks([])
+    box.set_yticks([])
+
+
 def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
-         half: float, path_half: float) -> str:  # fmt: skip
+         half: float, path_half: float, centre: tuple[float, float] | None = None,
+         outline: Sequence[Any] = ()) -> str:  # fmt: skip
     """The DEM with each rover's path since the onset scaled up, as velocity
     arrows on a map; returns the scale for the note. ``path_half``: the half
-    width the longest path is scaled to fill about half of."""
+    width the longest path is scaled to fill about half of. ``centre``: the
+    (lon, lat) of the map's 0, 0, ``outline`` Iceland's coast for the
+    locator (:func:`iceland_outline`)."""
     import matplotlib as mpl
 
     from gps_plot import terrain
@@ -494,9 +587,9 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     ax.set_xlim(-half, half)
     ax.set_ylim(-half, half)
     ax.set_aspect("equal")
-    ax.set_xlabel("East [m]")
-    ax.set_ylabel("North [m]")
-    ax.legend(loc="lower left", fontsize="small")
+    _gmt_look(ax, half, centre, outline)
+    # above the tick labels inside the frame
+    ax.legend(loc="lower left", fontsize="small", borderaxespad=1.8)
     what = "paths" if many else "path"
     src = f"{dem.source} DEM, " if dem is not None else ""
     ax.set_title(f"terrain ({src}{what} {scale:g} m per mm)")
@@ -643,7 +736,7 @@ def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> N
     """A horizontal colour bar inside ``ax`` at ``loc``, on a white box of
     a fixed size in inches so the label, the bar and its ticks always sit
     inside it; ``borderpad`` as a legend's, so it lines up with one."""
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # type: ignore[import-untyped]
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
     box = inset_axes(ax, width="36%", height=0.62, loc=loc, borderpad=0.5)
     box.set_facecolor((1.0, 1.0, 1.0, 0.85))
@@ -675,6 +768,8 @@ def polar_figure(
     path_half: float = MAP_HALF_M,
     profile_dem: Any = None,
     profile_half: float | None = None,
+    centre: tuple[float, float] | None = None,
+    outline: Sequence[Any] = (),
 ) -> Any:
     """The figure of one pair or several (``--together``), one panel per
     ``panels`` entry (:data:`PANELS`); with a map, it is large on the left
@@ -684,7 +779,8 @@ def polar_figure(
     centre, ``half`` its half width) for the map; each pair's ``pos`` is its
     rover in that frame. ``profile_dem``: the same about the same centre,
     wide enough for the profiles (``profile_half`` [m] either side of each
-    rover; default :data:`gps_plot.profile.PROFILE_HALF_M`).
+    rover; default :data:`gps_plot.profile.PROFILE_HALF_M`). ``centre``:
+    the map's 0, 0 (lon, lat); ``outline``: Iceland for its locator.
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -749,7 +845,7 @@ def polar_figure(
             _sector(ax, pairs, style, legend_inside=inside)
         elif panel == "map":
             holder = fig.add_subplot(where[panel])
-            _map(holder, pairs, style, dem, half, path_half)  # scale in its title
+            _map(holder, pairs, style, dem, half, path_half, centre, outline)
         elif panel == "profile":
             gap = (PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
             axes, _ = prf.panel(fig, where[panel], pairs, style, profile_dem,
@@ -849,9 +945,11 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
 
 
 def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
-           map_half: float, res: str = "auto") -> tuple[Any, float]:  # fmt: skip
+           map_half: float, res: str = "auto",
+           ) -> tuple[Any, float, tuple[float, float] | None]:  # fmt: skip
     """Put the rovers on one map: each pair's ``pos`` about their centre, and
-    the DEM window holding them all (None without a DEM); its half width."""
+    the DEM window holding them all (None without a DEM); its half width and
+    the centre (lon, lat)."""
     import pyproj
 
     from gps_plot import terrain
@@ -859,7 +957,7 @@ def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
 
     located = [pp for pp in pairs if pp.lonlat is not None]
     if "map" not in panels or not located:
-        return None, map_half
+        return None, map_half, None
     to_isn = pyproj.Transformer.from_crs("EPSG:4326", terrain.ISN93, always_xy=True)
     xy = np.array([to_isn.transform(pp.lonlat[0], pp.lonlat[1])
                    for pp in located if pp.lonlat is not None])  # fmt: skip
@@ -870,11 +968,12 @@ def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
     half = spread + map_half
     to_geo = pyproj.Transformer.from_crs(terrain.ISN93, "EPSG:4326", always_xy=True)
     lon, lat = to_geo.transform(*centre)
+    where = (float(lon), float(lat))
     try:
-        return terrain.dem_window(lon, lat, gis_dir(config), half, res=res), half
+        return terrain.dem_window(lon, lat, gis_dir(config), half, res=res), half, where
     except OSError as exc:
         print(f"no DEM for the map ({exc})", file=sys.stderr)
-        return None, half
+        return None, half, where
 
 
 def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) -> int:
@@ -940,16 +1039,22 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         f"{span} after the onset{onset_note}"
     )
     groups = [[g for g in got]] if args.together else [[g] for g in got]
+    outline: list[Any] = []
+    if "map" in panels:  # the locator's Iceland
+        from gps_plot.map import gis_dir
+
+        outline = iceland_outline(gis_dir(config))
     for group in groups:
         pairs = [pp for pp, _ in group]
         for pp, (marker, line, slope) in zip(pairs, PAIR_STYLES, strict=False):
             pp.marker, pp.colour, pp.slope_colour = marker, line, slope
-        dem, half = _place(pairs, config, panels, args.map_half, args.dem_res)
+        dem, half, centre = _place(pairs, config, panels, args.map_half,
+                                   args.dem_res)  # fmt: skip
         profile_dem = None
         if "profile" in panels:  # its own window: the profiles reach past the map
             from gps_plot.profile import PROFILE_HALF_M
 
-            profile_dem, _ = _place(pairs, config, ["map"], PROFILE_HALF_M + 30.0,
+            profile_dem, _, _ = _place(pairs, config, ["map"], PROFILE_HALF_M + 30.0,
                                     args.dem_res)  # fmt: skip
         note = f"{head}; " + "; ".join(n for _, n in group)
         # one onset for the figure (the earliest): every pair's days from it
@@ -972,7 +1077,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                            title_status=status, status_color=colour,
                            interactive=not args.save, panels=panels, dem=dem,
                            half=half, path_half=args.map_half,
-                           profile_dem=profile_dem)  # fmt: skip
+                           profile_dem=profile_dem, centre=centre,
+                           outline=outline)  # fmt: skip
         if not args.save:
             import matplotlib.pyplot as plt
 

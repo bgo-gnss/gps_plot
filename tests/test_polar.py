@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import pathlib
 
 import numpy as np
 import pytest
@@ -202,3 +203,19 @@ def test_a_westward_section_is_mirrored_with_compass_ends():
     assert mean == pytest.approx(313.0) and mirrored
     assert section_heading([110.0]) == (pytest.approx(110.0), False)
     assert section_heading([350.0, 20.0])[0] == pytest.approx(5.0)
+
+
+def test_degmin_as_the_gmt_maps() -> None:
+    assert polar.degmin(64.00917, "N", "S") == "64°00.55'N"
+    assert polar.degmin(-16.80933, "E", "W") == "16°48.56'W"
+    assert polar.degmin(-16.99999, "E", "W") == "17°00.00'W"
+
+
+def test_iceland_outline_reads_gmt_segments(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "vector").mkdir()
+    (tmp_path / "vector" / polar.COAST_FILE).write_text(
+        "# @VGMT1.0\n>\n-20 64\n-19 64.5\n>\n-15 65\n-14 65.2\n-14.5 65.4\n"
+    )
+    segs = polar.iceland_outline(str(tmp_path))
+    assert [s.shape for s in segs] == [(2, 2), (3, 2)]
+    assert polar.iceland_outline(str(tmp_path / "missing")) == []
