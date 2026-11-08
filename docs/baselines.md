@@ -97,8 +97,9 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
   experiment; the slope colour field and fall lines went.
   Dressed as the GMT maps (BGÓ 2026-11-08): tick labels inside the frame
   (`200 m E`, `400 m N`), a + at 0, 0 (the rovers' centre) with its
-  coordinates top right, and an Iceland locator (the GMT overview coast,
-  `vector/is50v_coast_wgs84_overview.gmt`) with the map in red.
+  coordinates top right, and an Iceland locator drawn as the GMT maps' (no
+  frame or sea; the coast, fissure swarms, glaciers and central volcanoes of
+  `insets.LOCATOR_*`, their colours too) with the map in red.
 - **profile** (`profile.py`; default since BGÓ 2026-11-01, in place of the
   section) — one sub-panel per pair: the DEM ground along its motion,
   ±250 m through the rover (its own DEM window, wider than the map's), true

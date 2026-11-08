@@ -36,7 +36,7 @@ import datetime as dt
 import os
 import sys
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -61,9 +61,6 @@ COLOUR_DAYS = 28.0
 #: the map: ground steeper than this [°] tinted in this colour (BGÓ
 #: 2026-10-31, the 2 m ArcticDEM dots map), lit from the north-west
 STEEP_DEG = 30.0
-#: the Iceland coast of the map's locator (under the GIS dir's ``vector/``),
-#: the one the GMT maps' overview uses
-COAST_FILE = "is50v_coast_wgs84_overview.gmt"
 STEEP_CMAP = "Oranges"
 SHADE_AZIMUTH, SHADE_ALTITUDE = 315.0, 45.0
 
@@ -363,7 +360,7 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
         centred += int(np.count_nonzero(~inside & (r >= MIN_RADIUS_MM)))
         ax.scatter(np.where(inside, np.radians(shifted), 0.0), np.where(inside, r, 0.0),
                    c=pp.since, s=16, marker=pp.marker, zorder=3, edgecolors="k",
-                   linewidths=0.3, **style)  # fmt: skip
+                   linewidths=0.6, **style)  # fmt: skip
 
         def ray(deg: float, length: float, **kw: Any) -> None:
             a = np.radians((deg - lo) % 360.0 + lo)
@@ -400,7 +397,7 @@ def _hodograph(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> Non
                 if pp.d.shape[1]), default=1.0) * 1.1  # fmt: skip
     for pp in pairs:
         ax.scatter(pp.d[1], pp.d[0], c=pp.since, s=16, marker=pp.marker, zorder=3,
-                   edgecolors="k", linewidths=0.3, **style)  # fmt: skip
+                   edgecolors="k", linewidths=0.6, **style)  # fmt: skip
         if pp.motion is not None:
             a = np.radians(pp.motion)
             ax.plot([0.0, rmax * np.sin(a)], [0.0, rmax * np.cos(a)], color=pp.colour,
@@ -418,14 +415,13 @@ def _hodograph(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> Non
     ax.set_title("north against east [mm]")
 
 
-def iceland_outline(gis: str) -> list[Any]:
-    """The Iceland coast (lon, lat) segments for the map's locator, from the
-    GMT maps' overview coast (``vector/is50v_coast_wgs84_overview.gmt``);
-    empty when it is missing."""
+def read_segments(path: str) -> list[Any]:
+    """The (lon, lat) segments of a GMT multi-segment file (``>`` between
+    them); empty when it is missing."""
     segments: list[Any] = []
     points: list[tuple[float, float]] = []
     try:
-        with open(os.path.join(gis, "vector", COAST_FILE)) as fh:
+        with open(path) as fh:
             for line in fh:
                 if line.startswith(">"):
                     if points:
@@ -439,6 +435,65 @@ def iceland_outline(gis: str) -> list[Any]:
     if points:
         segments.append(np.array(points))
     return segments
+
+
+def iceland_layers(gis: str) -> dict[str, list[Any]]:
+    """The GMT maps' locator layers (:mod:`gps_plot.insets`): ``coast``,
+    ``swarms``, ``glaciers``, ``volcanoes`` as (lon, lat) segments; a
+    missing file gives an empty layer."""
+    from gps_plot import insets
+
+    files = {"coast": insets.LOCATOR_COAST, "swarms": insets.LOCATOR_SWARMS,
+             "glaciers": insets.LOCATOR_GLACIERS,
+             "volcanoes": insets.LOCATOR_VOLCANOES}  # fmt: skip
+    return {k: read_segments(os.path.join(gis, f)) for k, f in files.items()}
+
+
+def gmt_colour(value: str) -> Any:
+    """A GMT colour (``119/136/153`` or a name) for matplotlib."""
+    if "/" in value:
+        return tuple(float(c) / 255.0 for c in value.split("/"))
+    return value
+
+
+def gmt_pen(value: str) -> tuple[float, Any]:
+    """A GMT pen (``0.2p,black``): (width [pt], colour)."""
+    width, _, colour = value.partition(",")
+    return float(width.rstrip("p")), gmt_colour(colour or "black")
+
+
+def _locator(ax: Any, layers: Mapping[str, Sequence[Any]],
+             centre: tuple[float, float]) -> None:  # fmt: skip
+    """The Iceland locator in ``ax``'s top right, drawn as the GMT maps'
+    (:func:`gps_plot.insets.draw_locator`): no frame and no sea, white land
+    with a black coast, the fissure swarms slate, the glaciers near-white,
+    the central volcanoes outlined, and the map a red square."""
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # type: ignore[import-untyped]
+
+    from gps_plot import insets
+
+    box = inset_axes(ax, width=2.2, height=1.5, loc="upper right",
+                     bbox_to_anchor=(0.0, 0.0, 1.0, 0.95),
+                     bbox_transform=ax.transAxes, borderpad=0.4)  # fmt: skip
+    box.set_zorder(20)
+    box.axis("off")
+
+    def draw(name: str, fill: str | None, pen: str) -> None:
+        width, colour = gmt_pen(pen)
+        for seg in layers.get(name, ()):
+            box.fill(seg[:, 0], seg[:, 1], fc=gmt_colour(fill) if fill else "none",
+                     ec=colour, lw=width)  # fmt: skip
+
+    draw("coast", insets.LOCATOR_LAND, "0p,none")
+    draw("swarms", insets.LOCATOR_SWARM_FILL, insets.LOCATOR_SWARM_PEN)
+    draw("glaciers", insets.LOCATOR_GLACIER_FILL, insets.LOCATOR_GLACIER_PEN)
+    draw("volcanoes", None, insets.LOCATOR_VOLCANO_PEN)
+    draw("coast", None, insets.LOCATOR_COAST_PEN)  # over the swarms' sea edges
+    box.plot(*centre, marker="s", ms=6, mfc="none", mec="red", mew=1.5)
+    w, s_, e, n = insets.LOCATOR_CORNERS
+    box.set_xlim(w, e)
+    box.set_ylim(s_, n)
+    box.set_aspect(1.0 / np.cos(np.radians(65.0)))
 
 
 def degmin(value: float, pos: str, neg: str) -> str:
@@ -457,13 +512,12 @@ def _metres(pos: str, neg: str) -> Any:
 
 
 def _gmt_look(ax: Any, half: float, centre: tuple[float, float] | None,
-              outline: Sequence[Any]) -> None:  # fmt: skip
+              locator: Mapping[str, Sequence[Any]]) -> None:  # fmt: skip
     """The map panel dressed as the GMT maps (BGÓ 2026-11-08): the tick
     labels inside the frame (``200 m E``, ``400 m N``), the centre marked
     with its coordinates, and an Iceland locator with the map on it."""
     import matplotlib.patheffects as pe
     from matplotlib.ticker import MaxNLocator
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes  # type: ignore[import-untyped]
 
     halo = [pe.withStroke(linewidth=2.5, foreground="w")]
     for axis, pos, neg, side in ((ax.xaxis, "E", "W", "x"), (ax.yaxis, "N", "S", "y")):
@@ -488,31 +542,18 @@ def _gmt_look(ax: Any, half: float, centre: tuple[float, float] | None,
                     xy=(0.99, 0.99), xycoords="axes fraction", ha="right",
                     va="top", fontsize="small", zorder=21,
                     bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
-    if centre is None or not outline:
-        return
-    box = inset_axes(ax, width=1.9, height=1.3, loc="upper right",
-                     bbox_to_anchor=(0.0, 0.0, 1.0, 0.95),
-                     bbox_transform=ax.transAxes, borderpad=0.4)  # fmt: skip
-    box.set_zorder(20)
-    box.set_facecolor((0.83, 0.92, 0.96))  # the sea, as the GMT locator
-    for seg in outline:
-        box.fill(seg[:, 0], seg[:, 1], fc="w", ec="k", lw=0.3)
-    box.plot(*centre, marker="s", ms=6, mfc="none", mec="red", mew=1.5)
-    box.set_xlim(-24.7, -13.3)
-    box.set_ylim(63.2, 66.7)
-    box.set_aspect(1.0 / np.cos(np.radians(65.0)))
-    box.set_xticks([])
-    box.set_yticks([])
+    if centre is not None and locator.get("coast"):
+        _locator(ax, locator, centre)
 
 
 def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
          half: float, path_half: float, centre: tuple[float, float] | None = None,
-         outline: Sequence[Any] = ()) -> str:  # fmt: skip
+         locator: Mapping[str, Sequence[Any]] | None = None) -> str:  # fmt: skip
     """The DEM with each rover's path since the onset scaled up, as velocity
     arrows on a map; returns the scale for the note. ``path_half``: the half
     width the longest path is scaled to fill about half of. ``centre``: the
-    (lon, lat) of the map's 0, 0, ``outline`` Iceland's coast for the
-    locator (:func:`iceland_outline`)."""
+    (lon, lat) of the map's 0, 0, ``locator`` the Iceland locator's
+    layers (:func:`iceland_layers`)."""
     import matplotlib as mpl
 
     from gps_plot import terrain
@@ -598,7 +639,7 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     ax.set_xlim(-half, half)
     ax.set_ylim(-half, half)
     ax.set_aspect("equal")
-    _gmt_look(ax, half, centre, outline)
+    _gmt_look(ax, half, centre, locator or {})
     # above the tick labels inside the frame
     ax.legend(loc="lower left", fontsize="small", borderaxespad=1.8)
     what = "paths" if many else "path"
@@ -647,7 +688,7 @@ def _section(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
         along = pp.d[0] * np.cos(a) + pp.d[1] * np.sin(a)
         ok = np.isfinite(pp.d[2])
         ax.scatter(along[ok], pp.d[2][ok], c=pp.since[ok], s=16, marker=pp.marker,
-                   zorder=3, edgecolors="k", linewidths=0.3, **style)  # fmt: skip
+                   zorder=3, edgecolors="k", linewidths=0.6, **style)  # fmt: skip
         if pp.downslope is not None:
             # the terrain along the motion: its dip seen in that direction
             app = np.arctan(np.tan(np.radians(pp.downslope[1]))
@@ -780,7 +821,7 @@ def polar_figure(
     profile_dem: Any = None,
     profile_half: float | None = None,
     centre: tuple[float, float] | None = None,
-    outline: Sequence[Any] = (),
+    locator: Mapping[str, Sequence[Any]] | None = None,
     colour_days: float = COLOUR_DAYS,
 ) -> Any:
     """The figure of one pair or several (``--together``), one panel per
@@ -792,7 +833,7 @@ def polar_figure(
     rover in that frame. ``profile_dem``: the same about the same centre,
     wide enough for the profiles (``profile_half`` [m] either side of each
     rover; default :data:`gps_plot.profile.PROFILE_HALF_M`). ``centre``:
-    the map's 0, 0 (lon, lat); ``outline``: Iceland for its locator.
+    the map's 0, 0 (lon, lat); ``locator``: its Iceland layers.
     ``colour_days``: the colours span the newest this many days, older
     points are open (0: all coloured).
     """
@@ -861,7 +902,7 @@ def polar_figure(
             _sector(ax, pairs, style, legend_inside=inside)
         elif panel == "map":
             holder = fig.add_subplot(where[panel])
-            _map(holder, pairs, style, dem, half, path_half, centre, outline)
+            _map(holder, pairs, style, dem, half, path_half, centre, locator)
         elif panel == "profile":
             gap = (PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
             axes, _ = prf.panel(fig, where[panel], pairs, style, profile_dem,
@@ -1057,11 +1098,11 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         f"{span} after the onset{onset_note}"
     )
     groups = [[g for g in got]] if args.together else [[g] for g in got]
-    outline: list[Any] = []
+    locator: dict[str, list[Any]] = {}
     if "map" in panels:  # the locator's Iceland
         from gps_plot.map import gis_dir
 
-        outline = iceland_outline(gis_dir(config))
+        locator = iceland_layers(gis_dir(config))
     for group in groups:
         pairs = [pp for pp, _ in group]
         for pp, (marker, line, slope) in zip(pairs, PAIR_STYLES, strict=False):
@@ -1096,7 +1137,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                            interactive=not args.save, panels=panels, dem=dem,
                            half=half, path_half=args.map_half,
                            profile_dem=profile_dem, centre=centre,
-                           outline=outline,
+                           locator=locator,
                            colour_days=args.colour_days)  # fmt: skip
         if not args.save:
             import matplotlib.pyplot as plt

@@ -211,14 +211,23 @@ def test_degmin_as_the_gmt_maps() -> None:
     assert polar.degmin(-16.99999, "E", "W") == "17°00.00'W"
 
 
-def test_iceland_outline_reads_gmt_segments(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "vector").mkdir()
-    (tmp_path / "vector" / polar.COAST_FILE).write_text(
+def test_iceland_layers_read_gmt_segments(tmp_path: pathlib.Path) -> None:
+    from gps_plot import insets
+
+    coast = tmp_path / insets.LOCATOR_COAST
+    coast.parent.mkdir(parents=True)
+    coast.write_text(
         "# @VGMT1.0\n>\n-20 64\n-19 64.5\n>\n-15 65\n-14 65.2\n-14.5 65.4\n"
     )
-    segs = polar.iceland_outline(str(tmp_path))
-    assert [s.shape for s in segs] == [(2, 2), (3, 2)]
-    assert polar.iceland_outline(str(tmp_path / "missing")) == []
+    layers = polar.iceland_layers(str(tmp_path))
+    assert [s.shape for s in layers["coast"]] == [(2, 2), (3, 2)]
+    assert layers["swarms"] == [] and layers["glaciers"] == []  # missing files
+
+
+def test_gmt_colours_and_pens() -> None:
+    assert polar.gmt_colour("white") == "white"
+    assert polar.gmt_colour("255/0/51") == pytest.approx((1.0, 0.0, 0.2))
+    assert polar.gmt_pen("0.2p,black") == (0.2, "black")
 
 
 @pytest.mark.parametrize(("days", "vmin"), [(10.0, 19.0), (0.0, 0.0), (100.0, 0.0)])
