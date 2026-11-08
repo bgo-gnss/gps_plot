@@ -552,6 +552,17 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         help=f"the recent rate's window (default {track.RECENT_DAYS} days)",
     )  # fmt: skip
     g.add_argument(
+        "--track-status", action="store_true",
+        help="also write <figure>.status.json: per station the rate over the "
+        "last --track-status-days days and since the onset with σ, the newest "
+        "day's movement and the newest day (track_status.py; aflogun's Vöktun "
+        "tab shows it)",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-status-days", type=int, default=None, metavar="DAYS",
+        help="the status file's rate window (default: --track-recent)",
+    )  # fmt: skip
+    g.add_argument(
         "--track-scale", type=float, default=None, metavar="M_PER_MM",
         help="metres on the map per mm of displacement (default: the "
         f"farthest track {track.TRACK_CM} cm long)",
@@ -2144,11 +2155,13 @@ def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
 def _draw_tracks(
     fig: Any, args: Any, parser: Any, config: Any, style: dict[str, Any],
     stations: Sequence[Any], maps: Any,
-) -> tuple[Any, list[tuple[str, Any]], Any]:  # fmt: skip
+) -> tuple[Any, list[tuple[str, Any]], Any, dict[str, Any] | None]:  # fmt: skip
     """``--track``: every station's track on ``fig``; what was drawn
     (:class:`gps_plot.track.Drawn`: the locator sits on the legend, the
-    insets keep off it), the ``--track-series`` figures by station and the
-    zoom inset's drawing (``draw(fig, width_cm)``: the tracks inside it)."""
+    insets keep off it), the ``--track-series`` figures by station, the
+    zoom inset's drawing (``draw(fig, width_cm)``: the tracks inside it)
+    and, with ``--track-status``, the status file's content
+    (:func:`gps_plot.track_status.status_record`)."""
     from gps_plot import track
 
     series = {s.strip().upper() for s in (args.track_series or "").split(",")
@@ -2175,7 +2188,12 @@ def _draw_tracks(
         else "the mean of " + ", ".join(refs)
     )  # fmt: skip
     reference = up_reference = None
+    status_days = (
+        (args.track_status_days or args.track_recent) if args.track_status else None
+    )
+    ref_info: dict[str, Any] = {}
     if refs:
+        ref_info = {"asked": refs, "kept": [], "dropped": []}
         loaded, used = [], []
         for r in refs:
             try:
@@ -2202,8 +2220,10 @@ def _draw_tracks(
             for name, speed in moved:
                 print(f"--track-ref: {name} left out: it moves {speed:.0f} mm/yr "
                       "against the others since the onset", file=sys.stderr)  # fmt: skip
+                ref_info["dropped"].append({"station": name, "speed": round(speed, 1)})
             loaded = [loaded[used.index(k)] for k in kept]
             used = kept
+        ref_info["kept"] = list(used)
         if len(refs) > 1:
             ref_name = "the mean of " + ", ".join(used)
         horizontal = [(t, y[:2]) for t, y in loaded]
@@ -2236,7 +2256,7 @@ def _draw_tracks(
                 pos_dir=pos_dir, uncert=args.track_uncert, common_mode=common_mode,
                 before_days=before, recent_days=args.track_recent,
                 reference=reference, keep_trend=keep_trend,
-                up_reference=up_reference,
+                up_reference=up_reference, status_days=status_days,
             ))  # fmt: skip
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
@@ -2275,6 +2295,15 @@ def _draw_tracks(
                                path_days=args.track_path_days,
                                cpt=drawn.cpt, up=args.track_up)  # fmt: skip
 
+    status = None
+    if status_days is not None:
+        from gps_plot import track_status
+
+        status = track_status.status_record(
+            tracks, onset=onset, event=label, window_days=status_days,
+            frame=args.track_frame, common_mode=common_mode,
+            keep_trend=keep_trend, reference=ref_info or None,
+        )  # fmt: skip
     picked = [tr for tr in tracks if tr.marker in series]
     return drawn, [
         (tr.marker, track.series_figure(
@@ -2282,7 +2311,7 @@ def _draw_tracks(
             days_range=span, cmap=args.track_cmap, common_mode=common_mode,
             reference=ref_name, keep_trend=keep_trend))
         for tr in picked
-    ], zoom  # fmt: skip
+    ], zoom, status  # fmt: skip
 
 
 def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
@@ -2345,10 +2374,10 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
                                   labels=args.markers, status_legend=None,
                                   rj=rj, avoid=avoid)  # fmt: skip
 
-    drawn = None
+    drawn = status = None
     series: list[tuple[str, Any]] = []
     if getattr(args, "track", None):  # the dots over the stations, as approved
-        drawn, series, zoom_tracks = _draw_tracks(
+        drawn, series, zoom_tracks, status = _draw_tracks(
             fig, args, parser, config, style, stations, maps
         )
 
@@ -2358,6 +2387,8 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
 
     elif getattr(args, "track_series", None):
         parser.error("--track-series needs --track")
+    elif getattr(args, "track_status", False):
+        parser.error("--track-status needs --track")
     _finish(fig, args)
     _insets(
         fig, args, config, style, stations,
@@ -2377,6 +2408,15 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
         print(p)
     if links:
         _write_nearest(links, saved, args.nearest_csv)
+    if status is not None and saved:
+        from gps_plot import track_status
+
+        path = track_status.status_path(saved[0])
+        track_status.write_status(path, status)
+        print(path)
+        if getattr(args, "manifest", None):  # published with the map
+            with open(args.manifest, "a") as fh:
+                fh.write(os.path.abspath(path) + "\n")
     for marker, sfig in series:
         for p in _save_series(sfig, args, config, f"{args.name or stem}-{marker}"):
             print(p)

@@ -63,7 +63,15 @@ the pre-onset window first, days ≥ half of them have; glorg-like translation),
 reference station that moves since the onset (> 5 σ from the median rate, while
 ≥ 3 are left) is left out (`track.screen_references`; EYVI 2026-10);
 days are matched by calendar `track.day_key`; the dotted path follows a 5-day running median
-(`--track-path-days`).
+(`--track-path-days`). `--track-status` also writes `<figure>.status.json`
+(`track_status.py`, schema 1, rates mm/yr): per station its role (station /
+reference / dropped_reference), newest day, the rate over the last
+`--track-status-days` days (default `--track-recent`; widened like the recent
+rate for sparse days) and since the onset, each `[value, σ]` with the same σ
+as the legend, and the newest day's movement (newest − previous day, σ = √2 ×
+the pre-onset daily scatter, significant > 3 σ); it goes into the manifest
+with the map. aflogun's *Vöktun* tab reads it (area `monitoring:` in
+station_areas.yaml).
 Area layers for any map: `--layers volcanic` (FutureVolc swarms, central
 volcanoes named, caldera rims) and `rural` (IS 50V main + local roads,
 building points, farm names; `vector/build_09_is50v.sh`); overlapping

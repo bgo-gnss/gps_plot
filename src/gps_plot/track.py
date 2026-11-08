@@ -151,6 +151,9 @@ class Vertical:
     recent_window: float = RECENT_DAYS
     #: the trend kept (``keep_trend``): the Up rate before the onset
     before: tuple[float, float] | None = None
+    #: the status file's window rate (``status_days``, :mod:`gps_plot.track_status`)
+    status: tuple[float, float] | None = None
+    status_window: float = 0.0
 
     @property
     def end_count(self) -> int:
@@ -212,6 +215,9 @@ class Track:
     colour: str = SINCE_COLOR
     #: the window of :attr:`recent` [days] (:func:`recent_span`)
     recent_window: float = RECENT_DAYS
+    #: the status file's window rate (``status_days``, :mod:`gps_plot.track_status`)
+    status: Rate | None = None
+    status_window: float = 0.0
 
     @property
     def end_count(self) -> int:
@@ -574,11 +580,13 @@ def station_track(
     before_days: int = BEFORE_DAYS,
     recent_days: int = RECENT_DAYS,
     keep_trend: bool = False,
+    status_days: int | None = None,
 ) -> Track:
     """A station's :class:`Track` from its horizontal series ``y`` (N, E)
     [mm] at epochs ``t`` [fractional years, finite]. ``keep_trend``: only
     the seasonal before the onset removed, its trend kept and measured
-    (:attr:`Track.before`)."""
+    (:attr:`Track.before`). ``status_days``: also the rate over that
+    window (:attr:`Track.status`, as :attr:`Track.recent`)."""
     t_on = yearf(onset)
     in_pre = (t >= yearf(pre[0])) & (t < yearf(pre[1]))
     r, rms = detrend(t, y, in_pre, keep_line=keep_trend)
@@ -605,12 +613,19 @@ def station_track(
         line_rate(t, r, float(t[-1]) - span / YEAR, float(t[-1]), rms),
         wander_scale(t, resid, in_pre, span),
     )  # fmt: skip
+    status, status_span = None, 0.0
+    if status_days is not None:
+        status_span = recent_span(t, t_on, status_days)
+        status = scaled(
+            line_rate(t, r, float(t[-1]) - status_span / YEAR, float(t[-1]), rms),
+            wander_scale(t, resid, in_pre, status_span),
+        )  # fmt: skip
     return Track(
         marker, lon, lat, t[shown], r[0, shown], r[1, shown],
         (t[shown] - t_on) * YEAR, float(math.hypot(*rms)), since, recent,
         int((t >= t_on).sum()), before, (float(rms[0]), float(rms[1])),
         (float(zero_sigma[0]), float(zero_sigma[1])), n_near < 3,
-        recent_window=span,
+        recent_window=span, status=status, status_window=status_span,
     )  # fmt: skip
 
 
@@ -623,6 +638,7 @@ def vertical_track(
     before_days: int = BEFORE_DAYS,
     recent_days: int = RECENT_DAYS,
     keep_trend: bool = False,
+    status_days: int | None = None,
 ) -> Vertical:
     """A station's :class:`Vertical` from its Up ``u`` (1, N) [mm] at epochs
     ``t``: as :func:`station_track` does the horizontal (trend and seasonal
@@ -655,6 +671,8 @@ def vertical_track(
         k = float(wander_scale(t, resid, in_pre, days)[0])
         return got[0][0], got[0][1] * k
 
+    status_span = (recent_span(t, t_on, status_days)
+                   if status_days is not None else 0.0)  # fmt: skip
     return Vertical(
         t[shown], r[0, shown], (t[shown] - t_on) * YEAR, float(rms[0]),
         zero_sigma, n_near < 3,
@@ -663,6 +681,9 @@ def vertical_track(
         int((t >= t_on).sum()),
         span,
         before,
+        (rate(float(t[-1]) - status_span / YEAR, status_span)
+         if status_days is not None else None),
+        status_span,
     )  # fmt: skip
 
 
@@ -728,6 +749,7 @@ def load_track(
     keep_trend: bool = False,
     up_reference: tuple[FloatArray, FloatArray] | None = None,
     vertical: bool = True,
+    status_days: int | None = None,
 ) -> Track:
     """Read a station (:func:`load_series`) and make its track; with
     ``reference`` (another station's ``load_series``) relative to it. With
@@ -741,7 +763,7 @@ def load_track(
               else (t, y[:2]))  # fmt: skip
     tr = station_track(marker, lon, lat, th, yh, onset, pre,
                        before_days=before_days, recent_days=recent_days,
-                       keep_trend=keep_trend)  # fmt: skip
+                       keep_trend=keep_trend, status_days=status_days)  # fmt: skip
     if not vertical or (reference is not None and up_reference is None):
         return tr
     tu, u = up_series(t, y)
@@ -749,7 +771,8 @@ def load_track(
         tu, u = relative_to(tu, u, *up_reference)
     try:
         vt = vertical_track(tu, u, onset, pre, before_days=before_days,
-                            recent_days=recent_days, keep_trend=keep_trend)  # fmt: skip
+                            recent_days=recent_days, keep_trend=keep_trend,
+                            status_days=status_days)  # fmt: skip
     except ValueError:
         return tr
     return dataclasses.replace(tr, vertical=vt)
