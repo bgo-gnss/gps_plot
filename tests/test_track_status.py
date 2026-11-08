@@ -100,3 +100,16 @@ def test_newest_day_is_the_watched_stations() -> None:
         reference={"asked": ["FAGC"], "kept": ["FAGC"], "dropped": []},
     )  # fmt: skip
     assert rec["newest_day"] == track.newest_day([watched]).isoformat()
+
+
+def test_colour_range_counts_back_from_the_watched() -> None:
+    t, y = _series(move=(100.0, 0.0))
+    watched = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    later = np.append(t, t[-1] + 2 / 365.25)
+    ref = track.station_track("FAGC", -16.6, 63.9, later,
+                              np.hstack([y, y[:, -1:]]), ONSET, PRE)  # fmt: skip
+    tracks = [dataclasses.replace(watched, colour_days=28.0),
+              dataclasses.replace(ref, colour_days=28.0, shown=False)]  # fmt: skip
+    lo, top = track.colour_range(tracks)
+    assert top == pytest.approx(float(watched.days.max()))
+    assert top - lo == pytest.approx(28.0)
