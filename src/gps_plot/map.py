@@ -563,6 +563,11 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         "station's colour, the one since the onset grey dashed",
     )  # fmt: skip
     g.add_argument(
+        "--track-colour-days", type=float, default=0.0, metavar="DAYS",
+        help="colour the dots of the newest DAYS only, older ones open black "
+        "(as gpsplot polar; default 0: all coloured)",
+    )  # fmt: skip
+    g.add_argument(
         "--track-status", action="store_true",
         help="also write <figure>.status.json: per station the rate over the "
         "last --track-status-days days and since the onset with σ, the newest "
@@ -2303,6 +2308,9 @@ def _draw_tracks(
         tracks = [dataclasses.replace(tr, shown=tr.marker in keep) for tr in tracks]
     if args.track_colours == "recent":
         tracks = [dataclasses.replace(tr, colour_recent=True) for tr in tracks]
+    if args.track_colour_days > 0:
+        tracks = [dataclasses.replace(tr, colour_days=args.track_colour_days)
+                  for tr in tracks]  # fmt: skip
     tracks = track.with_colours(tracks)  # SVIE blue, SVIN red, …
     print(f"tracks since {onset:%Y-%m-%d} ({label}), trend {pre[0]:%Y-%m-%d} - "
           f"{pre[1]:%Y-%m-%d}: {len(tracks)} stations", file=sys.stderr)  # fmt: skip
@@ -2335,7 +2343,9 @@ def _draw_tracks(
         track.draw_zoom_tracks(f, shown, args.inset, width_cm,
                                arrows=args.track_arrows,
                                path_days=args.track_path_days,
-                               cpt=drawn.cpt, up=args.track_up)  # fmt: skip
+                               cpt=drawn.cpt, up=args.track_up,
+                               colour_lo=span[0] if args.track_colour_days > 0
+                               else None)  # fmt: skip
 
     status = None
     if status_days is not None:

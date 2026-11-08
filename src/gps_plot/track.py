@@ -79,11 +79,16 @@ BEFORE_COLOR = "80/80/80"
 RECENT_COLOR = "black"
 #: ``colour_recent`` (BGÓ 2026-11-08): the rate since the onset grey dashed,
 #: the recent rate in the station's colour
-SINCE_GREY = "110/110/110"
-SINCE_GREY_STYLE = "6_3:0"
-#: ... drawn as the displacement since the onset (at the dots' scale) ending
-#: in a T bar, its 1-σ ellipse at the end (BGÓ 2026-11-08)
+SINCE_GREY = "90/90/90"
+SINCE_GREY_STYLE = ""
+#: ... drawn as the displacement since the onset (at the dots' scale), a
+#: solid line ending in a T bar as the SEY map's totals, its 1-σ ellipse at
+#: the end (BGÓ 2026-11-08)
 SINCE_GREY_END = "+et"
+SINCE_GREY_PEN = "1.4p"
+#: recent mode: a recent rate's arrow only above this many σ (its numbers
+#: are in the legend either way)
+RECENT_SIGMA = 2.0
 #: the newest day in the legend: through yesterday green, else red (as the
 #: time series' "Last datapoint"; a darker green, readable on white)
 FRESH_COLOR = "0/160/0"
@@ -231,6 +236,26 @@ class Track:
     #: the recent rate's arrow in :attr:`colour`, the one since the onset
     #: grey dashed (``--track-colours recent``)
     colour_recent: bool = False
+    #: the dots coloured over the newest this many days only, older ones
+    #: open black (``--track-colour-days``; 0: all coloured)
+    colour_days: float = 0.0
+
+    @property
+    def recent_shown(self) -> bool:
+        """Its recent arrow drawn: always, or in recent mode only above
+        ``RECENT_SIGMA`` σ."""
+        r = self.recent
+        if r is None:
+            return False
+        return not self.colour_recent or r.speed > RECENT_SIGMA * r.sigma_speed
+
+    @property
+    def up_recent_shown(self) -> bool:
+        """Its recent Up arrow drawn (as :attr:`recent_shown`)."""
+        vt = self.vertical
+        if vt is None or vt.recent is None:
+            return False
+        return not self.colour_recent or abs(vt.recent[0]) > RECENT_SIGMA * vt.recent[1]
 
     @property
     def end_count(self) -> int:
@@ -828,9 +853,9 @@ def recent_key(
         f" ({', '.join(longer)} days: too few days in {recent_days})" if longer else ""
     )
     if any(tr.colour_recent for tr in tracks):
-        since = f" since {onset:%d.%m.%Y}" if onset else " since the onset"
-        return (f"arrows: velocity of the last {recent_days} days{more}; "
-                f"grey dashed T: moved{since}")  # fmt: skip
+        # the grey T line has its own key (_draw_legend t_key)
+        return (f"arrows: velocity of the last {recent_days} days{more}, "
+                f"drawn above {RECENT_SIGMA:g} σ")  # fmt: skip
     return f"black arrows: mean velocity of the last {recent_days} days{more}"
 
 
@@ -877,17 +902,23 @@ def legend_entries(
                 out.append((up_text(tr.marker, vt, onset, recent), tr.colour))
             continue
         if tr.since is not None and tr.colour_recent:
-            # recent mode: the displacement since the onset (the grey T
-            # line) and the recent rate (the arrow)
+            # recent mode: the recent rate (the arrow, its colour), then the
+            # displacement since the onset (the T line, grey), Up beside
+            if tr.recent is not None:
+                r = tr.recent
+                line = (f"{tr.marker} last {tr.recent_window:.0f} days {r.speed:.0f} "
+                        f"{pm} {r.sigma_speed:.0f} mm/yr toward {r.azimuth:.0f}{deg}")  # fmt: skip
+                if vt is not None and vt.recent is not None:
+                    line += f", up {vt.recent[0]:+.0f} {pm} {vt.recent[1]:.0f} mm/yr"
+                out.append((line, tr.colour))
             n, e = tr.end
             az = math.degrees(math.atan2(e, n)) % 360
             line = (f"{tr.marker} moved {math.hypot(n, e):.0f} {pm} "
-                    f"{tr.end_sigma:.0f} mm ({az:.0f}{deg})")  # fmt: skip
-            if tr.recent is not None:
-                r = tr.recent
-                line += (f"; {tr.recent_window:.0f} d: {r.speed:.0f} {pm} "
-                         f"{r.sigma_speed:.0f} mm/yr ({r.azimuth:.0f}{deg})")  # fmt: skip
-            out.append((line, tr.colour))
+                    f"{tr.end_sigma:.0f} mm toward {az:.0f}{deg}")  # fmt: skip
+            if vt is not None and vt.n_after:
+                line += f", up {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm"
+            out.append((line, SINCE_GREY))
+            continue
         elif tr.since is not None:
             s = tr.since
             moved_mm = math.hypot(*tr.end)
@@ -1061,7 +1092,7 @@ def draw_up_arrows(
     for tr in tracks:
         vt = tr.vertical
         if (up_vector(tr) is None or tr.recent is None or vt is None
-                or vt.recent is None):  # fmt: skip
+                or vt.recent is None or not tr.up_recent_shown):  # fmt: skip
             continue
         recent.append(maps.VelocityVector(
             tr.marker, tr.lon, tr.lat, east=0.0, north=vt.recent[0],
@@ -1117,9 +1148,10 @@ def draw_track_marks(
     cm_per_mm: float | None = None,
     up: bool = False,
     deg_per_cm: float | None = None,
+    colour_lo: float | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """The dotted paths, the dots (coloured by ``cpt``, else the current
-    CPT) and the
+    CPT; with ``colour_lo`` [days] the older ones open black) and the
     arrows of ``tracks``; on the map or in a zoom inset at its own scale.
     A station with too few days for a rate gets a displacement arrow to
     its newest position, at the dots' scale (``cm_per_mm``), with a dashed
@@ -1143,8 +1175,12 @@ def draw_track_marks(
     z = np.concatenate(days) if days else np.zeros(0)
     if z.size:
         order = np.argsort(z, kind="stable")  # newest on top
-        fig.plot(x=x[order], y=y[order], fill=z[order], cmap=cpt or True,
-                 style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
+        old = z[order] < colour_lo if colour_lo is not None else np.zeros(z.size, bool)
+        if old.any():  # older than the colours: open black (as the polar plot)
+            fig.plot(x=x[order][old], y=y[order][old], style=DOT_STYLE, pen=DOT_PEN)
+        if (~old).any():
+            fig.plot(x=x[order][~old], y=y[order][~old], fill=z[order][~old],
+                     cmap=cpt or True, style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
     moved = [tr for tr in tracks if tr.shown and tr.moved and tr.since is not None]
     tips_x, tips_y = [], []
     # the rates before the onset (trend kept), grey, under the others
@@ -1162,7 +1198,8 @@ def draw_track_marks(
         vecs = []
         for tr in moved:
             pairs = (
-                ((tr.colour, tr.recent),)  # the displacement since: below
+                # the displacement since: below; the recent arrow above 2 σ
+                ((tr.colour, tr.recent if tr.recent_shown else None),)
                 if tr.colour_recent
                 else ((tr.colour, tr.since), ("recent", tr.recent))
             )
@@ -1203,7 +1240,7 @@ def draw_track_marks(
             fig, disp, colors={"since-grey": SINCE_GREY},
             styles={"since-grey": SINCE_GREY_STYLE},
             ends={"since-grey": SINCE_GREY_END}, scale=cm_per_mm,
-            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+            confidence=0.39, vector_head=ARROW_HEAD, pen_width=SINCE_GREY_PEN,
             ellipse_pen=f"0.6p,{SINCE_GREY}", markers=False, labels=False,
         )  # fmt: skip
         if region is not None and width_cm:
@@ -1239,6 +1276,9 @@ def colour_range(tracks: Sequence[Track]) -> tuple[float, float]:
     (at least a day before), at least a day long."""
     z = np.concatenate([tr.days for tr in tracks]) if tracks else np.zeros(1)
     lo = float(min(z.min(), -1.0)) if z.size else -1.0
+    days = max((tr.colour_days for tr in tracks), default=0.0)
+    if days > 0 and z.size:  # the newest days only (older: open black)
+        lo = max(lo, float(z.max()) - days)
     return lo, max(float(z.max()) if z.size else 0.0, lo + 1.0)
 
 
@@ -1284,11 +1324,13 @@ def draw_tracks(
     if tracks:
         cpt = _cpt_file()
         pygmt.makecpt(cmap=cmap, series=list(colour_range(tracks)), output=cpt)
+    open_days = max((tr.colour_days for tr in tracks), default=0.0)
     lons, lats = draw_track_marks(
         fig, tracks, m_per_mm=m_per_mm, arrow_scale=scale, arrows=arrows,
         path_days=path_days, region=region, width_cm=width, cpt=cpt,
         cm_per_mm=m_per_mm / (km_per_cm(region, width) * 1000.0),
         up=up, deg_per_cm=(region[1] - region[0]) / width,
+        colour_lo=colour_range(tracks)[0] if open_days > 0 and tracks else None,
     )  # fmt: skip
     if tracks:
         # small, inside the upper right, on a white box (BGÓ 2026-10-28)
@@ -1297,7 +1339,14 @@ def draw_tracks(
                           MAP_TICK_LENGTH_PRIMARY="2p"):  # fmt: skip
             fig.colorbar(
                 cmap=cpt,
-                frame=[f"xaf+ldays since {onset:%d.%m.%Y}"],
+                frame=[
+                    f"xaf+ldays since {onset:%d.%m.%Y}"
+                    + (
+                        f"; black open: before the last {open_days:g} days"
+                        if open_days > 0
+                        else ""
+                    )
+                ],
                 position=f"JTR+jTR+o0.45c/0.35c+w{CBAR_WIDTH * width:.1f}c/0.2c+h",
                 box=CBAR_BOX,
             )
@@ -1308,9 +1357,27 @@ def draw_tracks(
     # each line's numbers belong to an arrow: no arrows, no lines (BGÓ
     # 2026-11-01: SEY9's lone "34 mm/yr" line on the SEY dot map)
     entries = legend_entries(tracks, onset, recent_days, up=up) if arrows else []
-    if arrows and any(tr.shown and tr.moved and tr.since is not None
-                      and tr.recent is not None for tr in tracks):  # fmt: skip
+    recent_mode = [tr for tr in tracks if tr.shown and tr.moved and tr.colour_recent
+                   and tr.since is not None]  # fmt: skip
+    if (
+        arrows
+        and not recent_mode
+        and any(
+            tr.shown and tr.moved and tr.since is not None and tr.recent is not None
+            for tr in tracks
+        )
+    ):
         entries = [(recent_key(recent_days, tracks, onset), RECENT_COLOR), *entries]
+    t_key = arrow_note = None
+    if arrows and recent_mode:  # icons, not a line of text (BGÓ 2026-11-08)
+        t_key = f"moved since {onset:%d.%m.%Y}"
+        arrow_note = f"last {recent_days} days"
+        if any(not tr.recent_shown or (tr.vertical is not None and up
+                                       and not tr.up_recent_shown)
+               for tr in recent_mode):  # fmt: skip
+            entries = [*entries, (f"no arrow: no motion above the noise "
+                                  f"({RECENT_SIGMA:g} σ) in the last {recent_days} days",
+                                  "black")]  # fmt: skip
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
     entries = [*entries, *keys]  # (text, colour) of the map's own, e.g. --steep
@@ -1318,7 +1385,8 @@ def draw_tracks(
         fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
-        floor_cm=legend_floor_cm, newest=newest_day(tracks),
+        floor_cm=legend_floor_cm, newest=newest_day(tracks), t_key=t_key,
+        arrow_note=arrow_note,
     )  # fmt: skip
     boxes.append((0.0, right, 0.0, top))
     return Drawn(top, tuple(boxes), lons, lats, cpt)
@@ -1384,10 +1452,11 @@ def draw_zoom_tracks(
     path_days: int = PATH_MEDIAN_DAYS,
     cpt: str | None = None,
     up: bool = True,
+    colour_lo: float | None = None,
 ) -> None:
     """The tracks inside a zoom inset's ``box`` (``width_cm`` wide), at
     the inset's own dot and arrow scales, with those scales drawn; the
-    dots coloured by the map's ``cpt``."""
+    dots coloured by the map's ``cpt`` (from ``colour_lo``, as the map's)."""
     w, e, s, n = box[:4]
     inside = [tr for tr in tracks if w <= tr.lon <= e and s <= tr.lat <= n]
     if not inside:
@@ -1397,8 +1466,9 @@ def draw_zoom_tracks(
     draw_track_marks(fig, inside, m_per_mm=m_per_mm, arrow_scale=scale,
                      arrows=arrows, path_days=path_days, cpt=cpt,
                      cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0),
-                     up=up, deg_per_cm=(box[1] - box[0]) / width_cm)  # fmt: skip
-    moved = any(tr.moved and tr.since is not None for tr in inside)
+                     up=up, deg_per_cm=(box[1] - box[0]) / width_cm,
+                     colour_lo=colour_lo)  # fmt: skip
+    moved = any(tr.shown and tr.moved and tr.since is not None for tr in inside)
     draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
                       arrow_ref=ref if arrows and moved else None,
                       arrow_scale=scale)  # fmt: skip
@@ -1416,22 +1486,28 @@ def _draw_legend(
     m_per_mm: float,
     floor_cm: float,
     newest: dt.date | None = None,
+    t_key: str | None = None,
+    arrow_note: str | None = None,
 ) -> tuple[float, float]:
     """The lower-left legend box: on top the arrow reference (when arrows are
     drawn), the dot scale and the ``newest`` day side by side, under them
-    ``entries`` (top down). Returns its top and right edge [cm from the
-    map's lower left]."""
+    with ``t_key`` a grey T line the dot scale's length and its text
+    (``moved since …``), then ``entries`` (top down); ``arrow_note`` follows
+    the arrow reference (``last 7 days``). Returns its top and right edge
+    [cm from the map's lower left]."""
     from gps_plot import maps
 
     width, height = maps._map_size_cm(region, projection)
     pad, sp = maps.LEGEND_BOX_PAD_CM, LEGEND_LINE_CM / height
     anchor = (0.02, 0.5 * sp + (pad + floor_cm) / height)
-    n = len(entries)
+    n = len(entries) + (1 if t_key else 0)
 
     def at(fx: float, line: float) -> tuple[float, float]:
         return maps.region_point(region, anchor[0] + fx / width, anchor[1] + line * sp)
 
     ref_text = f"{arrow_ref:g} mm/yr" if arrow_ref is not None else ""
+    if ref_text and arrow_note:
+        ref_text += f", {arrow_note}"
     dot_text = f"{dot_ref:g} mm (dots)"
     arrow_cm = arrow_ref * arrow_scale if arrow_ref is not None else 0.0
     dot_x = (max(arrow_cm, maps.text_width_cm(ref_text, LEGEND_FONT)) + 1.0
@@ -1441,6 +1517,9 @@ def _draw_legend(
     new = newest_text(newest) if newest is not None else None
     top_wide = (new_x + maps.text_width_cm(new[0], LEGEND_FONT) if new
                 else dot_x + maps.text_width_cm(dot_text, LEGEND_FONT))  # fmt: skip
+    t_text = f"{dot_ref:g} mm {t_key}" if t_key else ""
+    if t_key:  # the T line before its text
+        top_wide = max(top_wide, bar_cm + 0.3 + maps.text_width_cm(t_text, LEGEND_FONT))
     lines = n + 1.8
     box = maps.vector_legend_box(
         region, projection, anchor, sp, lines,
@@ -1451,6 +1530,13 @@ def _draw_legend(
     for i, (label, color) in enumerate(reversed(entries)):  # bottom up
         x, y = at(0.0, i)
         fig.text(x=x, y=y, text=label, font=f"{LEGEND_FONT},{color}", justify="LM")
+    if t_key:  # as the SEY map's "100 mm moved since installed"
+        x, y = at(0.0, n - 1)
+        fig.plot(data=np.array([[x, y, 0.0, bar_cm]]), style=f"v{ARROW_HEAD}+et",
+                 pen=f"{SINCE_GREY_PEN},{SINCE_GREY}")  # fmt: skip
+        x, y = at(bar_cm + 0.3, n - 1)
+        fig.text(x=x, y=y, text=t_text, font=f"{LEGEND_FONT},{SINCE_GREY}",
+                 justify="LM")  # fmt: skip
     if arrow_ref is not None:
         x, y = at(0.0, n)
         maps._draw_vector_layer(
