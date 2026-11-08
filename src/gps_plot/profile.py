@@ -212,7 +212,8 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                 label=f"ground slope {dip:.0f}° down (50 m plane)")  # fmt: skip
     ax.scatter(sign * prof.along * scale, z0 + prof.up * scale, c=prof.t,
                s=30 if small else 55, marker=pp.marker, edgecolors="k",
-               linewidths=0.4, zorder=4, alpha=0.8, **style)  # fmt: skip
+               linewidths=0.6, zorder=4, **style)  # fmt: skip
+    # no alpha: it would fill the open (older than the colours) points black
     wt, wa, wu = weekly_medians(prof.t, prof.along, prof.up)
     if wt.size:  # the path without the day-to-day noise
         ax.plot(np.r_[0, sign * wa * scale], np.r_[z0, z0 + wu * scale], color="k",

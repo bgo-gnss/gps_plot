@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import pathlib
 
 import numpy as np
 import pytest
@@ -202,3 +203,73 @@ def test_a_westward_section_is_mirrored_with_compass_ends():
     assert mean == pytest.approx(313.0) and mirrored
     assert section_heading([110.0]) == (pytest.approx(110.0), False)
     assert section_heading([350.0, 20.0])[0] == pytest.approx(5.0)
+
+
+def test_degmin_as_the_gmt_maps() -> None:
+    assert polar.degmin(64.00917, "N", "S") == "64°00.55'N"
+    assert polar.degmin(-16.80933, "E", "W") == "16°48.56'W"
+    assert polar.degmin(-16.99999, "E", "W") == "17°00.00'W"
+
+
+def test_iceland_layers_read_gmt_segments(tmp_path: pathlib.Path) -> None:
+    from gps_plot import insets
+
+    coast = tmp_path / insets.LOCATOR_COAST
+    coast.parent.mkdir(parents=True)
+    coast.write_text(
+        "# @VGMT1.0\n>\n-20 64\n-19 64.5\n>\n-15 65\n-14 65.2\n-14.5 65.4\n"
+    )
+    layers = polar.iceland_layers(str(tmp_path))
+    assert [s.shape for s in layers["coast"]] == [(2, 2), (3, 2)]
+    assert layers["swarms"] == [] and layers["glaciers"] == []  # missing files
+
+
+def test_gmt_colours_and_pens() -> None:
+    assert polar.gmt_colour("white") == "white"
+    assert polar.gmt_colour("255/0/51") == pytest.approx((1.0, 0.0, 0.2))
+    assert polar.gmt_pen("0.2p,black") == (0.2, "black")
+
+
+@pytest.mark.parametrize(("days", "vmin"), [(10.0, 19.0), (0.0, 0.0), (100.0, 0.0)])
+def test_colours_only_the_newest_days(days: float, vmin: float) -> None:
+    """Points older than the colour window are open: no fill (BGÓ 2026-11-08)."""
+    from matplotlib.collections import PathCollection
+
+    fig = polar.polar_figure([_pair("SVIE-SKFC", 333.0)],
+                             onset=dt.datetime(2025, 7, 30), panels=("hodograph",),
+                             colour_days=days)  # fmt: skip
+    dots = [c for ax in fig.axes for c in ax.collections
+            if isinstance(c, PathCollection)]  # fmt: skip
+    assert dots and all(c.norm.vmin == pytest.approx(vmin) for c in dots)
+    rgba = dots[0].to_rgba(dots[0].get_array())
+    assert (rgba[:, 3] == 0).sum() == round(vmin)  # days 0 .. vmin-1 open
+
+
+def test_panels_close_up_to_the_map() -> None:
+    """The panels beside the map start STACKED_GAP_IN right of it (BGÓ 2026-11-08)."""
+    from gps_plot import terrain
+
+    xs = np.arange(-300.0, 301.0, 5.0)
+    dem = terrain.DemWindow(xs, xs.copy(), 800.0 - 0.4 * xs[None, :] + 0 * xs[:, None])
+    pairs = [_pair("SVIE-SKFC", 333.0, downslope=(90.0, 21.8), pos=(150.0, 0.0))]
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30),
+                             panels=("sector", "map", "profile"), dem=dem,
+                             half=300.0, profile_dem=dem,
+                             locator={"coast": [np.array([[-20.0, 64.0], [-19.0, 65.0],
+                                                          [-18.0, 64.0]])]})  # fmt: skip
+    renderer = fig._get_renderer()
+    to_fig = fig.transFigure.inverted()
+    free = [a for a in fig.axes if a.get_axes_locator() is None]
+    mapax = max(free, key=lambda a: a.get_position().width)
+    edge = mapax.get_position().x1
+    beside = [a for a in free if a.get_position().x0 > edge - 0.05]  # not the logo
+    left = min(a.get_tightbbox(renderer).transformed(to_fig).x0 for a in beside)
+    gap_in = (left - mapax.get_position().x1) * fig.get_size_inches()[0]
+    assert gap_in == pytest.approx(polar.STACKED_GAP_IN, abs=0.02)
+    assert fig.get_size_inches()[0] < 21.0  # the freed width trimmed
+
+
+def test_older_than() -> None:
+    assert polar.older_than(28.0) == "older than 4 weeks"
+    assert polar.older_than(7.0) == "older than 1 week"
+    assert polar.older_than(10.0) == "older than 10 days"
