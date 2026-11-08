@@ -434,3 +434,32 @@ def test_recent_window_widens_for_weekly_days() -> None:
     daily = on + np.arange(30) / 365.25
     assert track.recent_span(np.concatenate([t[:400], daily]), on, 14) == 14
     assert track.recent_span(t[:403], on, 14) == 14  # too few since the onset
+
+
+def test_recent_mode_legend_order_and_gate() -> None:
+    """--track-colours recent (BGÓ 2026-11-08): a rate line only when its
+    arrow is drawn (above RECENT_SIGMA), every rate line before the grey
+    displacement lines; a station not in --track-stations has none."""
+    import dataclasses
+
+    t, y = _series(move=(200.0, -120.0))
+    fast = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    t2, y2 = _series(move=(200.0, -120.0), seed=3)
+    other = track.station_track("SVIN", -16.79, 64.0, t2, y2, ONSET, PRE)
+    still = track.station_track("SKFC", -17.0, 64.0, *_series(seed=4), ONSET, PRE)
+    assert fast.recent is not None
+    tracks = [dataclasses.replace(tr, colour_recent=True, colour=c, shown=s)
+              for tr, c, s in ((fast, "blue", True), (other, "red", True),
+                               (still, "green", False))]  # fmt: skip
+    # SVIN's recent rate made noise-level: no arrow, no rate line
+    r = tracks[1].recent
+    assert r is not None
+    tracks[1] = dataclasses.replace(tracks[1], recent=dataclasses.replace(
+        r, sigma_north=1e4, sigma_east=1e4))  # fmt: skip
+    lines = track.legend_entries(tracks, ONSET, 14)
+    colours = [c for _, c in lines]
+    assert colours[0] == "blue" and "SVIE last" in lines[0][0]
+    assert not any("SVIN last" in t for t, _ in lines)
+    assert colours[1:] == [track.SINCE_GREY, track.SINCE_GREY]
+    assert [t.split()[0] for t, _ in lines[1:]] == ["SVIE", "SVIN"]
+    assert not any(t.startswith("SKFC") for t, _ in lines)

@@ -269,7 +269,6 @@ def test_panels_close_up_to_the_map() -> None:
     assert fig.get_size_inches()[0] < 21.0  # the freed width trimmed
 
 
-def test_older_than() -> None:
-    assert polar.older_than(28.0) == "older than 4 weeks"
-    assert polar.older_than(7.0) == "older than 1 week"
-    assert polar.older_than(10.0) == "older than 10 days"
+def test_older_note() -> None:
+    assert (polar.older_note(dt.datetime(2026, 9, 23), 28.0)
+            == "since 23.09.2026 until 28 days ago")  # fmt: skip
