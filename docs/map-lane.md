@@ -502,7 +502,9 @@ stations (with `--margin` 0.03 unless given); the other kinds do so without
 - **`--nearest-from FILE`** draws the links of a list made elsewhere
   instead (`gpscoord nearest`, e.g. `--data-before 20231110 --join
   LISK+LISF`: stations with data from before the dike, a moved station as
-  one); a moved station `A+B` links to its last mark.
+  one); a moved station `A+B` links to its last mark. `--nearest-ranks 1,2` draws the second
+  nearest too (dashed grey, `maps.draw_ranked_links`), from a `gpscoord
+  nearest -k 2` list.
 - **`--no-stations`** draws no station symbols or names, on station,
   velocity and deformation maps; the stations still set the extent.
   `gpsplot map base` is a station map without stations, Iceland when no
