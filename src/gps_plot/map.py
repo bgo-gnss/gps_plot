@@ -552,6 +552,17 @@ def _add_track_options(p: argparse.ArgumentParser) -> None:
         help=f"the recent rate's window (default {track.RECENT_DAYS} days)",
     )  # fmt: skip
     g.add_argument(
+        "--track-stations", default=None, metavar="STA[,STA…]",
+        help="draw arrows and legend lines only for these stations (the "
+        "others: dots only, still references); default all",
+    )  # fmt: skip
+    g.add_argument(
+        "--track-colours", choices=("since", "recent"), default="since",
+        help="since (default): the rate since the onset in the station's "
+        "colour, the recent one black; recent: the recent rate in the "
+        "station's colour, the one since the onset grey dashed",
+    )  # fmt: skip
+    g.add_argument(
         "--track-status", action="store_true",
         help="also write <figure>.status.json: per station the rate over the "
         "last --track-status-days days and since the onset with σ, the newest "
@@ -2287,6 +2298,11 @@ def _draw_tracks(
         except (ValueError, OSError) as exc:
             dropped.append(f"{c.marker}: {exc}")
     _report(dropped)
+    if args.track_stations:  # the others: dots only (BGÓ 2026-11-08)
+        keep = {s.strip().upper() for s in args.track_stations.split(",") if s.strip()}
+        tracks = [dataclasses.replace(tr, shown=tr.marker in keep) for tr in tracks]
+    if args.track_colours == "recent":
+        tracks = [dataclasses.replace(tr, colour_recent=True) for tr in tracks]
     tracks = track.with_colours(tracks)  # SVIE blue, SVIN red, …
     print(f"tracks since {onset:%Y-%m-%d} ({label}), trend {pre[0]:%Y-%m-%d} - "
           f"{pre[1]:%Y-%m-%d}: {len(tracks)} stations", file=sys.stderr)  # fmt: skip

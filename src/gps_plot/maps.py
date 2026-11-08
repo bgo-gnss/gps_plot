@@ -1713,13 +1713,18 @@ def _cached_cpt(text: str) -> str:
 
 
 def _velo_style(
-    color: str, scale: float, confidence: float, head: str, pen_width: str
-) -> dict[str, str]:
-    """GMT ``velo`` kwargs for one vector layer (shared arrow styling)."""
+    color: str, scale: float, confidence: float, head: str, pen_width: str,
+    line_style: str = "",
+    end: str = "+e",
+) -> dict[str, str]:  # fmt: skip
+    """GMT ``velo`` kwargs for one vector layer (shared arrow styling);
+    ``line_style`` a GMT pen style (``4_2:0`` dashed) for the arrow's line,
+    ``end`` its end (``+e`` an arrow head, ``+et`` a T bar)."""
+    dash = f",{line_style}" if line_style else ""
     return {
         "spec": f"e{scale}/{confidence}/0",
         "pen": f"{pen_width},{color}",
-        "vector": f"{head}+p{pen_width},{color}+e+g{color}",
+        "vector": f"{head}+p{pen_width},{color}{dash}{end}+g{color}",
     }
 
 
@@ -1740,6 +1745,8 @@ def _draw_vector_layer(
     pen_width: str,
     ellipse_fill: str | None = None,
     ellipse_pen: str | None = None,
+    line_style: str = "",
+    end: str = "+e",
 ) -> None:
     """One ``fig.velo`` layer; rows with non-finite components are dropped.
 
@@ -1763,7 +1770,9 @@ def _draw_vector_layer(
             corr[finite],
         ]
     )
-    kwargs: dict[str, Any] = _velo_style(color, scale, confidence, head, pen_width)
+    kwargs: dict[str, Any] = _velo_style(
+        color, scale, confidence, head, pen_width, line_style, end
+    )
     if sigma_east is not None or sigma_north is not None:
         # outline the uncertainty ellipse with the arrow pen or its own
         kwargs["line"] = True if ellipse_pen is None else ellipse_pen
@@ -2704,9 +2713,13 @@ def draw_velocity_vectors(
     avoid: Sequence[tuple[float, float, str, str]] = (),
     quiet: Sequence[Any] = (),
     totals: Mapping[str, tuple[float, float]] | None = None,
+    styles: Mapping[str, str] | None = None,
+    ends: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """The arrows, ellipses, station dots and names of
     :func:`velocity_map` (also drawn in a zoom inset); its legend entries,
+    ``styles``: a GMT line style per method (``4_2:0``: dashed arrows);
+    ``ends``: a vector end per method (``+et``: a T bar, not a head);
     ``(label, colour)`` per method in first-appearance order. ``quiet``
     (``lon``/``lat``/``marker``) are stations without an arrow: a dot and
     a name only. ``totals`` (marker → east, north [mm]) draws each
@@ -2749,6 +2762,8 @@ def draw_velocity_vectors(
             pen_width=pen_width,
             ellipse_fill=ellipse_fill,
             ellipse_pen=ellipse_pen,
+            line_style=(styles or {}).get(method or "", ""),
+            end=(ends or {}).get(method or "", "+e"),
         )
         legend_entries.append((method if method else "velocity", layer_color))
 
