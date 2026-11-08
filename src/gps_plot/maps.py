@@ -2037,12 +2037,31 @@ class MapLink:
     lon1: float
     lat1: float
     label: str
+    #: 1 = the nearest; 2, 3 … drawn dashed grey (``--nearest-ranks``)
+    rank: int = 1
 
 
 DEFAULT_LINK_PEN = "0.4p,black"
 DEFAULT_LINK_FONT = "5p,Helvetica,black=~1p,white"  # white halo over the hillshade
 #: the arrow stops this short of its end point, clear of the station symbol
 DEFAULT_LINK_GAP_CM = 0.15
+#: the pen and font of links of rank 2 and up: dashed grey, under rank 1
+LINK_PEN_LOWER_RANK = "0.4p,110/110/110,-"
+LINK_FONT_LOWER_RANK = "5p,Helvetica,90/90/90=~1p,white"
+
+
+def draw_ranked_links(
+    fig: Any, links: Sequence[MapLink], *, projection: str = DEFAULT_PROJECTION
+) -> None:
+    """:func:`draw_links` by rank: the lower ranks (second nearest …) first,
+    dashed grey, then the nearest on top in the default pen."""
+    for rank in sorted({k.rank for k in links}, reverse=True):
+        group = [k for k in links if k.rank == rank]
+        if rank == 1:
+            draw_links(fig, group, projection=projection)
+        else:
+            draw_links(fig, group, projection=projection,
+                       pen=LINK_PEN_LOWER_RANK, font=LINK_FONT_LOWER_RANK)  # fmt: skip
 
 
 def draw_links(
@@ -2078,8 +2097,9 @@ def draw_links(
     rows = [
         [k.lon0, k.lat0, ends[i, 0], ends[i, 1]] for i, k in enumerate(links) if keep[i]
     ]
+    colour = pen.split(",")[1] if "," in pen else "black"
     fig.plot(data=np.array(rows), style="v0.16c+s+e+a35+h0.5", pen=pen,
-             fill=pen.split(",")[-1])  # fmt: skip
+             fill=colour)  # fmt: skip
     for i, k in enumerate(links):
         if not keep[i] or not k.label:
             continue

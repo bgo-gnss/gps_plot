@@ -104,3 +104,22 @@ def test_nearest_from_list(tmp_path):
     assert name == "SVAK-20" and nb.id == "LISK+LISF"
     assert (link.lon1, link.lat1) == (-22.3670, 63.9232)  # LISF, the last mark
     assert link.label == "0.3 km"
+
+
+def test_nearest_from_ranks(tmp_path):
+    """--nearest-ranks 1,2: both links, each with its rank."""
+    import argparse
+
+    from gps_plot import map as gmap
+
+    f = tmp_path / "two.csv"
+    f.write_text("name,lon,lat,rank,nearest\n"
+                 "P,-22.43,63.88,1,SENG\nP,-22.43,63.88,2,THOB\n")  # fmt: skip
+    st = [maps.StationCoordinate("SENG", -22.4337, 63.8822),
+          maps.StationCoordinate("THOB", -22.4550, 63.8600)]  # fmt: skip
+    one = gmap._links_from(argparse.Namespace(nearest_from=str(f)),
+                           argparse.ArgumentParser(), st, maps)  # fmt: skip
+    assert [k.rank for k, _ in one] == [1]
+    both = gmap._links_from(argparse.Namespace(nearest_from=str(f), nearest_ranks="1,2"),
+                            argparse.ArgumentParser(), st, maps)  # fmt: skip
+    assert [(k.rank, nb.id) for k, (_, nb) in both] == [(1, "SENG"), (2, "THOB")]
