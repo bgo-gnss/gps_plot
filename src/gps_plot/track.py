@@ -109,6 +109,15 @@ CBAR_FONT = "7p,Helvetica"
 CBAR_BOX = "+gwhite@15+p0.4p,gray40+c0.1c/0.1c"
 #: the colour bar's box with its label, from the map's top [cm]
 CBAR_BOX_HEIGHT_CM = 1.4
+#: with open (older) dots: the box's extra room at the bottom for their key
+#: (an open circle, "older than N days"), and that key's height below the
+#: map's top [cm]
+CBAR_OPEN_ROOM_CM = 0.4
+CBAR_BOX_OPEN = "+gwhite@15+p0.4p,gray40+c0.1c/0.1c/0.4c/0.1c"
+CBAR_OPEN_Y_CM = 0.95
+#: that key's font: the colour bar's own text is drawn at about half the
+#: map's point size, the key matches it
+CBAR_NOTE_FONT = "2.8p,Helvetica,black"
 #: a zoom inset's longest arrow [cm] and the font of its scales
 ZOOM_ARROW_CM = 1.5
 INSET_FONT = "6p,Helvetica-Bold"
@@ -1345,19 +1354,24 @@ def draw_tracks(
                           MAP_TICK_LENGTH_PRIMARY="2p"):  # fmt: skip
             fig.colorbar(
                 cmap=cpt,
-                frame=[
-                    f"xaf+ldays since {onset:%d.%m.%Y}"
-                    + (
-                        f"; black open: before the last {open_days:g} days"
-                        if open_days > 0
-                        else ""
-                    )
-                ],
+                frame=[f"xaf+ldays since {onset:%d.%m.%Y}"],
                 position=f"JTR+jTR+o0.45c/0.35c+w{CBAR_WIDTH * width:.1f}c/0.2c+h",
-                box=CBAR_BOX,
+                # room under the label for the open dots' key
+                box=CBAR_BOX if open_days <= 0 else CBAR_BOX_OPEN,
             )
+        extra = CBAR_OPEN_ROOM_CM if open_days > 0 else 0.0
+        if open_days > 0:  # as gpsplot polar: an open circle, "older than …"
+            left = width - 0.45 - CBAR_WIDTH * width
+            y = (height - CBAR_OPEN_Y_CM) / height
+            cx, cy = maps.region_point(region, (left + 0.15) / width, y)
+            fig.plot(x=[cx], y=[cy], style="c0.09c", pen=DOT_PEN)
+            tx, ty = maps.region_point(region, (left + 0.28) / width, y)
+            # the date the colours start: before it the dots are open
+            start = onset + dt.timedelta(days=math.ceil(colour_range(tracks)[0]))
+            fig.text(x=tx, y=ty, justify="LM", font=CBAR_NOTE_FONT,
+                     text=f"older than {open_days:g} days (before {start:%d.%m.%Y})")  # fmt: skip
         boxes.append((width - 0.45 - CBAR_WIDTH * width - 0.4, width,
-                      height - CBAR_BOX_HEIGHT_CM, height))  # fmt: skip
+                      height - CBAR_BOX_HEIGHT_CM - extra, height))  # fmt: skip
 
     moved = any(tr.shown and tr.moved and tr.since is not None for tr in tracks)
     # each line's numbers belong to an arrow: no arrows, no lines (BGÓ
