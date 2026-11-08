@@ -80,6 +80,8 @@ RECENT_COLOR = "black"
 #: ``colour_recent`` (BGÓ 2026-11-08): the rate since the onset grey dashed,
 #: the recent rate in the station's colour
 SINCE_GREY = "90/90/90"
+#: the same grey for matplotlib (the series figures)
+SINCE_GREY_MPL = "#5a5a5a"
 SINCE_GREY_STYLE = ""
 #: ... drawn as the displacement since the onset (at the dots' scale), a
 #: solid line ending in a T bar as the SEY map's totals, its 1-σ ellipse at
@@ -1629,6 +1631,34 @@ def trimmed(tr: Track, before_days: int) -> Track:
     )  # fmt: skip
 
 
+def moved_rate(mm: float, sigma: float, days: FloatArray, count: int
+               ) -> tuple[float, float, float]:  # fmt: skip
+    """The rate the displacement since the onset amounts to: ``mm`` (the
+    mean of the newest ``count`` days, σ ``sigma``) over the time to those
+    days → ``(mean day, rate, σ)`` [days, mm/yr]."""
+    day = float(np.mean(days[-max(count, 1) :]))
+    years = max(day, 1.0) / YEAR
+    return day, mm / years, sigma / years
+
+
+def _series_dots(ax: Any, when: list[dt.datetime], y: FloatArray,
+                 days: FloatArray, on_map: Any, lo: float, hi: float, cmap: str,
+                 open_days: float) -> Any:  # fmt: skip
+    """A panel's dots: before the map's days grey; with ``open_days`` the
+    days before ``lo`` open black (as on the map); the rest coloured."""
+    pick = [w for w, m in zip(when, on_map, strict=True) if not m]
+    ax.scatter(pick, y[~on_map], s=12, color="0.6", zorder=2)
+    open_ = on_map & (days < lo) if open_days > 0 else np.zeros(days.size, bool)
+    coloured = on_map & ~open_
+    if open_.any():
+        ax.scatter([w for w, m in zip(when, open_, strict=True) if m], y[open_],
+                   s=18, facecolors="none", edgecolors="black", linewidths=0.6,
+                   zorder=3)  # fmt: skip
+    return ax.scatter([w for w, m in zip(when, coloured, strict=True) if m],
+                      y[coloured], c=days[coloured], cmap=cmap, vmin=lo, vmax=hi,
+                      s=18, edgecolors="black", linewidths=0.3, zorder=3)  # fmt: skip
+
+
 def rate_line(
     tr: Track, comp: int, rate: Rate, first_day: float
 ) -> tuple[FloatArray, FloatArray]:
@@ -1645,25 +1675,33 @@ def rate_line(
 
 def _up_panel(ax: Any, vt: Vertical, onset: dt.date, t0: dt.datetime, lo: float,
               hi: float, before_days: int, recent_days: int, cmap: str,
-              colour: str = SINCE_COLOR) -> None:  # fmt: skip
+              colour: str = SINCE_COLOR, recent_mode: bool = False,
+              open_days: float = 0.0) -> None:  # fmt: skip
     """The Up panel of :func:`series_figure`: the days as there, the rates
     since the onset and of the last days drawn on them (the numbers of the
     map's legend line)."""
     when = [t0 + dt.timedelta(days=float(d)) for d in vt.days]
     on_map = vt.days >= -before_days
     ax.plot(when, vt.up, color="0.6", lw=0.5, ls=":", zorder=1)
-    ax.scatter([w for w, m in zip(when, on_map, strict=True) if not m],
-               vt.up[~on_map], s=12, color="0.6", zorder=2)  # fmt: skip
-    ax.scatter([w for w, m in zip(when, on_map, strict=True) if m], vt.up[on_map],
-               c=vt.days[on_map], cmap=cmap, vmin=lo, vmax=hi, s=18,
-               edgecolors="black", linewidths=0.3, zorder=3)  # fmt: skip
+    _series_dots(ax, when, vt.up, vt.days, on_map, lo, hi, cmap, open_days)
     ax.axvline(t0, color="0.3", lw=0.8, ls="--", zorder=0)
     text = []
-    for rate, color, first, label in (
-        (vt.since, colour, 0.0, f"since {onset:%d.%m}"),
-        (vt.recent, RECENT_COLOR, float(vt.days[-1]) - vt.recent_window,
-         f"last {vt.recent_window:.0f} days"),
-    ):  # fmt: skip
+    if recent_mode and vt.n_after:  # the displacement's rate: grey dashed
+        day, v, sv = moved_rate(vt.end, vt.end_sigma, vt.days, vt.end_count)
+        ax.plot([t0, t0 + dt.timedelta(days=day)], [0.0, vt.end], color=SINCE_GREY_MPL,
+                lw=2, ls="--", zorder=4)  # fmt: skip
+        text.append((f"since {onset:%d.%m}: moved {vt.end:+.0f} ± "
+                     f"{vt.end_sigma:.0f} mm = {v:.0f} ± {sv:.0f} mm/yr",
+                     SINCE_GREY_MPL))  # fmt: skip
+    lines = (
+        ((vt.recent, colour, float(vt.days[-1]) - vt.recent_window,
+          f"last {vt.recent_window:.0f} days"),)
+        if recent_mode
+        else ((vt.since, colour, 0.0, f"since {onset:%d.%m}"),
+              (vt.recent, RECENT_COLOR, float(vt.days[-1]) - vt.recent_window,
+               f"last {vt.recent_window:.0f} days"))
+    )  # fmt: skip
+    for rate, color, first, label in lines:
         if rate is None:
             continue
         k = vt.days >= first
@@ -1673,8 +1711,9 @@ def _up_panel(ax: Any, vt: Vertical, onset: dt.date, t0: dt.datetime, lo: float,
         ax.plot([t0 + dt.timedelta(days=float(e)) for e in ends], mm, color=color,
                 lw=2, zorder=4)  # fmt: skip
         text.append((f"{label}: v = {rate[0]:.0f} ± {rate[1]:.0f} mm/yr", color))
-    text.append((f"vertical {vt.end:+.0f} ± {vt.end_sigma:.0f} mm since "
-                 f"{onset:%d.%m}", "black"))  # fmt: skip
+    if not recent_mode:
+        text.append((f"vertical {vt.end:+.0f} ± {vt.end_sigma:.0f} mm since "
+                     f"{onset:%d.%m}", "black"))  # fmt: skip
     for i, (line, color) in enumerate(text):
         ax.text(0.01, 0.95 - 0.09 * i, line, transform=ax.transAxes, color=color,
                 va="top", fontsize=10)  # fmt: skip
@@ -1710,19 +1749,33 @@ def series_figure(
     when = [t0 + dt.timedelta(days=float(d)) for d in tr.days]
     lo, hi = days_range or (-float(before_days), float(max(tr.days.max(), 1.0)))
     on_map = tr.days >= -before_days
-    rates = ((tr.since, tr.colour, 0.0, f"since {onset:%d.%m}"),
-             (tr.recent, RECENT_COLOR, float(tr.days[-1]) - tr.recent_window,
-              f"last {tr.recent_window:.0f} days"))  # fmt: skip
+    recent_mode = tr.colour_recent
+    open_days = tr.colour_days
+    # recent mode (BGÓ 2026-11-08): the displacement's rate a grey dashed
+    # line from the onset to the newest days, the recent rate in the
+    # station's colour; else the rate since the onset and the recent black
+    rates = (
+        ((tr.recent, tr.colour, float(tr.days[-1]) - tr.recent_window,
+          f"last {tr.recent_window:.0f} days"),)
+        if recent_mode
+        else ((tr.since, tr.colour, 0.0, f"since {onset:%d.%m}"),
+              (tr.recent, RECENT_COLOR, float(tr.days[-1]) - tr.recent_window,
+               f"last {tr.recent_window:.0f} days"))
+    )  # fmt: skip
     for comp, (ax, name) in enumerate(zip(axes[:2], ("North", "East"), strict=True)):
         y = (tr.north, tr.east)[comp]
         ax.plot(when, y, color="0.6", lw=0.5, ls=":", zorder=1)
-        ax.scatter([w for w, m in zip(when, on_map, strict=True) if not m],
-                   y[~on_map], s=12, color="0.6", zorder=2)  # fmt: skip
-        dots = ax.scatter([w for w, m in zip(when, on_map, strict=True) if m],
-                          y[on_map], c=tr.days[on_map], cmap=cmap, vmin=lo, vmax=hi,
-                          s=18, edgecolors="black", linewidths=0.3, zorder=3)  # fmt: skip
+        dots = _series_dots(ax, when, y, tr.days, on_map, lo, hi, cmap, open_days)
         ax.axvline(t0, color="0.3", lw=0.8, ls="--", zorder=0)
         text = []
+        if recent_mode and tr.n_after:
+            end = tr.end[comp]
+            sigma = tr.end_sigmas[comp]
+            day, v, sv = moved_rate(end, sigma, tr.days, tr.end_count)
+            ax.plot([t0, t0 + dt.timedelta(days=day)], [0.0, end], color=SINCE_GREY_MPL,
+                    lw=2, ls="--", zorder=4)  # fmt: skip
+            text.append((f"since {onset:%d.%m}: moved {end:+.0f} ± {sigma:.0f} mm "
+                         f"= {v:.0f} ± {sv:.0f} mm/yr", SINCE_GREY_MPL))  # fmt: skip
         for rate, color, first, label in rates:
             if rate is None:
                 continue
@@ -1746,9 +1799,20 @@ def series_figure(
         ax.grid(True, color="0.85", lw=0.5)
     if vt is not None:
         _up_panel(axes[2], vt, onset, t0, lo, hi, before_days, recent_days, cmap,
-                  tr.colour)  # fmt: skip
-    fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
-                 shrink=0.6, aspect=30)  # fmt: skip
+                  tr.colour, recent_mode, open_days)  # fmt: skip
+    if open_days > 0:  # as the map: the last N days, open dots before them
+        import matplotlib as mpl
+
+        newest = onset + dt.timedelta(days=round(hi))
+        fig.colorbar(
+            mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(lo - hi, 0.0), cmap=cmap),
+            ax=axes, shrink=0.6, aspect=30,
+            label=f"last {open_days:g} days (days before {newest:%d.%m.%Y}); "
+            f"open: since {onset:%d.%m.%Y} until {open_days:g} days ago",
+        )  # fmt: skip
+    else:
+        fig.colorbar(dots, ax=axes, label=f"days since {onset:%d.%m.%Y}",
+                     shrink=0.6, aspect=30)  # fmt: skip
     rel = f" relative to {reference}" if reference else ""
     removed = ("seasonal before the onset removed, its trend kept" if keep_trend
                else "trend and seasonal before the onset removed")  # fmt: skip
