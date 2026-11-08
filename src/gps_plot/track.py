@@ -1402,7 +1402,7 @@ def draw_tracks(
         entries = [(recent_key(recent_days, tracks, onset), RECENT_COLOR), *entries]
     t_key = arrow_note = None
     if arrows and recent_mode:  # icons, not a line of text (BGÓ 2026-11-08)
-        t_key = f"moved since {onset:%d.%m.%Y}"
+        t_key = f"movement since {onset:%d.%m.%Y}"
         arrow_note = f"last {recent_days} days"
         if any(not tr.recent_shown or (tr.vertical is not None and up
                                        and not tr.up_recent_shown)

@@ -78,7 +78,7 @@ dots only, still references); `--track-colours recent` draws the recent rate
 as the station-coloured arrow, only above 2 σ (its legend line then too, all
 rate lines first; "no arrow: no motion above the noise" otherwise), and the
 displacement since the onset as a solid grey T line with its ellipse at the
-dots' scale (a T icon "10 mm moved since …", the numbers in grey);
+dots' scale (a T icon "10 mm movement since …", the numbers in grey);
 `--track-colour-days 14` colours the dots of the last 14 days only (the
 colour bar −14 … 0 days before the newest), older ones open black ("since
 <onset> until 14 days ago"), as `gpsplot polar`.
