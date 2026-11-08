@@ -219,3 +219,18 @@ def test_iceland_outline_reads_gmt_segments(tmp_path: pathlib.Path) -> None:
     segs = polar.iceland_outline(str(tmp_path))
     assert [s.shape for s in segs] == [(2, 2), (3, 2)]
     assert polar.iceland_outline(str(tmp_path / "missing")) == []
+
+
+@pytest.mark.parametrize(("days", "vmin"), [(10.0, 19.0), (0.0, 0.0), (100.0, 0.0)])
+def test_colours_only_the_newest_days(days: float, vmin: float) -> None:
+    """Points older than the colour window are open: no fill (BGÓ 2026-11-08)."""
+    from matplotlib.collections import PathCollection
+
+    fig = polar.polar_figure([_pair("SVIE-SKFC", 333.0)],
+                             onset=dt.datetime(2025, 7, 30), panels=("hodograph",),
+                             colour_days=days)  # fmt: skip
+    dots = [c for ax in fig.axes for c in ax.collections
+            if isinstance(c, PathCollection)]  # fmt: skip
+    assert dots and all(c.norm.vmin == pytest.approx(vmin) for c in dots)
+    rgba = dots[0].to_rgba(dots[0].get_array())
+    assert (rgba[:, 3] == 0).sum() == round(vmin)  # days 0 .. vmin-1 open

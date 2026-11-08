@@ -95,6 +95,10 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
   scaled up (title: m per mm; a dot scale bar) — the same convention as a
   velocity arrow on a map. BGÓ 2026-10-31, from the 2 m ArcticDEM dots
   experiment; the slope colour field and fall lines went.
+  Dressed as the GMT maps (BGÓ 2026-11-08): tick labels inside the frame
+  (`200 m E`, `400 m N`), a + at 0, 0 (the rovers' centre) with its
+  coordinates top right, and an Iceland locator (the GMT overview coast,
+  `vector/is50v_coast_wgs84_overview.gmt`) with the map in red.
 - **profile** (`profile.py`; default since BGÓ 2026-11-01, in place of the
   section) — one sub-panel per pair: the DEM ground along its motion,
   ±250 m through the rover (its own DEM window, wider than the map's), true
@@ -119,6 +123,9 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
 
 The colour bar (days since the onset) sits inside the map, else inside the
 profile, as on the other maps; only a figure with neither has it on the side.
+The colours span only the newest `--colour-days` (default 28, BGÓ
+2026-11-08); older points, in every panel, are open: a black outline
+without fill. `--colour-days 0` colours them all.
 Title: `A, B -- C movement since <onset>` (BGÓ 2026-11-02). No footnote
 under or in the figure; `gpsplot polar` prints it (series, onset, motion
 directions, DEM) to the run log instead.

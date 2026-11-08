@@ -55,6 +55,9 @@ SECTOR_FRACTION = 0.15
 
 #: the epochs' colours, days since the onset (as the track maps)
 CMAP = "turbo"
+#: the colours span only the newest this many days (BGÓ 2026-11-08): older
+#: points are open, a black outline without fill (``--colour-days``)
+COLOUR_DAYS = 28.0
 #: the map: ground steeper than this [°] tinted in this colour (BGÓ
 #: 2026-10-31, the 2 m ArcticDEM dots map), lit from the north-west
 STEEP_DEG = 30.0
@@ -135,6 +138,14 @@ def build_parser(
         "--map-half", type=float, default=MAP_HALF_M, metavar="M",
         help=f"half-width of the map panel around the rover [m] (default {MAP_HALF_M:g})",
     )  # fmt: skip
+    parser.add_argument(
+        "--colour-days",
+        type=float,
+        default=COLOUR_DAYS,
+        metavar="DAYS",
+        help=f"colour only the newest DAYS (default {COLOUR_DAYS:g}); older "
+        "points are a black outline without fill; 0 = colour them all",
+    )
     parser.add_argument(
         "--dem-res", choices=("auto", "2m", "5m"), default="auto",
         help="the DEM: auto (default) = a 2 m ArcticDEM area grid where one "
@@ -770,6 +781,7 @@ def polar_figure(
     profile_half: float | None = None,
     centre: tuple[float, float] | None = None,
     outline: Sequence[Any] = (),
+    colour_days: float = COLOUR_DAYS,
 ) -> Any:
     """The figure of one pair or several (``--together``), one panel per
     ``panels`` entry (:data:`PANELS`); with a map, it is large on the left
@@ -781,6 +793,8 @@ def polar_figure(
     wide enough for the profiles (``profile_half`` [m] either side of each
     rover; default :data:`gps_plot.profile.PROFILE_HALF_M`). ``centre``:
     the map's 0, 0 (lon, lat); ``outline``: Iceland for its locator.
+    ``colour_days``: the colours span the newest this many days, older
+    points are open (0: all coloured).
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
@@ -827,8 +841,10 @@ def polar_figure(
     vmax = max(
         (float(np.max(pp.since)) for pp in pairs if np.size(pp.since)), default=1.0
     )
-    cmap = mpl.colormaps[CMAP]
-    norm = mpl.colors.Normalize(vmin=0.0, vmax=max(vmax, 1e-9))
+    # below the colour window: no fill, so the scatters' black edge is all
+    vmin = max(0.0, vmax - colour_days) if colour_days > 0 else 0.0
+    cmap = mpl.colormaps[CMAP].with_extremes(under="none")
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=max(vmax, vmin + 1e-9))
     style = {"cmap": cmap, "norm": norm}
     if stacked:
         widths = [_square_map_ratio(size, fig.subplotpars), 1.0]
@@ -861,6 +877,8 @@ def polar_figure(
 
     column = [a for a in fig.axes if a is not holder]  # the panels beside the map
     label = f"days since {onset:%Y-%m-%d %H:%M}"
+    if vmin > 0:
+        label += ", older: open"
     if holder is not None:
         _inner_colorbar(fig, holder, cm.ScalarMappable(norm=norm, cmap=cmap), label,
                         "lower center" if "map" in panels else "upper left")  # fmt: skip
@@ -1078,7 +1096,8 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                            interactive=not args.save, panels=panels, dem=dem,
                            half=half, path_half=args.map_half,
                            profile_dem=profile_dem, centre=centre,
-                           outline=outline)  # fmt: skip
+                           outline=outline,
+                           colour_days=args.colour_days)  # fmt: skip
         if not args.save:
             import matplotlib.pyplot as plt
 
