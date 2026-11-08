@@ -892,6 +892,7 @@ def legend_entries(
     for a station that moved only up or down."""
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
+    greys: list[tuple[str, str]] = []  # recent mode: the displacements, last
     for tr in tracks:
         if not tr.shown:  # --track-stations: its dots only
             continue
@@ -904,20 +905,25 @@ def legend_entries(
         if tr.since is not None and tr.colour_recent:
             # recent mode: the recent rate (the arrow, its colour), then the
             # displacement since the onset (the T line, grey), Up beside
-            if tr.recent is not None:
+            # (BGÓ 2026-11-08) the rate only when its arrow is drawn (above
+            # RECENT_SIGMA), all the rates first, the grey lines after them
+            parts = []
+            if tr.recent_shown and tr.recent is not None:
                 r = tr.recent
-                line = (f"{tr.marker} last {tr.recent_window:.0f} days {r.speed:.0f} "
-                        f"{pm} {r.sigma_speed:.0f} mm/yr toward {r.azimuth:.0f}{deg}")  # fmt: skip
-                if vt is not None and vt.recent is not None:
-                    line += f", up {vt.recent[0]:+.0f} {pm} {vt.recent[1]:.0f} mm/yr"
-                out.append((line, tr.colour))
+                parts.append(f"{r.speed:.0f} {pm} {r.sigma_speed:.0f} mm/yr "
+                             f"toward {r.azimuth:.0f}{deg}")  # fmt: skip
+            if vt is not None and vt.recent is not None and tr.up_recent_shown:
+                parts.append(f"up {vt.recent[0]:+.0f} {pm} {vt.recent[1]:.0f} mm/yr")
+            if parts:
+                out.append((f"{tr.marker} last {tr.recent_window:.0f} days "
+                            + ", ".join(parts), tr.colour))  # fmt: skip
             n, e = tr.end
             az = math.degrees(math.atan2(e, n)) % 360
             line = (f"{tr.marker} moved {math.hypot(n, e):.0f} {pm} "
                     f"{tr.end_sigma:.0f} mm toward {az:.0f}{deg}")  # fmt: skip
             if vt is not None and vt.n_after:
                 line += f", up {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm"
-            out.append((line, SINCE_GREY))
+            greys.append((line, SINCE_GREY))
             continue
         elif tr.since is not None:
             s = tr.since
@@ -943,7 +949,7 @@ def legend_entries(
                         tr.colour))  # fmt: skip
         if vt is not None and vt.n_after:
             out.append((up_text(tr.marker, vt, onset, recent), tr.colour))
-    return out
+    return [*out, *greys]
 
 
 def newest_day(tracks: Sequence[Track]) -> dt.date | None:
