@@ -964,8 +964,10 @@ def legend_entries(
 
 
 def newest_day(tracks: Sequence[Track]) -> dt.date | None:
-    """The day of the newest position of any of ``tracks``."""
-    ends = [float(tr.t[-1]) for tr in tracks if tr.t.size]
+    """The day of the newest position of the shown ``tracks``
+    (``--track-stations``: the watched ones, BGÓ 2026-11-08), else of any."""
+    pool = [tr for tr in tracks if tr.shown] or list(tracks)
+    ends = [float(tr.t[-1]) for tr in pool if tr.t.size]
     if not ends:
         return None
     return dt.date.fromordinal(int(day_key(np.array([max(ends)]))[0]))
@@ -1198,8 +1200,12 @@ def draw_track_marks(
         if old.any():  # older than the colours: open black (as the polar plot)
             fig.plot(x=x[order][old], y=y[order][old], style=DOT_STYLE, pen=DOT_PEN)
         if (~old).any():
-            fig.plot(x=x[order][~old], y=y[order][~old],
-                     fill=z[order][~old] - colour_top, cmap=cpt or True,
+            # a day past the top (a reference newer than the watched
+            # stations) takes the top colour
+            fill = z[order][~old] - colour_top
+            if colour_top:
+                fill = np.minimum(fill, 0.0)
+            fig.plot(x=x[order][~old], y=y[order][~old], fill=fill, cmap=cpt or True,
                      style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
     moved = [tr for tr in tracks if tr.shown and tr.moved and tr.since is not None]
     tips_x, tips_y = [], []
@@ -1298,7 +1304,13 @@ def colour_range(tracks: Sequence[Track]) -> tuple[float, float]:
     lo = float(min(z.min(), -1.0)) if z.size else -1.0
     days = max((tr.colour_days for tr in tracks), default=0.0)
     if days > 0 and z.size:  # the newest days only (older: open black)
-        lo = max(lo, float(z.max()) - days)
+        # counted back from the shown stations' newest day, as the bar's
+        # label (newest_day): a reference's later day takes the top colour
+        pool = [tr for tr in tracks if tr.shown] or list(tracks)
+        shown = np.concatenate([tr.days for tr in pool])
+        top = float(shown.max()) if shown.size else float(z.max())
+        lo = max(lo, top - days)
+        return lo, max(top, lo + 1.0)
     return lo, max(float(z.max()) if z.size else 0.0, lo + 1.0)
 
 
