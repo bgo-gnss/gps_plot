@@ -1164,9 +1164,11 @@ def draw_track_marks(
     up: bool = False,
     deg_per_cm: float | None = None,
     colour_lo: float | None = None,
+    colour_top: float = 0.0,
 ) -> tuple[FloatArray, FloatArray]:
     """The dotted paths, the dots (coloured by ``cpt``, else the current
-    CPT; with ``colour_lo`` [days] the older ones open black) and the
+    CPT; with ``colour_lo`` [days] the older ones open black; the colour
+    of a dot is its day less ``colour_top``: days before the newest) and the
     arrows of ``tracks``; on the map or in a zoom inset at its own scale.
     A station with too few days for a rate gets a displacement arrow to
     its newest position, at the dots' scale (``cm_per_mm``), with a dashed
@@ -1194,8 +1196,9 @@ def draw_track_marks(
         if old.any():  # older than the colours: open black (as the polar plot)
             fig.plot(x=x[order][old], y=y[order][old], style=DOT_STYLE, pen=DOT_PEN)
         if (~old).any():
-            fig.plot(x=x[order][~old], y=y[order][~old], fill=z[order][~old],
-                     cmap=cpt or True, style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
+            fig.plot(x=x[order][~old], y=y[order][~old],
+                     fill=z[order][~old] - colour_top, cmap=cpt or True,
+                     style=DOT_STYLE, pen=DOT_PEN)  # fmt: skip
     moved = [tr for tr in tracks if tr.shown and tr.moved and tr.since is not None]
     tips_x, tips_y = [], []
     # the rates before the onset (trend kept), grey, under the others
@@ -1336,16 +1339,20 @@ def draw_tracks(
 
     boxes: list[tuple[float, float, float, float]] = []
     cpt = None
+    open_days = max((tr.colour_days for tr in tracks), default=0.0)
+    lo, top = colour_range(tracks) if tracks else (0.0, 0.0)
+    # with open dots: the colours over the last days, as days before the
+    # newest (-14 … 0, BGÓ 2026-11-08); else days since the onset
+    shift = top if open_days > 0 else 0.0
     if tracks:
         cpt = _cpt_file()
-        pygmt.makecpt(cmap=cmap, series=list(colour_range(tracks)), output=cpt)
-    open_days = max((tr.colour_days for tr in tracks), default=0.0)
+        pygmt.makecpt(cmap=cmap, series=[lo - shift, top - shift], output=cpt)
     lons, lats = draw_track_marks(
         fig, tracks, m_per_mm=m_per_mm, arrow_scale=scale, arrows=arrows,
         path_days=path_days, region=region, width_cm=width, cpt=cpt,
         cm_per_mm=m_per_mm / (km_per_cm(region, width) * 1000.0),
         up=up, deg_per_cm=(region[1] - region[0]) / width,
-        colour_lo=colour_range(tracks)[0] if open_days > 0 and tracks else None,
+        colour_lo=lo if open_days > 0 and tracks else None, colour_top=shift,
     )  # fmt: skip
     if tracks:
         # small, inside the upper right, on a white box (BGÓ 2026-10-28)
@@ -1354,7 +1361,12 @@ def draw_tracks(
                           MAP_TICK_LENGTH_PRIMARY="2p"):  # fmt: skip
             fig.colorbar(
                 cmap=cpt,
-                frame=[f"xaf+ldays since {onset:%d.%m.%Y}"],
+                frame=[
+                    f"xaf+llast {open_days:g} days (days before "
+                    f"{newest_day(tracks):%d.%m.%Y})"
+                    if open_days > 0
+                    else f"xaf+ldays since {onset:%d.%m.%Y}"
+                ],
                 position=f"JTR+jTR+o0.45c/0.35c+w{CBAR_WIDTH * width:.1f}c/0.2c+h",
                 # room under the label for the open dots' key
                 box=CBAR_BOX if open_days <= 0 else CBAR_BOX_OPEN,
@@ -1366,10 +1378,8 @@ def draw_tracks(
             cx, cy = maps.region_point(region, (left + 0.15) / width, y)
             fig.plot(x=[cx], y=[cy], style="c0.09c", pen=DOT_PEN)
             tx, ty = maps.region_point(region, (left + 0.28) / width, y)
-            # the date the colours start: before it the dots are open
-            start = onset + dt.timedelta(days=math.ceil(colour_range(tracks)[0]))
             fig.text(x=tx, y=ty, justify="LM", font=CBAR_NOTE_FONT,
-                     text=f"older than {open_days:g} days (before {start:%d.%m.%Y})")  # fmt: skip
+                     text=f"since {onset:%d.%m.%Y} until {open_days:g} days ago")  # fmt: skip
         boxes.append((width - 0.45 - CBAR_WIDTH * width - 0.4, width,
                       height - CBAR_BOX_HEIGHT_CM - extra, height))  # fmt: skip
 
@@ -1473,6 +1483,7 @@ def draw_zoom_tracks(
     cpt: str | None = None,
     up: bool = True,
     colour_lo: float | None = None,
+    colour_top: float = 0.0,
 ) -> None:
     """The tracks inside a zoom inset's ``box`` (``width_cm`` wide), at
     the inset's own dot and arrow scales, with those scales drawn; the
@@ -1487,7 +1498,7 @@ def draw_zoom_tracks(
                      arrows=arrows, path_days=path_days, cpt=cpt,
                      cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0),
                      up=up, deg_per_cm=(box[1] - box[0]) / width_cm,
-                     colour_lo=colour_lo)  # fmt: skip
+                     colour_lo=colour_lo, colour_top=colour_top)  # fmt: skip
     moved = any(tr.shown and tr.moved and tr.since is not None for tr in inside)
     draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
                       arrow_ref=ref if arrows and moved else None,

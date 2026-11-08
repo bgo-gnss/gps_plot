@@ -2345,7 +2345,9 @@ def _draw_tracks(
                                path_days=args.track_path_days,
                                cpt=drawn.cpt, up=args.track_up,
                                colour_lo=span[0] if args.track_colour_days > 0
-                               else None)  # fmt: skip
+                               else None,
+                               colour_top=span[1] if args.track_colour_days > 0
+                               else 0.0)  # fmt: skip
 
     status = None
     if status_days is not None:
