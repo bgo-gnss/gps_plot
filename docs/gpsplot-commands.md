@@ -72,6 +72,16 @@ as the legend, and the newest day's movement (newest − previous day, σ = √2
 the pre-onset daily scatter, significant > 3 σ); it goes into the manifest
 with the map. aflogun's *Vöktun* tab reads it (area `monitoring:` in
 station_areas.yaml).
+A monitoring look (BGÓ 2026-11-08, Svínafellsheiði): `--track-stations
+SVIE,SVIN` draws arrows and legend lines for those stations only (the others
+dots only, still references); `--track-colours recent` draws the recent rate
+as the station-coloured arrow, only above 2 σ (its legend line then too, all
+rate lines first; "no arrow: no motion above the noise" otherwise), and the
+displacement since the onset as a solid grey T line with its ellipse at the
+dots' scale (a T icon "10 mm moved since …", the numbers in grey);
+`--track-colour-days 14` colours the dots of the last 14 days only (the
+colour bar −14 … 0 days before the newest), older ones open black ("since
+<onset> until 14 days ago"), as `gpsplot polar`.
 Area layers for any map: `--layers volcanic` (FutureVolc swarms, central
 volcanoes named, caldera rims) and `rural` (IS 50V main + local roads,
 building points, farm names; `vector/build_09_is50v.sh`); overlapping

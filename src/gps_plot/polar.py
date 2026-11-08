@@ -818,12 +818,10 @@ def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
                  backdrop=True)  # fmt: skip
 
 
-def older_than(days: float) -> str:
-    """``older than 4 weeks`` (whole weeks), else ``older than 10 days``."""
-    if days % 7 == 0:
-        weeks = int(days // 7)
-        return f"older than {weeks} week{'s' if weeks > 1 else ''}"
-    return f"older than {days:g} days"
+def older_note(onset: dt.datetime, days: float) -> str:
+    """The open points' key: ``since 23.09.2026 until 28 days ago`` (as the
+    track maps', BGÓ 2026-11-08)."""
+    return f"since {onset:%d.%m.%Y} until {days:g} days ago"
 
 
 def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
@@ -854,8 +852,8 @@ def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
     if older:
         box.plot([0.08], [0.15], marker="o", ms=5, mfc="none", mec="k", mew=0.8,
                  transform=box.transAxes)  # fmt: skip
-        box.text(0.11, 0.15, f"black outline, no fill: {older}", fontsize="x-small",
-                 va="center", transform=box.transAxes)  # fmt: skip
+        box.text(0.11, 0.15, older, fontsize="x-small", va="center",
+                 transform=box.transAxes)  # fmt: skip
     bar.ax.tick_params(labelsize="xx-small", length=2, pad=1)
     bar.ax.xaxis.set_label_position("top")
     bar.set_label(label, fontsize="x-small", labelpad=2)
@@ -975,16 +973,21 @@ def polar_figure(
     column = [a for a in fig.axes
               if a is not holder and a.get_axes_locator() is None]  # fmt: skip
     label = f"days since {onset:%Y-%m-%d %H:%M}"
-    older = older_than(colour_days) if vmin > 0 else None
+    older = older_note(onset, colour_days) if vmin > 0 else None
+    bar_norm = norm
+    if older:  # the bar as the last days: days before the newest (-28 … 0)
+        newest = onset + dt.timedelta(days=vmax)
+        label = f"last {colour_days:g} days (days before {newest:%d.%m.%Y})"
+        bar_norm = mpl.colors.Normalize(vmin=vmin - vmax, vmax=0.0)
     if holder is not None:
-        _inner_colorbar(fig, holder, cm.ScalarMappable(norm=norm, cmap=cmap), label,
+        _inner_colorbar(fig, holder, cm.ScalarMappable(norm=bar_norm, cmap=cmap), label,
                         "lower center" if "map" in panels else "upper left",
                         older)  # fmt: skip
     else:
         cax = fig.add_axes((right + 0.015, 0.14, 0.012, 0.62))
-        bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax,
+        bar = fig.colorbar(cm.ScalarMappable(norm=bar_norm, cmap=cmap), cax=cax,
                            extend="min" if older else "neither")  # fmt: skip
-        bar.set_label(label + (f"; black outline, no fill: {older}" if older else ""))
+        bar.set_label(label + (f"; open: {older}" if older else ""))
 
     rovers = ", ".join(pp.rover for pp in pairs)
     refs = sorted({pp.name[5:] for pp in pairs})
