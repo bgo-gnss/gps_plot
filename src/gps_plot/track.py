@@ -109,6 +109,8 @@ CBAR_FONT = "7p,Helvetica"
 CBAR_BOX = "+gwhite@15+p0.4p,gray40+c0.1c/0.1c"
 #: the colour bar's box with its label, from the map's top [cm]
 CBAR_BOX_HEIGHT_CM = 1.4
+#: the monitoring look's newest day, top centre: its top below the map's [cm]
+NEWEST_TOP_CM = 0.35
 #: with open (older) dots: the box's extra room at the bottom for their key
 #: (an open circle, "older than N days"), and that key's height below the
 #: map's top [cm]
@@ -1415,10 +1417,21 @@ def draw_tracks(
         fig, entries, region=region,
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
-        floor_cm=legend_floor_cm, newest=newest_day(tracks), t_key=t_key,
-        arrow_note=arrow_note,
+        floor_cm=legend_floor_cm, t_key=t_key, arrow_note=arrow_note,
+        newest=None if recent_mode else newest_day(tracks),
     )  # fmt: skip
     boxes.append((0.0, right, 0.0, top))
+    newest = newest_day(tracks)
+    if recent_mode and newest is not None:
+        # the monitoring look: the newest day top centre, between the logo
+        # and the colour bar, on a box as the colour bar's (BGÓ 2026-11-08)
+        text, colour = newest_text(newest)
+        fig.text(position="TC", justify="TC", offset=f"0c/-{NEWEST_TOP_CM}c",
+                 text=text, font=f"{LEGEND_FONT},{colour}", fill="white@15",
+                 pen="0.4p,gray40", clearance="0.15c/0.1c")  # fmt: skip
+        half = maps.text_width_cm(text, LEGEND_FONT) / 2 + 0.3
+        boxes.append((width / 2 - half, width / 2 + half,
+                      height - NEWEST_TOP_CM - 0.8, height))  # fmt: skip
     return Drawn(top, tuple(boxes), lons, lats, cpt)
 
 
