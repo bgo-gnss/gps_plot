@@ -58,6 +58,9 @@ CMAP = "turbo"
 #: the colours span only the newest this many days (BGÓ 2026-11-08): older
 #: points are open, a black outline without fill (``--colour-days``)
 COLOUR_DAYS = 28.0
+#: the gap between the map and the labels of the panels beside it [in]
+#: (BGÓ 2026-11-08: narrower)
+STACKED_GAP_IN = 0.08
 #: the map: ground steeper than this [°] tinted in this colour (BGÓ
 #: 2026-10-31, the 2 m ArcticDEM dots map), lit from the north-west
 STEEP_DEG = 30.0
@@ -747,6 +750,35 @@ def _square_map_ratio(size: tuple[float, float], pars: Any) -> float:
     return float(np.clip(high / max(total - high, 1e-9), 1.2, 2.2))
 
 
+def _close_up(fig: Any, mapax: Any, column: list[Any]) -> None:
+    """The panels beside the map moved left, their labels
+    :data:`STACKED_GAP_IN` right of it (their aspect is fixed: a wider cell
+    only centres them), and the figure trimmed by the width freed on the
+    right (BGÓ 2026-11-08)."""
+    renderer = fig._get_renderer()
+    to_fig = fig.transFigure.inverted()
+    width, height = fig.get_size_inches()
+    box = mapax.get_position()
+    tight = [a.get_tightbbox(renderer).transformed(to_fig) for a in column]
+    shift = min(t.x0 for t in tight) - (box.x1 + STACKED_GAP_IN / width)
+    if shift <= 0:
+        return
+    for a in column:
+        f = a.get_position(original=True)
+        a.set_position((f.x0 - shift, f.y0, f.width, f.height))
+        a.apply_aspect()
+    tight = [a.get_tightbbox(renderer).transformed(to_fig) for a in column]
+    spare = 1.0 - max(t.x1 for t in tight) - STACKED_GAP_IN / width
+    if spare <= 0:
+        return
+    scale = 1.0 / (1.0 - spare)  # the same inches in the narrower figure
+    fig.set_size_inches(width / scale, height)
+    for a in [mapax, *column]:
+        f = a.get_position(original=True)
+        a.set_position((f.x0 * scale, f.y0, f.width * scale, f.height))
+        a.apply_aspect()
+
+
 def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
                   status: str | None, status_color: str) -> None:  # fmt: skip
     """A stacked figure framed on its map (BGÓ 2026-11-03): no map title, the
@@ -772,6 +804,8 @@ def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
             a.set_position((f.x0, box.y0 + (f.y0 - lo) * scale,
                             f.width, f.height * scale))  # fmt: skip
             a.apply_aspect()
+    _close_up(fig, mapax, column)
+    box = mapax.get_position()
     h = fig.get_size_inches()[1]
     middle = 0.5  # the title on the whole figure (BGÓ 2026-11-03)
     if status is not None:
@@ -784,24 +818,44 @@ def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
                  backdrop=True)  # fmt: skip
 
 
-def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str) -> None:
+def older_than(days: float) -> str:
+    """``older than 4 weeks`` (whole weeks), else ``older than 10 days``."""
+    if days % 7 == 0:
+        weeks = int(days // 7)
+        return f"older than {weeks} week{'s' if weeks > 1 else ''}"
+    return f"older than {days:g} days"
+
+
+def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
+                    older: str | None = None) -> None:  # fmt: skip
     """A horizontal colour bar inside ``ax`` at ``loc``, on a white box of
     a fixed size in inches so the label, the bar and its ticks always sit
-    inside it; ``borderpad`` as a legend's, so it lines up with one."""
+    inside it; ``borderpad`` as a legend's, so it lines up with one.
+    ``older``: the points below the colours are open (a black outline):
+    an open triangle at the bar's start and a line under it say so."""
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-    box = inset_axes(ax, width="36%", height=0.62, loc=loc, borderpad=0.5)
+    high = 0.62 if older is None else 0.8
+    box = inset_axes(ax, width="36%", height=high, loc=loc, borderpad=0.5)
     box.set_facecolor((1.0, 1.0, 1.0, 0.85))
     box.set_zorder(20)
     box.set_xticks([])
     box.set_yticks([])
     for side in box.spines.values():
         side.set_edgecolor("0.5")
+    lift = 0.02 if older is None else 0.14  # room for the note under the ticks
     cax = inset_axes(box, width="90%", height=0.13, loc="center",
-                     bbox_to_anchor=(0.0, 0.02, 1.0, 1.0),
+                     bbox_to_anchor=(0.0, lift, 1.0, 1.0),
                      bbox_transform=box.transAxes, borderpad=0)  # fmt: skip
     cax.set_zorder(21)  # over its box
-    bar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+    bar = fig.colorbar(mappable, cax=cax, orientation="horizontal",
+                       extend="min" if older else "neither",
+                       extendfrac=0.04)  # fmt: skip
+    if older:
+        box.plot([0.08], [0.15], marker="o", ms=5, mfc="none", mec="k", mew=0.8,
+                 transform=box.transAxes)  # fmt: skip
+        box.text(0.11, 0.15, f"black outline, no fill: {older}", fontsize="x-small",
+                 va="center", transform=box.transAxes)  # fmt: skip
     bar.ax.tick_params(labelsize="xx-small", length=2, pad=1)
     bar.ax.xaxis.set_label_position("top")
     bar.set_label(label, fontsize="x-small", labelpad=2)
@@ -878,7 +932,8 @@ def polar_figure(
                             top=1.0 - PROFILE_ALONE_TOP / size[1])  # fmt: skip
     else:
         fig.subplots_adjust(left=0.05, right=right, bottom=0.07, top=top,
-                            wspace=0.1 if inside else 0.18, hspace=0.3)  # fmt: skip
+                            wspace=0.1 if inside else 0.18,
+                            hspace=0.3)  # fmt: skip
     vmax = max(
         (float(np.max(pp.since)) for pp in pairs if np.size(pp.since)), default=1.0
     )
@@ -916,17 +971,20 @@ def polar_figure(
         else:
             raise ValueError(f"unknown panel {panel!r}: one of {', '.join(PANELS)}")
 
-    column = [a for a in fig.axes if a is not holder]  # the panels beside the map
+    # the panels beside the map (not its insets: the locator)
+    column = [a for a in fig.axes
+              if a is not holder and a.get_axes_locator() is None]  # fmt: skip
     label = f"days since {onset:%Y-%m-%d %H:%M}"
-    if vmin > 0:
-        label += ", older: open"
+    older = older_than(colour_days) if vmin > 0 else None
     if holder is not None:
         _inner_colorbar(fig, holder, cm.ScalarMappable(norm=norm, cmap=cmap), label,
-                        "lower center" if "map" in panels else "upper left")  # fmt: skip
+                        "lower center" if "map" in panels else "upper left",
+                        older)  # fmt: skip
     else:
         cax = fig.add_axes((right + 0.015, 0.14, 0.012, 0.62))
-        bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
-        bar.set_label(label)
+        bar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax,
+                           extend="min" if older else "neither")  # fmt: skip
+        bar.set_label(label + (f"; black outline, no fill: {older}" if older else ""))
 
     rovers = ", ".join(pp.rover for pp in pairs)
     refs = sorted({pp.name[5:] for pp in pairs})

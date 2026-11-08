@@ -126,7 +126,10 @@ The colour bar (days since the onset) sits inside the map, else inside the
 profile, as on the other maps; only a figure with neither has it on the side.
 The colours span only the newest `--colour-days` (default 28, BGÓ
 2026-11-08); older points, in every panel, are open: a black outline
-without fill. `--colour-days 0` colours them all.
+without fill. `--colour-days 0` colours them all. The colour bar then starts
+with an open triangle and says so under its ticks ("black outline, no fill:
+older than 4 weeks"). The panels beside the map sit 0.08 in from it (their
+labels), the figure trimmed by the width that frees.
 Title: `A, B -- C movement since <onset>` (BGÓ 2026-11-02). No footnote
 under or in the figure; `gpsplot polar` prints it (series, onset, motion
 directions, DEM) to the run log instead.

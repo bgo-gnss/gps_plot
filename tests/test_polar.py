@@ -243,3 +243,33 @@ def test_colours_only_the_newest_days(days: float, vmin: float) -> None:
     assert dots and all(c.norm.vmin == pytest.approx(vmin) for c in dots)
     rgba = dots[0].to_rgba(dots[0].get_array())
     assert (rgba[:, 3] == 0).sum() == round(vmin)  # days 0 .. vmin-1 open
+
+
+def test_panels_close_up_to_the_map() -> None:
+    """The panels beside the map start STACKED_GAP_IN right of it (BGÓ 2026-11-08)."""
+    from gps_plot import terrain
+
+    xs = np.arange(-300.0, 301.0, 5.0)
+    dem = terrain.DemWindow(xs, xs.copy(), 800.0 - 0.4 * xs[None, :] + 0 * xs[:, None])
+    pairs = [_pair("SVIE-SKFC", 333.0, downslope=(90.0, 21.8), pos=(150.0, 0.0))]
+    fig = polar.polar_figure(pairs, onset=dt.datetime(2025, 7, 30),
+                             panels=("sector", "map", "profile"), dem=dem,
+                             half=300.0, profile_dem=dem,
+                             locator={"coast": [np.array([[-20.0, 64.0], [-19.0, 65.0],
+                                                          [-18.0, 64.0]])]})  # fmt: skip
+    renderer = fig._get_renderer()
+    to_fig = fig.transFigure.inverted()
+    free = [a for a in fig.axes if a.get_axes_locator() is None]
+    mapax = max(free, key=lambda a: a.get_position().width)
+    edge = mapax.get_position().x1
+    beside = [a for a in free if a.get_position().x0 > edge - 0.05]  # not the logo
+    left = min(a.get_tightbbox(renderer).transformed(to_fig).x0 for a in beside)
+    gap_in = (left - mapax.get_position().x1) * fig.get_size_inches()[0]
+    assert gap_in == pytest.approx(polar.STACKED_GAP_IN, abs=0.02)
+    assert fig.get_size_inches()[0] < 21.0  # the freed width trimmed
+
+
+def test_older_than() -> None:
+    assert polar.older_than(28.0) == "older than 4 weeks"
+    assert polar.older_than(7.0) == "older than 1 week"
+    assert polar.older_than(10.0) == "older than 10 days"
