@@ -152,7 +152,10 @@ def status_record(
             else "station"
         )
 
-    days = [day_of(float(tr.t[-1])) for tr in tracks if tr.t.size]
+    # the newest day of the watched stations (not the references: a day only
+    # they have says nothing of the stations watched), else of any
+    watched = [tr for tr in tracks if role(tr.marker) == "station" and tr.t.size]
+    days = [day_of(float(tr.t[-1])) for tr in (watched or tracks) if tr.t.size]
     return {
         "schema": SCHEMA,
         "made": (made or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%dT%H:%MZ"),

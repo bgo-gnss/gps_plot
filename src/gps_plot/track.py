@@ -964,8 +964,10 @@ def legend_entries(
 
 
 def newest_day(tracks: Sequence[Track]) -> dt.date | None:
-    """The day of the newest position of any of ``tracks``."""
-    ends = [float(tr.t[-1]) for tr in tracks if tr.t.size]
+    """The day of the newest position of the shown ``tracks``
+    (``--track-stations``: the watched ones, BGÓ 2026-11-08), else of any."""
+    pool = [tr for tr in tracks if tr.shown] or list(tracks)
+    ends = [float(tr.t[-1]) for tr in pool if tr.t.size]
     if not ends:
         return None
     return dt.date.fromordinal(int(day_key(np.array([max(ends)]))[0]))

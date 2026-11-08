@@ -79,3 +79,24 @@ def test_cli_track_status_options() -> None:
     assert a.track_status and a.track_status_days == 7
     a = p.parse_args(["station", "SVIE", "--track", "20260923"])
     assert not a.track_status and a.track_status_days is None
+
+
+def test_newest_day_is_the_watched_stations() -> None:
+    """A day only a reference station has (a half day on okada) does not
+    make the map or the status newer than the watched stations (BGÓ
+    2026-11-08)."""
+    t, y = _series(move=(100.0, 0.0))
+    watched = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    later = np.append(t, t[-1] + 1 / 365.25)
+    ref = track.station_track("FAGC", -16.6, 63.9, later,
+                              np.hstack([y, y[:, -1:]]), ONSET, PRE)  # fmt: skip
+    both = [watched, ref]
+    assert track.newest_day(both) == track.newest_day([ref])  # all shown: any
+    hidden = [watched, dataclasses.replace(ref, shown=False)]
+    assert track.newest_day(hidden) == track.newest_day([watched])
+    rec = track_status.status_record(
+        both, onset=ONSET, event="e", window_days=7, frame="itrf14",
+        common_mode=True, keep_trend=False,
+        reference={"asked": ["FAGC"], "kept": ["FAGC"], "dropped": []},
+    )  # fmt: skip
+    assert rec["newest_day"] == track.newest_day([watched]).isoformat()
