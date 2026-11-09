@@ -1,0 +1,8 @@
+# The sibling packages yang runs, at exact commits: <name> <git url> <commit>.
+# gps_plot is not here: install.sh runs from its checkout, so that checkout's
+# commit is the pin. Move a line only after the version has run on the laptop.
+gtimes       https://github.com/bgo-gnss/gtimes.git       b0bc417f2136cb6063bef900ee54fdcd7736db03
+geofunc      https://github.com/bgo-gnss/geofunc.git      5e66ee903fdd7ecab5c2c1e8d112778c28a98a35
+gps_parser   https://github.com/bgo-gnss/gps_parser.git   fb306f1f1b41ca22f55cdaf3b1edde11d68d8a2e
+geo_dataread https://github.com/bgo-gnss/geo_dataread.git 1d8a80c055ea07e8d984c9ac1fa436a87e48e02b
+gps_analysis https://github.com/bgo-gnss/gps_analysis.git 41bdb5f230a469ee15747b2e833af333b99b3e71

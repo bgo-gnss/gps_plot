@@ -1,0 +1,10 @@
+[Unit]
+Description=Svínafellsheiði first: redraw its plots as soon as okada has SVIE+SVIN for yesterday
+
+[Service]
+Type=oneshot
+Nice=5
+EnvironmentFile=/mnt/data/gpsops/src/gps_plot/deployment/yang/yang.env
+WorkingDirectory=/mnt/data/gpsops
+ExecStart=/mnt/data/gpsops/src/gps_plot/deployment/yang/svinafell-watch.sh
+TimeoutStartSec=30min

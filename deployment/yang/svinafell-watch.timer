@@ -1,0 +1,10 @@
+[Unit]
+Description=Every 10 min 07-13 and 16-18: Svínafellsheiði first
+
+[Timer]
+OnCalendar=*-*-* 07..12:00/10
+OnCalendar=*-*-* 16..17:00/10
+Persistent=true
+
+[Install]
+WantedBy=timers.target
