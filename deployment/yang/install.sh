@@ -30,6 +30,7 @@ fail() { echo "install: $1" >&2; exit 1; }
 for tool in gmt gs git curl; do
     command -v "$tool" >/dev/null || fail "$tool is missing: see SUDO-STEPS.md"
 done
+[ -e "$(gmt --show-library)" ] || fail "$(gmt --show-library) is missing: see SUDO-STEPS.md"
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
 mkdir -p "$YANG_ROOT"/{bin,config,cache,gg/tables,gis,plots,pos,velocities} "$SRC"
