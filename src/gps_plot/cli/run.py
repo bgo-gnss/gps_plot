@@ -4,7 +4,7 @@ Expands plots.yaml (:mod:`gps_plot.products`) into ``gpsplot ts`` jobs and
 runs them in this process through the same driver and batch contract.
 Each run gets ``<plots_dir>/_runs/<UTC stamp>/`` with one manifest per job
 group, ``publish.manifest`` (only ``publish: true`` runs: the rsync input)
-and the summary; the oldest run directories beyond ``keep_runs`` are pruned.
+and the summary; the oldest run directories beyond ``keep_runs`` (or ``keep_run_days``) are pruned.
 Exit status 1 when any plot failed. Design: docs/plots-yaml-design.md.
 
 Run order: the ``prepare:`` steps of plots.yaml run first, in their order
@@ -403,7 +403,11 @@ def run(prog: str, argv: list[str]) -> int:
             str(Path(f).relative_to(root.resolve())) + "\n"
             for f in sorted(set(published))
         )
-    _prune(root / "_runs", int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)))
+    _prune(
+        root / "_runs",
+        int(cfg.get("keep_runs", DEFAULT_KEEP_RUNS)),
+        int(cfg.get("keep_run_days", 0)),
+    )
     if not args.keep_stale:
         stale = _stale(jobs, configured, root)
         for f in stale:
@@ -603,8 +607,17 @@ def _cfg_file(config: Any, cfg: dict[str, Any], what: str) -> Path:
     return path if path.is_absolute() else Path(config.config_path) / path
 
 
-def _prune(runs: Path, keep: int) -> None:
-    old = sorted(p for p in runs.iterdir() if p.is_dir())[:-keep] if keep > 0 else []
+def _prune(runs: Path, keep: int, keep_days: int = 0) -> None:
+    """Remove old run directories: those beyond the newest ``keep``, or with
+    ``keep_days`` those older than that many days (their names are UTC stamps),
+    for a host whose frequent runs would use up a count in a few days."""
+    dirs = sorted(p for p in runs.iterdir() if p.is_dir())
+    if keep_days > 0:
+        limit = dt.datetime.now(dt.UTC) - dt.timedelta(days=keep_days)
+        stamp = limit.strftime("%Y%m%dT%H%M%SZ")
+        old = [p for p in dirs if p.name < stamp]
+    else:
+        old = dirs[:-keep] if keep > 0 else []
     for p in old:
         shutil.rmtree(p, ignore_errors=True)
 

@@ -25,7 +25,8 @@ UNITS=(svinafell-watch.service svinafell-watch.timer
     gpsplot-rtk-long.service gpsplot-rtk-long.timer
     gpsplot-run.service gpsplot-run.timer
     gpsplot-run-update.service gpsplot-run-update.timer
-    yang-config-sync.service yang-config-sync.timer)
+    yang-config-sync.service yang-config-sync.timer
+    yang-notify@.service)
 SRC=$HOME/src  # the code; the venv, caches and data stay on /mnt/data
 
 fail() { echo "install: $1" >&2; exit 1; }
@@ -81,6 +82,9 @@ for unit in "${UNITS[@]}"; do
     ln -sf "$HERE/$unit" "$HOME/.config/systemd/user/$unit"
 done
 systemctl --user daemon-reload
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HERE/gps-jobs.py" "$HOME/.local/bin/gps-jobs"
 
 python -c "import pygmt; pygmt.show_versions()" | grep -E 'version|GMT' | head -8
 gpsplot run --help >/dev/null

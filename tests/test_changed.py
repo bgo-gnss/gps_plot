@@ -147,3 +147,22 @@ def test_plots_root_prefers_the_flag_then_the_host(monkeypatch) -> None:
     host[0] = None
     assert common.plots_root(None, None, cfg) == Path("/from/yaml")
 
+
+def test_prune_by_age_keeps_recent_runs_whatever_their_number(tmp_path) -> None:
+    import datetime as dt
+
+    from gps_plot.cli import run
+
+    now = dt.datetime.now(dt.UTC)
+    made = [now - dt.timedelta(days=d, minutes=m) for d, m in
+            ((20, 0), (15, 0), (1, 1), (1, 2), (1, 3), (0, 5))]  # fmt: skip
+    names = [t.strftime("%Y%m%dT%H%M%SZ") for t in made]
+    for n in names:
+        (tmp_path / n).mkdir()
+
+    run._prune(tmp_path, keep=2, keep_days=14)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(names[2:])
+
+    run._prune(tmp_path, keep=2)  # no age given: the count, as before
+    assert len(list(tmp_path.iterdir())) == 2
+

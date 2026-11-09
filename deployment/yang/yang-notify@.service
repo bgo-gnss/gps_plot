@@ -1,0 +1,7 @@
+[Unit]
+Description=Notify that %i failed on yang (once per failure streak)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
+ExecStart=%h/src/gps_plot/deployment/yang/yang-notify.py fail %i

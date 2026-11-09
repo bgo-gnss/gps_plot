@@ -1,0 +1,45 @@
+# yang-d01's automated runs: one entry per systemd --user unit of gpsops. Read by
+# gps-jobs (beside this file), which joins it with what systemd says and checks
+# each output's age, so a run that "succeeds" but writes nothing still shows.
+#   kind: timer (default) | service | url;   outputs: {path glob, max_age}
+jobs:
+  svinafell-watch:
+    group: gps
+    what: Svínafellsheiði first, 07-13 and 16-18, once okada has SVIE+SVIN
+    outputs:
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/maps/svinafellsheidi-hreyfing-yfirlit.status.json, max_age: 34h}
+  gpsplot-rtk:
+    group: gps
+    what: RTK plots 6 h, 12 h, 2 d (every 5 min)
+    outputs:
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-rtk-12h.png, max_age: 20m}
+  gpsplot-rtk-long:
+    group: gps
+    what: RTK plots 4 d, 7 d, 14 d (every 30 min)
+    outputs:
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-rtk-7d.png, max_age: 75m}
+  gpsplot-run-update:
+    group: gps
+    what: new days from okada, areas then standard (07:45-16:45)
+    outputs:
+      - {path: /mnt/data/gpsops/pos/days.imo.24hr_itrf14.csv, max_age: 34h}
+  gpsplot-run:
+    group: gps
+    what: every selected plot, nightly 02:00
+    outputs:
+      - {path: /mnt/data/gpsops/plots/_runs/2*, max_age: 26h}
+  yang-config-sync:
+    group: gps
+    what: config follows gps-config-data main (every 10 min)
+    outputs:
+      - {path: /mnt/data/gpsops/config/plots.yaml, max_age: 400d}
+  aflogun:
+    group: gps
+    kind: service
+    what: aflogun and the Vöktun pages, 127.0.0.1:8050
+    url: http://127.0.0.1:8050/
+  nginx:
+    group: gps
+    kind: url
+    what: the plots at /gps/ (nginx, a system service)
+    url: http://127.0.0.1/gps/

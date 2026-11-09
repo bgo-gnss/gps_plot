@@ -1,7 +1,9 @@
 [Unit]
+OnFailure=yang-notify@%n.service
 Description=yang's config follows gps-config-data main, after a dry-run check
 
 [Service]
+ExecStartPost=%h/src/gps_plot/deployment/yang/yang-notify.py ok %n
 Type=oneshot
 EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
 WorkingDirectory=/mnt/data/gpsops

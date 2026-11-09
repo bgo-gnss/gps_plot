@@ -1,7 +1,9 @@
 [Unit]
+OnFailure=yang-notify@%n.service
 Description=Svínafellsheiði first: redraw its plots as soon as okada has SVIE+SVIN for yesterday
 
 [Service]
+ExecStartPost=%h/src/gps_plot/deployment/yang/yang-notify.py ok %n
 Type=oneshot
 Nice=5
 EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
