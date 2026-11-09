@@ -12,7 +12,8 @@ set -euo pipefail
 DEST=yang-d01.vedur.is:/mnt/data/gpsops
 ROOT=/mnt/data/gpsops
 CONFIG=$HOME/.config/gpsconfig
-RSYNC=(rsync -rlt --mkpath --partial --no-owner --no-group --info=stats1)
+# -O: the top directories belong to gpsops, so bgo cannot set their times
+RSYNC=(rsync -rltO --mkpath --partial --no-owner --no-group --info=stats1)
 [ "${1:-}" = -n ] && RSYNC+=(-n)
 
 send() {  # send MODE SRC... DEST: file mode 664 (rewritten on yang) or 640 (config)

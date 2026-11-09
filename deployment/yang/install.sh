@@ -33,7 +33,9 @@ done
 [ -e "$(gmt --show-library)" ] || fail "$(gmt --show-library) is missing: see SUDO-STEPS.md"
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
-mkdir -p "$YANG_ROOT"/{bin,config,cache,gg/tables,gis,plots,pos,velocities} "$SRC"
+mkdir -p "$YANG_ROOT"/{bin,config,cache/gps_analysis/noise,gg/tables,gis,plots,pos,velocities} "$SRC"
+# seed-from-laptop.sh writes these as bgo, through the group
+chmod 2775 "$YANG_ROOT" "$YANG_ROOT"/{config,cache,cache/gps_analysis,cache/gps_analysis/noise,gg,gg/tables,gis,pos,velocities}
 
 # uv: the release binary, no installer script
 if [ "$("$YANG_ROOT/bin/uv" --version 2>/dev/null | cut -d' ' -f2)" != "$UV_VERSION" ]; then
