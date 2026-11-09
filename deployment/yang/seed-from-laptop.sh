@@ -39,3 +39,7 @@ sed -e "s|~/gps-data/|$ROOT/|g" -e "s|~/.config/gpsconfig/|$ROOT/config/|g" \
     -e "/^\[PATHS\]/a velocity_dir = $ROOT/velocities" \
     "$CONFIG/postprocess.cfg" > "$tmp/postprocess.cfg"
 send 640 "$tmp/postprocess.cfg" "$DEST/config/"
+
+# Without -p rsync applies the remote umask, so 664 arrives as 644 and gpsops
+# could not rewrite the .pos files. (-p would try to chmod gpsops's top dirs.)
+[ "${1:-}" = -n ] || ssh "${DEST%%:*}" "cd $ROOT && find pos cache/gps_analysis velocities gg gis -user \$(id -un) ! -perm -g+w -exec chmod g+w {} +"
