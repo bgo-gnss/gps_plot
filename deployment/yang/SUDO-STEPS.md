@@ -6,6 +6,8 @@ Run once, by a person, before `install.sh`. All on yang unless stated.
 
 ```bash
 sudo apt install gmt gmt-gshhg gmt-dcw ghostscript nginx nfs-common
+# matplotlib usetex: the labels of the time-series figures
+sudo apt install --no-install-recommends dvipng texlive-latex-extra texlive-fonts-recommended cm-super
 # GMT and PyGMT open libgmt.so by that name. Ubuntu ships the link only in
 # libgmt-dev, which would pull 42 packages onto a small / for this one link.
 sudo ln -sf libgmt.so.6 /usr/lib/x86_64-linux-gnu/libgmt.so

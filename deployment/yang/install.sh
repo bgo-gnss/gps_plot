@@ -27,7 +27,7 @@ fail() { echo "install: $1" >&2; exit 1; }
 [ "$(id -un)" = gpsops ] || fail "run as gpsops (sudo -iu gpsops)"
 [ -w "$YANG_ROOT" ] || fail "$YANG_ROOT is not writable: see SUDO-STEPS.md"
 [ "$(readlink -f "$HERE/../..")" = "$SRC/gps_plot" ] || fail "run from a checkout at $SRC/gps_plot"
-for tool in gmt gs git curl; do
+for tool in gmt gs git curl latex dvipng; do
     command -v "$tool" >/dev/null || fail "$tool is missing: see SUDO-STEPS.md"
 done
 [ -e "$(gmt --show-library)" ] || fail "$(gmt --show-library) is missing: see SUDO-STEPS.md"
