@@ -76,3 +76,34 @@ def test_state_round_trip_and_a_bad_file(tmp_path: Path) -> None:
     assert changed.load_state(path)["stations"] == {"SVIN": "x"}
     path.write_text("not json")
     assert changed.load_state(path) == {}
+
+
+def test_a_named_state_has_its_own_file() -> None:
+    assert changed.state_file() == changed.STATE_FILE
+    named = changed.state_file("areas")
+    assert named == Path("_runs") / ".fingerprints.areas.json"
+    assert named != changed.state_file("standard")
+
+
+def test_active_of_a_changed_run_stays_inside_the_box(monkeypatch) -> None:
+    """--changed turns ``active`` into a station list, so the box ``ts active``
+    applies has to be applied here: ZIMM has no plate and would fail the run."""
+    import configparser
+    from types import SimpleNamespace
+
+    import geo_dataread.pos as pos
+
+    from gps_plot.cli import run
+
+    cfg = configparser.ConfigParser()
+    cfg.read_string("[VONC]\nx = 1\n[ZIMM]\nx = 1\n[KARV]\nstation_status = inactive\n")
+    seen = {}
+
+    def inside_only(prod, directory, region):
+        seen["prod"], seen["region"] = prod, region
+        return [("VONC", -18.5, 64.0), ("KARV", -15.0, 65.0)]
+
+    monkeypatch.setattr(pos, "pos_stations", inside_only)
+    monkeypatch.setattr("gps_plot.cli.common.config_dir", lambda *a: None)
+    assert run._active(SimpleNamespace(config=cfg)) == ["VONC"]
+    assert seen["prod"] == "imo.24hr_itrf14"

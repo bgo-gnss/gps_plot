@@ -22,7 +22,9 @@ set -a; . "$HERE/yang.env"; set +a
 UV_VERSION=0.8.22
 UNITS=(svinafell-watch.service svinafell-watch.timer
     gpsplot-rtk.service gpsplot-rtk.timer
-    gpsplot-rtk-long.service gpsplot-rtk-long.timer)
+    gpsplot-rtk-long.service gpsplot-rtk-long.timer
+    gpsplot-run.service gpsplot-run.timer
+    gpsplot-run-update.service gpsplot-run-update.timer)
 SRC=$HOME/src  # the code; the venv, caches and data stay on /mnt/data
 
 fail() { echo "install: $1" >&2; exit 1; }

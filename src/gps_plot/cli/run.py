@@ -210,6 +210,12 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         "last whole run (everything when the setup or gpsplot changed)",
     )
     p.add_argument(
+        "--state",
+        metavar="NAME",
+        help="this selection's own --changed baseline, saved after a clean "
+        "run (a selected run otherwise saves none)",
+    )
+    p.add_argument(
         "--no-prepare",
         action="store_true",
         help="skip the plots.yaml prepare: steps (e.g. gps-network-days)",
@@ -320,7 +326,8 @@ def run(prog: str, argv: list[str]) -> int:
             return 1
     # after the update and the prepare steps: the data as it will be plotted
     jobs, state = _changed_jobs(jobs, config, root, prog,
-                                measure=whole or args.changed, narrow=args.changed)  # fmt: skip
+                                measure=whole or args.changed or bool(args.state),
+                                narrow=args.changed, state_name=args.state)  # fmt: skip
     if args.changed and not jobs:
         print(f"{prog}: no station changed since the last whole run, nothing drawn")
         return 0
@@ -383,8 +390,9 @@ def run(prog: str, argv: list[str]) -> int:
         if stale:
             print(f"{prog}: deleted {len(stale)} plot(s) the config no longer has:")
             print("".join(f"  {f}\n" for f in stale), end="")
-    if whole and status == 0 and state:  # the baseline the next --changed compares with
-        changed.save_state(root / changed.STATE_FILE, state)
+    if (whole or args.state) and status == 0 and state:
+        # the baseline the next --changed compares with
+        changed.save_state(root / changed.state_file(args.state), state)
     print(f"{prog}: {len(jobs)} job(s), run dir {run_dir}, exit {status}")
     return status
 
@@ -479,6 +487,7 @@ def _changed_jobs(
     *,
     measure: bool = True,
     narrow: bool,
+    state_name: str | None = None,
 ) -> tuple[list[products.Job], dict[str, Any]]:
     """(the jobs to run, the new state to save). ``narrow`` (``--changed``):
     only the jobs touching a station whose files changed since the saved
@@ -490,7 +499,7 @@ def _changed_jobs(
 
     import gps_plot
 
-    old = changed.load_state(root / changed.STATE_FILE)
+    old = changed.load_state(root / changed.state_file(state_name))
     cache = dict(old.get("files") or {})
     pos = config_dir(config, "pos_dir", None)
     if not pos or not Path(pos).is_dir():
@@ -523,10 +532,20 @@ def _changed_jobs(
 
 
 def _active(config: Any) -> list[str]:
-    """The operated stations (stations.cfg) an ``active`` job list stands for."""
-    from gps_plot.cli.common import active_stations
+    """The stations an ``active`` job list stands for: the operated ones
+    (stations.cfg) inside the plotting box, as ``gpsplot ts active`` takes them.
+    Without the box --changed drew foreign stations, which have no plate."""
+    from geo_dataread.pos import pos_stations
 
-    return list(active_stations(config))
+    from gps_plot.cli.common import ICELAND_REGION, active_stations, config_dir
+
+    inside = {
+        sta
+        for sta, _lon, _lat in pos_stations(
+            "imo.24hr_itrf14", config_dir(config, "pos_dir", None), ICELAND_REGION
+        )
+    }
+    return [sta for sta in active_stations(config) if sta in inside]
 
 
 def _cfg_file(config: Any, cfg: dict[str, Any], what: str) -> Path:

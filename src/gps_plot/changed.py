@@ -105,6 +105,11 @@ def setup_print(config_dir: Path, code_dir: Path, cache: dict[str, Any]) -> str:
     return h.hexdigest()
 
 
+def state_file(name: str | None = None) -> Path:
+    """The saved state, under plots_dir; ``name``: a selected run's own baseline."""
+    return STATE_FILE.with_name(f".fingerprints.{name}.json") if name else STATE_FILE
+
+
 def load_state(path: Path) -> dict[str, Any]:
     """The saved state (``setup``, ``stations``, ``files``), {} when none
     or unreadable."""

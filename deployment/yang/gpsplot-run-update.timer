@@ -1,0 +1,10 @@
+[Unit]
+Description=gpsplot on yang: new days from okada, plots when changed
+
+[Timer]
+OnCalendar=*-*-* 07,08,09,10,16:45
+OnCalendar=*-*-* 12:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

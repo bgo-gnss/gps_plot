@@ -1,0 +1,10 @@
+[Unit]
+Description=gpsplot on yang: every selected plot, nightly
+
+[Service]
+Type=oneshot
+Nice=10
+EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
+WorkingDirectory=/mnt/data/gpsops
+ExecStart=/usr/bin/flock -w 3600 %t/gpsplot-run.lock %h/src/gps_plot/deployment/yang/yang-plots.sh
+TimeoutStartSec=6h
