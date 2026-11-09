@@ -69,3 +69,13 @@ for name in "${changed[@]}"; do
     install -m 640 "$STAGE/$name" "$LIVE/.$name.new" && mv -f "$LIVE/.$name.new" "$LIVE/$name"
 done
 echo "config-sync: synced to $rev: ${changed[*]}"
+
+# aflogun caches these until it restarts (a service not installed: no-op)
+for name in "${changed[@]}"; do
+    case $name in
+        station_areas.yaml|stations.cfg|events.yaml|postprocess.cfg)
+            systemctl --user try-restart aflogun.service 2>/dev/null || true
+            echo "config-sync: aflogun restarted ($name)"
+            break ;;
+    esac
+done

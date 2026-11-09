@@ -83,6 +83,13 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+## 5a. nginx: room for the aflogun install
+
+```bash
+sudo mkdir -p /etc/nginx/gps.d
+sudo nginx -t && sudo systemctl reload nginx
+```
+
 ## 5b. gps-config-data for gpsops (config sync, T4)
 
 The config sync needs a clone that gpsops can pull. As gpsops, with a key
