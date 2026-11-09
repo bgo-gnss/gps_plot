@@ -20,7 +20,9 @@ esac
 set -a; . "$HERE/yang.env"; set +a
 
 UV_VERSION=0.8.22
-UNITS=(svinafell-watch.service svinafell-watch.timer)
+UNITS=(svinafell-watch.service svinafell-watch.timer
+    gpsplot-rtk.service gpsplot-rtk.timer
+    gpsplot-rtk-long.service gpsplot-rtk-long.timer)
 SRC=$HOME/src  # the code; the venv, caches and data stay on /mnt/data
 
 fail() { echo "install: $1" >&2; exit 1; }
@@ -82,6 +84,8 @@ gpsplot run --help >/dev/null
 gps-realign --help >/dev/null
 
 if [ $ENABLE -eq 1 ]; then
-    systemctl --user enable --now svinafell-watch.timer
+    for unit in "${UNITS[@]}"; do
+        [[ $unit == *.timer ]] && systemctl --user enable --now "$unit"
+    done
 fi
 echo "install: done (gps_plot $(git -C "$SRC/gps_plot" rev-parse --short HEAD))"

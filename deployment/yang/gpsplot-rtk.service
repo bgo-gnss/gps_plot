@@ -1,0 +1,10 @@
+[Unit]
+Description=gpsplot rtk-run, short plots every 5 min
+
+[Service]
+Type=oneshot
+Nice=10
+EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
+WorkingDirectory=/mnt/data/gpsops
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot rtk-run --area svinafellsheidi --run 6h,12h,2d --plots-dir /mnt/data/gpsops/plots
+TimeoutStartSec=15min

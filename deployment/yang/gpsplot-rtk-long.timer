@@ -1,0 +1,9 @@
+[Unit]
+Description=gpsplot rtk-run, long plots every 30 min, without 7d-along
+
+[Timer]
+OnCalendar=*:2/30
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -56,6 +56,22 @@ sudo systemctl daemon-reload && sudo mount -a
 ls /mnt_data/okada/D/SNX | head -3; ls /mnt_data/okada/WEEKS | tail -2
 ```
 
+## 4b. NFS from rtk.vedur.is (the RTK plots)
+
+Already exported to everyone. Short lines so a terminal does not break them:
+
+```bash
+sudo mkdir -p /mnt_data/rtgpsdata
+O=ro,soft,timeo=50,retrans=2,nofail,_netdev
+O=$O,x-systemd.automount
+O=$O,x-systemd.mount-timeout=10
+O=$O,x-systemd.idle-timeout=600
+H=rtk.vedur.is:/home/gpsops/rtklib-run/data
+echo "$H /mnt_data/rtgpsdata nfs $O 0 0" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount -a
+ls /mnt_data/rtgpsdata | head -3
+```
+
 ## 5. nginx at `/gps/`
 
 From the gps_plot checkout. Check the `allow` ranges in the file first.
