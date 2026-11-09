@@ -13,7 +13,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 #: the reference frame plotted when neither --tType nor --frame is given
@@ -61,6 +62,13 @@ def config_dir(config: Any, option: str, default: str | None = None) -> Any:
         return config.getPostProcessDir(option)
     except Exception:
         return default
+
+
+def plots_root(flag: str | None, config: Any, cfg: Mapping[str, Any]) -> Path:
+    """Where the figures go: ``--plots-dir``, else postprocess.cfg ``plots_dir``
+    (per host), else plots.yaml ``plots_dir``."""
+    named = flag or config_dir(config, "plots_dir", None) or cfg.get("plots_dir")
+    return Path(str(named or "")).expanduser()
 
 
 # ---------------------------------------------------------------------------

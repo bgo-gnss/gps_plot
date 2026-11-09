@@ -83,6 +83,18 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+## 5b. gps-config-data for gpsops (config sync, T4)
+
+The config sync needs a clone that gpsops can pull. As gpsops, with a key
+git.vedur.is accepts (if it has none, add one as a read-only deploy key on
+`aut/gnss/gnss_configs/gps-config-data`):
+
+```bash
+mkdir -p ~/git
+R=git@git.vedur.is:aut/gnss/gnss_configs/gps-config-data.git
+git clone $R ~/git/gps-config-data
+```
+
 ## 6. Mail out (needed for T6)
 
 postfix was installed as "Local only" (`default_transport = error`), so it

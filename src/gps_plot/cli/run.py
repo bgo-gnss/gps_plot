@@ -61,12 +61,18 @@ def _network_days(workers: int | None) -> int:
 PREPARE_STEPS = {"network_days": _network_days}
 
 
-def update_script(arg: str | None, cfg: dict[str, Any]) -> Path | None:
-    """``--update-pos [SCRIPT]``: the script to run, SCRIPT or plots.yaml
-    ``update_pos:``; None when the flag is not given."""
+def update_script(
+    arg: str | None, cfg: dict[str, Any], config: Any = None
+) -> Path | None:
+    """``--update-pos [SCRIPT]``: the script to run, SCRIPT, postprocess.cfg
+    ``update_pos`` (per host) or plots.yaml ``update_pos:``; None when the flag
+    is not given."""
     if arg is None:
         return None
-    named = arg or cfg.get("update_pos") or ""
+    from gps_plot.cli.common import config_dir
+
+    per_host = config_dir(config, "update_pos", None) if config is not None else None
+    named = arg or per_host or cfg.get("update_pos") or ""
     return Path(str(named)).expanduser() if named else Path()
 
 
@@ -210,6 +216,13 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         "last whole run (everything when the setup or gpsplot changed)",
     )
     p.add_argument(
+        "--check-files",
+        action="store_true",
+        help="refuse the run when a map layer's file is not on this host "
+        "(a map otherwise leaves such a layer out); with --dry-run, the check "
+        "of a new configuration",
+    )
+    p.add_argument(
         "--state",
         metavar="NAME",
         help="this selection's own --changed baseline, saved after a clean "
@@ -280,7 +293,9 @@ def run(prog: str, argv: list[str]) -> int:
     for slug, why in watched.items():
         if slug in have:
             print(f"watch: {slug} first ({why})")
-    root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
+    from gps_plot.cli.common import plots_root
+
+    root = plots_root(args.plots_dir, config, cfg)
     steps = [] if args.no_prepare else list(cfg.get("prepare") or [])
     unknown = [s for s in steps if s not in PREPARE_STEPS]
     if unknown:
@@ -288,7 +303,13 @@ def run(prog: str, argv: list[str]) -> int:
             f"{prog}: unknown prepare step(s) {unknown} (known: {sorted(PREPARE_STEPS)})"
         )
         return 2
-    update = update_script(args.update_pos, cfg)
+    update = update_script(args.update_pos, cfg, config)
+    if args.check_files:
+        missing = _check_files(jobs, config)
+        if missing:
+            print(f"{prog}: {plots_path}: files not on this host, nothing run:")
+            print("".join(f"  {line}\n" for line in missing), end="")
+            return 2
     whole = not (args.product or args.area or wanted)
     if args.dry_run:
         if update is not None:
@@ -434,6 +455,32 @@ def _tool(name: str, config: Any, **parser_kw: Any) -> tuple[Any, Any]:
         argparse.ArgumentParser(prog="gpsplot ts", **parser_kw), config=config
     )
     return driver.run, parser
+
+
+def _check_files(jobs: list[products.Job], config: Any) -> list[str]:
+    """One line per map job with a layer whose file is not on this host."""
+    from gps_plot import gis_layers
+    from gps_plot import map as gmap
+    from gps_plot.cli.map import join_negative_values
+
+    maps = [job for job in jobs if job.tool == "map"]
+    if not maps:
+        return []
+    parser = _tool("map", config, exit_on_error=False)[1]
+    missing = []
+    for job in maps:
+        args, _ = parser.parse_known_args(
+            join_negative_values([job.kind or "station", *job.argv])
+        )
+        catalogue = gmap.layer_catalogue(args, config)
+        try:
+            gis_layers.overlays(
+                gis_layers.expand(args.layers, catalogue),
+                gmap.gis_dir(config), catalogue, strict=True, quiet=True,
+            )  # fmt: skip
+        except FileNotFoundError as exc:
+            missing.append(f"{job.product}: {exc}")
+    return missing
 
 
 def _check_options(jobs: list[products.Job], config: Any) -> list[tuple[str, str]]:

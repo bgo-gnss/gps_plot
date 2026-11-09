@@ -288,7 +288,7 @@ def run(prog: str, argv: list[str]) -> int:
         print(f"{prog}: unknown run(s) {unknown}", file=sys.stderr)
         return 2
     jobs = [j for j in configured if runs is None or j.run in runs]
-    root = Path(args.plots_dir or cfg.get("plots_dir") or "").expanduser()
+    root = common.plots_root(args.plots_dir, config, cfg)
     if args.dry_run:
         for j in jobs:
             print(

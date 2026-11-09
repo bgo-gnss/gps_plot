@@ -107,3 +107,43 @@ def test_active_of_a_changed_run_stays_inside_the_box(monkeypatch) -> None:
     monkeypatch.setattr("gps_plot.cli.common.config_dir", lambda *a: None)
     assert run._active(SimpleNamespace(config=cfg)) == ["VONC"]
     assert seen["prod"] == "imo.24hr_itrf14"
+
+
+def test_check_files_names_a_map_layer_not_on_this_host(tmp_path, monkeypatch) -> None:
+    from argparse import Namespace
+    from types import SimpleNamespace
+
+    from gps_plot import gis_layers
+    from gps_plot import map as gmap
+    from gps_plot.cli import run
+
+    parser = SimpleNamespace(
+        parse_known_args=lambda probe: (Namespace(layers=["volcanoes"]), [])
+    )
+    monkeypatch.setattr(run, "_tool", lambda *a, **k: (None, parser))
+    monkeypatch.setattr(gmap, "layer_catalogue", lambda *a: gis_layers.BUILTIN)
+    monkeypatch.setattr(gmap, "gis_dir", lambda c: str(tmp_path))
+    jobs = [Job("mapped", None, "d", (), (), False, tool="map", kind="station")]
+    jobs.append(_job("ts", "VONC"))
+
+    missing = run._check_files(jobs, None)
+    assert len(missing) == 1 and missing[0].startswith("mapped: ")
+
+    layer = gis_layers.BUILTIN.layers["volcanoes"]
+    made = Path(gis_layers.layer_file(layer, str(tmp_path)))
+    made.parent.mkdir(parents=True)
+    made.write_text("{}")
+    assert run._check_files(jobs, None) == []
+
+
+def test_plots_root_prefers_the_flag_then_the_host(monkeypatch) -> None:
+    from gps_plot.cli import common
+
+    cfg = {"plots_dir": "/from/yaml"}
+    host: list[str | None] = ["/from/host"]
+    monkeypatch.setattr(common, "config_dir", lambda *a: host[0])
+    assert common.plots_root("/from/flag", None, cfg) == Path("/from/flag")
+    assert common.plots_root(None, None, cfg) == Path("/from/host")
+    host[0] = None
+    assert common.plots_root(None, None, cfg) == Path("/from/yaml")
+

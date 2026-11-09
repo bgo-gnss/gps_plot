@@ -1,0 +1,10 @@
+[Unit]
+Description=yang's config follows gps-config-data main, every 10 min
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
