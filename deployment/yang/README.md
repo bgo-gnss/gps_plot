@@ -1,13 +1,13 @@
 # gpsplot on yang-d01
 
-The plot production on `yang-d01.vedur.is`, as `gpsops`, everything under
-`/mnt/data/gpsops`. The laptop stays the test bed. Plan: `PLAN-yang-deploy.md` in
+The plot production on `yang-d01.vedur.is`, as `gpsops`: the code in `~/src`, the
+venv, caches and data under `/mnt/data/gpsops`. The laptop stays the test bed. Plan: `PLAN-yang-deploy.md` in
 the gpslibrary root.
 
 First install:
 
 1. [SUDO-STEPS.md](SUDO-STEPS.md): packages, data folder, NFS, nginx.
-2. As gpsops: clone this repo to `/mnt/data/gpsops/src/gps_plot`, check out the
+2. As gpsops: clone this repo to `~/src/gps_plot`, check out the
    commit to run, then `deployment/yang/install.sh`.
 3. On the laptop: `deployment/yang/seed-from-laptop.sh` (GIS 26 GB, `.pos`, tables,
    config). `-n` shows what it would copy.

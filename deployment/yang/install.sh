@@ -3,7 +3,7 @@
 #
 #   deployment/yang/install.sh [--enable]
 #
-# Run from /mnt/data/gpsops/src/gps_plot, after SUDO-STEPS.md. The checkout it
+# Run from ~gpsops/src/gps_plot, after SUDO-STEPS.md. The checkout it
 # runs from is what gets installed; the siblings come from pins.txt and the
 # third-party versions from requirements.lock (the laptop's versions, so the
 # figures can be compared). --enable also starts the timers: leave it off
@@ -21,7 +21,7 @@ set -a; . "$HERE/yang.env"; set +a
 
 UV_VERSION=0.8.22
 UNITS=(svinafell-watch.service svinafell-watch.timer)
-SRC=$YANG_ROOT/src
+SRC=$HOME/src  # the code; the venv, caches and data stay on /mnt/data
 
 fail() { echo "install: $1" >&2; exit 1; }
 [ "$(id -un)" = gpsops ] || fail "run as gpsops (sudo -iu gpsops)"
