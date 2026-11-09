@@ -20,3 +20,9 @@ First install:
 
 `install.sh` is safe to re-run. `pins.txt` holds the sibling commits and
 `requirements.lock` the third-party versions, compiled against the laptop's env.
+
+Afterwards, as gpsops: `deployment/yang/yang-update.sh [REF]` moves the code (and
+goes back if the new code refuses the live config); config follows
+gps-config-data main by itself. On the laptop: `deployment/yang/yang-gis-sync.sh`
+sends changed GIS data, before a `map_layers.yaml` that needs it is merged.
+`gps-jobs` shows the state of every timer.

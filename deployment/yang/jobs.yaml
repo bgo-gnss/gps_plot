@@ -43,3 +43,6 @@ jobs:
     kind: url
     what: the plots at /gps/ (nginx, a system service)
     url: http://127.0.0.1/gps/
+  launchpadlib-cache-clean:
+    group: system
+    ignore: true
