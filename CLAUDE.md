@@ -32,6 +32,7 @@ gps_plot/
 │   ├── profile.py                    # polar's profile panel: DEM ground along the motion, points scaled on it, weekly medians, plunge fit (σ both ways)
 │   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
+│   ├── rtk_status.py                 # RTK warning (PLAN-rtk-trigger T1): monitoring: rtk: limits → gps_analysis.rtk_alarm 1 h vs 6 h window offset on fixed minutes → <area rtk dir>/rtk.status.json (rtk-run writes it, --no-status skips); gpsplot rtk-bench replays it around an event
 │   ├── rtk_map.py                    # gpsplot rtk-map: last hours of RTK motion on a map, pair network in its own frame (no net motion)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
@@ -149,4 +150,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-10 (rtk_status + rtk-bench, RTK warning T1). Previous 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*

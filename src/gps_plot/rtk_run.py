@@ -256,7 +256,44 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
         "--keep-stale", action="store_true",
         help="keep rtk plots the config no longer has (default: delete)",
     )  # fmt: skip
+    p.add_argument(
+        "--no-status", action="store_true",
+        help="skip the areas' RTK warning (rtk.status.json; rtk_status.py)",
+    )  # fmt: skip
     return p
+
+
+def write_statuses(
+    jobs: Sequence[RtkJob],
+    areas: Mapping[str, Mapping[str, Any]],
+    rtk_dirs: Sequence[str],
+    root: Path,
+    prog: str,
+) -> int:
+    """The RTK warning of each area of ``jobs`` with ``monitoring: rtk:``
+    limits: ``rtk.status.json`` in its rtk dir. 1 when one failed."""
+    import datetime as dt
+
+    from gps_plot import rtk_status
+
+    status = 0
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None, second=0, microsecond=0)
+    read = rtk_status.rtk_reader(rtk_dirs)
+    for slug in sorted({j.area for j in jobs}):
+        try:
+            spec = rtk_status.rtk_spec(areas.get(slug) or {})
+            if spec is None:
+                continue
+            pairs = sorted({j.pair for j in jobs if j.area == slug and not j.group})
+            out_dir = next(j.out_dir for j in jobs if j.area == slug)
+            record = rtk_status.area_status(slug, spec, pairs, read, now)
+            path = root / out_dir / rtk_status.STATUS_NAME
+            rtk_status.write_status(path, record)
+            print(f"{prog}: {slug} RTK {record['level_name']} -> {path}")
+        except Exception as exc:  # one area must not sink the rest
+            print(f"{prog}: {slug} RTK status: {exc}", file=sys.stderr)
+            status = 1
+    return status
 
 
 def run(prog: str, argv: list[str]) -> int:
@@ -316,6 +353,8 @@ def run(prog: str, argv: list[str]) -> int:
             except Exception as exc:  # one pair must not sink the rest
                 print(f"{prog}: {j.stem}: {exc}", file=sys.stderr)
                 status = 1
+        if not args.no_status:
+            status = max(status, write_statuses(jobs, areas, dirs, root, prog))
         if not args.keep_stale:  # against every configured run, not just these
             for f in stale(configured, root):
                 f.unlink(missing_ok=True)
