@@ -11,7 +11,7 @@
 set -uo pipefail
 : "${YANG_ROOT:=/mnt/data/gpsops}"
 
-AREAS=svinafellsheidi,reykjanes,seydisfjordur
+AREAS=svinafellsheidi,reykjanes,seydisfjordur,vatnsfell,karahnjukar
 HERE=$(dirname "$(readlink -f "$0")")
 PLOTS=$YANG_ROOT/plots
 POS=$YANG_ROOT/pos
