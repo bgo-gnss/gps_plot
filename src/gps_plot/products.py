@@ -195,6 +195,8 @@ def area_table(doc: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                     )
                 entry["stacks"][name] = group
             entry["directions"].update(dirs)
+            if spec.get("monitoring") is not None:  # the first area's block wins
+                entry.setdefault("monitoring", spec["monitoring"])
     return out
 
 
