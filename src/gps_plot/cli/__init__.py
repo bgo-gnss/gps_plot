@@ -76,6 +76,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.rtk_run:run",
     ),
     Command(
+        "rtk-bench",
+        "replay the RTK warning around an event: when each level was reached",
+        "gps_plot.rtk_status:bench",
+    ),
+    Command(
         "run",
         "every standard-plot product of plots.yaml (or one product/area)",
         "gps_plot.cli.run:run",
