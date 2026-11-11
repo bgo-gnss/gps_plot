@@ -288,3 +288,12 @@ def test_total_direction_is_the_movement_since_the_onset() -> None:
     flat = np.zeros((3, 30))
     assert polar.total_direction(since, flat, sig) is None
     assert polar.total_direction(np.zeros(0), np.zeros((3, 0)), None) is None
+
+
+def test_room_to_edge_toward_an_azimuth() -> None:
+    from gps_plot import polar
+
+    assert polar.room_to_edge(0.0, 0.0, 0.0, 100.0) == pytest.approx(100.0)
+    assert polar.room_to_edge(-90.0, 0.0, 270.0, 100.0) == pytest.approx(10.0)
+    # north-west from near the west edge: the west edge comes first
+    assert polar.room_to_edge(-80.0, 0.0, 315.0, 100.0) == pytest.approx(20 * 2**0.5)
