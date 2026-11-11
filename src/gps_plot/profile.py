@@ -193,6 +193,14 @@ def prepare(pp: Any, dem: Any, scale: float, half: float = PROFILE_HALF_M) -> Pr
                    float(np.max(heights)) + max(25.0, 0.1 * span))  # fmt: skip
 
 
+def up_text(pp: Any) -> str:
+    """ ", up ±σ mm/d" of the pair's 14-day Up rate, for the arrow's label."""
+    vt = pp.track.vertical if pp.track is not None else None
+    if vt is None or vt.recent is None:
+        return ""
+    return f", up {vt.recent[0] / 365.25:+.2f} ± {vt.recent[1] / 365.25:.2f} mm/d"
+
+
 def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: float,
          half: float = PROFILE_HALF_M, small: bool = False) -> None:  # fmt: skip
     """One pair's sub-panel on ``ax``."""
@@ -221,6 +229,26 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
         ax.scatter(sign * wa * scale, z0 + wu * scale, c=wt, s=40 if small else 60,
                    marker="D", edgecolors="k", linewidths=1.0, zorder=6,
                    label=rf"weekly median ($\geq${MIN_PER_BIN} days)", **style)  # fmt: skip
+    # the 14-day rate: ARROW_DAYS of it from the newest position, along the
+    # motion and Up (BGÓ 2026-11-11; no ellipse)
+    from gps_plot.polar import ARROW_DAYS, rate_step
+
+    step = rate_step(pp)
+    if step is not None and prof.t.size:
+        u_x, u_y = np.sin(np.radians(pp.motion)), np.cos(np.radians(pp.motion))
+        newest = prof.t >= prof.t.max() - 2.0
+        a0, h0 = float(np.median(prof.along[newest])), float(np.median(prof.up[newest]))
+        da, dh = step[0] * u_y + step[1] * u_x, step[2]
+        ax.annotate("", xy=(sign * (a0 + da) * scale, z0 + (h0 + dh) * scale),
+                    xytext=(sign * a0 * scale, z0 + h0 * scale), zorder=7,
+                    arrowprops={"arrowstyle": "-|>", "color": pp.colour, "lw": 1.8})  # fmt: skip
+        ax.plot(
+            [],
+            [],
+            color=pp.colour,
+            lw=1.8,
+            label=f"{ARROW_DAYS:g} days at the 14-day rate" + up_text(pp),
+        )
     pl = prof.plunge
     if pl is not None:
         length = 1.15 * float(np.max(np.abs(prof.along))) * scale

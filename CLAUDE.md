@@ -28,7 +28,7 @@ gps_plot/
 │   ├── compose.py                    # multi-series figure (stack_figure, label-keyed colours)
 │   ├── axes.py                       # baseline series on other axes (orient: values/σ/overlays/ends); pair_axes/sign_pair = N/E/U, + = lengthening (sources.gps.fetch signs daily pairs; Orienter for RTK); label_flags
 │   ├── direction.py                  # gpsplot direction: motion direction (gps_analysis.direction) of pairs/stations → a station_areas.yaml directions: line
-│   ├── polar.py                      # gpsplot polar: sector / terrain map / profile (or section) of the displacement since an onset, --together; A_B-polar-<period>[-rtk]
+│   ├── polar.py                      # gpsplot polar: sector / terrain map / profile (or section) of the displacement since an onset, --together; A_B-polar-<period>[-rtk]; motion = the movement since the onset (above 2 σ, not station_areas directions:); its map as the track map: that movement as a T line in the pair's colour + the 14-day arrow (track.load_track vs the reference) above 2 σ with a ±1σ direction wedge, mm/d, its scale fitted to the room on the map; the sector and the profiles get the same velocity as 14 days of motion from the newest position (whole vector incl. Up), no ellipse (BGÓ 2026-11-11)
 │   ├── profile.py                    # polar's profile panel: DEM ground along the motion, points scaled on it, weekly medians, plunge fit (σ both ways)
 │   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
@@ -150,4 +150,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-10 (rtk_status + rtk-bench, RTK warning T1). Previous 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-11 (polar: motion from the movement since the onset, track-map arrows). Previous 2026-11-10 (rtk_status + rtk-bench, RTK warning T1). Previous 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*
