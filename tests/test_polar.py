@@ -272,3 +272,19 @@ def test_panels_close_up_to_the_map() -> None:
 def test_older_note() -> None:
     assert (polar.older_note(dt.datetime(2026, 9, 23), 28.0)
             == "since 23.09.2026 until 28 days ago")  # fmt: skip
+
+
+def test_total_direction_is_the_movement_since_the_onset() -> None:
+    """The direction is the end of the movement since the onset (the map's
+    grey line), only when it stands out of its noise (BGÓ 2026-11-11)."""
+    import numpy as np
+
+    from gps_plot import polar
+
+    since = np.arange(30.0)
+    d = np.vstack([since * 1.0, -since * 1.0, np.zeros(30)])  # NW, 315°
+    sig = np.full((3, 30), 1.0)
+    assert polar.total_direction(since, d, sig) == pytest.approx(315.0)
+    flat = np.zeros((3, 30))
+    assert polar.total_direction(since, flat, sig) is None
+    assert polar.total_direction(np.zeros(0), np.zeros((3, 0)), None) is None
