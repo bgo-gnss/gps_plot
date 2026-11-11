@@ -270,7 +270,8 @@ PANELS = ("sector", "map", "profile", "section", "hodograph")
 #: BGÓ 2026-11-01: the profile replaces the section in production
 DEFAULT_PANELS = ("sector", "map", "profile")
 #: half-width [m] of the map panel's DEM window around the rover
-MAP_HALF_M = 120.0
+#: 180 since 2026-11-11 (BGÓ): room for the 14-day arrows
+MAP_HALF_M = 180.0
 #: per pair of a --together figure: marker, motion colour, downslope colour
 PAIR_STYLES = (
     ("o", "red", "saddlebrown"),
@@ -305,6 +306,9 @@ class PairPlot:
     #: the onset epoch of ``since`` [days since 1970]
     t_on: float = 0.0
     sig: Any = None
+    #: the rover's :class:`gps_plot.track.Track` relative to the reference
+    #: (daily pairs): its 14-day rate is the map's arrow, as on the track map
+    track: Any = None
 
     @property
     def rover(self) -> str:
@@ -612,16 +616,12 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
                                     "ls": ls})  # fmt: skip
             ax.plot([], [], color=color, ls=ls, label=label)
 
-        if pp.motion is not None:
-            draw(
-                pp.motion,
-                arrow,
-                pp.colour,
-                _label(pp, many, f"motion {pp.motion:.0f}°"),
-            )
+        # the motion is the movement since the onset: drawn as its T line in
+        # the pair's colour (:func:`_movement_and_rate`), no arrow of its own
         if pp.downslope is not None:
             draw(pp.downslope[0], 0.8 * arrow, pp.slope_colour,
                  _label(pp, many, "downslope (DEM)"), "--")  # fmt: skip
+    _movement_and_rate(ax, pairs, half, scale, many)
     refs = {pp.ref[0]: pp for pp in pairs if pp.ref is not None}
     for name, pp in refs.items():  # toward each reference station, at the edge
         assert pp.ref is not None
@@ -654,6 +654,89 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
 #: the 16 compass points, from north clockwise
 COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")  # fmt: skip
+
+
+#: days averaged for the end of the movement since the onset
+END_DAYS = 2.0
+
+
+def _movement_and_rate(
+    ax: Any, pairs: Sequence[PairPlot], half: float, scale: float, many: bool
+) -> None:
+    """As the track map (BGÓ 2026-11-11, one look on every map): per rover
+    the movement since the onset, a T line in its colour at the dots' scale
+    (it is the pair's motion direction)
+    (its end the robust level of the newest ``END_DAYS``, 1-σ ellipse), and
+    its 14-day rate as an arrow in its colour only above
+    ``track.RECENT_SIGMA`` σ (1-σ ellipse), with a scale bar of its own."""
+    from matplotlib.patches import Ellipse, Wedge
+
+    from gps_plot import track
+
+    for pp in pairs:
+        if not pp.d.shape[1]:
+            continue
+        x0, y0 = pp.pos
+        lvl, lsig, n = end_of(pp.since, pp.d, pp.sig)
+        if n == 0 or not np.isfinite(lvl).all():
+            continue
+        ex, ey = x0 + lvl[1] * scale, y0 + lvl[0] * scale
+        length = float(np.hypot(ex - x0, ey - y0))
+        # BGÓ 2026-11-11: the T line is the motion, so in the pair's colour
+        what = (f"motion {pp.motion:.0f}° (movement since the onset)"
+                if pp.motion is not None else "movement since the onset")  # fmt: skip
+        ax.plot([x0, ex], [y0, ey], color=pp.colour, lw=2.4, zorder=4.4,
+                solid_capstyle="butt", label=_label(pp, many, what))  # fmt: skip
+        if length > 0:  # the T bar across the end
+            ux, uy = (ex - x0) / length, (ey - y0) / length
+            t = 0.025 * half
+            ax.plot([ex - uy * t, ex + uy * t], [ey + ux * t, ey - ux * t],
+                    color=pp.colour, lw=2.4, zorder=4.4)  # fmt: skip
+        ax.add_patch(Ellipse((ex, ey), 2 * lsig[1] * scale, 2 * lsig[0] * scale,
+                             fill=False, ec=pp.colour, lw=0.8, zorder=4.4))  # fmt: skip
+    shown = [pp for pp in pairs if pp.track is not None
+             and pp.track.recent is not None and pp.track.recent_shown]  # fmt: skip
+    quiet = [pp for pp in pairs if pp.track is not None and pp not in shown]
+    for pp in quiet:
+        ax.plot([], [], ls="none",
+                label=f"{pp.rover}: no motion above {track.RECENT_SIGMA:g} σ "
+                f"in the last {track.RECENT_DAYS} days")  # fmt: skip
+    if not shown:
+        return
+    fastest = max(pp.track.recent.speed for pp in shown)
+    rscale = 0.42 * half / fastest  # m on the map per mm/yr
+    for pp in shown:
+        r = pp.track.recent
+        x0, y0 = pp.pos
+        tx, ty = x0 + r.east * rscale, y0 + r.north * rscale
+        ax.annotate("", xy=(tx, ty), xytext=(x0, y0), zorder=5.5,
+                    arrowprops={"arrowstyle": "-|>", "color": pp.colour, "lw": 2.2,
+                                "mutation_scale": 16})  # fmt: skip
+        ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
+                             2 * r.sigma_north * rscale, fill=False, ec=pp.colour,
+                             lw=1.0, zorder=5.5))  # fmt: skip
+        # the direction's 1-σ as a wedge (BGÓ 2026-11-11): σ across the
+        # rate over its speed
+        un, ue = r.north / r.speed, r.east / r.speed
+        across = float(np.hypot(ue * r.sigma_north, un * r.sigma_east))
+        spread = min(float(np.degrees(np.arctan2(across, r.speed))), 90.0)
+        # matplotlib angles: from east, counter-clockwise
+        mid = 90.0 - r.azimuth
+        ax.add_patch(Wedge((x0, y0), float(np.hypot(tx - x0, ty - y0)),
+                           mid - spread, mid + spread, fc=pp.colour, alpha=0.18,
+                           ec="none", zorder=5.3))  # fmt: skip
+        ax.plot([], [], color=pp.colour, lw=2.2,
+                label=_label(pp, many, f"last {pp.track.recent_window:.0f} days "
+                             f"{r.speed:.0f} ± {r.sigma_speed:.0f} mm/yr "
+                             f"toward {r.azimuth:.0f} ± {spread:.0f}°"))  # fmt: skip
+    # the arrows' scale, above the dots' (every sized arrow has one)
+    bar = _nice(fastest / 2)
+    xb, yb = 0.55 * half, -0.78 * half
+    ax.annotate("", xy=(xb + bar * rscale, yb), xytext=(xb, yb), zorder=6,
+                arrowprops={"arrowstyle": "-|>", "color": "k", "lw": 2.0})  # fmt: skip
+    ax.annotate(f"{bar:g} mm/yr (arrows)", (xb, yb), xytext=(0, 7),
+                textcoords="offset points", fontsize="small", zorder=6,
+                bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
 
 
 def compass(deg: float) -> str:
@@ -1030,16 +1113,21 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     t_on = max(first if onset is None else dr_days(onset), first)
     when = dt.datetime(1970, 1, 1) + dt.timedelta(days=t_on)
     td, d, sd = displacement(t, y, s, t_on, window)
-    motion = (directions.get(name.upper()) or {}).get("motion")
-    how = "config/option"
-    if motion is None:
-        est, _, _ = dr.estimate(name, when, end, config, rtk=args.rtk,
-                                window=window, frame=args.frame)  # fmt: skip
-        if est.significant:
-            motion, how = est.azimuth, "estimated over the plot"
-        else:  # within its own noise: no direction to draw
-            how = "no significant motion over the plot"
     ok = np.isfinite(d[0]) & np.isfinite(d[1])
+    if getattr(args, "direction", None) is not None:  # asked for: as given
+        motion = (directions.get(name.upper()) or {}).get("motion")
+        how = "option"
+    else:
+        # BGÓ 2026-11-11: the direction is the movement since the onset (the
+        # map's grey T line), not the fixed station_areas.yaml directions:;
+        # the sector's and the profile's lines follow it as data arrive
+        motion = total_direction((np.asarray(td) - t_on)[ok], np.asarray(d)[:, ok],
+                                 np.asarray(sd)[:, ok])  # fmt: skip
+        how = (
+            "movement since the onset"
+            if motion is not None
+            else f"no movement above {MOTION_SIGMA:g} σ since the onset"
+        )
     pp = PairPlot(name, (np.asarray(td) - t_on)[ok], np.asarray(d)[:, ok], motion,
                   t_on=t_on, sig=np.asarray(sd)[:, ok])  # fmt: skip
     note = how if motion is None else f"motion {motion:.0f} deg ({how})"
@@ -1061,7 +1149,63 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     if b0 is not None:  # the reference, seen from the rover
         pp.ref = (name[5:], float(np.degrees(np.arctan2(-b0[1], -b0[0])) % 360.0),
                   float(np.hypot(b0[0], b0[1])))  # fmt: skip
+    if not args.rtk:
+        try:
+            pp.track = pair_track(name, when, end, args.frame)
+        except (OSError, ValueError) as exc:
+            print(f"{name}: no 14-day rate ({exc})", file=sys.stderr)
     return pp, f"{name}: {note}"
+
+
+#: the movement since the onset gives the direction above this many σ
+MOTION_SIGMA = 2.0
+
+
+def end_of(since: Any, d: Any, sig: Any) -> tuple[Any, Any, int]:
+    """The robust (N, E) level of the newest ``END_DAYS`` and its σ [mm]
+    (:func:`gps_analysis.direction.end_level`): the end of the grey line."""
+    from gps_analysis.direction import end_level
+
+    newest = since >= since.max() - END_DAYS
+    s = sig if sig is not None else np.ones_like(d)
+    lvl, lsig, n = end_level(d[:2, newest], s[:2, newest])
+    return lvl, lsig, int(n)
+
+
+def total_direction(since: Any, d: Any, sig: Any) -> float | None:
+    """The azimuth [°] of the movement since the onset, when it stands out
+    of its noise (``MOTION_SIGMA`` σ along it); None otherwise."""
+    if not np.asarray(since).size:
+        return None
+    lvl, lsig, n = end_of(since, d, sig)
+    if n == 0 or not np.isfinite(lvl).all():
+        return None
+    size = float(np.hypot(lvl[0], lvl[1]))
+    if size == 0:
+        return None
+    sigma = float(np.hypot(lvl[0] / size * lsig[0], lvl[1] / size * lsig[1]))
+    if size <= MOTION_SIGMA * sigma:
+        return None
+    return float(np.degrees(np.arctan2(lvl[1], lvl[0])) % 360.0)
+
+
+def pair_track(name: str, onset: dt.datetime, end: Any, frame: str) -> Any:
+    """The rover's track relative to the pair's reference, as the track map
+    makes it (:func:`gps_plot.track.load_track`: pre-onset trend removed,
+    14-day rate with the noise-wander σ, recent mode so its arrow follows
+    ``RECENT_SIGMA``). BGÓ 2026-11-11: the polar figure's map shows the
+    same 14-day arrow and grey movement since the onset as the track map."""
+    from gps_plot import terrain, track
+
+    rover, ref = name[:4], name[5:]
+    day = onset.date()
+    pre = track.pre_window(day)
+    last = end.date() if isinstance(end, dt.datetime) else end
+    lon, lat = terrain.station_lonlat(rover)
+    reference = track.load_series(ref, pre, frame=frame, end=last)
+    tr = track.load_track(rover, lon, lat, day, pre, frame=frame, end=last,
+                          reference=reference, vertical=False)  # fmt: skip
+    return dataclasses.replace(tr, colour_recent=True)
 
 
 def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
