@@ -136,3 +136,19 @@ def test_area_status_takes_the_higher_rule() -> None:
     rec = rs.area_status("a", spec, ["A-B"], read, NOW)
     assert rec["rule"] == "accel" and rec["level"] == 3
     assert rec["accel"]["set_by"]["scale_h"] in ra.SCALES
+
+
+def test_thresholds_per_scale_in_mm_and_mm_per_day() -> None:
+    q = np.ones((len(ra.SCALES), 2))
+    q[:, 1] = 2.0
+    fit = ra.Accel(scales={"A-B": q}, ks=(1.5, 2.0, 3.0))
+    got = ra.thresholds(fit, ["A-B", "NONE-B"])
+    assert list(got) == ["A-B"]
+    row24 = got["A-B"][ra.SCALES.index(24.0)]
+    assert row24["horizontal_mm"] == [1.5, 2.0, 3.0] and row24["up_mm"] == [
+        3.0,
+        4.0,
+        6.0,
+    ]
+    row6 = got["A-B"][ra.SCALES.index(6.0)]
+    assert row6["horizontal_mm_per_day"] == [6.0, 8.0, 12.0]

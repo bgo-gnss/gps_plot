@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -106,3 +108,15 @@ def test_empirical_sigma_from_day_to_day_scatter() -> None:
     assert all(abs(float(got[c].median()) - 2.0) < 0.3 for c in rt.COMP)
     few = rt.empirical_sigma(v.iloc[:5], formal.iloc[:5])
     assert (few == 0.5).all().all()  # too few days: formal kept
+
+
+def test_onset_direction_of_the_movement_since() -> None:
+    days = pd.date_range("2026-09-23", periods=40, freq="1D") + rt.NOON
+    a = np.radians(305.0)
+    x = np.linspace(0.0, 30.0, 40)
+    v = pd.DataFrame({"N": x * np.cos(a), "E": x * np.sin(a), "U": 0.0}, index=days)
+    sig = pd.DataFrame({"N": 1.0, "E": 1.0, "U": 3.0}, index=days)
+    got = rt.onset_direction(v, sig, dt.date(2026, 9, 23))
+    assert got is not None and abs(got - 305.0) < 0.5
+    still = v * 0.0
+    assert rt.onset_direction(still, sig, dt.date(2026, 9, 23)) is None

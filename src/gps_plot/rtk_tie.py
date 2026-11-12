@@ -283,6 +283,37 @@ def _clip_to(main: pd.DataFrame, other: pd.DataFrame) -> pd.DataFrame:
     return other.where((other >= lo - pad) & (other <= hi + pad))
 
 
+#: days averaged at either end of the movement since the onset (the
+#: polar figure's: 7 after the onset, the newest 2)
+ONSET_DAYS, END_DAYS = 7.0, 2.0
+#: the movement must stand this many σ above its noise for a direction
+MOTION_SIGMA = 2.0
+
+
+def onset_direction(
+    values: pd.DataFrame, sigma: pd.DataFrame, onset: dt.date
+) -> float | None:
+    """The azimuth [°] of the horizontal movement since ``onset``: the
+    median of the newest ``END_DAYS`` minus that of the first
+    ``ONSET_DAYS`` after it (at least three solutions each end), when it
+    stands ``MOTION_SIGMA`` σ out of the noise; None otherwise."""
+    on = pd.Timestamp(onset)
+    after = values[values.index >= on][["N", "E"]].dropna()
+    if len(after) < 6:
+        return None
+    first = after[after.index < on + pd.Timedelta(days=ONSET_DAYS)]
+    first = first if len(first) >= 3 else after.iloc[:3]
+    last = after[after.index > after.index[-1] - pd.Timedelta(days=END_DAYS)]
+    last = last if len(last) >= 3 else after.iloc[-3:]
+    d = (last.median() - first.median()).to_numpy(float)
+    size = float(np.hypot(*d))
+    noise = sigma[["N", "E"]].median().to_numpy(float)
+    sig = float(np.hypot(*noise)) * np.sqrt(1.0 / len(first) + 1.0 / len(last))
+    if not np.isfinite(size) or size <= MOTION_SIGMA * sig:
+        return None
+    return float(np.degrees(np.arctan2(d[1], d[0])) % 360.0)
+
+
 def _ylabels(azimuths: Sequence[float | None]) -> list[str] | None:
     """Motion / Across / Up labels (gps_plot.labels, as the baseline
     figures' ``--axes motion``), the motion azimuth(s) in the first."""
@@ -410,6 +441,29 @@ def _azimuth(config: Any, area: str | None, pair: str) -> float | None:
     return None if motion is None else float(motion)
 
 
+def _event_lines(config: Any, area: str | None) -> dict[str, list[str]]:
+    """The area's events.yaml onsets as ``{"YYYYMMDD": [colour]}`` for
+    ``timesmatplt.addEvent``, coloured as the baseline figures (plots.yaml
+    ``event_colours``; BGÓ 2026-11-12: the 23.9. onset on the daily
+    figures); empty without an area or file."""
+    from gps_plot import products
+
+    if not area:
+        return {}
+    base = Path(config.config_path).expanduser()
+    try:
+        events = products.load_yaml(base / "events.yaml").get("events") or []
+        plots = products.load_yaml(base / "plots.yaml")
+    except OSError:
+        return {}
+    colours = {**products.DEFAULT_EVENT_COLOURS, **(plots.get("event_colours") or {})}
+    out: dict[str, list[str]] = {}
+    for spec in products.event_specs(events, [area], colours):
+        day, colour = spec.split(",", 1)
+        out[day] = [colour]
+    return out
+
+
 def _save(fig: Any, path: Path, prog: str) -> None:
     import matplotlib.pyplot as plt
 
@@ -472,14 +526,27 @@ def run(prog: str, argv: list[str]) -> int:
     compare: dict[str, tuple[str, dict[str, Any]]] = {}
     try:
         onset = _onset(args, config)
-        azim = {s: (_azimuth(config, args.area, f"{s}-{refs[0]}") if along else None)
-                for s in stations}  # fmt: skip
-        if along and any(a is None for a in azim.values()):
-            raise ValueError("--axes motion: a station has no directions: motion "
-                             f"<station>-{refs[0]} in --area")  # fmt: skip
         routes = [_route(p, stations) for p in args.via]
         anchors = [a for _, a, _ in routes if a not in stations]
         daily, sigma = daily_in_frame(stations + sorted(set(anchors)), refs, onset)
+        # the motion axis: the movement since the onset in this frame (as the
+        # polar figure's, BGÓ 2026-11-12: the long-term direction, not the
+        # 14-day rate's); station_areas.yaml directions: motion when there
+        # is no movement above its noise yet
+        azim: dict[str, float | None] = {s: None for s in stations}
+        how: dict[str, str] = {}
+        if along:
+            for s in stations:
+                got_az = onset_direction(daily[s], sigma[s], onset)
+                if got_az is not None:
+                    azim[s], how[s] = got_az, "since onset"
+                else:
+                    azim[s] = _azimuth(config, args.area, f"{s}-{refs[0]}")
+                    how[s] = "directions: motion"
+            if any(a is None for a in azim.values()):
+                raise ValueError("--axes motion: a station has neither movement "
+                                 "since the onset nor a directions: motion "
+                                 f"<station>-{refs[0]} in --area")  # fmt: skip
         if routes and rtk_spans:
             read = rtk_status.rtk_reader(
                 list_baselines(rtk_dir(common.config_dir(config, "rtk_dir")))
@@ -515,6 +582,15 @@ def run(prog: str, argv: list[str]) -> int:
         print(f"{prog}: {exc}", file=sys.stderr)
         return 1
     out.mkdir(parents=True, exist_ok=True)
+
+    def motion_note(names: Sequence[str]) -> str:
+        """The motion axis of ``names``, on its own line of the note."""
+        if not along:
+            return ""
+        parts = [f"{n} {azim[n]:.0f}°" + ("" if how.get(n) == "since onset"
+                                         else " (directions: motion)")
+                 for n in names]  # fmt: skip
+        return "\nmotion axis = the movement since the onset: " + ", ".join(parts)
 
     def piece(
         sta: str, days: float
@@ -559,10 +635,9 @@ def run(prog: str, argv: list[str]) -> int:
             sty += ["line", "marked"]
             col += [colors[sta], colors[sta]]
             note = (
-                f"frame: {frame_name}; RTK {via_of[sta]} ({resolution(days)}) tied "
-                f"to the daily solutions (daily medians, linear between noons); "
-                f"after the newest daily ({newest:%d %b}) the RTK change since: "
-                f"provisional"
+                f"RTK {via_of[sta]} ({resolution(days)}) tied to the daily "
+                f"solutions (daily medians, linear between noons); after "
+                f"{newest:%d %b}: provisional{motion_note([sta])}"
             )
             last = min(main.dropna(how="all").index[-1].to_pydatetime(), now)
             fig = figure(ser, sty, col, main=f"{sta}: RTK + daily",
@@ -590,9 +665,10 @@ def run(prog: str, argv: list[str]) -> int:
         names = [m[0] for m in made]
         newest_all = min(m[3] for m in made)
         note = (
-            f"frame: {frame_name}; RTK ({resolution(days)}) "
+            f"RTK ({resolution(days)}) "
             + ", ".join(f"{s} via {via_of[s]}" for s in names)
             + f", tied to the daily solutions; after {newest_all:%d %b}: provisional"
+            + motion_note([m[0] for m in made])
         )
         last = min(
             max(m[1].dropna(how="all").index[-1] for m in made).to_pydatetime(), now
@@ -605,6 +681,7 @@ def run(prog: str, argv: list[str]) -> int:
         _save(fig, out / f"{'_'.join(names)}-tied-{_span_name(days)}{tail}.png", prog)
 
     ylabels = _ylabels([azim[s] for s in stations]) if along else None
+    event_lines = _event_lines(config, args.area) if daily_spans else {}
     for days in daily_spans:
         start = end - pd.Timedelta(days=days)
         keep = slice(start - pd.Timedelta(days=1), end)
@@ -620,8 +697,15 @@ def run(prog: str, argv: list[str]) -> int:
                      start=start, end=end, last=last_day.to_pydatetime(), now=now,
                      rtk=False, ylabels=ylabels,
                      ylim=[args.ylim] if args.ylim else [],
-                     note=f"daily (24 h), cleaned view, each station minus the "
-                     f"weighted daily mean of {', '.join(refs)} (their trend and "
-                     f"seasonal removed); empirical $\\sigma$ (day-to-day scatter)")  # fmt: skip
+                     note=f"daily (24 h), cleaned, minus the weighted daily mean of "
+                     f"{', '.join(refs)} (trend + seasonal removed); empirical "
+                     f"$\\sigma$"
+                     f"{motion_note(stations)}")  # fmt: skip
+        # on the three data panels only (addEvent would draw on the logo's
+        # axes too)
+        for day, (colour, *_rest) in event_lines.items():
+            when = dt.datetime.strptime(day, "%Y%m%d")
+            for ax in fig.axes[:3]:
+                ax.axvline(x=when, color=colour, zorder=2)
         _save(fig, out / f"{'_'.join(stations)}-frame-{days:g}d{tail}.png", prog)
     return 0

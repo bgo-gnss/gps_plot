@@ -364,6 +364,7 @@ def live(
     out: dict[str, Any] = {
         "multipliers": list(fit.ks),
         "scales_h": list(SCALES),
+        "thresholds": thresholds(fit, pairs),
         "quiet": fit.quiet,
         "quiet_months": fit.months,
         "pairs": rows,
@@ -375,6 +376,30 @@ def live(
     out["set_by"] = {k: best[2][k] for k in
                      ("pair", "scale_h", "component", "z", "z_held", "value_mm",
                       "dv_mm_per_day")}  # fmt: skip
+    return out
+
+
+def thresholds(fit: Accel, pairs: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """What each level needs, per pair and scale (for the Vöktun page's
+    table, BGÓ 2026-11-12): k · quiet q99 as extra displacement over T [mm]
+    and as the change of velocity it means [mm/day], horizontal and Up."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pair in pairs:
+        q = fit.scales.get(pair)
+        if q is None:
+            continue
+        rows = []
+        for j, t_h in enumerate(SCALES):
+            h = [round(float(k * q[j, 0]), 1) for k in fit.ks]
+            u = [round(float(k * q[j, 1]), 1) for k in fit.ks]
+            rows.append({
+                "scale_h": t_h,
+                "horizontal_mm": h,
+                "up_mm": u,
+                "horizontal_mm_per_day": [round(x * 24.0 / t_h, 1) for x in h],
+                "up_mm_per_day": [round(x * 24.0 / t_h, 1) for x in u],
+            })  # fmt: skip
+        out[pair] = rows
     return out
 
 
