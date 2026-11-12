@@ -242,7 +242,7 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                    label=rf"weekly median ($\geq${MIN_PER_BIN} days)", **style)  # fmt: skip
     # the 14-day rate: ARROW_DAYS of it from the newest position, along the
     # motion and Up (BGÓ 2026-11-11; no ellipse)
-    from gps_plot.polar import ARROW_DAYS, rate_step
+    from gps_plot.polar import rate_step, rate_step_label
 
     step = rate_step(pp)
     if step is not None and prof.t.size:
@@ -258,7 +258,7 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
             [],
             color=pp.colour,
             lw=1.8,
-            label=f"{ARROW_DAYS:g} days at the 14-day rate" + up_text(pp),
+            label=rate_step_label(pp) + (up_text(pp) if pp.rate_from != "rtk" else ""),
         )
     pl = prof.plunge
     if pl is not None:

@@ -215,6 +215,10 @@ class RtkOverlay:
     rates: tuple[RtkRate | None, ...] = ()
     #: the windows tried [days]
     windows: tuple[float, ...] = ()
+    #: the average rate since an episode's onset (``since``, days since
+    #: 1970), the RTK figure's black arrow (BGÓ 2026-11-12); None: not asked
+    since: RtkRate | None = None
+    since_t: float | None = None
 
 
 def history_days(window: float) -> float:
@@ -580,6 +584,7 @@ def overlay(
     window: float | Sequence[float] = RATE_WINDOWS,
     after: float | None = None,
     minutes: tuple[Any, Any] | None = None,
+    since: float | None = None,
 ) -> RtkOverlay:
     """The RTK tail of ``(t, y)`` (:func:`read_rtk`) on the daily
     displacement ``d_day`` at ``t_day``: shifted onto it
@@ -588,7 +593,8 @@ def overlay(
     (one or several, :func:`pick_rate`): windows under
     :data:`MINUTE_BELOW` on ``minutes`` (the 1-minute ``(t, y)``; none:
     those windows are skipped), every window but the longest with its
-    :func:`change_test`.
+    :func:`change_test`; with ``since`` [days since 1970] also the rate
+    from then to the newest bin (empirical σ, the 2 σ speed rule).
 
     Raises:
         ValueError: no RTK, or no day common to the two.
@@ -608,9 +614,13 @@ def overlay(
     )
     rate = pick_rate(rates)
     d = y[:, keep] + al.shift[:, None]
+    since_rate = None
+    if since is not None and since < t.max():
+        since_rate = estimate_rate(t, y, window=float(t.max()) - since, step=step)
     return RtkOverlay(t[keep], d, al, rate, interval, days,
                       rate.window if rate is not None else windows[-1],
-                      running_mean(t[keep], d), rates, windows)  # fmt: skip
+                      running_mean(t[keep], d), rates, windows,
+                      since_rate, since)  # fmt: skip
 
 
 def _window_rate(
@@ -646,11 +656,15 @@ def read_overlay(
     days: float = RTK_DAYS,
     window: float | Sequence[float] = RATE_WINDOWS,
     after: float | None = None,
+    since: float | None = None,
 ) -> RtkOverlay:
     """:func:`overlay` of the pair's RTK read back far enough for the tail,
-    the rate's window and history, and the alignment."""
+    the rates' windows (``since``'s too) and history, and the alignment."""
     windows = windows_of(window)
     longest = max(windows)
+    if since is not None:  # its window, to the end
+        longest = max(longest, (end - dt.datetime(1970, 1, 1)).total_seconds() / 86400.0
+                      - since)  # fmt: skip
     back = max(days, longest + history_days(longest), ALIGN_DAYS,
                CAL_DAYS + longest + BG_WINDOW) + 1.0  # fmt: skip
     t, y = read_rtk(name, end - dt.timedelta(days=back), end, config, interval)
@@ -660,7 +674,7 @@ def read_overlay(
         minutes = clean_minutes(*read_rtk(name, end - dt.timedelta(days=back_min),
                                           end, config, "1min"))  # fmt: skip
     return overlay(t, y, t_day, d_day, interval=interval, days=days, window=window,
-                   after=after, minutes=minutes)  # fmt: skip
+                   after=after, minutes=minutes, since=since)  # fmt: skip
 
 
 def span_text(days: float) -> str:
@@ -704,8 +718,8 @@ def quiet_label(
     if rate is None:
         span = windows_text(windows) if many else span_text(window)
         return f"RTK {span}: too few fixed solutions"
-    if many:
-        return (f"RTK {windows_text(windows)}: no speed-up, {span_text(rate.window)} "
+    if many:  # short: the map's legend sits beside its colour bar
+        return (f"RTK no speed-up; {span_text(rate.window)} "
                 f"{rate.speed:.1f} $\\pm$ {rate.sigma_speed:.1f} mm/d")  # fmt: skip
     return (f"RTK {span_text(rate.window)}: {rate.speed:.1f} $\\pm$ "
             f"{rate.sigma_speed:.1f} mm/d, below {RTK_SIGMA:g}$\\sigma$")  # fmt: skip

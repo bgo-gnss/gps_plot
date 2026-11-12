@@ -138,6 +138,20 @@ arrow); `--rtk` adds per pair (BGÓ 2026-11-12):
   and the day-median scatter. Every daily statistic (T line, direction,
   sector limits, dot scale, weekly medians, plunge) stays on the daily
   points.
+- **`--rate both|daily|rtk`** (BGÓ 2026-11-12: the RTK arrow dwarfed the
+  daily one): `both` (default) draws both arrows; `daily` only the 14-day
+  rate of the daily solutions, `rtk` only the RTK rate (the sector's and
+  profile's 14-day step then follows the RTK rate, when it passes its test).
+  The black arrow is the average since the onset (daily, above 2 σ); on
+  the RTK figure with `--rtk-since DATE` the RTK average since the newest
+  episode's onset (BGÓ 2026-11-12: 8 Nov 00:00 UTC at Svínafellsheiði).
+  Files `-rate-daily` / `-rate-rtk`. The `--rate rtk` run also writes
+  `<pairs>-polar-<period>-rtk-rates.json`: per rover each arrow's window,
+  end and whether it is drawn, so `gpsplot rtk-tie --rates` draws the same
+  window's rate as a line on the standard time series (fitted there, in
+  its own frame). The Vöktun page shows the two figures side by side, each
+  over the rtk-tie figure from 1 Aug (`--since 2026-08-01`): the daily
+  frame figure under the daily one, the RTK + daily under the RTK one.
 - **the RTK rate**, a line per component over the newest 10 and 30 min
   (1-minute values) and 6, 12, 24 and 72 h (`--rtk-rate`, default
   `10min,30min,6h,12h,24h,72h`). The SHORTEST window that passes its test
@@ -159,8 +173,9 @@ arrow); `--rtk` adds per pair (BGÓ 2026-11-12):
   ramp passes, however fast — rtk_accel's trailing Hampel would cut a
   collapse's first hour), then minus the sidereal multipath model (the
   median of the high-passed values 1…7 sidereal days before, ≥ 3).
-  Nothing passes: no arrow, a legend line "RTK 10 min–72 h: no speed-up,
-  72 h v ± σ mm/d"; an arrow's line names the window, the speed and, for a
+  Nothing passes: no arrow, a legend line "RTK no speed-up; 72 h v ± σ
+  mm/d" (short: the map's legend sits beside its colour bar, which moves
+  to the top of the map when the legend still reaches it); an arrow's line names the window, the speed and, for a
   shorter window, "speed-up z > limit". Up is in the log only, which lists
   every window. σ of a rate is
   empirical, the larger per component of (a) the residual scatter's

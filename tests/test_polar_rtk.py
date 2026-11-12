@@ -243,10 +243,10 @@ def test_window_rates_match_the_loop() -> None:
         assert r == pytest.approx(polar_rtk.line_fit(t[m], y[0, m])[0], rel=1e-6)
 
 
-def test_quiet_label_lists_the_windows() -> None:
+def test_quiet_label_is_short() -> None:
     r = _rate(0.2, 0.0, 3.0)
     text = polar_rtk.quiet_label(r, 3.0, polar_rtk.RATE_WINDOWS)
-    assert text.startswith("RTK 10 min–72 h: no speed-up, 24 h ")
+    assert text.startswith("RTK no speed-up; 24 h ")
     assert "σ" not in text and "±" not in text
 
 
