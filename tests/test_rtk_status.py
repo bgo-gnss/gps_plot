@@ -50,7 +50,7 @@ def test_area_status_levels_and_set_by() -> None:
     assert spec is not None
     data = {
         "QUIE-BASE": _series(0.0, NOW),
-        "MOVE-BASE": _series(25.0, NOW - dt.timedelta(minutes=30)),
+        "MOVE-BASE": _series(25.0, NOW - dt.timedelta(minutes=40)),  # held 5 min (T7)
     }
 
     def read(pair: str, start: dt.datetime, end: dt.datetime) -> Any:
@@ -115,3 +115,75 @@ def test_onset_of_reads_onset_and_time() -> None:
         rs.onset_of(ev, "f")
     with pytest.raises(ValueError):
         rs.onset_of(ev, "nope")
+
+
+def _noisy(step_mm: float, at: dt.datetime, seed: int) -> Any:
+    """``_series`` with its own noise (siblings do not share the rover's)."""
+    t, _ = _series(0.0, at)
+    y = np.random.default_rng(seed).normal(0.0, 1.0, (3, t.size))
+    y[0, t >= np.datetime64(at, "ns")] += step_mm
+    return t, y
+
+
+def _status(data: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    spec = rs.rtk_spec(_entry(**LIMITS, **extra))
+    assert spec is not None
+
+    def read(pair: str, start: dt.datetime, end: dt.datetime) -> Any:
+        return data[pair]
+
+    return rs.area_status("a", spec, list(data), read, NOW)
+
+
+def test_sibling_veto_keeps_a_base_jump_green() -> None:
+    """T5: the base jumps 25 mm, so every pair on it moves the same way."""
+    jump = NOW - dt.timedelta(minutes=40)
+    data = {
+        p: _noisy(25.0, jump, k)
+        for k, p in enumerate(["AAAA-BASE", "BBBB-BASE", "CCCC-BASE"])
+    }
+    assert _status(data)["level"] == 2  # without the veto: orange
+    rec = _status(data, common_mode="siblings")
+    assert rec["level"] == 0 and rec["common_mode"] == "siblings"
+    for row in rec["baselines"]:
+        assert row["level"] == 0 and row["vetoed"] == "BASE" and row["level_raw"] == 2
+        assert not any(k.startswith("_") for k in row)  # private keys not written
+
+
+def test_sibling_veto_lets_one_rover_moving_fire() -> None:
+    """Differential motion: one rover moves, its siblings stay; it fires."""
+    move = NOW - dt.timedelta(minutes=40)
+    data = {
+        "MOVE-BASE": _noisy(25.0, move, 1),
+        "QUIE-BASE": _noisy(0.0, move, 2),
+        "STIL-BASE": _noisy(0.0, move, 3),
+    }
+    rec = _status(data, common_mode="siblings")
+    assert rec["level"] == 2 and rec["set_by"]["pair"] == "MOVE-BASE"
+    assert "vetoed" not in next(r for r in rec["baselines"] if r["pair"] == "MOVE-BASE")
+
+
+def test_sibling_veto_svinafellsheidi_shape() -> None:
+    """SVIN-SVIE has no sibling on SVIE: its motion always fires. A SKFC
+    jump moves SVIN-SKFC and SVIE-SKFC alike and is vetoed."""
+    at = NOW - dt.timedelta(minutes=40)
+    data = {
+        "SVIN-SVIE": _noisy(25.0, at, 1),
+        "SVIN-SKFC": _noisy(25.0, at, 2),
+        "SVIE-SKFC": _noisy(25.0, at, 3),
+    }
+    rows = {r["pair"]: r for r in _status(data, common_mode="siblings")["baselines"]}
+    assert rows["SVIN-SVIE"]["level"] == 2 and "vetoed" not in rows["SVIN-SVIE"]
+    assert rows["SVIN-SKFC"]["level"] == 0 and rows["SVIE-SKFC"]["level"] == 0
+
+
+def test_sibling_veto_without_siblings_and_bad_mode() -> None:
+    got = {
+        "AAAA-BASE": {
+            "level": 2,
+            "_windows": {60.0: {"offset": [25, 0, 0], "level": 2, "yellow": (10, 20)}},
+        }
+    }
+    assert rs.sibling_veto(got) == got  # alone: kept
+    with pytest.raises(ValueError):
+        rs.rtk_spec(_entry(**LIMITS, common_mode="reference-typo"))

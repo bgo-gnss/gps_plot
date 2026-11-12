@@ -269,6 +269,7 @@ def write_statuses(
     rtk_dirs: Sequence[str],
     root: Path,
     prog: str,
+    config_dir: Path | None = None,
 ) -> int:
     """The RTK warning of each area of ``jobs`` with ``monitoring: rtk:``
     limits: ``rtk.status.json`` in its rtk dir. 1 when one failed."""
@@ -279,11 +280,23 @@ def write_statuses(
     status = 0
     now = dt.datetime.now(dt.UTC).replace(tzinfo=None, second=0, microsecond=0)
     read = rtk_status.rtk_reader(rtk_dirs)
+    thresholds: dict[str, Any] = {}
+    if config_dir is not None and (config_dir / rtk_status.THRESHOLDS_NAME).is_file():
+        from gps_plot import products
+
+        thresholds = products.load_yaml(config_dir / rtk_status.THRESHOLDS_NAME)
     for slug in sorted({j.area for j in jobs}):
         try:
             spec = rtk_status.rtk_spec(areas.get(slug) or {})
             if spec is None:
                 continue
+            edges = rtk_status.load_pair_edges(thresholds, slug)
+            if edges:
+                spec["pair_edges"] = edges
+            if spec.get("statistic") == "coherent":  # T9
+                from gps_plot import rtk_coherent
+
+                spec["coherent_fit"] = rtk_coherent.load(thresholds, slug)
             pairs = sorted({j.pair for j in jobs if j.area == slug and not j.group})
             out_dir = next(j.out_dir for j in jobs if j.area == slug)
             record = rtk_status.area_status(slug, spec, pairs, read, now)
@@ -354,7 +367,12 @@ def run(prog: str, argv: list[str]) -> int:
                 print(f"{prog}: {j.stem}: {exc}", file=sys.stderr)
                 status = 1
         if not args.no_status:
-            status = max(status, write_statuses(jobs, areas, dirs, root, prog))
+            status = max(
+                status,
+                write_statuses(
+                    jobs, areas, dirs, root, prog, Path(config.config_path).expanduser()
+                ),
+            )
         if not args.keep_stale:  # against every configured run, not just these
             for f in stale(configured, root):
                 f.unlink(missing_ok=True)
