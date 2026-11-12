@@ -84,6 +84,11 @@ def rtk_spec(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     # T5: the common-mode mode; ``siblings`` = the sibling veto
     spec["common_mode"] = raw.get("common_mode")
     common_mode(spec)
+    # BGÓ 2026-11-12: a level needs the offset to stand this many σ_Δ (the
+    # reference window's own scatter, i.e. the current noise) above zero, as
+    # the daily light needs 2 σ; 0 = off. Also the accel rule's, through
+    # rtk_thresholds.yaml significance_sigma
+    spec["significance_sigma"] = float(raw.get("significance_sigma", 0.0))
     # T9: the area's level from the pairs (agree) or the coherent statistic
     spec["statistic"] = str(raw.get("statistic", "pairs"))
     if spec["statistic"] not in ("pairs", "coherent", "accel"):
@@ -216,6 +221,22 @@ def baseline_level(
         up = float(w.offset[2])
         lh = alarm_level(horizontal, h_edges)
         lu = alarm_level(up, u_edges) if u_edges else 0
+        k_sig = float(spec.get("significance_sigma") or 0.0)
+        significant = True
+        if k_sig > 0:  # not above the current noise: no level (stays green)
+            sh = (
+                float(np.hypot(w.offset[0] * w.sigma[0], w.offset[1] * w.sigma[1]))
+                / horizontal
+                if horizontal > 0
+                else float(np.hypot(w.sigma[0], w.sigma[1]))
+            )
+            if horizontal < k_sig * sh:
+                lh = 0
+            if abs(up) < k_sig * float(w.sigma[2]):
+                lu = 0
+            significant = horizontal >= k_sig * sh or abs(up) >= k_sig * float(
+                w.sigma[2]
+            )
         ratio = max(horizontal / h_edges[0], abs(up) / u_edges[0] if u_edges else 0.0)
         per_window[float(minutes_w)] = {
             "offset": [float(v) for v in w.offset],
@@ -229,6 +250,7 @@ def baseline_level(
             "horizontal_mm": round(horizontal, 1),
             "up_mm": round(up, 1),
             "sigma_mm": [round(float(s), 1) for s in w.sigma],
+            "significant": significant,
             "n_window": w.n_after,
             "n_reference": w.n_before,
             "_ratio": ratio,

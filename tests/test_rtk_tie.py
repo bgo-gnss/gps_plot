@@ -120,3 +120,112 @@ def test_onset_direction_of_the_movement_since() -> None:
     assert got is not None and abs(got - 305.0) < 0.5
     still = v * 0.0
     assert rt.onset_direction(still, sig, dt.date(2026, 9, 23)) is None
+
+
+def test_line_sigma_ignores_slow_motion() -> None:
+    t = pd.date_range("2026-11-01", periods=24 * 60 * 2, freq="1min")
+    rng = np.random.default_rng(5)
+    slow = np.linspace(0.0, 50.0, t.size)  # 25 mm/d
+    df = pd.DataFrame({c: slow + rng.normal(0, 3.0, t.size) for c in rt.COMP}, index=t)
+    got = rt.line_sigma(df, None, sub_day=True)
+    assert np.all(np.abs(got - 3.0) < 0.4)
+
+
+def test_figure_drops_an_empty_series() -> None:
+    """A 6 h span after noon has no daily point: that series drops out
+    instead of failing the figure."""
+    import datetime as dt
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    idx = pd.date_range("2026-11-12 12:00", periods=60, freq="1min")
+    full = pd.DataFrame(np.ones((60, 3)), index=idx, columns=["n", "e", "u"])
+    empty = full.iloc[:0]
+    ser = [rt._series("RTK", full, None, None, "rtk"),
+           rt._series("daily", empty, None, None, "daily")]  # fmt: skip
+    fig = rt.figure(ser, ["line", "marked"], ["red", "red"], main="SVIN",
+                         sub="test", start=pd.Timestamp(idx[0]), end=pd.Timestamp(idx[-1]),
+                         last=idx[-1].to_pydatetime(), now=dt.datetime(2026, 11, 12, 13, 0),
+                         rtk=True)  # fmt: skip
+    assert fig is not None
+
+
+def test_fit_line_recovers_the_slope_and_level() -> None:
+    t = pd.date_range("2026-11-01", periods=48, freq="1h")
+    x = np.arange(48) / 24.0
+    df = pd.DataFrame({"N": 2.0 * x + 5.0, "E": -x, "U": np.nan}, index=t)
+    got = rt.fit_line(df, t[0], t[-1])
+    assert got is not None
+    slope, mid, tc = got
+    assert slope[:2] == pytest.approx([2.0, -1.0])
+    assert np.isnan(slope[2])  # no Up values: no Up line
+    at = (tc - t[0]) / pd.Timedelta(days=1)
+    assert mid[0] == pytest.approx(2.0 * at + 5.0)
+    assert rt.fit_line(df, t[-1], t[-1]) is None  # under three values
+
+
+def test_read_rates(tmp_path) -> None:
+    import json
+
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"rovers": {"SVIN": {
+        "pair": "SVIN-SKFC",
+        "daily": {"window_days": 14, "end": "2026-11-11T11:59", "shown": True,
+                  "speed": 1.0},
+        "rtk": {"window_days": 0.25, "end": "2026-11-12T22:30", "shown": False,
+                "speed": 2.0},
+    }}}))  # fmt: skip
+    got = rt.read_rates(str(path))
+    assert got["SVIN"]["daily"] == rt.RateWindow(
+        14.0, pd.Timestamp("2026-11-11 11:59"), True
+    )
+    assert got["SVIN"]["rtk"].days == 0.25 and not got["SVIN"]["rtk"].shown
+    assert rt.read_rates(None) == {}
+
+
+@pytest.mark.parametrize("shown", [True, False])
+def test_rate_lines_draw_over_the_window(shown: bool) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(3, 1)
+    for ax in axes:
+        ax.set_ylim(-10, 10)
+    t = pd.date_range("2026-11-10", periods=72, freq="1h")
+    df = pd.DataFrame({"N": np.arange(72) / 24.0, "E": 0.0, "U": 0.0}, index=t)
+    win = rt.RateWindow(1.0, t[-1], shown)
+    rt.rate_lines(fig, [(df, win, "red", "SVIN")], t[0])
+    lines = [ln for ln in axes[0].get_lines() if ln.get_color() == "red"]
+    assert len(lines) == 1
+    assert lines[0].get_linestyle() == ("-" if shown else "--")
+    texts = [x.get_text() for x in axes[0].get_legend().get_texts()]
+    assert any("SVIN 24 h: +1.00 mm/d" in x for x in texts)
+    assert ("below its test" in texts[0]) is (not shown)
+    assert axes[0].get_ylim() == (-10, 10)
+    plt.close(fig)
+
+
+def test_tick_labels_past_the_panel_edge_are_hidden() -> None:
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(6, 6))
+    axes = [fig.add_subplot(3, 1, i + 1) for i in range(3)]
+    for ax in axes:
+        ax.set_xlim(0, 10)
+        ax.set_xticks(
+            [0.2, 5, 10], ["a long left label", "middle", "a long right label"]
+        )
+    rt.trim_tick_labels(fig)
+    shown = [lab.get_text() for lab in axes[0].get_xticklabels() if lab.get_visible()]
+    assert shown == ["middle"]
+
+
+def test_every_figure_saves_at_one_width() -> None:
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(13, 20))
+    fig.add_subplot(1, 1, 1).text(
+        1.2, 0.5, "far right", transform=fig.axes[0].transAxes
+    )
+    bb = rt.save_bbox(fig)
+    assert (bb.x0, bb.x1) == rt.SAVE_X

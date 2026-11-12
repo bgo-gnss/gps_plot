@@ -29,6 +29,7 @@ Experiment and hold-out check: ``~/gps-data/curation/rtk-daily-tie``.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import os
 import sys
@@ -314,6 +315,56 @@ def onset_direction(
     return float(np.degrees(np.arctan2(d[1], d[0])) % 360.0)
 
 
+def line_sigma(df: pd.DataFrame, azimuth: float | None, sub_day: bool) -> np.ndarray:
+    """The RTK line's own noise per plotted component [mm] (BGÓ 2026-11-12,
+    the ±1σ bar): 1.4826·MAD of its departure from a centred running median
+    (1 h for the one-minute values, 12 h for the 1-h medians), so slow
+    motion stays out of it and the time-correlated noise within that span
+    is in it."""
+    v = rotate(df, azimuth) if azimuth is not None else df
+    win = pd.Timedelta(hours=1 if sub_day else 12)
+    resid = v - v.rolling(win, center=True, min_periods=3).median()
+    out = []
+    for c in v.columns:
+        r = resid[c].to_numpy(float)
+        r = r[np.isfinite(r)]
+        out.append(
+            1.4826 * float(np.median(np.abs(r - np.median(r)))) if r.size else np.nan
+        )
+    return np.asarray(out)
+
+
+def sigma_bars(fig: Any, bars: Sequence[tuple[str, np.ndarray]]) -> None:
+    """A ±2σ bar per series in the top-right corner of each data panel, in
+    the series' colour, "2σ = ±X mm" beside it; all centred on one line
+    (BGÓ 2026-11-12: 2σ, the significance the warning asks for)."""
+    for k, ax in enumerate(fig.axes[:3]):
+        lo, hi = ax.get_ylim()
+        sizes = [2.0 * float(sig[k]) for _, sig in bars]
+        ok = [s for s in sizes if np.isfinite(s) and s > 0]
+        if not ok:
+            continue
+        # one centre line for every bar, so the labels share a line (BGÓ
+        # 2026-11-12); the longest bar's top 5 % below the frame
+        y = hi - 0.05 * (hi - lo) - max(ok)
+        for i, ((colour, _), s) in enumerate(zip(bars, sizes, strict=True)):
+            if not np.isfinite(s) or s <= 0:
+                continue
+            x = 0.965 - 0.16 * i  # axes fraction, one bar per series leftwards
+            tr = ax.get_yaxis_transform()
+            ax.errorbar([x], [y], yerr=[[s], [s]], fmt="none", ecolor=colour,
+                        elinewidth=2.0, capsize=4, capthick=1.5, transform=tr,
+                        zorder=6, clip_on=False)  # fmt: skip
+            ax.text(x - 0.012, y, rf"$2\sigma = \pm${_num_mm(s)}", transform=tr,
+                    ha="right", va="center", fontsize="small", color=colour,
+                    zorder=6)  # fmt: skip
+        ax.set_ylim(lo, hi)
+
+
+def _num_mm(x: float) -> str:
+    return f"{x:.0f} mm" if x >= 10 else f"{x:.1f} mm"
+
+
 def _ylabels(azimuths: Sequence[float | None]) -> list[str] | None:
     """Motion / Across / Up labels (gps_plot.labels, as the baseline
     figures' ``--axes motion``), the motion azimuth(s) in the first."""
@@ -350,6 +401,16 @@ def figure(
     from gps_plot import compose, rtk_classic
     from gps_plot import timesmatplt as tplt
 
+    # a series with nothing in the span drops out (a 6 h span after noon
+    # holds no daily point: its keep window starts a day before the span)
+    kept = [
+        i for i, s in enumerate(series) if np.isfinite(np.asarray(s.y, float)).any()
+    ]
+    if not kept:
+        raise ValueError(f"{main}: no data in the span")
+    series = [series[i] for i in kept]
+    styles = [styles[i] for i in kept]
+    colors = [colors[i] for i in kept]
     current = now - last < (dt.timedelta(hours=1) if rtk else dt.timedelta(days=2))
     title = tplt.StationTitle(
         main=r"\Huge %s \ \Large %s" % (main, sub),
@@ -372,6 +433,124 @@ def figure(
                              fontsize=12)  # fmt: skip
     tplt.inpLogo(fig)  # type: ignore[no-untyped-call]
     return fig
+
+
+# --- the rate lines (BGÓ 2026-11-12) --------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class RateWindow:
+    """One polar arrow's window (``gpsplot polar --rtk``'s ``-rtk-rates.json``):
+    ``days`` long, ending ``end``; ``shown`` whether the polar figure draws
+    the arrow."""
+
+    days: float
+    end: pd.Timestamp
+    shown: bool
+    #: the legend's name of the window (default: its length)
+    label: str = ""
+
+
+def read_rates(path: str | None) -> dict[str, dict[str, RateWindow]]:
+    """``{station: {"daily"|"rtk"|"since"|"rtk_since": RateWindow}}`` from
+    the polar figure's rates file (``since``: the daily average since the
+    onset; ``rtk_since``: the RTK average since the newest episode's
+    onset); empty without one (no lines drawn)."""
+    if not path:
+        return {}
+    import json
+
+    doc = json.loads(Path(path).expanduser().read_text())
+    out: dict[str, dict[str, RateWindow]] = {}
+    for sta, got in doc.get("rovers", {}).items():
+        out[sta.upper()] = {}
+        for k, v in got.items():
+            if k not in ("daily", "rtk", "since", "rtk_since"):
+                continue
+            end, days = pd.Timestamp(v["end"]), float(v["window_days"])
+            # the window's start to the hour: 11:59 less 49.4993 d is the onset day
+            start = (end - pd.Timedelta(days=days)).round("h")
+            label = {"since": f"since {start:%d %b}",
+                     "rtk_since": f"since {start:%d %b %H:%M}"}.get(k, "")  # fmt: skip
+            out[sta.upper()][k] = RateWindow(days, end, bool(v["shown"]), label)
+    return out
+
+
+def fit_line(
+    df: pd.DataFrame, t0: pd.Timestamp, t1: pd.Timestamp
+) -> tuple[np.ndarray, np.ndarray, pd.Timestamp] | None:
+    """Least-squares line per column of ``df`` over ``[t0, t1]``: (slope
+    [mm/d], value at the window's mean time, that time); None with fewer
+    than three values."""
+    w = df[(df.index >= t0) & (df.index <= t1)]
+    if len(w.dropna(how="all")) < 3:
+        return None
+    x = (w.index - t0) / pd.Timedelta(days=1)
+    xc = float(np.mean(x))
+    slope, mid = [], []
+    for c in w.columns:
+        y = w[c].to_numpy(float)
+        ok = np.isfinite(y)
+        if ok.sum() < 3:
+            slope.append(np.nan)
+            mid.append(np.nan)
+            continue
+        xx = np.asarray(x, float)[ok]
+        b = np.polyfit(xx - xc, y[ok], 1)
+        slope.append(b[0])
+        mid.append(b[1])
+    return np.asarray(slope), np.asarray(mid), t0 + pd.Timedelta(days=xc)
+
+
+def rate_lines(
+    fig: Any,
+    lines: Sequence[tuple[pd.DataFrame, RateWindow, str, str]],
+    start: pd.Timestamp,
+) -> None:
+    """Each ``(values as plotted, window, colour, name)``: its line fitted
+    over the window, drawn over it (from ``start`` at the earliest) on the
+    three data panels, solid when the polar figure draws that arrow, dashed
+    when not; their slopes in a legend of their own at the top left of the
+    first panel, under the logo (BGÓ 2026-11-12: labels on the lines hid
+    the data)."""
+    from matplotlib.lines import Line2D
+
+    handles, texts = [], []
+    for values, win, colour, name in lines:
+        t0, t1 = win.end - pd.Timedelta(days=win.days), win.end
+        got = fit_line(values, t0, t1)
+        if got is None:
+            continue
+        slope, mid, tc = got
+        a = max(t0, start)
+        edge = "w" if colour in ("k", "black") else "k"  # a black line: white edge
+        style = "-" if win.shown else "--"
+        for k, ax in enumerate(fig.axes[:3]):
+            if not np.isfinite(slope[k]):
+                continue
+            lo, hi = ax.get_ylim()
+            ends = [
+                mid[k] + slope[k] * ((x - tc) / pd.Timedelta(days=1)) for x in (a, t1)
+            ]
+            xs = [a.to_pydatetime(), t1.to_pydatetime()]
+            ax.plot(xs, ends, color=edge, lw=4.0, solid_capstyle="butt", zorder=7)
+            ax.plot(xs, ends, color=colour, lw=2.4, ls=style, solid_capstyle="butt",
+                    zorder=8)  # fmt: skip
+            ax.set_ylim(lo, hi)
+        if not np.isfinite(slope[0]):
+            continue
+        span = win.label or (f"{win.days * 1440:.0f} min" if win.days < 1 / 24
+                             else f"{win.days * 24:g} h" if win.days <= 3
+                             else f"{win.days:g} d")  # fmt: skip
+        handles.append(Line2D([], [], color=colour, lw=2.4, ls=style))
+        texts.append(f"{name} {span}: {slope[0]:+.2f} mm/d"
+                     + ("" if win.shown else " (below its test)"))  # fmt: skip
+    if handles:
+        # top left, under the logo (the 2σ bars hold the top right)
+        fig.axes[0].legend(handles, texts, loc="upper left",
+                           bbox_to_anchor=(0.005, 0.83), fontsize="small",
+                           framealpha=0.85, title="rates (top panel)",
+                           title_fontsize="x-small")  # fmt: skip
 
 
 # --- the command ------------------------------------------------------------
@@ -408,6 +587,16 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
                    help="station colours, e.g. SVIN=red,SVIE=#2ca02c")  # fmt: skip
     p.add_argument("--ylim", type=float, default=None,
                    help="daily figures: ± this many mm around the data at least")  # fmt: skip
+    p.add_argument("--rtk-since", default=None,
+                   help="the RTK figures' --since instead (BGÓ 2026-11-12: from "
+                   "1 Aug the RTK figure was too long), e.g. 2026-11-01")  # fmt: skip
+    p.add_argument("--since", default=None,
+                   help="also RTK and daily figures from this date, YYYY-MM-DD "
+                   "(named -since<YYYYMMDD>), e.g. 2026-08-01")  # fmt: skip
+    p.add_argument("--rates", default=None,
+                   help="gpsplot polar --rtk's -rtk-rates.json: draw each "
+                   "station's rate as a line over the polar arrow's window, the "
+                   "daily one on the daily figures, the RTK one on the RTK figures")  # fmt: skip
     p.add_argument("--out", required=True, help="directory of the figures")
     p.add_argument("--end", default=None, help="UTC 'YYYY-MM-DD HH:MM' (default now)")
     return p
@@ -464,14 +653,47 @@ def _event_lines(config: Any, area: str | None) -> dict[str, list[str]]:
     return out
 
 
+#: every figure's saved width [in, figure coordinates] (BGÓ 2026-11-12: the
+#: daily and the RTK figures side by side on the Vöktun page at one size; the
+#: trimmed width differed by the RTK's now-line label): from left of the
+#: y labels to past that label
+SAVE_X = (0.9, 12.5)
+
+
+def trim_tick_labels(fig: Any) -> None:
+    """Hide the data panels' x tick labels that reach past the panel's
+    left or right edge (BGÓ 2026-11-12: "13 Nov 26" at the end of the
+    axis stuck out of the figure)."""
+    fig.canvas.draw()
+    for ax in fig.axes[:3]:
+        box = ax.get_window_extent()
+        for lab in ax.get_xticklabels(which="both"):
+            if not lab.get_visible() or not lab.get_text():
+                continue
+            ext = lab.get_window_extent()
+            if ext.x1 > box.x1 + 1.0 or ext.x0 < box.x0 - 1.0:
+                lab.set_visible(False)
+
+
+def save_bbox(fig: Any) -> Any:
+    """The saved area [in]: :data:`SAVE_X` wide, the tight box's height."""
+    import matplotlib as mpl
+    from matplotlib.transforms import Bbox
+
+    pad = float(mpl.rcParams["savefig.pad_inches"])
+    tight = fig.get_tightbbox()
+    return Bbox([[SAVE_X[0], tight.y0 - pad], [SAVE_X[1], tight.y1 + pad]])
+
+
 def _save(fig: Any, path: Path, prog: str) -> None:
     import matplotlib.pyplot as plt
 
     from gps_plot import timesmatplt as tplt
 
-    tmp = path.with_name(f".{path.stem}")  # saveFig adds .png
-    tplt.saveFig(str(tmp), "png", fig)
-    os.replace(f"{tmp}.png", path)
+    trim_tick_labels(fig)
+    tmp = path.with_name(f".{path.stem}.png")
+    fig.savefig(str(tmp), bbox_inches=save_bbox(fig), dpi=tplt.PNG_DPI)
+    os.replace(tmp, path)
     plt.close(fig)
     print(f"{prog}: {path}")
 
@@ -510,6 +732,27 @@ def run(prog: str, argv: list[str]) -> int:
     daily_spans = sorted(float(x) for x in args.daily_days.split(",") if x.strip())
     now = dt.datetime.now(dt.UTC).replace(tzinfo=None, second=0, microsecond=0)
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp(now)
+    #: span [days] -> its file name part, for --since
+    names_of: dict[float, str] = {}
+    for when, rtk in ((args.since, False), (args.rtk_since or args.since, True)):
+        if not when:
+            continue
+        since = pd.Timestamp(when)
+        sd = (end - since) / pd.Timedelta(days=1)
+        names_of[sd] = f"since{since:%Y%m%d}"
+        if rtk:
+            rtk_spans = sorted({*rtk_spans, sd})
+        else:
+            daily_spans = sorted({*daily_spans, sd})
+
+    def span_name(days: float) -> str:
+        return names_of.get(days, _span_name(days))
+
+    try:
+        rates = read_rates(args.rates)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"{prog}: --rates: {exc}", file=sys.stderr)
+        rates = {}
     out = Path(args.out).expanduser()
     if str(out.resolve()).startswith("/mnt_data"):
         print(f"{prog}: never write under /mnt_data", file=sys.stderr)
@@ -605,7 +848,27 @@ def run(prog: str, argv: list[str]) -> int:
         main = series.loc[start - pd.Timedelta(days=1) : end]
         head = main[(main.index >= start)
                     & (main.index < start + pd.Timedelta(hours=1 if days < 1 else 6))]  # fmt: skip
-        return main, (head if len(head) else main).median(), newest
+        if days not in names_of and len(head.dropna(how="all")):
+            return main, head.median(), newest
+        # a since-figure (weeks: a few wild RTK hours at its start must not
+        # set it; or no RTK there, older than the archive) or no RTK at the
+        # span's start: the daily figure's zero, so the two agree
+        d0 = daily[sta].loc[start - pd.Timedelta(days=1) : end]
+        return main, (d0 - _zeroed(d0, start)).median(), newest
+
+    def plotted(df: pd.DataFrame, azimuth: float | None) -> pd.DataFrame:
+        """``df`` on the figure's axes (rotated with ``--axes motion``)."""
+        return rotate(df, azimuth) if azimuth is not None else df
+
+    def tied_values(sta: str, win: RateWindow, zero: pd.Series) -> pd.DataFrame:
+        """The station's tied RTK over the window (one-minute values for a
+        window under a day, as the polar figure's) minus the figure's
+        ``zero``, on the figure's axes."""
+        got = tied[sta]["1min" if win.days < 1 else "1h"]
+        if got is None:
+            return pd.DataFrame(columns=["N", "E", "U"], dtype=float)
+        lo = win.end - pd.Timedelta(days=win.days)
+        return plotted(got[0].loc[lo : win.end] - zero, azim[sta])
 
     def resolution(days: float) -> str:
         return "1-min values" if days < 1 else "1-h medians"
@@ -645,7 +908,14 @@ def run(prog: str, argv: list[str]) -> int:
                          now=now, rtk=True,
                          ylabels=_ylabels([azim[sta]]) if along else None,
                          note=note)  # fmt: skip
-            _save(fig, out / f"{sta}-tied-{_span_name(days)}{tail}.png", prog)
+            sigma_bars(fig, [(colors[sta], line_sigma(main[main.index >= start],
+                                                      azim[sta], days < 1))])  # fmt: skip
+            rate_lines(fig, [(tied_values(sta, w, zero), w,
+                              colors[sta] if kind == "rtk" else "k", sta)
+                             for kind in ("rtk_since", "rtk")
+                             if (w := rates.get(sta, {}).get(kind)) is not None],
+                       start)  # fmt: skip
+            _save(fig, out / f"{sta}-tied-{span_name(days)}{tail}.png", prog)
         if len(made) < 2:
             continue
         # all the stations together, each on its own zero and motion azimuth
@@ -678,7 +948,17 @@ def run(prog: str, argv: list[str]) -> int:
                      now=now, rtk=True,
                      ylabels=_ylabels([azim[s] for s in names]) if along else None,
                      note=note)  # fmt: skip
-        _save(fig, out / f"{'_'.join(names)}-tied-{_span_name(days)}{tail}.png", prog)
+        sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
+                                                   azim[m[0]], days < 1))
+                         for m in made])  # fmt: skip
+        # the RTK arrow's window in the station's colour, the average since
+        # the newest episode's onset black (BGÓ 2026-11-12)
+        rate_lines(fig, [(tied_values(m[0], w, m[2]), w,
+                          colors[m[0]] if kind == "rtk" else "k", m[0])
+                         for kind in ("rtk_since", "rtk") for m in made
+                         if (w := rates.get(m[0], {}).get(kind)) is not None],
+                   start)  # fmt: skip
+        _save(fig, out / f"{'_'.join(names)}-tied-{span_name(days)}{tail}.png", prog)
 
     ylabels = _ylabels([azim[s] for s in stations]) if along else None
     event_lines = _event_lines(config, args.area) if daily_spans else {}
@@ -707,5 +987,14 @@ def run(prog: str, argv: list[str]) -> int:
             when = dt.datetime.strptime(day, "%Y%m%d")
             for ax in fig.axes[:3]:
                 ax.axvline(x=when, color=colour, zorder=2)
-        _save(fig, out / f"{'_'.join(stations)}-frame-{days:g}d{tail}.png", prog)
+        # the 14-day rate in the station's colour, the average since the
+        # onset black (BGÓ 2026-11-12), as the polar figure's arrows
+        rate_lines(fig, [
+            (plotted(_zeroed(daily[s].loc[keep], start), azim[s]), w,
+             colors[s] if kind == "daily" else "k", s)
+            for kind in ("since", "daily") for s in stations
+            if (w := rates.get(s, {}).get(kind)) is not None
+        ], start)  # fmt: skip
+        name = names_of.get(days, f"{days:g}d")
+        _save(fig, out / f"{'_'.join(stations)}-frame-{name}{tail}.png", prog)
     return 0

@@ -69,6 +69,9 @@ K_GRID = np.round(np.geomspace(0.5, 40.0, 300), 4)
 #: excursion and the light would jump green → red (SVIN-SVIE 2026-11-12: 0.24
 #: months, k 1.40/1.42/1.44). Provisional, until a few quiet months exist.
 MIN_RATIO = (1.0, 1.5, 2.0)
+#: σ of the current noise a level needs (BGÓ 2026-11-12), written by a
+#: calibration; rtk_thresholds.yaml significance_sigma: 0 turns it off
+SIGNIFICANCE = 2.0
 
 #: ``(pair, start, end) -> (t, y_mm)``, rtk_status.rtk_reader's signature
 Reader = Callable[[str, dt.datetime, dt.datetime], Any]
@@ -84,6 +87,14 @@ class Accel:
     ks: tuple[float, float, float]
     quiet: list[list[str]] = field(default_factory=list)
     months: float = 0.0
+    #: pair -> (len(SCALES), 2) the quiet robust σ of a_T [mm] (horizontal
+    #: per axis, Up); empty: no significance test
+    sigma: dict[str, np.ndarray] = field(default_factory=dict)
+    #: pair -> (2,) the quiet input noise [mm] (horizontal per axis, Up)
+    noise: dict[str, np.ndarray] = field(default_factory=dict)
+    #: a level needs a_T ≥ this many σ of the CURRENT noise (BGÓ 2026-11-12:
+    #: significant before yellow, as the daily light); 0: off
+    significance: float = 0.0
 
 
 # --- the chain (bench common.py + est_sg.py) ------------------------------
@@ -209,17 +220,93 @@ def components(a: np.ndarray) -> np.ndarray:
     return np.stack([np.hypot(a[..., 0], a[..., 1]), np.abs(a[..., 2])], -1)
 
 
+#: the current input noise: the trailing span its scatter is taken over [h]
+NOISE_H = 24.0
+
+
+def input_noise(df: pd.DataFrame, grid: pd.DatetimeIndex) -> np.ndarray:
+    """(len(grid), 2) the input's current noise [mm] (horizontal per axis,
+    Up): the robust scatter (IQR/1.349) over the trailing ``NOISE_H`` of the
+    10-min values' departure from their trailing 1-h median. Causal; it
+    rises in storms, icing and bad multipath, when quiet-calibrated edges
+    would let noise through."""
+    out = np.full((len(grid), 2), np.nan)
+    d = df[["n", "e", "u"]]
+    if d.dropna(how="all").empty or not len(grid):
+        return out
+    resid = d - d.rolling(pd.Timedelta(hours=1), min_periods=3).median()
+    win = pd.Timedelta(hours=NOISE_H)
+    iqr = (
+        resid.rolling(win, min_periods=36).quantile(0.75)
+        - resid.rolling(win, min_periods=36).quantile(0.25)
+    ) / 1.349
+    h = np.sqrt((iqr["n"] ** 2 + iqr["e"] ** 2) / 2.0)
+    both = pd.DataFrame({"h": h, "u": iqr["u"]})
+    got = both.reindex(grid, method="ffill", tolerance=pd.Timedelta("20min"))
+    return np.asarray(got.to_numpy(float), dtype=float)
+
+
+def pair_series(
+    read: Reader, pair: str, start: dt.datetime, end: dt.datetime,
+    grid: pd.DatetimeIndex,
+) -> tuple[np.ndarray, np.ndarray] | None:  # fmt: skip
+    """``(estimate (len(grid), len(SCALES), 3), input noise (len(grid), 2))``
+    for one pair from data in [start, end]; None without data."""
+    t, y = read(pair, start, end)
+    if not np.size(t):
+        return None
+    ten = despike_coarse(ten_min(t, y))
+    df = sidereal(ten)
+    return estimate(df, grid), input_noise(df, grid)
+
+
 def pair_values(
     read: Reader, pair: str, start: dt.datetime, end: dt.datetime,
     grid: pd.DatetimeIndex,
 ) -> np.ndarray | None:  # fmt: skip
     """(len(grid), len(SCALES), 3) for one pair from data in [start, end],
     None without data."""
-    t, y = read(pair, start, end)
-    if not np.size(t):
+    got = pair_series(read, pair, start, end, grid)
+    return None if got is None else got[0]
+
+
+def axis_sigma(v: np.ndarray) -> np.ndarray:
+    """(…, len(SCALES), 3) a_T → (len(SCALES), 2) robust σ [mm]: horizontal
+    per axis (the RMS of N's and E's 1.4826·MAD), Up."""
+    flat = v.reshape(-1, v.shape[-2], 3)
+    med = np.nanmedian(flat, axis=0)
+    mad = 1.4826 * np.nanmedian(np.abs(flat - med[None]), axis=0)  # (S, 3)
+    return np.stack([np.sqrt((mad[:, 0] ** 2 + mad[:, 1] ** 2) / 2.0), mad[:, 2]], -1)
+
+
+def significant(
+    stats: np.ndarray, noise_now: np.ndarray, fit: Accel, pair: str
+) -> np.ndarray | None:
+    """(steps, scales, 2) whether each value stands ``fit.significance`` σ
+    of the CURRENT noise above zero: σ_now = the quiet σ of a_T on that
+    scale × (the input noise now / its quiet level). None without the test.
+    The horizontal length is judged against √2 × the per-axis σ (its
+    typical size under noise alone)."""
+    if fit.significance <= 0 or pair not in fit.sigma or pair not in fit.noise:
         return None
-    df = sidereal(despike_coarse(ten_min(t, y)))
-    return estimate(df, grid)
+    ratio = noise_now / fit.noise[pair][None, :]  # (steps, 2)
+    ratio = np.where(np.isfinite(ratio), np.maximum(ratio, 1.0), 1.0)  # never laxer
+    sig = fit.sigma[pair][None, :, :] * ratio[:, None, :]
+    sig = sig * np.array([np.sqrt(2.0), 1.0])[None, None, :]
+    return np.asarray(stats >= fit.significance * sig, dtype=bool)
+
+
+def gated_z(
+    stats: np.ndarray, q99: np.ndarray, ok: np.ndarray | None, k_yellow: float
+) -> np.ndarray:
+    """:func:`z_of` with each component that is not significant held just
+    below yellow (it may still show how close it is, never light it)."""
+    if ok is None:
+        return z_of(stats, q99)
+    z = stats / q99[None]
+    z = np.where(ok, z, np.minimum(z, 0.999 * k_yellow))
+    z = np.where(np.isfinite(z), z, -np.inf).max(axis=-1)
+    return np.where(np.isfinite(z), z, np.nan)
 
 
 # --- levels ---------------------------------------------------------------
@@ -322,17 +409,22 @@ def live(
             continue
         row: dict[str, Any] = {"pair": pair}
         try:
-            v = pair_values(read, pair, start, now, grid)
+            got = pair_series(read, pair, start, now, grid)
         except (OSError, ValueError) as exc:
             row["error"] = str(exc)
             rows.append(row)
             continue
-        if v is None:
+        if got is None:
             row["stale"] = True
             rows.append(row)
             continue
+        v, noise_now = got
         st = components(v)
-        z = z_of(st, fit.scales[pair])
+        ok = significant(st, noise_now, fit, pair)
+        z = gated_z(st, fit.scales[pair], ok, fit.ks[0])
+        if ok is not None and pair in fit.noise:
+            ratio = noise_now[-1] / fit.noise[pair]
+            row["noise_ratio"] = [round(float(x), 2) for x in ratio]
         lv = scale_levels(z, fit.ks)[-1]
         if np.isnan(z[-1]).all():
             row["stale"] = True
@@ -364,6 +456,7 @@ def live(
     out: dict[str, Any] = {
         "multipliers": list(fit.ks),
         "scales_h": list(SCALES),
+        "significance_sigma": fit.significance,
         "thresholds": thresholds(fit, pairs),
         "quiet": fit.quiet,
         "quiet_months": fit.months,
@@ -411,16 +504,20 @@ def calibrate(
     horizontal length and |Up|, then the area's k. Data from ``HISTORY``
     before each span warm the chain up; only the span is scored."""
     raw: list[dict[str, np.ndarray]] = []
+    raw_v: dict[str, list[np.ndarray]] = {}
+    raw_noise: dict[str, list[np.ndarray]] = {}
     for a, b in spans:
         ta, tb = pd.Timestamp(a), pd.Timestamp(b)
         grid = pd.date_range(ta, tb, freq=GRID, inclusive="left")
         got = {}
         for p in pairs:
-            v = pair_values(
+            pv = pair_series(
                 read, p, (ta - HISTORY).to_pydatetime(), tb.to_pydatetime(), grid
             )
-            if v is not None:
-                got[p] = components(v)
+            if pv is not None:
+                got[p] = components(pv[0])
+                raw_v.setdefault(p, []).append(pv[0])
+                raw_noise.setdefault(p, []).append(pv[1])
         raw.append(got)
     pooled: dict[str, list[np.ndarray]] = {}
     for d in raw:
@@ -445,8 +542,19 @@ def calibrate(
         "fitted": [round(k, 3) for k in fitted],
         "min_ratio": list(MIN_RATIO),
         "episodes": [sum(episodes(lv, k) for lv in lvs) for k in (1, 2, 3)],
+        "significance_sigma": SIGNIFICANCE,
         "pairs": {
-            p: {"q99_mm": [[round(float(x), 3) for x in r] for r in q]}
+            p: {
+                "q99_mm": [[round(float(x), 3) for x in r] for r in q],
+                "sigma_mm": [
+                    [round(float(x), 3) for x in r]
+                    for r in axis_sigma(np.concatenate(raw_v[p]))
+                ],
+                "noise_mm": [
+                    round(float(x), 3)
+                    for x in np.nanmedian(np.concatenate(raw_noise[p]), axis=0)
+                ],
+            }
             for p, q in q99.items()
         },
     }
@@ -465,4 +573,15 @@ def load(doc: Mapping[str, Any], area: str) -> Accel | None:
         ks=tuple(float(k) for k in raw["multipliers"]),  # type: ignore[arg-type]
         quiet=[list(s) for s in raw.get("quiet") or []],
         months=float(raw.get("quiet_months") or 0.0),
+        sigma={
+            p: np.asarray(v["sigma_mm"], float)
+            for p, v in raw["pairs"].items()
+            if v.get("sigma_mm")
+        },  # fmt: skip
+        noise={
+            p: np.asarray(v["noise_mm"], float)
+            for p, v in raw["pairs"].items()
+            if v.get("noise_mm")
+        },  # fmt: skip
+        significance=float(raw.get("significance_sigma") or 0.0),
     )

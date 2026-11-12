@@ -187,3 +187,25 @@ def test_sibling_veto_without_siblings_and_bad_mode() -> None:
     assert rs.sibling_veto(got) == got  # alone: kept
     with pytest.raises(ValueError):
         rs.rtk_spec(_entry(**LIMITS, common_mode="reference-typo"))
+
+
+def test_significance_gate_holds_a_level_inside_the_noise() -> None:
+    import datetime as _dt
+
+    t = np.arange(np.datetime64(NOW - _dt.timedelta(hours=8), "m"),
+                  np.datetime64(NOW, "m") + 1).astype("datetime64[ns]")  # fmt: skip
+    rng = np.random.default_rng(0)
+    y = rng.normal(0.0, 30.0, (3, t.size))  # a stormy hour-to-hour scatter
+    y[0, t >= np.datetime64(NOW - _dt.timedelta(minutes=50), "ns")] += 12.0
+    tm = rs.minutes(t)
+    end = float(rs.minutes(np.datetime64(NOW, "ns")))
+    spec = {
+        **rs.DEFAULTS,
+        "horizontal_mm": [10.0, 20.0, 40.0],
+        "up_mm": [100.0, 200.0, 400.0],
+    }
+    loose = rs.baseline_level(tm, y, end, spec)
+    gated = rs.baseline_level(tm, y, end, {**spec, "significance_sigma": 2.0})
+    assert loose is not None and gated is not None
+    assert gated["level"] <= loose["level"]
+    assert gated["significant"] is (gated["level"] > 0 or gated["significant"])

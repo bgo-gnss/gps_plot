@@ -152,3 +152,36 @@ def test_thresholds_per_scale_in_mm_and_mm_per_day() -> None:
     ]
     row6 = got["A-B"][ra.SCALES.index(6.0)]
     assert row6["horizontal_mm_per_day"] == [6.0, 8.0, 12.0]
+
+
+def test_significance_gate_follows_the_current_noise() -> None:
+    q99 = np.ones((len(ra.SCALES), 2))
+    sig = np.full((len(ra.SCALES), 2), 0.5)
+    fit = ra.Accel(scales={"A-B": q99}, ks=(1.5, 2.0, 3.0), sigma={"A-B": sig},
+                   noise={"A-B": np.array([1.0, 1.0])}, significance=2.0)  # fmt: skip
+    st = np.full((2, len(ra.SCALES), 2), 2.0)  # z = 2: orange by the edges
+    calm = np.array([[1.0, 1.0], [1.0, 1.0]])
+    storm = np.array([[4.0, 4.0], [4.0, 4.0]])  # 4x the quiet input noise
+    ok_calm = ra.significant(st, calm, fit, "A-B")
+    ok_storm = ra.significant(st, storm, fit, "A-B")
+    assert (
+        ok_calm is not None and ok_calm.all()
+    )  # 2 >= 2 * 0.5 * sqrt2 (H), 2 * 0.5 (U)
+    assert ok_storm is not None and not ok_storm.any()
+    z = ra.gated_z(st, q99, ok_storm, fit.ks[0])
+    assert np.nanmax(z) < fit.ks[0]  # held below yellow
+    assert (
+        ra.significant(st, calm, ra.Accel(scales={"A-B": q99}, ks=(1, 2, 3)), "A-B")
+        is None
+    )
+
+
+def test_input_noise_rises_with_scatter() -> None:
+    idx = pd.date_range("2026-11-01", periods=6 * 72, freq="10min")
+    rng = np.random.default_rng(2)
+    s = np.where(np.arange(idx.size) < 6 * 36, 1.0, 5.0)
+    df = pd.DataFrame(
+        {c: rng.normal(0, 1, idx.size) * s for c in ("n", "e", "u")}, index=idx
+    )
+    got = ra.input_noise(df, idx)
+    assert got[6 * 30, 1] < 1.6 and got[-1, 1] > 3.5
