@@ -77,7 +77,8 @@ the DEM plane at the rover (see Terrain); the note names the DEM used.
 ```bash
 gpsplot polar SVIN-SKFC SVIE-SKFC --together --special 90d --save png
 gpsplot polar SVIE-SKFC --onset 20260920 -e 20261029 --save pdf
-gpsplot polar SVIE-SKFC --rtk --special week --save png
+gpsplot polar SVIN-SKFC SVIE-SKFC --together -s 20260923 --rtk --save png
+gpsplot polar SVIN-SVIE -s 20260923 --rtk --rtk-rate 72h --save png
 ```
 
 The horizontal displacement since an onset, coloured by time. `--onset auto`
@@ -113,14 +114,78 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
     with their σ, errors in both directions (effective variance), with a 1σ
     wedge, scaled up by the misfit only when χ²/dof > 1. Days are not
     independent, so read it as a rough interval.
-  RTK points are reduced to daily medians first, so weeks and the fit count
-  days. A westward motion runs to the left, as in the section. Without a
+  The daily points are reduced to daily medians first, so weeks and the
+  fit count days (the `--rtk` tail is drawn over them, never fitted). A westward motion runs to the left, as in the section. Without a
   DEM the heights are from the rover. `--panels profile` alone gives a
   profile-only figure (13 in wide, the colour bar in the first sub-panel).
 - **section** — (optional) along the motion against Up [mm], with the
   terrain's apparent dip. A westward motion runs to the left (seen from the
   south), the compass points at the axis ends (BGÓ 2026-10-31).
 - **hodograph** — north against east (optional; redundant with the sector).
+
+### `--rtk`: the RTK on top of the daily figure (`polar_rtk.py`)
+
+The figure is the daily one, unchanged (daily points, T line, 14-day
+arrow); `--rtk` adds per pair (BGÓ 2026-11-12):
+
+- **the RTK tail**: the newest `--rtk-days` (default 3d) of FIXED RTK
+  solutions (RTKLIB Q 2 float and 5 single dropped), `--rtk-interval` 1h
+  (default) or 10min medians, small dots coloured by time as the daily ones,
+  with their 12 h running mean as a line in the pair's RTK colour (maroon,
+  indigo, …), in the sector, map and profile. Moved onto the daily path:
+  the median, over up to 14 common days, of (daily point − the RTK's own UTC
+  day median, days with bins over half the day); the log prints the shift
+  and the day-median scatter. Every daily statistic (T line, direction,
+  sector limits, dot scale, weekly medians, plunge) stays on the daily
+  points.
+- **the RTK rate**, a line per component over the newest 10 and 30 min
+  (1-minute values) and 6, 12, 24 and 72 h (`--rtk-rate`, default
+  `10min,30min,6h,12h,24h,72h`). The SHORTEST window that passes its test
+  is drawn on the map as an arrow in the RTK colour with its 1-σ ellipse
+  (no wedge), at the 14-day arrows' scale (BGÓ 2026-11-12): so a slow,
+  long-running signal shows as the 72 h arrow until a sudden speed-up
+  takes over. Tests:
+  - the longest window: its speed above 2 σ (along it);
+  - the shorter ones: their CHANGE d = v − v_bg from the rate over the
+    72 h before the window, z = |d/σ| (N, E; σ = 1.4826·MAD of d at every
+    end over the last 7 d), above max(floor, quantile of z over those
+    7 d): under an hour floor 4 and the 99.9 %; 6 h 3, 12 h 3.5, 24 h 4,
+    with the 99 % (seven days hold only 14 / 7 independent 12 h / 24 h
+    windows, so their quantile is a poor guide).
+    The speed itself against 2 σ fired nearly every hour (a 2-D speed
+    passes 2 σ in exp(−2) ≈ 13 % of noise; six windows compound it).
+  The minute windows use the 1-minute values cleaned (`clean_minutes`):
+  isolated spikes out by a CENTRED 5-minute Hampel (5 robust σ, ≥ 2 mm; a
+  ramp passes, however fast — rtk_accel's trailing Hampel would cut a
+  collapse's first hour), then minus the sidereal multipath model (the
+  median of the high-passed values 1…7 sidereal days before, ≥ 3).
+  Nothing passes: no arrow, a legend line "RTK 10 min–72 h: no speed-up,
+  72 h v ± σ mm/d"; an arrow's line names the window, the speed and, for a
+  shorter window, "speed-up z > limit". Up is in the log only, which lists
+  every window. σ of a rate is
+  empirical, the larger per component of (a) the residual scatter's
+  white-noise σ of the slope × the block-mean scale k of the residuals
+  (blocks of window/8) and (b) the repeatability: the window rate for
+  every end over max(7 d, 4 windows), its robust scatter (1.4826·MAD)
+  about a line through them in time. (b) catches the sidereal multipath
+  and day-to-day atmosphere, which (a) cannot see in one window.
+  Measured 2026-11-12 (hourly replays over 4 days, 8–12 Nov): the minute
+  and 6 h windows never fired; 24 h on SVIN-SVIE 3 times (5 mm/d against
+  ~2 on 8 Nov, the new movement); 12 h on SVIE-SKFC once (70 mm/d, noise:
+  the 1 % by design). The change a window needs: SVIN-SVIE 10 min ≈ 6 m/d,
+  30 min ≈ 5 m/d, 6 h ≈ 40, 12 h ≈ 15, 24 h ≈ 7 mm/d; the SKFC pairs:
+  10 min 25–32 m/d, 30 min 7–8 m/d, 6 h ≈ 200, 12 h ≈ 75, 24 h ≈ 35 mm/d.
+  Cleaning halved the SVIN-SVIE 10 min limit (12 → 6 m/d) and quartered
+  SVIE-SKFC's; the 1-minute tails stay heavy (the 99.9 % of z is 10–45 σ):
+  the minute windows see a collapse only.
+
+Status line: the daily one plus `RTK to <dd Mon HH:MM> UTC`. Measured
+2026-11-12: SKFC pairs 24 h σ 6–10 mm/d horizontal (never significant at
+~1–4 mm/d motion), 72 h 1.2–1.6 mm/d; SVIN-SVIE 24 h 1.3–2 mm/d, 72 h
+0.4–0.7. Day-median alignment scatter N/E 2–3.5 mm (SKFC pairs), 0.5 mm
+(SVIN-SVIE); Up 19 mm (SKFC pairs): their RTK Up tail is not to be read.
+Before 2026-11-12 `--rtk` drew the RTK 10-min medians (float included)
+alone, from their first epoch.
 
 The colour bar (days since the onset) sits inside the map, else inside the
 profile, as on the other maps; only a figure with neither has it on the side.
