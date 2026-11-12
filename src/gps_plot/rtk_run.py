@@ -297,6 +297,10 @@ def write_statuses(
                 from gps_plot import rtk_coherent
 
                 spec["coherent_fit"] = rtk_coherent.load(thresholds, slug)
+            if spec.get("statistic") == "accel":  # T10
+                from gps_plot import rtk_accel
+
+                spec["accel_fit"] = rtk_accel.load(thresholds, slug)
             pairs = sorted({j.pair for j in jobs if j.area == slug and not j.group})
             out_dir = next(j.out_dir for j in jobs if j.area == slug)
             record = rtk_status.area_status(slug, spec, pairs, read, now)

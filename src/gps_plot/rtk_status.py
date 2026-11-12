@@ -86,9 +86,10 @@ def rtk_spec(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     common_mode(spec)
     # T9: the area's level from the pairs (agree) or the coherent statistic
     spec["statistic"] = str(raw.get("statistic", "pairs"))
-    if spec["statistic"] not in ("pairs", "coherent"):
+    if spec["statistic"] not in ("pairs", "coherent", "accel"):
         raise ValueError(
-            f"rtk statistic must be 'pairs' or 'coherent', got {spec['statistic']!r}"
+            "rtk statistic must be 'pairs', 'coherent' or 'accel', got "
+            f"{spec['statistic']!r}"
         )
     return spec
 
@@ -426,9 +427,24 @@ def area_status(
             record["rule"] += " (coherent: too few pairs)"
     elif spec.get("statistic") == "coherent":
         record["rule"] += " (coherent: not calibrated)"
+    # T10: the acceleration warning; the area takes the higher of it and
+    # the offset rule (BGÓ 2026-11-12: the offset rule still catches steps)
+    accel = spec.get("accel_fit") if spec.get("statistic") == "accel" else None
+    if accel is not None:
+        from gps_plot import rtk_accel
+
+        got = rtk_accel.live(read, list(spec["baselines"] or pairs), accel, now)
+        record["accel"] = got
+        if got["level"] is not None and got["level"] > level:
+            level = got["level"]
+            record["rule"] = "accel"
+    elif spec.get("statistic") == "accel":
+        record["rule"] += " (accel: not calibrated)"
     record["level"] = level
     record["level_name"] = LEVEL_NAMES[level]
-    if record["rule"] == "coherent":
+    if record["rule"] == "accel":
+        pass  # one pair suffices: acceleration has no base-jump twin
+    elif record["rule"] == "coherent":
         if coherent and coherent.get("red_unconfirmed"):  # the guard held it
             record["red_unconfirmed"] = True
     elif level < top["level"]:  # T7: a red pair alone, or reds sharing a base
@@ -563,6 +579,12 @@ def bench_parser(prog: str) -> argparse.ArgumentParser:
         "<area>: coherent:, then the report",
     )  # fmt: skip
     p.add_argument(
+        "--calibrate-accel", action="append", default=None, metavar="START,END",
+        help="T10: the acceleration warning's quiet q99 and multipliers from "
+        "these quiet spans (ISO dates, end excluded; repeatable) for the area's "
+        "monitoring: rtk: baselines -> rtk_thresholds.yaml <area>: accel:",
+    )  # fmt: skip
+    p.add_argument(
         "--cache", default=None,
         help="with --calibrate-rate/--calibrate-coherent: keep each pair-period "
         "statistic here (npz)",
@@ -677,6 +699,39 @@ def _config_bench(prog: str, args: argparse.Namespace, config: Any) -> int:
     return 0
 
 
+def _calibrate_accel(prog: str, args: argparse.Namespace, config: Any, cfg: Any) -> int:
+    """``rtk-bench --area A --calibrate-accel START,END ...`` (T10)."""
+    from geo_dataread.rtk_read import list_baselines, rtk_dir
+
+    from gps_plot import products, rtk_accel
+    from gps_plot.cli import common
+    from gps_plot.cli.run import _cfg_file
+
+    areas = products.area_table(products.load_yaml(_cfg_file(config, cfg, "areas")))
+    spec = rtk_spec(areas.get(args.area or "") or {})
+    if spec is None or not spec["baselines"]:
+        print(f"{prog}: --area with monitoring: rtk: baselines", file=sys.stderr)
+        return 2
+    spans = []
+    for item in args.calibrate_accel:
+        a, _, b = item.partition(",")
+        spans.append((a.strip(), b.strip()))
+    read = rtk_reader(list_baselines(rtk_dir(common.config_dir(config, "rtk_dir"))))
+    thresholds = Path(config.config_path).expanduser() / THRESHOLDS_NAME
+    try:
+        got = rtk_accel.calibrate(read, spec["baselines"], spans)
+    except ValueError as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
+        return 2
+    old = products.load_yaml(thresholds) if thresholds.is_file() else {}
+    write_thresholds(thresholds, merge_area(old, args.area, {"accel": got}))
+    print(
+        f"{prog}: accel {args.area}: k {got['multipliers']} (fitted {got['fitted']}), "
+        f"{got['quiet_months']} quiet months, episodes {got['episodes']} -> {thresholds}"
+    )
+    return 0
+
+
 def _edges(text: str | None) -> list[float] | None:
     return [float(v) for v in text.split(",")] if text else None
 
@@ -693,6 +748,8 @@ def bench(prog: str, argv: list[str]) -> int:
     config = _load_config()
     plots_path = Path(config.config_path).expanduser() / "plots.yaml"
     cfg = products.load_yaml(plots_path)
+    if args.calibrate_accel:
+        return _calibrate_accel(prog, args, config, cfg)
     if args.pair is None:
         return _config_bench(prog, args, config)
     if args.onset:
