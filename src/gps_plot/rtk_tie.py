@@ -53,8 +53,8 @@ def daily_in_frame(
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     """Each station's daily N/E/U [mm] minus the reference stations'
     weighted mean (trend + seasonal of each fitted before ``onset``), one
-    row per day at noon; and the station's own formal σ [mm] on those days
-    (the mean of four references adds little to it)."""
+    row per day at noon; and its empirical σ [mm] (:func:`empirical_sigma`:
+    the scatter of this series, so the references' noise is in it)."""
     from gps_plot import track
 
     pre = track.pre_window(onset)
@@ -77,13 +77,34 @@ def daily_in_frame(
         t, y = track.load_series(s, pre, up=True)
         d = pd.DataFrame(y.T, index=track.day_key(t), columns=list(COMP))
         d = (d.groupby(level=0).mean() - ref).dropna(how="all").sort_index()
-        sig = _sigma(s, pre).reindex(d.index)
+        sig = empirical_sigma(d, _sigma(s, pre).reindex(d.index))
         for frame in (d, sig):
             frame.index = pd.DatetimeIndex(
                 [pd.Timestamp(dt.date.fromordinal(int(o))) + NOON for o in frame.index]
             ).as_unit("ns")
         values[s], sigmas[s] = d, sig
     return values, sigmas
+
+
+def empirical_sigma(values: pd.DataFrame, formal: pd.DataFrame) -> pd.DataFrame:
+    """Daily σ from the scatter of the series itself (BGÓ 2026-11-12, as the
+    baseline stacks' ``--baseline-sigma empirical``): per component the
+    day-to-day noise 1.4826·MAD(Δ)/√2 over consecutive days (slow motion
+    cancels in Δ), and each day's formal σ scaled so their median is that
+    noise (a day's relative quality kept). ``values``/``formal`` indexed by
+    proleptic day ordinal. Formal σ where too few consecutive days (< 10)."""
+    out = formal.copy()
+    days = np.asarray(values.index, dtype=float)
+    consecutive = np.diff(days) == 1.0
+    for c in COMP:
+        dv = np.diff(values[c].to_numpy(float))[consecutive]
+        dv = dv[np.isfinite(dv)]
+        med_formal = float(np.nanmedian(formal[c].to_numpy(float)))
+        if dv.size < 10 or not np.isfinite(med_formal) or med_formal <= 0:
+            continue
+        noise = 1.4826 * float(np.median(np.abs(dv - np.median(dv)))) / np.sqrt(2.0)
+        out[c] = formal[c] * (noise / med_formal)
+    return out
 
 
 def _sigma(marker: str, pre: tuple[dt.date, dt.date]) -> pd.DataFrame:
@@ -601,6 +622,6 @@ def run(prog: str, argv: list[str]) -> int:
                      ylim=[args.ylim] if args.ylim else [],
                      note=f"daily (24 h), cleaned view, each station minus the "
                      f"weighted daily mean of {', '.join(refs)} (their trend and "
-                     f"seasonal removed)")  # fmt: skip
+                     f"seasonal removed); empirical $\\sigma$ (day-to-day scatter)")  # fmt: skip
         _save(fig, out / f"{'_'.join(stations)}-frame-{days:g}d{tail}.png", prog)
     return 0

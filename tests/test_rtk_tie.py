@@ -92,3 +92,17 @@ def test_route_station_anchor_and_sign() -> None:
     assert rt._route("SKFC-SVIE", ["SVIE"]) == ("SVIE", "SKFC", -1.0)
     with pytest.raises(ValueError, match="neither end"):
         rt._route("AAAA-BBBB", ["SVIN"])
+
+
+def test_empirical_sigma_from_day_to_day_scatter() -> None:
+    rng = np.random.default_rng(3)
+    n = 400
+    days = np.arange(738000, 738000 + n)
+    v = pd.DataFrame({c: 0.05 * np.arange(n) + rng.normal(0, 2.0, n) for c in rt.COMP},
+                     index=days)  # fmt: skip
+    formal = pd.DataFrame({c: np.full(n, 0.5) for c in rt.COMP}, index=days)
+    got = rt.empirical_sigma(v, formal)
+    # 2 mm white noise behind a slow trend; the formal 0.5 mm scaled up to it
+    assert all(abs(float(got[c].median()) - 2.0) < 0.3 for c in rt.COMP)
+    few = rt.empirical_sigma(v.iloc[:5], formal.iloc[:5])
+    assert (few == 0.5).all().all()  # too few days: formal kept
