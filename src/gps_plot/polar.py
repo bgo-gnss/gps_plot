@@ -371,7 +371,7 @@ class PairPlot:
     #: epochs as days since the figure's onset (``rtk_since``), its colour
     rtk: Any = None
     rtk_since: Any = None
-    rtk_colour: str = "maroon"
+    rtk_colour: str = "teal"  # polar_rtk.RTK_COLOURS[0]
     #: the rate arrows drawn (``--rate``): both, daily or rtk
     rate_from: str = "both"
     #: ``--refs``: the frame's name (``the mean of A, B``); None: a pair

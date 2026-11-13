@@ -131,7 +131,10 @@ PATH_DAYS = 12.0 / 24.0
 #: consecutive such medians (BGÓ 2026-11-13: rate × days overshot a drop
 #: that had stopped)
 LEVEL_DAYS = 0.5
-RTK_COLOURS = ("maroon", "indigo", "chocolate", "teal")
+#: each pair's RTK path and arrow colour, in pair order; none near the
+#: colour bar's red end (BGÓ 2026-11-13: maroon vanished on the newest
+#: dark-red daily points)
+RTK_COLOURS = ("teal", "indigo", "chocolate", "maroon")
 
 
 @dataclasses.dataclass(frozen=True)
