@@ -222,6 +222,17 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                s=30 if small else 55, marker=pp.marker, edgecolors="k",
                linewidths=0.6, zorder=4, **style)  # fmt: skip
     # no alpha: it would fill the open (older than the colours) points black
+    rtk = getattr(pp, "rtk", None)
+    if rtk is not None and np.size(pp.rtk_since):  # --rtk: the RTK tail on top
+        from gps_plot.polar import _rtk_dots
+
+        ux, uy = np.sin(np.radians(pp.motion)), np.cos(np.radians(pp.motion))
+        r_along = rtk.d[0] * uy + rtk.d[1] * ux
+        p_along = rtk.path[0] * uy + rtk.path[1] * ux
+        _rtk_dots(ax, sign * r_along * scale, z0 + rtk.d[2] * scale, pp.rtk_since,
+                  style, pp.marker, 4 if small else 8,
+                  (sign * p_along * scale, z0 + rtk.path[2] * scale),
+                  pp.rtk_colour)  # fmt: skip
     wt, wa, wu = weekly_medians(prof.t, prof.along, prof.up)
     if wt.size:  # the path without the day-to-day noise
         ax.plot(np.r_[0, sign * wa * scale], np.r_[z0, z0 + wu * scale], color="k",
@@ -231,7 +242,7 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                    label=rf"weekly median ($\geq${MIN_PER_BIN} days)", **style)  # fmt: skip
     # the 14-day rate: ARROW_DAYS of it from the newest position, along the
     # motion and Up (BGÓ 2026-11-11; no ellipse)
-    from gps_plot.polar import ARROW_DAYS, rate_step
+    from gps_plot.polar import rate_step, rate_step_label
 
     step = rate_step(pp)
     if step is not None and prof.t.size:
@@ -247,7 +258,7 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
             [],
             color=pp.colour,
             lw=1.8,
-            label=f"{ARROW_DAYS:g} days at the 14-day rate" + up_text(pp),
+            label=rate_step_label(pp) + (up_text(pp) if pp.rate_from != "rtk" else ""),
         )
     pl = prof.plunge
     if pl is not None:

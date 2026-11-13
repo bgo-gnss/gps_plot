@@ -76,6 +76,11 @@ COMMANDS: tuple[Command, ...] = (
         "gps_plot.rtk_run:run",
     ),
     Command(
+        "rtk-tie",
+        "a landslide station in a stable frame within the day: RTK tied to the daily solutions",
+        "gps_plot.rtk_tie:run",
+    ),
+    Command(
         "rtk-bench",
         "replay the RTK warning around an event: when each level was reached",
         "gps_plot.rtk_status:bench",
