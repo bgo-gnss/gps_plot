@@ -33,6 +33,11 @@ gps_plot/
 │   ├── terrain.py                    # DEM slope at a station (plane over 50 m; 2 m ArcticDEM area grid where it covers, else 5 m ISN93)
 │   ├── labels.py                     # is/en label table (components, '+ fjær'); axis_labels
 │   ├── rtk_status.py                 # RTK warning (PLAN-rtk-trigger T1): monitoring: rtk: limits → gps_analysis.rtk_alarm 1 h vs 6 h window offset on fixed minutes → <area rtk dir>/rtk.status.json (rtk-run writes it, --no-status skips); gpsplot rtk-bench replays it around an event
+│   ├── rtk_bench.py                  # RTK warning bench (T2): rtk-bench --area A [--set tune|test] [--quiet calibration|evaluation] over rtk_bench.yaml (config dir): delay after the swarm onset per event (area = highest pair), alarm episodes per month on quiet periods; reproducible markdown
+│   ├── rtk_coherent.py               # RTK warning T9: the area's coherent statistic (one-sided projection of each pair's window offset on its tune-event direction, matched (amplitude-weighted) sum over pairs; red needs two independent pairs); statistic: coherent; rtk-bench --calibrate-coherent → rtk_thresholds.yaml <area>: coherent:
+│   ├── rtk_accel.py                  # RTK warning T10: acceleration (v_now − v_bg)·T on 0.25–24 h (sidereal filter + causal Savitzky–Golay order 2, the slow bench's chain); statistic: accel, the area takes max(offset rule, accel); rtk-bench --area A --calibrate-accel START,END → rtk_thresholds.yaml <area>: accel:
+│   ├── rtk_rate.py                   # RTK warning, rate rule (BGÓ 2026-11-13): the SPEED over 24 h / 72 h (sidereal-filtered 1-h medians, empirical σ = max(white, repeatability)) on the daily light's 1/3/5 mm/d (Up 2/5/7), a level above significance_sigma; monitoring: rtk: rate: {windows_h, components, significance_sigma}; the area takes the highest of offset, accel, rate
+│   ├── rtk_tie.py                    # gpsplot rtk-tie: a landslide station in the reference-mean frame (track.reference_mean) within the day: daily positions + RTK pair anomaly vs its daily medians (sidereal-filtered 1-h medians), provisional tail after the newest daily; SVIN-tied-<N>d.png (gpsplot-rtk-tie timer); --since DATE / --rtk-since DATE = -since<DATE> daily / RTK figures; --rates = polar -rtk-rates.json, each arrow's rate as a line over its window (solid drawn, dashed below its test, black = since the onset), slopes in a legend under the logo; every figure saved at one width (SAVE_X)
 │   ├── rtk_map.py                    # gpsplot rtk-map: last hours of RTK motion on a map, pair network in its own frame (no net motion)
 │   ├── rtk.py                        # gpsplot rtk: RTK baselines (geo_dataread.rtk_read), --daily GLOBK join; --sign/--axes (docs/baselines.md)
 │   ├── sources/rtk.py                # RTK baseline -> Series (mm, zeroed on the first hour); align_daily
@@ -150,4 +155,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-12 (polar --rtk: daily figure + RTK tail and rate). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows). Previous 2026-11-10 (rtk_status + rtk-bench, RTK warning T1). Previous 2026-11-04 (map --nearest) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-13 (polar --refs/--via: the reference-mean frame, --rate, the rates file; rtk_rate; rtk-tie --since/--rates). Previous 2026-11-12 (polar --rtk). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows) — history in `git log --follow CLAUDE.md docs/`.*
