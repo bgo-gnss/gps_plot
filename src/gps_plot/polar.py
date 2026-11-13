@@ -23,8 +23,10 @@ onset is ``--onset``: a date, an events.yaml event id, ``auto`` (the
 default: the newest events.yaml event whose region holds a rover, inside
 the period) or ``start`` (the start of the period). The motion direction is the pair's (station_areas.yaml
 ``directions:``, ``--direction``, ``--direction-from``), else the one
-estimated over the plotted span. Daily by default (the cleaned plate
-series), ``--rtk`` for the RTK baseline (10-minute medians). Files:
+estimated over the plotted span. The daily (cleaned plate) series;
+``--rtk`` adds the newest RTK on top of it, fixed solutions moved onto the
+daily path, and the RTK rate over a recent window as an arrow with its
+1-σ ellipse when significant (:mod:`gps_plot.polar_rtk`). Files:
 ``A_B-polar-<period>`` (``-rtk``).
 """
 
@@ -70,8 +72,16 @@ SHADE_AZIMUTH, SHADE_ALTITUDE = 315.0, 45.0
 EXAMPLES = """examples:
   gpsplot polar SVIE-SKFC --special year --save png
   gpsplot polar SVIN-SKFC SVIE-SKFC --onset 20260920 -e 20261029 --save pdf
-  gpsplot polar SVIE-SKFC --rtk --special week --save png
+  gpsplot polar SVIN-SKFC SVIE-SKFC --together -s 20260923 --rtk --save png
+  gpsplot polar SVIN-SVIE --rtk --rtk-days 3 --rtk-rate 72h --save png
 """
+
+
+def window_list(value: str) -> tuple[float, ...]:
+    """``6h,12h,24h,72h`` → (0.25, 0.5, 1, 3) days, sorted."""
+    from gps_plot.direction import window_days
+
+    return tuple(sorted(window_days(v.strip()) for v in value.split(",") if v.strip()))
 
 
 def build_parser(
@@ -101,8 +111,8 @@ def build_parser(
     )
     parser.add_argument(
         "--special", choices=SPECIALS, default=None,
-        help="the period ending -e (default yesterday): 90d, year, full; "
-        "week, month (for --rtk). Default year (week with --rtk)",
+        help="the period ending -e (default yesterday; now with --rtk): 90d, "
+        "year, full, week, month. Default year",
     )  # fmt: skip
     parser.add_argument(
         "--onset", default="auto",
@@ -112,9 +122,57 @@ def build_parser(
     )  # fmt: skip
     parser.add_argument(
         "--window", type=window_days, default=None,
-        help="the onset level is the median over this (default 7d, 1h RTK)",
+        help="the onset level is the median over this (default 7d)",
     )  # fmt: skip
-    parser.add_argument("--rtk", action="store_true", help="from the RTK baseline")
+    parser.add_argument(
+        "--rtk", action="store_true",
+        help="the RTK baseline on top of the daily points: the newest "
+        "--rtk-days of fixed solutions moved onto the daily path, and the RTK "
+        "rate over --rtk-rate as an arrow with its 1-sigma ellipse above 2 sigma "
+        "(empirical sigma, gps_plot.polar_rtk)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--rtk-days", type=window_days, default=None, metavar="SPAN",
+        help="--rtk: the RTK tail drawn, e.g. 3d or 36h (default 3d)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--rtk-rate", type=window_list, default=None, metavar="SPANS",
+        help="--rtk: the RTK rate's windows, comma-separated, e.g. 24h or "
+        "6h,12h,24h,72h (the default): the shortest above 2 sigma is drawn, so "
+        "a sudden speed-up takes over from a slow, long-running signal",
+    )  # fmt: skip
+    parser.add_argument(
+        "--rtk-interval", choices=("1h", "10min"), default="1h",
+        help="--rtk: the RTK medians drawn and fitted (default 1h)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--refs", default=None, metavar="A,B,C",
+        help="the reference-mean frame (BGÓ 2026-11-13: as the track map and "
+        "the time series): the arguments are stations (SVIN SVIE), each relative "
+        "to the weighted mean of these (a moving one left out, "
+        "gps_plot.track.frame_reference); dots and daily arrows from that track. "
+        "Files: -frame",
+    )  # fmt: skip
+    parser.add_argument(
+        "--via", action="append", default=[], metavar="A-B",
+        help="--refs --rtk: the RTK pair of a station, repeatable, e.g. --via "
+        "SVIN-SVIE --via SVIE-SKFC: the station by RTK against the pair's other "
+        "end, which the frame's daily track carries",
+    )  # fmt: skip
+    parser.add_argument(
+        "--rtk-since", type=_when, default=None, metavar="YYYYMMDD[-HH:MM]",
+        help="--rate rtk: the black arrow is the RTK average rate since then "
+        "(the onset of the newest episode; default: the daily average since "
+        "the figure's onset)",
+    )  # fmt: skip
+    parser.add_argument(
+        "--rate", choices=RATE_SOURCES, default="both",
+        help="the rate arrows: both (default), daily (the 14-day rate of the "
+        "daily solutions only) or rtk (the RTK rate only, needs --rtk; the "
+        "sector's and profile's arrows too). BGÓ 2026-11-12: the RTK arrow "
+        "dwarfed the daily one, so the Vöktun page shows one figure of each. "
+        "Files: -rate-daily / -rate-rtk",
+    )  # fmt: skip
     parser.add_argument(
         "--frame", default=None,
         help=f"daily .pos frame (default {common.DEFAULT_PLOT_FRAME})",
@@ -216,7 +274,7 @@ def resolve_span(args: argparse.Namespace, now: dt.datetime) -> tuple[Any, Any, 
         name = (f"since{args.start:%Y%m%d}" if args.end is None
                 else f"{args.start:%Y%m%d}-{end:%Y%m%d}")  # fmt: skip
         return args.start, end, name
-    special = args.special or ("week" if args.rtk else "year")
+    special = args.special or "year"
     days = {"90d": 91, "year": 366, "week": 7, "month": 31}.get(special)
     start = None if days is None else end - dt.timedelta(days=days)
     return start, end, special
@@ -309,6 +367,15 @@ class PairPlot:
     #: the rover's :class:`gps_plot.track.Track` relative to the reference
     #: (daily pairs): its 14-day rate is the map's arrow, as on the track map
     track: Any = None
+    #: ``--rtk``: the pair's :class:`gps_plot.polar_rtk.RtkOverlay`, its
+    #: epochs as days since the figure's onset (``rtk_since``), its colour
+    rtk: Any = None
+    rtk_since: Any = None
+    rtk_colour: str = "maroon"
+    #: the rate arrows drawn (``--rate``): both, daily or rtk
+    rate_from: str = "both"
+    #: ``--refs``: the frame's name (``the mean of A, B``); None: a pair
+    frame_name: str | None = None
 
     @property
     def rover(self) -> str:
@@ -383,6 +450,16 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             ray(pp.motion + 90.0, 0.3 * rmax, color="b", lw=1.0,
                 label="across" if pp is pairs[0] else None)  # fmt: skip
             ray(pp.motion - 90.0, 0.3 * rmax, color="b", lw=1.0)
+        if pp.rtk is not None and np.size(pp.rtk_since):
+            rr = np.hypot(pp.rtk.d[0], pp.rtk.d[1])
+            ra = (np.degrees(np.arctan2(pp.rtk.d[1], pp.rtk.d[0])) - lo) % 360.0 + lo
+            ins = (ra <= hi) & (rr >= MIN_RADIUS_MM)
+            pr = np.hypot(pp.rtk.path[0], pp.rtk.path[1])
+            pa = (
+                np.degrees(np.arctan2(pp.rtk.path[1], pp.rtk.path[0])) - lo
+            ) % 360.0 + lo
+            _rtk_dots(ax, np.radians(ra[ins]), rr[ins], pp.rtk_since[ins], style,
+                      pp.marker, 5, (np.radians(pa), pr), pp.rtk_colour)  # fmt: skip
     # the 14-day rate: ARROW_DAYS of it from the newest position (no ellipse)
     for pp in pairs:
         step = rate_step(pp)
@@ -401,7 +478,7 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
                     zorder=6, arrowprops={"arrowstyle": "-|>", "color": pp.colour,
                                           "lw": 1.8})  # fmt: skip
         ax.plot([], [], color=pp.colour, lw=1.8,
-                label=_label(pp, many, f"{ARROW_DAYS:g} days at the 14-day rate"))  # fmt: skip
+                label=_label(pp, many, rate_step_label(pp)))  # fmt: skip
         rmax = max(rmax, 1.05 * float(np.hypot(*tip)))
     ax.xaxis.set_major_formatter(
         FuncFormatter(lambda x, _p: f"{np.degrees(x) % 360:.0f}°")
@@ -415,6 +492,27 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
     elif lines:
         ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize="small")
     return centred
+
+
+def rtk_dots_label(ov: Any) -> str:
+    """The RTK points' legend text."""
+    from gps_plot.polar_rtk import PATH_DAYS, span_text
+
+    return (f"RTK fixed {ov.interval}, last {span_text(ov.days)} "
+            f"(line: {span_text(PATH_DAYS)} mean)")  # fmt: skip
+
+
+def _rtk_dots(ax: Any, x: Any, y: Any, since: Any, style: dict[str, Any],
+              marker: str, size: float, path: tuple[Any, Any] | None = None,
+              colour: str = "k", label: str | None = None) -> None:  # fmt: skip
+    """The RTK tail over the daily points (``--rtk``): small points coloured
+    by time as the daily ones, and ``path`` (x, y: their running median)
+    a line in ``colour``, the path without the hourly noise."""
+    ax.scatter(x, y, c=since, s=size, marker=marker, edgecolors="k",
+               linewidths=0.2, alpha=0.7, zorder=3.6, label=label, **style)  # fmt: skip
+    if path is not None:
+        ax.plot(*path, color="w", lw=2.6, zorder=3.7, solid_capstyle="round")
+        ax.plot(*path, color=colour, lw=1.4, zorder=3.8, solid_capstyle="round")
 
 
 def _hodograph(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any]) -> None:
@@ -620,6 +718,12 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
         order = np.argsort(pp.since)  # the newest on top
         ax.scatter(px[order], py[order], c=pp.since[order], s=60, marker=pp.marker,
                    zorder=3, edgecolors="k", linewidths=0.4, **style)  # fmt: skip
+        if pp.rtk is not None and np.size(pp.rtk_since):
+            _rtk_dots(ax, x0 + pp.rtk.d[1] * scale, y0 + pp.rtk.d[0] * scale,
+                      pp.rtk_since, style, pp.marker, 10,
+                      (x0 + pp.rtk.path[1] * scale, y0 + pp.rtk.path[0] * scale),
+                      pp.rtk_colour,
+                      label=_label(pp, many, rtk_dots_label(pp.rtk)))  # fmt: skip
         ax.plot(x0, y0, marker="^", ms=11, color="w", mec="k", zorder=4)
         if many:
             ax.annotate(pp.rover, (x0, y0), xytext=(8, -14), textcoords="offset points",
@@ -693,15 +797,17 @@ def room_to_edge(x0: float, y0: float, az_deg: float, half: float) -> float:
     return float(max(out, 0.0))
 
 
-def arrow_scale(shown: Sequence[PairPlot], half: float, preferred: float) -> float:
+def arrow_scale(
+    shown: Sequence[tuple[tuple[float, float], Any]], half: float, preferred: float
+) -> float:
     """The arrows' m per mm/yr: ``preferred``, made smaller where an arrow
+    (``shown``: (its start on the map, its :class:`gps_plot.track.Rate`))
     with its 1-σ ellipse would leave the map (BGÓ 2026-11-11: the scale
     follows the room, no arrow off the map)."""
     scale = preferred
-    for pp in shown:
-        r = pp.track.recent
+    for pos, r in shown:
         reach = r.speed + max(r.sigma_north, r.sigma_east)  # tip + ellipse
-        room = 0.92 * room_to_edge(*pp.pos, r.azimuth, half)
+        room = 0.92 * room_to_edge(*pos, r.azimuth, half)
         if reach > 0:
             scale = min(scale, room / reach)
     return scale
@@ -741,18 +847,35 @@ def _movement_and_rate(
                     color=pp.colour, lw=2.4, zorder=4.4)  # fmt: skip
         ax.add_patch(Ellipse((ex, ey), 2 * lsig[1] * scale, 2 * lsig[0] * scale,
                              fill=False, ec=pp.colour, lw=0.8, zorder=4.4))  # fmt: skip
-    shown = [pp for pp in pairs if pp.track is not None
+    daily = [pp for pp in pairs if pp.rate_from != "rtk"]
+    shown = [pp for pp in daily if pp.track is not None
              and pp.track.recent is not None and pp.track.recent_shown]  # fmt: skip
-    quiet = [pp for pp in pairs if pp.track is not None and pp not in shown]
+    quiet = [pp for pp in daily if pp.track is not None and pp not in shown]
     for pp in quiet:
         ax.plot([], [], ls="none",
-                label=f"{pp.rover}: no motion above {track.RECENT_SIGMA:g} σ "
+                label=f"{pp.rover}: no motion above {track.RECENT_SIGMA:g}$\\sigma$ "
                 f"in the last {track.RECENT_DAYS} days")  # fmt: skip
-    if not shown:
+    # --rtk: the RTK rate, an arrow with its 1-σ ellipse only above 2 σ
+    from gps_plot import polar_rtk
+
+    with_rtk = [pp for pp in pairs if pp.rtk is not None and pp.rate_from != "daily"]
+    rtk_shown = [pp for pp in with_rtk
+                 if pp.rtk.rate is not None and pp.rtk.rate.significant]  # fmt: skip
+    for pp in with_rtk:
+        if pp not in rtk_shown:
+            ax.plot([], [], ls="none", label=_label(pp, many, polar_rtk.quiet_label(
+                pp.rtk.rate, pp.rtk.window, pp.rtk.windows)))  # fmt: skip
+    # the average since the onset, black (BGÓ 2026-11-12: the background
+    # the 14-day and the RTK arrows are read against), above 2 σ
+    since_shown = [pp for pp in pairs if since_drawn(pp)]
+    arrows = [(pp.pos, pp.track.recent) for pp in shown]
+    arrows += [(pp.pos, pp.rtk.rate.as_track_rate()) for pp in rtk_shown]
+    arrows += [(pp.pos, since_rate(pp)[0]) for pp in since_shown]  # type: ignore[index]
+    if not arrows:
         return
-    fastest = max(pp.track.recent.speed for pp in shown)
+    fastest = max(r.speed for _, r in arrows)
     # half the old length (BGÓ 2026-11-11: shorter arrows), less where the room is short
-    rscale = arrow_scale(shown, half, 0.21 * half / fastest)  # m per mm/yr
+    rscale = arrow_scale(arrows, half, 0.21 * half / fastest)  # m per mm/yr
     for pp in shown:
         r = pp.track.recent
         x0, y0 = pp.pos
@@ -778,6 +901,29 @@ def _movement_and_rate(
                              f"{r.speed / YEAR_DAYS:.2f} ± "
                              f"{r.sigma_speed / YEAR_DAYS:.2f} mm/d "
                              f"toward {r.azimuth:.0f} ± {spread:.0f}°"))  # fmt: skip
+    for pp in since_shown:  # black, under the coloured ones, no wedge
+        r, what = since_rate(pp)  # type: ignore[misc]
+        x0, y0 = pp.pos
+        tx, ty = x0 + r.east * rscale, y0 + r.north * rscale
+        ax.annotate("", xy=(tx, ty), xytext=(x0, y0), zorder=5.4,
+                    arrowprops={"arrowstyle": "-|>", "color": "k", "lw": 2.2,
+                                "mutation_scale": 16})  # fmt: skip
+        ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
+                             2 * r.sigma_north * rscale, fill=False, ec="k",
+                             lw=1.0, zorder=5.4))  # fmt: skip
+        ax.plot([], [], color="k", lw=2.2, label=_label(pp, many, what))
+    for pp in rtk_shown:  # as the 14-day arrow, its own colour, no wedge
+        r = pp.rtk.rate.as_track_rate()
+        x0, y0 = pp.pos
+        tx, ty = x0 + r.east * rscale, y0 + r.north * rscale
+        ax.annotate("", xy=(tx, ty), xytext=(x0, y0), zorder=5.6,
+                    arrowprops={"arrowstyle": "-|>", "color": pp.rtk_colour,
+                                "lw": 2.2, "mutation_scale": 16})  # fmt: skip
+        ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
+                             2 * r.sigma_north * rscale, fill=False,
+                             ec=pp.rtk_colour, lw=1.2, zorder=5.6))  # fmt: skip
+        ax.plot([], [], color=pp.rtk_colour, lw=2.2,
+                label=_label(pp, many, polar_rtk.rate_label(pp.rtk.rate)))  # fmt: skip
     # the arrows' scale, above the dots' (every sized arrow has one), in
     # mm/d as the Vöktun page (BGÓ 2026-11-11)
     bar = _nice(fastest / YEAR_DAYS / 2)
@@ -957,6 +1103,25 @@ def older_note(onset: dt.datetime, days: float) -> str:
     return f"since {onset:%d.%m.%Y} until {days:g} days ago"
 
 
+#: the colour bar's box at the foot of the map starts here [axes fraction]
+#: (36 % wide, centred on 0.54: :func:`_inner_colorbar`)
+BAR_LEFT = 0.355
+
+
+def legend_reaches(fig: Any, ax: Any, x: float) -> bool:
+    """``ax``'s legend reaches past ``x`` [axes fraction] (BGÓ 2026-11-12:
+    the RTK figure's long legend lines ran under the colour bar)."""
+    leg = ax.get_legend()
+    if leg is None:
+        return False
+    try:
+        box = leg.get_window_extent()  # the figure's own renderer, any canvas
+    except RuntimeError:  # a text the renderer cannot set: keep the default place
+        return False
+    right = ax.transAxes.inverted().transform((box.x1, box.y0))[0]
+    return bool(right > x)
+
+
 def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
                     older: str | None = None) -> None:  # fmt: skip
     """A horizontal colour bar inside ``ax`` at ``loc``, on a white box of
@@ -1069,8 +1234,11 @@ def polar_figure(
                             wspace=0.1 if inside else 0.18,
                             hspace=0.3)  # fmt: skip
     vmax = max(
-        (float(np.max(pp.since)) for pp in pairs if np.size(pp.since)), default=1.0
-    )
+        [float(np.max(pp.since)) for pp in pairs if np.size(pp.since)]
+        + [float(np.max(pp.rtk_since)) for pp in pairs
+           if pp.rtk_since is not None and np.size(pp.rtk_since)],
+        default=1.0,
+    )  # fmt: skip
     # below the colour window: no fill, so the scatters' black edge is all
     vmin = max(0.0, vmax - colour_days) if colour_days > 0 else 0.0
     cmap = mpl.colormaps[CMAP].with_extremes(under="none")
@@ -1116,9 +1284,15 @@ def polar_figure(
         label = f"last {colour_days:g} days (days before {newest:%d.%m.%Y})"
         bar_norm = mpl.colors.Normalize(vmin=vmin - vmax, vmax=0.0)
     if holder is not None:
+        loc = "upper left"
+        if "map" in panels:  # under the map, unless its legend reaches in
+            loc = (
+                "upper center"
+                if legend_reaches(fig, holder, BAR_LEFT)
+                else "lower center"
+            )
         _inner_colorbar(fig, holder, cm.ScalarMappable(norm=bar_norm, cmap=cmap), label,
-                        "lower center" if "map" in panels else "upper left",
-                        older)  # fmt: skip
+                        loc, older)  # fmt: skip
     else:
         cax = fig.add_axes((right + 0.015, 0.14, 0.012, 0.62))
         bar = fig.colorbar(cm.ScalarMappable(norm=bar_norm, cmap=cmap), cax=cax,
@@ -1126,8 +1300,12 @@ def polar_figure(
         bar.set_label(label + (f"; open: {older}" if older else ""))
 
     rovers = ", ".join(pp.rover for pp in pairs)
-    refs = sorted({pp.name[5:] for pp in pairs})
-    title = rf"\Huge {rovers} -- {', '.join(refs)} movement since {onset:%Y-%m-%d}"
+    if pairs[0].frame_name:  # --refs: the frame, as the time series' titles
+        title = (rf"\Huge {rovers} movement since {onset:%Y-%m-%d} \ \Large "
+                 f"frame: {pairs[0].frame_name.removeprefix('the ')}")  # fmt: skip
+    else:
+        refs = sorted({pp.name[5:] for pp in pairs})
+        title = rf"\Huge {rovers} -- {', '.join(refs)} movement since {onset:%Y-%m-%d}"
     if stacked and holder is not None:
         _frame_on_map(fig, holder, column, title, title_status, status_color)
         return fig
@@ -1155,10 +1333,7 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     from gps_plot import direction as dr
     from gps_plot.axes import apriori
 
-    if args.rtk:
-        t, y, s = dr._rtk(name, read_from, end, config)
-    else:
-        t, y, s = dr._daily(name, read_from, end, config, args.frame)
+    t, y, s = dr._daily(name, read_from, end, config, args.frame)
     have = np.isfinite(np.asarray(y, dtype=float)).all(axis=0)
     if not have.any():
         raise ValueError("no data in the period")
@@ -1202,12 +1377,170 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     if b0 is not None:  # the reference, seen from the rover
         pp.ref = (name[5:], float(np.degrees(np.arctan2(-b0[1], -b0[0])) % 360.0),
                   float(np.hypot(b0[0], b0[1])))  # fmt: skip
-    if not args.rtk:
+    try:
+        pp.track = pair_track(name, when, end, args.frame)
+    except (OSError, ValueError) as exc:
+        print(f"{name}: no 14-day rate ({exc})", file=sys.stderr)
+    if args.rtk:  # the RTK on top of the daily points
+        from gps_plot import polar_rtk
+
         try:
-            pp.track = pair_track(name, when, end, args.frame)
+            pp.rtk = polar_rtk.read_overlay(
+                name, end, config, pp.since + t_on, pp.d,
+                interval=args.rtk_interval,
+                days=args.rtk_days or polar_rtk.RTK_DAYS,
+                window=args.rtk_rate or polar_rtk.RATE_WINDOWS, after=t_on,
+                since=(dr_days(args.rtk_since)
+                       if getattr(args, "rtk_since", None) is not None else None),
+            )  # fmt: skip
         except (OSError, ValueError) as exc:
-            print(f"{name}: no 14-day rate ({exc})", file=sys.stderr)
+            print(f"{name}: no RTK ({exc})", file=sys.stderr)
+        else:
+            pp.rtk_since = pp.rtk.t - t_on
+            note += "; " + polar_rtk.note(name, pp.rtk)
     return pp, f"{name}: {note}"
+
+
+def track_days(t: Any) -> Any:
+    """A track's fractional years as days since 1970, at the day's noon."""
+    from gps_plot import track
+
+    return track.day_key(np.asarray(t, dtype=float)) - EPOCH_ORDINAL + 0.5
+
+
+EPOCH_ORDINAL = dt.date(1970, 1, 1).toordinal()
+
+
+def track_neu(tr: Any) -> tuple[Any, Any, Any]:
+    """(t [days since 1970], (3, N) N, E, Up [mm], (3,) σ [mm]) of a track:
+    its horizontal days, Up where the vertical has the day (else NaN)."""
+    t = track_days(tr.t)
+    up = np.full(t.size, np.nan)
+    sig_u = np.nan
+    vt = tr.vertical
+    if vt is not None and np.size(vt.t):
+        at = {int(k): float(u) for k, u in zip(track_days(vt.t), vt.up, strict=True)}
+        up = np.array([at.get(int(k), np.nan) for k in t])
+        sig_u = float(vt.scatter)
+    y = np.vstack([np.asarray(tr.north, float), np.asarray(tr.east, float), up])
+    return t, y, np.array([tr.scatter_ne[0], tr.scatter_ne[1], sig_u])
+
+
+def frame_track(sta: str, onset: dt.datetime, end: Any, frame: str, ref: Any) -> Any:
+    """The station's track in the frame of ``ref``
+    (:class:`gps_plot.track.FrameReference`), as the track map makes it."""
+    from gps_plot import terrain, track
+
+    day = onset.date()
+    last = end.date() if isinstance(end, dt.datetime) else end
+    lon, lat = terrain.station_lonlat(sta)
+    tr = track.load_track(sta, lon, lat, day, track.pre_window(day), frame=frame,
+                          end=last, reference=ref.horizontal, up_reference=ref.up)  # fmt: skip
+    return dataclasses.replace(tr, colour_recent=True)
+
+
+def anchor_of(name: str, tr: Any) -> Any:
+    """The RTK pair's other end (:class:`gps_plot.polar_rtk.Anchor`) from its
+    track in the frame: its days, and its 14-day rate beyond them."""
+    from gps_plot.polar_rtk import Anchor
+
+    t, y, _ = track_neu(tr)
+    r, vt = tr.recent, tr.vertical
+    up = vt.recent if vt is not None and vt.recent is not None else (np.nan, np.nan)
+    rate = (np.array([r.north, r.east, up[0]]) / YEAR_DAYS if r is not None
+            else np.full(3, np.nan))  # fmt: skip
+    sig = (np.array([r.sigma_north, r.sigma_east, up[1]]) / YEAR_DAYS if r is not None
+           else np.full(3, np.nan))  # fmt: skip
+    return Anchor(name, t, y, rate, sig)
+
+
+def _slope(pp: PairPlot, args: Any, config: Any) -> str:
+    """The DEM slope at the rover, onto ``pp``; its part of the note."""
+    if args.no_dem:
+        return ""
+    from gps_plot import terrain
+    from gps_plot.map import gis_dir
+
+    radius = args.slope_radius or terrain.SLOPE_RADIUS_M
+    try:
+        pp.lonlat = terrain.station_lonlat(pp.rover)
+        sl = terrain.slope_at(*pp.lonlat, gis_dir(config), radius=radius,
+                              res=args.dem_res)  # fmt: skip
+    except (OSError, ValueError) as exc:
+        print(f"{pp.name}: no DEM ({exc})", file=sys.stderr)
+        return ""
+    pp.downslope = (sl.azimuth, sl.dip)
+    return f", {sl.source} DEM slope over {radius:g} m"
+
+
+def via_pair(sta: str, via: Sequence[str]) -> str | None:
+    """The ``--via`` pair of ``sta``: the first naming it first, else the
+    first naming it second (``--via SVIN-SVIE --via SVIE-SKFC``: SVIE's is
+    SVIE-SKFC, not SVIN-SVIE)."""
+    pairs = [v.upper() for v in via]
+    for pos in (0, 1):
+        for p in pairs:
+            if p.split("-")[pos] == sta:
+                return p
+    return None
+
+
+def _read_station(sta: str, args: Any, config: Any, onset: dt.datetime, end: Any,
+                  ref: Any, tracks: dict[str, Any]) -> tuple[PairPlot, str]:  # fmt: skip
+    """``--refs``: one station in the reference-mean frame, the dots and the
+    daily arrows from its track (the track map's); with ``--rtk`` the RTK of
+    its ``--via`` pair carried by the other end's track."""
+    frame = args.frame or common.DEFAULT_PLOT_FRAME
+    if sta not in tracks:
+        tracks[sta] = frame_track(sta, onset, end, frame, ref)
+    tr = tracks[sta]
+    t_on = dr_days(onset)
+    t, y, sig = track_neu(tr)
+    keep = t >= t_on
+    if not keep.any():
+        raise ValueError(f"no data since {onset:%Y-%m-%d}")
+    since, d = t[keep] - t_on, y[:, keep]
+    s = np.repeat(sig[:, None], d.shape[1], axis=1)
+    motion: float | None
+    if getattr(args, "direction", None) is not None:
+        motion, how = float(args.direction), "option"
+    else:
+        motion = total_direction(since, d, s)
+        how = ("movement since the onset" if motion is not None
+               else f"no movement above {MOTION_SIGMA:g} σ since the onset")  # fmt: skip
+    pp = PairPlot(sta, since, d, motion, t_on=t_on, sig=s, track=tr,
+                  frame_name=ref.name)  # fmt: skip
+    note = how if motion is None else f"motion {motion:.0f} deg ({how})"
+    note += _slope(pp, args, config)
+    if args.rtk:
+        pair = via_pair(sta, args.via)
+        if pair is None:
+            print(f"{sta}: no --via pair: no RTK", file=sys.stderr)
+        else:
+            a, b = pair.split("-")
+            other = b if a == sta else a
+            from gps_plot import polar_rtk
+
+            try:
+                if other not in tracks:
+                    tracks[other] = frame_track(other, onset, end, frame, ref)
+                pp.rtk = polar_rtk.read_overlay(
+                    f"{sta}-{other}", end, config, pp.since + t_on, pp.d,
+                    interval=args.rtk_interval,
+                    days=args.rtk_days or polar_rtk.RTK_DAYS,
+                    window=args.rtk_rate or polar_rtk.RATE_WINDOWS, after=t_on,
+                    since=(dr_days(args.rtk_since)
+                           if getattr(args, "rtk_since", None) is not None else None),
+                    anchor=anchor_of(other, tracks[other]),
+                )  # fmt: skip
+            except (OSError, ValueError) as exc:
+                print(f"{sta}: no RTK ({exc})", file=sys.stderr)
+            else:
+                pp.rtk_since = pp.rtk.t - t_on
+                note += f"; RTK {sta}-{other} + {other}'s track; " + polar_rtk.note(
+                    sta, pp.rtk
+                )
+    return pp, f"{sta}: {note}"
 
 
 #: the map's legend and colour bar start this far in [axes fraction]: clear
@@ -1269,6 +1602,10 @@ def pair_track(name: str, onset: dt.datetime, end: Any, frame: str) -> Any:
     return dataclasses.replace(tr, colour_recent=True)
 
 
+#: an RTK figure's title is green while its newest RTK is younger than this
+RTK_CURRENT = dt.timedelta(hours=1)
+#: ``--rate``: the rate arrows drawn
+RATE_SOURCES = ("both", "daily", "rtk")
 #: the sector's and the profile's rate arrows: this many days of motion at
 #: the 14-day rate, from the newest position (BGÓ 2026-11-11)
 ARROW_DAYS = 14.0
@@ -1278,6 +1615,11 @@ def rate_step(pp: PairPlot) -> tuple[float, float, float] | None:
     """(N, E, U) [mm]: ``ARROW_DAYS`` of motion at the pair's 14-day rate,
     when the track map would draw its arrow (horizontal or Up above 2 σ):
     then the whole velocity, Up included whatever its σ."""
+    if pp.rate_from == "rtk":
+        r = pp.rtk.rate if pp.rtk is not None else None
+        if r is None or not r.significant:
+            return None
+        return r.north * ARROW_DAYS, r.east * ARROW_DAYS, r.up * ARROW_DAYS
     tr = pp.track
     if tr is None or tr.recent is None:
         return None
@@ -1291,6 +1633,48 @@ def rate_step(pp: PairPlot) -> tuple[float, float, float] | None:
     k = ARROW_DAYS / YEAR_DAYS
     u = vt.recent[0] * k if vt is not None and vt.recent is not None else 0.0
     return tr.recent.north * k, tr.recent.east * k, u
+
+
+def since_rate(pp: PairPlot) -> tuple[Any, str] | None:
+    """The black arrow: (its :class:`gps_plot.track.Rate` [mm/yr], legend).
+    On an RTK figure with ``--rtk-since``, the RTK average since the
+    episode's onset (BGÓ 2026-11-12); else the daily average since the
+    figure's onset."""
+    if pp.rate_from == "rtk" and pp.rtk is not None and pp.rtk.since_t is not None:
+        r = pp.rtk.since
+        if r is None:
+            return None
+        day = dt.datetime(1970, 1, 1) + dt.timedelta(days=pp.rtk.since_t)
+        when = (
+            f"{day:%d %b}" if (day.hour, day.minute) == (0, 0) else f"{day:%d %b %H:%M}"
+        )
+        return r.as_track_rate(), (
+            f"RTK since {when}: {r.speed:.2f} $\\pm$ "
+            f"{r.sigma_speed:.2f} mm/d, {r.azimuth:.0f}°")  # fmt: skip
+    tr = pp.track
+    if tr is None or tr.since is None:
+        return None
+    r = tr.since
+    day = dt.datetime(1970, 1, 1) + dt.timedelta(days=pp.t_on)
+    return r, (f"since {day:%d %b}: {r.speed / YEAR_DAYS:.2f} $\\pm$ "
+               f"{r.sigma_speed / YEAR_DAYS:.2f} mm/d toward {r.azimuth:.0f}°")  # fmt: skip
+
+
+def since_drawn(pp: PairPlot) -> bool:
+    """The black arrow is drawn: above ``RECENT_SIGMA`` σ."""
+    from gps_plot import track
+
+    got = since_rate(pp)
+    return got is not None and got[0].speed > track.RECENT_SIGMA * got[0].sigma_speed
+
+
+def rate_step_label(pp: PairPlot) -> str:
+    """The sector's and the profile's arrow in the legend."""
+    if pp.rate_from == "rtk" and pp.rtk is not None and pp.rtk.rate is not None:
+        from gps_plot.polar_rtk import span_text
+
+        return f"{ARROW_DAYS:g} days at the RTK {span_text(pp.rtk.rate.window)} rate"
+    return f"{ARROW_DAYS:g} days at the 14-day rate"
 
 
 def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
@@ -1358,34 +1742,66 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         start = onset - dt.timedelta(days=1)
     if not args.save:
         mpl.use("WebAgg")
-    window = args.window or (1.0 / 24.0 if args.rtk else 7.0)
+    window = args.window or 7.0
     panels = [x.strip() for x in args.panels.split(",") if x.strip()]
     if not panels or set(panels) - set(PANELS):
         parser.error(f"--panels: from {', '.join(PANELS)}")
+    if args.rate == "rtk" and not args.rtk:
+        parser.error("--rate rtk needs --rtk")
     if args.together and len(args.Baselines) > len(PAIR_STYLES):
         parser.error(f"--together: at most {len(PAIR_STYLES)} pairs")
 
-    directions = dr.resolve_directions(
-        args.Baselines, "motion", motion=args.direction,
-        span=args.direction_from, config=config, frame=args.frame, rtk=args.rtk,
-    )  # fmt: skip
     read_from = start or dt.datetime(1990, 1, 1)
     got: list[tuple[PairPlot, str]] = []
     failed = 0
-    for name in args.Baselines:
+    frame_name = None
+    if args.refs:  # BGÓ 2026-11-13: the reference-mean frame, as the track map
+        from gps_plot import track
+
+        if onset is None:
+            parser.error("--refs needs an onset (--onset or an events.yaml event)")
+        refs = [r.strip().upper() for r in args.refs.split(",") if r.strip()]
         try:
-            got.append(_read_pair(name, args, config, onset, end, read_from, window,
-                                  directions))  # fmt: skip
-        except Exception as exc:  # one bad pair must not sink the rest
-            print(f"{name}: {exc}", file=sys.stderr)
-            failed += 1
+            ref = track.frame_reference(
+                refs, track.pre_window(onset.date()), onset.date(),
+                frame=args.frame or common.DEFAULT_PLOT_FRAME, end=end.date(),
+            )  # fmt: skip
+        except (ValueError, OSError) as exc:
+            parser.error(f"--refs: {exc}")
+        frame_name = ref.name
+        for name, speed in ref.dropped:
+            print(f"--refs: {name} left out: it moves {speed:.0f} mm/yr against the "
+                  "others since the onset", file=sys.stderr)  # fmt: skip
+        tracks: dict[str, Any] = {}
+        for name in args.Baselines:
+            sta = name.upper().split("-")[0]
+            try:
+                got.append(_read_station(sta, args, config, onset, end, ref, tracks))
+            except Exception as exc:  # one bad station must not sink the rest
+                print(f"{sta}: {exc}", file=sys.stderr)
+                failed += 1
+    else:
+        directions = dr.resolve_directions(
+            args.Baselines, "motion", motion=args.direction,
+            span=args.direction_from, config=config, frame=args.frame,
+        )  # fmt: skip
+        for name in args.Baselines:
+            try:
+                got.append(_read_pair(name, args, config, onset, end, read_from,
+                                      window, directions))  # fmt: skip
+            except Exception as exc:  # one bad pair must not sink the rest
+                print(f"{name}: {exc}", file=sys.stderr)
+                failed += 1
     if not got:
         return 1
-    kind = "RTK 10-min medians" if args.rtk else "daily, cleaned plate series"
+    kind = "daily, cleaned plate series" + (", RTK on top" if args.rtk else "")
     span = f"{window:g} d" if window >= 1 else f"{24 * window:g} h"
     head = (
         f"rover - reference, {kind}; displacement from the median of the first "
         f"{span} after the onset{onset_note}"
+        if frame_name is None
+        else f"station - {frame_name} (the track map's frame), {kind}; zero at the "
+        f"onset{onset_note}"
     )
     groups = [[g for g in got]] if args.together else [[g] for g in got]
     locator: dict[str, list[Any]] = {}
@@ -1395,8 +1811,13 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         locator = iceland_layers(gis_dir(config))
     for group in groups:
         pairs = [pp for pp, _ in group]
-        for pp, (marker, line, slope) in zip(pairs, PAIR_STYLES, strict=False):
+        from gps_plot.polar_rtk import RTK_COLOURS
+
+        for pp, (marker, line, slope), rc in zip(pairs, PAIR_STYLES, RTK_COLOURS,
+                                                 strict=False):  # fmt: skip
             pp.marker, pp.colour, pp.slope_colour = marker, line, slope
+            pp.rtk_colour = rc
+            pp.rate_from = args.rate
         dem, half, centre = _place(pairs, config, panels, args.map_half,
                                    args.dem_res)  # fmt: skip
         profile_dem = None
@@ -1410,17 +1831,28 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         t0 = min(pp.t_on for pp in pairs)
         for pp in pairs:
             pp.since = pp.since + (pp.t_on - t0)
+            if pp.rtk_since is not None:
+                pp.rtk_since = pp.rtk_since + (pp.t_on - t0)
         when = dt.datetime(1970, 1, 1) + dt.timedelta(days=t0)
         last = when + dt.timedelta(
             days=max(float(np.max(pp.since)) for pp in pairs if np.size(pp.since))
         )
         colour: Any
         status: str
-        if args.rtk:  # minutes old, not days: no daily currency colour
-            status, colour = f"Last epoch: {last:%d %b %Y %H:%M} UTC", "k"
-        else:
-            title = tplt.make_title(pairs[0].name, last)
-            status, colour = title.status, title.status_color
+        title = tplt.make_title(pairs[0].name, last)
+        # the standard daily rule (tplt.data_is_current: green only through
+        # yesterday; BGÓ 2026-11-13: a daily figure goes red until it updates)
+        status, colour = title.status, title.status_color
+        rtk_last = [float(np.max(pp.rtk.t)) for pp in pairs
+                    if pp.rtk is not None and np.size(pp.rtk.t)]  # fmt: skip
+        if rtk_last:  # the daily status, and how new the RTK on top is
+            newest = dt.datetime(1970, 1, 1) + dt.timedelta(days=max(rtk_last))
+            status += f"; RTK to {newest:%d %b %H:%M} UTC"
+            # BGÓ 2026-11-13: on an RTK figure the colour says whether the RTK
+            # is updating (the daily day is a day or two old by design), as
+            # the RTK plots' title: current within RTK_CURRENT
+            colour = (tplt.STATUS_CURRENT_COLOR if now - newest < RTK_CURRENT
+                      else tplt.STATUS_STALE_COLOR)  # fmt: skip
         print(note)
         fig = polar_figure(pairs, onset=when,
                            title_status=status, status_color=colour,
@@ -1435,24 +1867,102 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             plt.show()
             continue
         # A_B-polar-<period>; together: A_C_B (the rovers, then the references)
-        refs = sorted({pp.name[5:] for pp in pairs})
-        names = "_".join([*(pp.rover for pp in pairs), *refs])
-        stem = f"{names}-polar-{period}" + ("-rtk" if args.rtk else "")
+        if frame_name is None:  # A_C_B: the rovers, then the references
+            refs = sorted({pp.name[5:] for pp in pairs})
+            names = "_".join([*(pp.rover for pp in pairs), *refs])
+            base = f"{names}-polar-{period}"
+        else:  # A_C-polar-<period>-frame
+            names = "_".join(pp.rover for pp in pairs)
+            base = f"{names}-polar-{period}-frame"
+        stem = (base + ("-rtk" if args.rtk else "")
+                + ("" if args.rate == "both" else f"-rate-{args.rate}"))  # fmt: skip
         fig_dir = (
             args.figDir
             if args.figDir is not None
             else common.config_dir(config, "fig_dir", "")
         )
         tplt.saveFig(os.path.join(fig_dir, stem), args.save, fig)
+        written = list(getattr(fig, "_gps_files", ()))
+        if args.rtk and args.rate == "rtk":  # the arrows' windows, for rtk-tie
+            path = os.path.join(fig_dir, f"{base}-rtk-rates.json")
+            write_rates(path, pairs, now)
+            written.append(path)
         if args.manifest:
             with open(args.manifest, "a") as fh:
-                fh.writelines(
-                    os.path.abspath(f) + "\n" for f in getattr(fig, "_gps_files", ())
-                )
+                fh.writelines(os.path.abspath(f) + "\n" for f in written)
         print(
             f"plotted {', '.join(pp.name for pp in pairs)}: {os.path.join(fig_dir, stem)}"
         )
     return 1 if failed == len(args.Baselines) else 0
+
+
+def arrow_rates(pp: PairPlot) -> dict[str, Any]:
+    """The pair's two rate arrows as the time series draw them: each one's
+    window [days], its end (UTC ISO), whether the figure draws it and its
+    speed [mm/d] (``gpsplot rtk-tie --rates`` draws a line over the same
+    window; BGÓ 2026-11-12) and its N/E/U [mm/d], so that line is this
+    arrow's velocity, not a fit of its own (BGÓ 2026-11-13)."""
+    from gps_plot import track
+
+    def neu(n: float, e: float, u: float) -> list[float | None]:
+        return [round(float(x), 4) if np.isfinite(x) else None for x in (n, e, u)]
+
+    out: dict[str, Any] = {"pair": pp.name}
+    tr = pp.track
+    vt = tr.vertical if tr is not None else None
+    if tr is not None and tr.recent is not None and np.size(pp.since):
+        end = dt.datetime(1970, 1, 1) + dt.timedelta(
+            days=float(pp.t_on + np.max(pp.since))
+        )
+        out["daily"] = {"window_days": float(tr.recent_window),
+                        "end": end.isoformat(timespec="minutes"),
+                        "shown": bool(tr.recent_shown),
+                        "speed": tr.recent.speed / YEAR_DAYS,
+                        "neu_mm_per_day": neu(
+                            tr.recent.north / YEAR_DAYS, tr.recent.east / YEAR_DAYS,
+                            vt.recent[0] / YEAR_DAYS
+                            if vt is not None and vt.recent is not None else np.nan)}  # fmt: skip
+        if tr.since is not None:  # the average since the onset (black)
+            out["since"] = {"window_days": float(np.max(pp.since)),
+                            "end": end.isoformat(timespec="minutes"),
+                            # the daily average's own test, whatever this
+                            # figure's black arrow is (the RTK run writes it)
+                            "shown": bool(tr.since.speed
+                                          > track.RECENT_SIGMA * tr.since.sigma_speed),
+                            "speed": tr.since.speed / YEAR_DAYS,
+                            "neu_mm_per_day": neu(
+                                tr.since.north / YEAR_DAYS, tr.since.east / YEAR_DAYS,
+                                vt.since[0] / YEAR_DAYS
+                                if vt is not None and vt.since is not None else np.nan)}  # fmt: skip
+    ov = pp.rtk
+    if ov is not None and ov.rate is not None and np.size(ov.t):
+        r = ov.rate
+        end = dt.datetime(1970, 1, 1) + dt.timedelta(days=float(np.max(ov.t)))
+        out["rtk"] = {"window_days": float(r.window),
+                      "end": end.isoformat(timespec="minutes"),
+                      "shown": bool(r.significant), "speed": r.speed,
+                      "neu_mm_per_day": neu(r.north, r.east, r.up)}  # fmt: skip
+        if ov.since is not None and ov.since_t is not None:  # the RTK black line
+            out["rtk_since"] = {"window_days": float(np.max(ov.t)) - ov.since_t,
+                                "end": end.isoformat(timespec="minutes"),
+                                "shown": bool(ov.since.speed > 2 * ov.since.sigma_speed),
+                                "speed": ov.since.speed,
+                                "neu_mm_per_day": neu(ov.since.north, ov.since.east,
+                                                      ov.since.up)}  # fmt: skip
+    return out
+
+
+def write_rates(path: str, pairs: Sequence[PairPlot], now: dt.datetime) -> None:
+    """``{"made": ISO, "rovers": {rover: arrow_rates}}`` to ``path``
+    (atomically: the page's runs read it)."""
+    import json
+
+    doc = {"made": now.isoformat(timespec="minutes"),
+           "rovers": {pp.rover: arrow_rates(pp) for pp in pairs}}  # fmt: skip
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(doc, fh, indent=1)
+    os.replace(tmp, path)
 
 
 def dr_days(when: dt.datetime) -> float:

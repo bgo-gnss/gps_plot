@@ -89,8 +89,9 @@ def test_resolve_span() -> None:
     now = dt.datetime(2026, 10, 30, 12)
     start, end, name = polar.resolve_span(parser.parse_args(["A-B"]), now)
     assert (end - start).days == 366 and name == "year" and end.hour == 0
+    # --rtk: the daily figure's year, to now (the RTK runs on to the hour)
     start, end, name = polar.resolve_span(parser.parse_args(["A-B", "--rtk"]), now)
-    assert (end - start).days == 7 and name == "week" and end == now
+    assert (end - start).days == 366 and name == "year" and end == now
     args = parser.parse_args(["A-B", "-s", "20260101", "-e", "20260301"])
     assert polar.resolve_span(args, now)[2] == "20260101-20260301"
     # a fixed start running on to today keeps one name day after day
