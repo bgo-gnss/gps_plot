@@ -1,0 +1,18 @@
+[Unit]
+OnFailure=yang-notify@%n.service
+Description=gpsplot polar, Svínafellsheiði in the reference-mean frame: the daily-rate figure (no RTK), the RTK-rate figure (black: since the 8 Nov episode) + the rates file for gpsplot-rtk-tie, the both-arrows figure, SVIN-SVIE (BGÓ 2026-11-13, from the laptop)
+
+[Service]
+ExecStartPost=%h/src/gps_plot/deployment/yang/yang-notify.py ok %n
+Type=oneshot
+Nice=10
+EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
+Environment=MPLBACKEND=Agg
+WorkingDirectory=/mnt/data/gpsops
+# the Vöktun page: the daily figure and the RTK one
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot polar SVIN SVIE --together -s 20260923 --refs SKFC,SLEC,FAGC,KVSK --rate daily --save png -d /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot polar SVIN SVIE --together -s 20260923 --refs SKFC,SLEC,FAGC,KVSK --rtk --rtk-days 3d --rate rtk --rtk-since 20261108 --via SVIN-SVIE --via SVIE-SKFC --save png -d /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+# links: both arrows on one figure, and SVIN-SVIE
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot polar SVIN SVIE --together -s 20260923 --refs SKFC,SLEC,FAGC,KVSK --rtk --rtk-days 3d --via SVIN-SVIE --via SVIE-SKFC --save png -d /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot polar SVIN-SVIE -s 20260923 --rtk --rtk-days 3d --save png -d /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+TimeoutStartSec=15min

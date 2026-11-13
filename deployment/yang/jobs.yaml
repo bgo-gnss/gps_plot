@@ -13,6 +13,18 @@ jobs:
     what: RTK plots 6 h, 12 h, 2 d (every 5 min)
     outputs:
       - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-rtk-12h.png, max_age: 20m}
+  gpsplot-polar-rtk:
+    group: gps
+    what: Svínafellsheiði polar in the reference-mean frame, daily-rate and RTK-rate figures + the rates file for rtk-tie (every 10 min)
+    outputs:
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-polar-since20260923-frame-rate-daily.png, max_age: 30m}
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-polar-since20260923-frame-rtk-rate-rtk.png, max_age: 30m}
+  gpsplot-rtk-tie:
+    group: gps
+    what: SVIN, SVIE in the reference frame, RTK tied to daily solutions, 6 h-7 d, 90 d/1 yr, since 1 Aug (RTK 1 Nov) with the polar rate lines (every 10 min)
+    outputs:
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-tied-since20261101-motion.png, max_age: 30m}
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-frame-since20260801-motion.png, max_age: 30m}
   gpsplot-rtk-long:
     group: gps
     what: RTK plots 4 d, 7 d, 14 d (every 30 min)

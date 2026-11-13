@@ -23,6 +23,8 @@ UV_VERSION=0.8.22
 UNITS=(svinafell-watch.service svinafell-watch.timer
     gpsplot-rtk.service gpsplot-rtk.timer
     gpsplot-rtk-long.service gpsplot-rtk-long.timer
+    gpsplot-polar-rtk.service gpsplot-polar-rtk.timer
+    gpsplot-rtk-tie.service gpsplot-rtk-tie.timer
     gpsplot-run.service gpsplot-run.timer
     gpsplot-run-update.service gpsplot-run-update.timer
     yang-config-sync.service yang-config-sync.timer

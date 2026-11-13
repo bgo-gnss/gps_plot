@@ -1,0 +1,10 @@
+[Unit]
+Description=gpsplot rtk-tie (Svínafellsheiði) every 10 minutes
+
+[Timer]
+OnCalendar=*:2/10
+Persistent=false
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target

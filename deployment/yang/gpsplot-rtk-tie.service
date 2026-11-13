@@ -1,0 +1,13 @@
+[Unit]
+OnFailure=yang-notify@%n.service
+Description=gpsplot rtk-tie: SVIN and SVIE in the SKFC/SLEC/FAGC/KVSK frame, RTK tied to the daily solutions; 6 h-7 d, daily 90 d / 1 yr, since 1 Aug (RTK 1 Nov) with the polar rate lines (BGÓ 2026-11-13, from the laptop)
+
+[Service]
+ExecStartPost=%h/src/gps_plot/deployment/yang/yang-notify.py ok %n
+Type=oneshot
+Nice=10
+EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
+Environment=MPLBACKEND=Agg
+WorkingDirectory=/mnt/data/gpsops
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot rtk-tie SVIN SVIE --via SVIN-SVIE --via SVIE-SKFC --compare SVIN-SKFC --refs SKFC,SLEC,FAGC,KVSK --event svinafellsheidi-2026-09-landslide --area svinafellsheidi --days 0.25,0.5,2,7 --daily-days 90,365 --colors SVIN=red,SVIE=#2ca02c --axes motion --since 2026-08-01 --rtk-since 2026-11-01 --rates /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-polar-since20260923-frame-rtk-rates.json --out /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+TimeoutStartSec=15min

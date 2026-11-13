@@ -1,0 +1,10 @@
+[Unit]
+Description=gpsplot polar --rtk (Svínafellsheiði) every 10 minutes
+
+[Timer]
+OnCalendar=*:6/10
+Persistent=false
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target
