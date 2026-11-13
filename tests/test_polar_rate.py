@@ -80,3 +80,44 @@ def test_rate_option() -> None:
     assert parser.parse_args(["SVIN-SKFC"]).rate == "both"
     with pytest.raises(SystemExit):
         parser.parse_args(["SVIN-SKFC", "--rate", "fast"])
+
+
+def test_via_pair_prefers_the_station_first() -> None:
+    via = ["SVIN-SVIE", "SVIE-SKFC"]
+    assert polar.via_pair("SVIN", via) == "SVIN-SVIE"
+    assert polar.via_pair("SVIE", via) == "SVIE-SKFC"  # not SVIN-SVIE
+    assert polar.via_pair("SKFC", via) == "SVIE-SKFC"
+    assert polar.via_pair("FAGC", via) is None
+
+
+def test_track_days_are_noon_days_since_1970() -> None:
+    from gps_plot import track
+
+    t = np.array(
+        [track.yearf(dt.date(2026, 11, 11)), track.yearf(dt.date(2024, 2, 29))]
+    )
+    got = polar.track_days(t)
+    want = [(dt.date(2026, 11, 11) - dt.date(1970, 1, 1)).days + 0.5,
+            (dt.date(2024, 2, 29) - dt.date(1970, 1, 1)).days + 0.5]  # fmt: skip
+    assert got == pytest.approx(want)
+
+
+def test_anchor_interpolates_then_goes_on_at_its_rate() -> None:
+    a = polar_rtk.Anchor("SVIE", np.array([0.5, 1.5, 2.5]),
+                         np.array([[0.0, 1.0, 2.0], [0.0, 0.0, 0.0], [np.nan, 5.0, 5.0]]),
+                         np.array([1.0, 0.0, -2.0]), np.array([0.2, 0.2, 1.0]))  # fmt: skip
+    at = a.at(np.array([1.0, 2.5, 3.5]))
+    assert at[0] == pytest.approx([0.5, 2.0, 3.0])  # linear, then 1 mm/d on
+    assert at[2] == pytest.approx([5.0, 5.0, 3.0])  # its own days only
+    r = polar_rtk.with_anchor_sigma(_rate(1.0, 0.0, 0.3), a)
+    assert r is not None
+    assert r.sigma_north == pytest.approx(np.hypot(0.3, 0.2))
+    assert r.sigma_up == pytest.approx(np.hypot(0.3, 1.0))
+    assert polar_rtk.with_anchor_sigma(None, a) is None
+
+
+def test_frame_option_parses() -> None:
+    parser = polar.build_parser()
+    args = parser.parse_args(["SVIN", "SVIE", "--refs", "SKFC,SLEC", "--rtk",
+                              "--via", "SVIN-SVIE", "--via", "SVIE-SKFC"])  # fmt: skip
+    assert args.refs == "SKFC,SLEC" and args.via == ["SVIN-SVIE", "SVIE-SKFC"]

@@ -570,6 +570,69 @@ def reference_mean(
     return from_day_key(grid[keep]), total[:, keep] / wsum[:, keep]
 
 
+@dataclasses.dataclass(frozen=True)
+class FrameReference:
+    """The mean of several reference stations (:func:`frame_reference`):
+    the horizontal and Up references for :func:`load_track`, the stations
+    used and those left out (name, speed [mm/yr] against the others)."""
+
+    horizontal: tuple[FloatArray, FloatArray]
+    up: tuple[FloatArray, FloatArray] | None
+    used: list[str]
+    dropped: list[tuple[str, float]]
+
+    @property
+    def name(self) -> str:
+        """``the mean of A, B, C`` (or the one station)."""
+        return self.used[0] if len(self.used) == 1 else "the mean of " + ", ".join(self.used)
+
+
+def frame_reference(
+    refs: Sequence[str],
+    pre: tuple[dt.date, dt.date],
+    onset: dt.date,
+    *,
+    frame: str = "itrf14",
+    pos_dir: str | None = None,
+    uncert: float = TRACK_UNCERT,
+    common_mode: bool = True,
+    end: dt.date | None = None,
+) -> FrameReference:
+    """The track map's reference (``gpsplot map --track-ref A,B,C``, BGÓ
+    2026-11-13: the polar figure in the same frame): each station read as
+    :func:`load_series`, those moving against the others since the onset
+    left out (:func:`screen_references`, with three or more), the rest's
+    weighted mean (:func:`reference_mean`), horizontal and Up.
+
+    Raises:
+        ValueError: no reference station with data.
+    """
+    loaded: dict[str, tuple[FloatArray, FloatArray]] = {}
+    for r in refs:
+        try:
+            loaded[r] = load_series(r, pre, frame=frame, pos_dir=pos_dir, uncert=uncert,
+                                    common_mode=common_mode, end=end, up=True)  # fmt: skip
+        except (ValueError, OSError):
+            if len(refs) == 1:
+                raise
+    if not loaded:
+        raise ValueError(f"no reference station with data among {list(refs)}")
+    dropped: list[tuple[str, float]] = []
+    used = list(loaded)
+    if len(used) >= 3:
+        used, dropped = screen_references(
+            {k: (t, y[:2]) for k, (t, y) in loaded.items()}, pre, onset
+        )
+    horizontal = [(loaded[k][0], loaded[k][1][:2]) for k in used]
+    ups = [up_series(*loaded[k]) for k in used]
+    hor = horizontal[0] if len(horizontal) == 1 else reference_mean(horizontal, pre)
+    try:
+        up = ups[0] if len(ups) == 1 else reference_mean(ups, pre)
+    except ValueError:
+        up = None
+    return FrameReference(hor, up, list(used), dropped)
+
+
 def screen_references(
     series: Mapping[str, tuple[FloatArray, FloatArray]],
     pre: tuple[dt.date, dt.date],

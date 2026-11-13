@@ -221,6 +221,57 @@ class RtkOverlay:
     since_t: float | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class Anchor:
+    """The other end of the RTK pair, in the figure's frame (BGÓ 2026-11-13:
+    the polar figure in the reference-mean frame, as the track map and the
+    time series): its daily positions ``t`` [days since 1970], ``y`` (3, N)
+    [mm], its newest rate ``rate`` (3,) [mm/d] and that rate's σ (3,).
+
+    The station in the frame = (station − anchor) by RTK + the anchor in the
+    frame (:meth:`at`). The anchor moves slowly next to the RTK's noise, so
+    its daily positions, linear between them, carry it; after its newest day
+    it goes on at ``rate`` (held flat it would put its own motion, SVIE
+    ≈ 0.65 mm/d, into the station's newest rates). The pre-onset trends of
+    the two ends differ by a few mm/yr: left in."""
+
+    name: str
+    t: Any
+    y: Any
+    rate: Any
+    sigma: Any
+
+    def at(self, t: Any) -> Any:
+        """(3, len(t)) the anchor's position at ``t`` [days since 1970]."""
+        t = np.asarray(t, dtype=float)
+        out = np.full((3, t.size), np.nan)
+        for c in range(3):
+            ok = np.isfinite(self.y[c])
+            if not ok.any():
+                continue
+            tc, yc = np.asarray(self.t, float)[ok], np.asarray(self.y[c], float)[ok]
+            v = np.interp(t, tc, yc)
+            after = t > tc[-1]
+            rate = float(self.rate[c]) if np.isfinite(self.rate[c]) else 0.0
+            v[after] = yc[-1] + rate * (t[after] - tc[-1])
+            out[c] = v
+        return out
+
+
+def with_anchor_sigma(rate: RtkRate | None, anchor: Anchor) -> RtkRate | None:
+    """``rate`` with the anchor's rate σ added in quadrature (the RTK's own
+    empirical σ does not hold the anchor's daily noise)."""
+    if rate is None:
+        return None
+    a = [float(x) if np.isfinite(x) else 0.0 for x in anchor.sigma]
+    return dataclasses.replace(
+        rate,
+        sigma_north=math.hypot(rate.sigma_north, a[0]),
+        sigma_east=math.hypot(rate.sigma_east, a[1]),
+        sigma_up=math.hypot(rate.sigma_up, a[2]),
+    )
+
+
 def history_days(window: float) -> float:
     """The repeatability's look-back for a ``window``-long rate: at least
     :data:`HISTORY_DAYS`, and four windows (three of back-to-back pairs)."""
@@ -657,9 +708,13 @@ def read_overlay(
     window: float | Sequence[float] = RATE_WINDOWS,
     after: float | None = None,
     since: float | None = None,
+    anchor: Anchor | None = None,
 ) -> RtkOverlay:
     """:func:`overlay` of the pair's RTK read back far enough for the tail,
-    the rates' windows (``since``'s too) and history, and the alignment."""
+    the rates' windows (``since``'s too) and history, and the alignment;
+    with ``anchor`` the pair's station in the anchor's frame (the pair read
+    station − anchor, plus :meth:`Anchor.at`), the rates' σ with the
+    anchor's rate σ."""
     windows = windows_of(window)
     longest = max(windows)
     if since is not None:  # its window, to the end
@@ -668,13 +723,29 @@ def read_overlay(
     back = max(days, longest + history_days(longest), ALIGN_DAYS,
                CAL_DAYS + longest + BG_WINDOW) + 1.0  # fmt: skip
     t, y = read_rtk(name, end - dt.timedelta(days=back), end, config, interval)
+    if anchor is not None:
+        y = y + anchor.at(t)
     minutes = None
     if min(windows) < MINUTE_BELOW:
         back_min = CAL_DAYS + SIDEREAL_DAYS * SIDEREAL_S / 86400.0 + 1.5
-        minutes = clean_minutes(*read_rtk(name, end - dt.timedelta(days=back_min),
-                                          end, config, "1min"))  # fmt: skip
-    return overlay(t, y, t_day, d_day, interval=interval, days=days, window=window,
-                   after=after, minutes=minutes, since=since)  # fmt: skip
+        tm, ym = clean_minutes(*read_rtk(name, end - dt.timedelta(days=back_min),
+                                         end, config, "1min"))  # fmt: skip
+        if anchor is not None:  # after the cleaning: the anchor is smooth
+            ym = ym + anchor.at(tm)
+        minutes = (tm, ym)
+    ov = overlay(t, y, t_day, d_day, interval=interval, days=days, window=window,
+                 after=after, minutes=minutes, since=since)  # fmt: skip
+    if anchor is None:
+        return ov
+    rates = tuple(with_anchor_sigma(r, anchor) for r in ov.rates)
+    rate = pick_rate(rates)  # again: the 72 h speed test sees the larger σ
+    return dataclasses.replace(
+        ov,
+        rate=rate,
+        rates=rates,
+        window=rate.window if rate is not None else ov.windows[-1],
+        since=with_anchor_sigma(ov.since, anchor),
+    )
 
 
 def span_text(days: float) -> str:

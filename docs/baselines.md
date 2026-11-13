@@ -142,6 +142,18 @@ arrow); `--rtk` adds per pair (BGÓ 2026-11-12):
   daily one): `both` (default) draws both arrows; `daily` only the 14-day
   rate of the daily solutions, `rtk` only the RTK rate (the sector's and
   profile's 14-day step then follows the RTK rate, when it passes its test).
+  **`--refs A,B,C`** (BGÓ 2026-11-13): the reference-mean frame of the track
+  map and the time series instead of pairs. The arguments are stations
+  (`SVIN SVIE`); the frame is `track.frame_reference` (the track map's
+  steps: a reference moving against the others left out, the weighted mean
+  of the rest, horizontal and Up); the dots and the daily arrows come from
+  the station's track in it, so the numbers are the track map's. With
+  `--rtk`, `--via A-B` names each station's RTK pair: the station = (station −
+  other end) by RTK + the other end's track (`polar_rtk.Anchor`: its days,
+  linear between them, its 14-day rate after the newest; the rates' σ with
+  that rate's σ in quadrature). Files `A_B-polar-<period>-frame[-rtk][-rate-x]`.
+  The title's colour: an RTK figure green while its newest RTK is under 1 h
+  old, a daily one on the standard daily rule (green only through yesterday).
   The black arrow is the average since the onset (daily, above 2 σ); on
   the RTK figure with `--rtk-since DATE` the RTK average since the newest
   episode's onset (BGÓ 2026-11-12: 8 Nov 00:00 UTC at Svínafellsheiði).
