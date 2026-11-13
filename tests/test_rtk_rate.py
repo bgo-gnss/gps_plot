@@ -78,3 +78,14 @@ def test_up_left_out_when_not_asked() -> None:
     assert both is not None and horiz is not None
     assert max(r["level"] for r in rtk_rate.pair_rates(h, both, h.index[-1], 3.0)) == 3
     assert max(r["level"] for r in rtk_rate.pair_rates(h, horiz, h.index[-1], 3.0)) == 0
+
+
+def test_up_has_its_own_sigma_factor() -> None:
+    """BGÓ 2026-11-13: Up on, with a higher σ factor, fires only when far
+    out of its noise."""
+    h = _hourly(20.0, None, 0.0)
+    h["U"] += -8.0 * np.clip((np.arange(len(h)) / 24.0) - 16.0, 0, None)
+    spec = rtk_rate.spec_of({"up_significance_sigma": 1e6})
+    assert spec is not None and spec["up_significance_sigma"] == 1e6
+    assert max(r["level"] for r in rtk_rate.pair_rates(h, spec, h.index[-1], 3.0)) == 0
+    assert rtk_rate.spec_of({})["up_significance_sigma"] is None  # type: ignore[index]

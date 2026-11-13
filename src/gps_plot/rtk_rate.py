@@ -81,6 +81,11 @@ def spec_of(raw: Any) -> dict[str, Any] | None:
         # None: the area's significance_sigma
         "significance_sigma": (float(raw["significance_sigma"])
                                if raw.get("significance_sigma") is not None else None),
+        # BGÓ 2026-11-13: Up its own σ factor (None: significance_sigma), so
+        # the noisy RTK Up fires only in extreme cases
+        "up_significance_sigma": (float(raw["up_significance_sigma"])
+                                  if raw.get("up_significance_sigma") is not None
+                                  else None),
         "horizontal_mm_per_day": [float(x) for x in
                                   raw.get("horizontal_mm_per_day", HORIZONTAL_MM_PER_DAY)],
         "up_mm_per_day": [float(x) for x in raw.get("up_mm_per_day", UP_MM_PER_DAY)],
@@ -186,7 +191,9 @@ def pair_rates(
         comps = spec.get("components", COMPONENTS)
         lh = (levels_of(speed, sig_h, spec["horizontal_mm_per_day"], significance)
               if "horizontal" in comps else 0)  # fmt: skip
-        lu = (levels_of(up, float(sig[2]), spec["up_mm_per_day"], significance)
+        k_up = spec.get("up_significance_sigma")
+        k_up = significance if k_up is None else float(k_up)
+        lu = (levels_of(up, float(sig[2]), spec["up_mm_per_day"], k_up)
               if "up" in comps else 0)  # fmt: skip
         rows.append({
             "window_h": w,
@@ -246,6 +253,11 @@ def live(
         "up_mm_per_day": list(spec["up_mm_per_day"]),
         "components": list(spec.get("components", COMPONENTS)),
         "significance_sigma": significance,
+        "up_significance_sigma": (
+            significance
+            if spec.get("up_significance_sigma") is None
+            else float(spec["up_significance_sigma"])
+        ),
         "pairs": rows,
     }
     if best is None:
