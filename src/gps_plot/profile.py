@@ -352,29 +352,64 @@ def end_along_up(prof: Profile) -> tuple[float, float] | None:
     return float(lvl[0]), float(lvl[1])
 
 
+def _day_text(days_1970: float) -> str:
+    """``23 Sep`` of an epoch in days since 1970."""
+    import datetime as dt
+
+    return (dt.datetime(1970, 1, 1) + dt.timedelta(days=days_1970)).strftime("%d %b")
+
+
+def total_movement(prof: Profile) -> tuple[float, float, float, str, str, bool] | None:
+    """The movement the T bar shows: (start Up, end Up, total [mm], since
+    when, colour, above its test), Up relative to the rover. The RTK
+    figure (``--rate rtk`` with an episode onset): the RTK movement since that onset, the
+    black arrow's line over its window, ending at the newest RTK path
+    point, in black (BGÓ 2026-11-13); otherwise the newest daily level
+    since the figure's onset, in the pair's colour."""
+    pp = prof.pp
+    rtk: Any = getattr(pp, "rtk", None)
+    since = getattr(rtk, "since", None) if pp.rate_from == "rtk" else None
+    if since is not None and rtk.since_t is not None and rtk.path is not None:
+        path = np.asarray(rtk.path, dtype=float)
+        ok = np.isfinite(path).all(axis=0)
+        if ok.any():
+            step = np.array([since.north, since.east, since.up]) * since.window
+            end = float(path[2][ok][-1])
+            return (end - float(step[2]), end, float(np.linalg.norm(step)),
+                    _day_text(rtk.since_t), "k", bool(since.significant))  # fmt: skip
+    end_lvl = end_along_up(prof)
+    if end_lvl is None:
+        return None
+    along, up = end_lvl
+    return 0.0, up, float(np.hypot(along, up)), _day_text(pp.t_on), pp.colour, True
+
+
 def _total_bar(ax: Any, prof: Profile, sign: float, scale: float, half: float,
                small: bool) -> None:  # fmt: skip
-    """The movement since the onset as a vertical T bar beside the rover
-    (BGÓ 2026-11-13): from the rover's height to the newest level's, capped
-    at both ends, at the dots' scale; beside it the total (along and Up)
-    and the Up of it [mm]."""
-    end = end_along_up(prof)
-    if end is None:
+    """The movement (:func:`total_movement`) as a vertical T bar beside the
+    rover (BGÓ 2026-11-13): its Up at the dots' scale, capped at both ends;
+    beside it since when, the total and the Up of it [mm] (and "below its
+    test" when the RTK rate since then is)."""
+    got = total_movement(prof)
+    if got is None:
         return
-    along, up = end
-    pp, z0 = prof.pp, prof.z0
+    u0, u1, total, when, colour, shown = got
+    z0 = prof.z0
     x = -sign * 0.2 * half  # behind the rover, clear of its points and name
     cap = 0.02 * half
-    y1 = z0 + up * scale
-    kw = {"color": pp.colour, "lw": 2.2, "zorder": 6.5, "solid_capstyle": "butt"}
-    ax.plot([x, x], [z0, y1], **kw)
-    for y in (z0, y1):
+    y0, y1 = z0 + u0 * scale, z0 + u1 * scale
+    kw = {"color": colour, "lw": 2.2, "zorder": 6.5, "solid_capstyle": "butt"}
+    ax.plot([x, x], [y0, y1], **kw)
+    for y in (y0, y1):
         ax.plot([x - cap, x + cap], [y, y], **kw)
-    total = float(np.hypot(along, up))
-    ax.annotate(f"{total:.0f} mm total\nUp {up:+.0f} mm", (x, 0.5 * (z0 + y1)),
+    text = f"since {when}:\n{total:.0f} mm total\nUp {u1 - u0:+.0f} mm"
+    if not shown:  # as the black arrow's legend
+        text += "\n(below its test)"
+    ax.annotate(text,
+                (x, 0.5 * (y0 + y1)),
                 xytext=(-6 if sign > 0 else 6, 0), textcoords="offset points",
                 ha="right" if sign > 0 else "left", va="center",
-                fontsize="x-small" if small else "small", color=pp.colour,
+                fontsize="x-small" if small else "small", color=colour,
                 zorder=8, bbox={"boxstyle": "round", "fc": "w", "alpha": 0.8,
                                 "ec": "none"})  # fmt: skip
 
