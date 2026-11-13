@@ -433,6 +433,8 @@ def area_status(
         "common_mode": spec.get("common_mode"),
         "horizontal_mm": spec["horizontal_mm"],
         "up_mm": spec["up_mm"],
+        # BGÓ 2026-11-13: the offset rule's σ test, for the page's green column
+        "significance_sigma": spec.get("significance_sigma") or 0.0,
         "baselines": rows,
     }
     if not live:
