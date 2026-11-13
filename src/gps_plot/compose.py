@@ -95,6 +95,7 @@ def stack_figure(
     colors: Sequence[str] | None = None,
     fig: Figure | None = None,
     robust_lines: bool = False,
+    robust_pct: float = 2.0,
     ylabels: Sequence[str] | None = None,
 ) -> Figure:
     """Overlay ``series`` on the N/E/U frame; series ``k`` is moved by k·offset.
@@ -120,9 +121,10 @@ def stack_figure(
             series such as 1-minute RTK medians). Lines are drawn first.
         colors: Per series colours (default: :func:`series_colors`).
         robust_lines: ``"line"`` series set the y range by their
-            2–98 percentiles, not their extremes: the spikes of a dense
-            RTK line run off the axis instead of squashing the points
-            (takes effect where ``ylim`` sets the range: one number).
+            ``robust_pct`` – (100 − ``robust_pct``) percentiles (default
+            2–98), not their extremes: the spikes of a dense RTK line run
+            off the axis instead of squashing the points (takes effect
+            where ``ylim`` sets the range: one number).
         ylabels: The three y-axis labels (default North/East/Up [mm]; see
             :func:`gps_plot.labels.axis_labels`).
     """
@@ -172,12 +174,12 @@ def stack_figure(
 
     def low(k: int, i: int) -> float:
         if robust_lines and styles[k] == "line":
-            return float(np.nanpercentile(shifted[k][i], 2.0))
+            return float(np.nanpercentile(shifted[k][i], robust_pct))
         return float(np.nanmin(shifted[k][i]))
 
     def high(k: int, i: int) -> float:
         if robust_lines and styles[k] == "line":
-            return float(np.nanpercentile(shifted[k][i], 98.0))
+            return float(np.nanpercentile(shifted[k][i], 100.0 - robust_pct))
         return float(np.nanmax(shifted[k][i]))
 
     ymin = [min(low(k, i) for k in range(len(series))) for i in range(3)]
