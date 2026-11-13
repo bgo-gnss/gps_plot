@@ -95,9 +95,12 @@ def test_prepare_puts_the_rover_on_the_ground(motion: float, west: bool) -> None
     assert prof.z0 == pytest.approx(760.0)  # 800 - 0.4 * 100
     assert prof.plunge is not None
     assert prof.plunge.deg == pytest.approx(np.degrees(np.arctan(0.5)), abs=0.1)
-    # the range holds the ground and the scaled points
-    assert prof.lo < min(np.nanmin(prof.z), prof.z0 - 5 * 5.0)
-    assert prof.hi > np.nanmax(prof.z)
+    # the range holds the ground within the half width and the scaled points
+    near = prof.z[np.abs(prof.s) <= prf.PROFILE_HALF_M]
+    assert prof.lo < min(np.nanmin(near), prof.z0 - 5 * 5.0)
+    assert prof.hi > np.nanmax(near)
+    # the box: the ground and the rover, padded
+    assert prof.box == pytest.approx(np.nanmax(near) - np.nanmin(near) + 15 + 25, abs=1)
     # past the DEM edge (the profile reaches 250 m from a rover at 300 m)
     edge = prf.prepare(_pair(90.0, pos=(300.0, 0.0)), _dem(), scale=5.0)
     assert np.isnan(edge.z).any() and np.isfinite(edge.z).any()

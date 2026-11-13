@@ -247,7 +247,9 @@ def test_colours_only_the_newest_days(days: float, vmin: float) -> None:
 
 
 def test_panels_close_up_to_the_map() -> None:
-    """The panels beside the map start STACKED_GAP_IN right of it (BGÓ 2026-11-08)."""
+    """The panels beside the map start STACKED_GAP_IN right of it (BGÓ
+    2026-11-08): their labels, or their frames less the fixed label room
+    (2026-11-13: tick labels do not change the width)."""
     from gps_plot import terrain
 
     xs = np.arange(-300.0, 301.0, 5.0)
@@ -264,7 +266,8 @@ def test_panels_close_up_to_the_map() -> None:
     mapax = max(free, key=lambda a: a.get_position().width)
     edge = mapax.get_position().x1
     beside = [a for a in free if a.get_position().x0 > edge - 0.05]  # not the logo
-    left = min(a.get_tightbbox(renderer).transformed(to_fig).x0 for a in beside)
+    left = polar._column_x0(fig, renderer, beside)
+    assert left <= min(a.get_tightbbox(renderer).transformed(to_fig).x0 for a in beside)
     gap_in = (left - mapax.get_position().x1) * fig.get_size_inches()[0]
     assert gap_in == pytest.approx(polar.STACKED_GAP_IN, abs=0.02)
     assert fig.get_size_inches()[0] < 21.0  # the freed width trimmed
