@@ -2289,7 +2289,7 @@ def stdTimesPlot(
         fig,
         label=label,
         markerfacecolor="none" if open_points else "r",
-        markeredgecolor="black" if open_points else "r",
+        markeredgecolor="0.4" if open_points else "r",  # grey rims: the rate lines read
         markeredgewidth=0.6 if open_points else None,
     )
 
