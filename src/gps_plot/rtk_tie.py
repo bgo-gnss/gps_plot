@@ -44,6 +44,9 @@ COMP = ("N", "E", "U")
 NOON = pd.Timedelta(hours=12)
 #: data before the plotted span: the sidereal filter's 7 days + its 24 h median
 RTK_WARMUP = pd.Timedelta(days=9)
+#: margins below / above the RTK line's 2–98 percentile range, of that range:
+#: room on top for the logo, the rates legend and the 2σ bar
+RTK_PAD = (0.05, 0.3)
 
 
 # --- the series -------------------------------------------------------------
@@ -422,12 +425,21 @@ def figure(
         created=r"\large (Plot created on %s UTC)" % now.strftime("%b %d %Y %H:%M"),
         status_color=tplt.STATUS_CURRENT_COLOR if current else tplt.STATUS_STALE_COLOR,
     )  # fmt: skip
+    # RTK: the y range from the line's 2–98 percentiles (and every daily
+    # point) plus the RTK_PAD margins, so the noisiest hours run off the axis
+    # (BGÓ 2026-11-13: motion −15..30, not −20..40 for one spike)
+    robust = rtk and not ylim
     fig = compose.stack_figure(
         list(series), title=title, labels=[s.label for s in series],
-        start=start.to_pydatetime(), end=end.to_pydatetime(), ylim=ylim,
+        start=start.to_pydatetime(), end=end.to_pydatetime(),
+        ylim=[0.0] if robust else ylim,
         styles=list(styles), colors=list(colors), fig=tplt._reusable_figure(),
         robust_lines=rtk, ylabels=ylabels,
     )  # fmt: skip
+    if robust:
+        for ax in fig.axes[:3]:
+            lo, hi = ax.get_ylim()
+            ax.set_ylim(lo - RTK_PAD[0] * (hi - lo), hi + RTK_PAD[1] * (hi - lo))
     if note:
         fig.axes[2].text(0.01, 0.98, note, transform=fig.axes[2].transAxes,
                          fontsize="x-small", color="0.3", va="top", wrap=True)  # fmt: skip
