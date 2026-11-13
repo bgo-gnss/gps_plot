@@ -17,7 +17,9 @@ ENV_FILE=$REPO/environments/yang-d01.vedur.is.env
 
 # repo paths; deployed flat. Not database.cfg, receivers.cfg or anything else
 # yang's plots do not read.
-FILES=(plots.yaml map_layers.yaml station_areas.yaml stations.cfg
+# rtk_thresholds.yaml: the RTK warning's calibrated edges (rtk-bench
+# --calibrate on the laptop, copied into the repo by hand; BGÓ 2026-11-13)
+FILES=(plots.yaml map_layers.yaml station_areas.yaml stations.cfg rtk_thresholds.yaml
     detrend_itrf2008.csv station-plate station_coord.xyz
     analysis-lane/analysis.yaml analysis-lane/detrend_params.itrf14.json
     analysis-lane/events.yaml analysis-lane/steps.yaml
