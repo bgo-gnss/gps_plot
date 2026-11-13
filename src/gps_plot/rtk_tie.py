@@ -411,7 +411,10 @@ def figure(
     series = [series[i] for i in kept]
     styles = [styles[i] for i in kept]
     colors = [colors[i] for i in kept]
-    current = now - last < (dt.timedelta(hours=1) if rtk else dt.timedelta(days=2))
+    # RTK: current within the hour; daily: the standard rule (green only
+    # through yesterday, tplt.data_is_current; BGÓ 2026-11-13: as the polar)
+    current = (now - last < dt.timedelta(hours=1) if rtk
+               else tplt.data_is_current(last))  # fmt: skip
     title = tplt.StationTitle(
         main=r"\Huge %s \ \Large %s" % (main, sub),
         status=(r"\LARGE Last epoch: %s UTC" % last.strftime("%d %b %Y %H:%M"))
@@ -449,6 +452,9 @@ class RateWindow:
     shown: bool
     #: the legend's name of the window (default: its length)
     label: str = ""
+    #: the polar arrow's velocity N/E/U [mm/d] (BGÓ 2026-11-13): drawn as
+    #: given through the data (only its level fitted); None: fitted here
+    neu: tuple[float, float, float] | None = None
 
 
 def read_rates(path: str | None) -> dict[str, dict[str, RateWindow]]:
@@ -472,7 +478,10 @@ def read_rates(path: str | None) -> dict[str, dict[str, RateWindow]]:
             start = (end - pd.Timedelta(days=days)).round("h")
             label = {"since": f"since {start:%d %b}",
                      "rtk_since": f"since {start:%d %b %H:%M}"}.get(k, "")  # fmt: skip
-            out[sta.upper()][k] = RateWindow(days, end, bool(v["shown"]), label)
+            given = v.get("neu_mm_per_day")
+            vel = (tuple(float("nan") if x is None else float(x) for x in given)
+                   if given else None)  # fmt: skip
+            out[sta.upper()][k] = RateWindow(days, end, bool(v["shown"]), label, vel)  # type: ignore[arg-type]
     return out
 
 
@@ -502,10 +511,51 @@ def fit_line(
     return np.asarray(slope), np.asarray(mid), t0 + pd.Timedelta(days=xc)
 
 
+def given_line(
+    df: pd.DataFrame, t0: pd.Timestamp, t1: pd.Timestamp, slope: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, pd.Timestamp] | None:
+    """:func:`fit_line`'s triple for a GIVEN ``slope`` per column [mm/d]: only
+    the level is fitted, the line through each column's mean value at its
+    mean time in the window (a least-squares fit of the level alone); None
+    with fewer than three values."""
+    w = df[(df.index >= t0) & (df.index <= t1)]
+    rows = w.dropna(how="all")
+    if len(rows) < 3:
+        return None
+    days = np.asarray((w.index - t0) / pd.Timedelta(days=1), float)
+    tc_days = float(
+        np.mean(np.asarray((rows.index - t0) / pd.Timedelta(days=1), float))
+    )
+    mid = []
+    for i, c in enumerate(w.columns):
+        y = w[c].to_numpy(float)
+        ok = np.isfinite(y)
+        if ok.sum() < 3 or not np.isfinite(slope[i]):
+            mid.append(np.nan)
+            continue
+        # the level at tc: the mean at the column's own mean time, moved
+        mid.append(
+            float(np.mean(y[ok]))
+            + float(slope[i]) * (tc_days - float(np.mean(days[ok])))
+        )
+    return np.asarray(slope, float), np.asarray(mid), t0 + pd.Timedelta(days=tc_days)
+
+
+def rotated_velocity(neu: Sequence[float], azimuth: float | None) -> np.ndarray:
+    """A velocity N/E/U on the figure's axes (along/across/Up with an
+    azimuth, as :func:`rotate`)."""
+    n, e, u = (float(x) for x in neu)
+    if azimuth is None:
+        return np.array([n, e, u])
+    a = np.radians(azimuth)
+    return np.array([n * np.cos(a) + e * np.sin(a), -n * np.sin(a) + e * np.cos(a), u])
+
+
 def rate_lines(
     fig: Any,
     lines: Sequence[tuple[pd.DataFrame, RateWindow, str, str]],
     start: pd.Timestamp,
+    azimuths: Sequence[float | None] | None = None,
 ) -> None:
     """Each ``(values as plotted, window, colour, name)``: its line fitted
     over the window, drawn over it (from ``start`` at the earliest) on the
@@ -516,9 +566,13 @@ def rate_lines(
     from matplotlib.lines import Line2D
 
     handles, texts = [], []
-    for values, win, colour, name in lines:
+    for i, (values, win, colour, name) in enumerate(lines):
         t0, t1 = win.end - pd.Timedelta(days=win.days), win.end
-        got = fit_line(values, t0, t1)
+        if win.neu is not None:  # the polar arrow's own velocity
+            az = azimuths[i] if azimuths is not None else None
+            got = given_line(values, t0, t1, rotated_velocity(win.neu, az))
+        else:
+            got = fit_line(values, t0, t1)
         if got is None:
             continue
         slope, mid, tc = got
@@ -910,11 +964,10 @@ def run(prog: str, argv: list[str]) -> int:
                          note=note)  # fmt: skip
             sigma_bars(fig, [(colors[sta], line_sigma(main[main.index >= start],
                                                       azim[sta], days < 1))])  # fmt: skip
-            rate_lines(fig, [(tied_values(sta, w, zero), w,
-                              colors[sta] if kind == "rtk" else "k", sta)
-                             for kind in ("rtk_since", "rtk")
-                             if (w := rates.get(sta, {}).get(kind)) is not None],
-                       start)  # fmt: skip
+            kinds = [k for k in ("rtk_since", "rtk") if k in rates.get(sta, {})]
+            rate_lines(fig, [(tied_values(sta, rates[sta][k], zero), rates[sta][k],
+                              colors[sta] if k == "rtk" else "k", sta) for k in kinds],
+                       start, [azim[sta]] * len(kinds))  # fmt: skip
             _save(fig, out / f"{sta}-tied-{span_name(days)}{tail}.png", prog)
         if len(made) < 2:
             continue
@@ -953,11 +1006,12 @@ def run(prog: str, argv: list[str]) -> int:
                          for m in made])  # fmt: skip
         # the RTK arrow's window in the station's colour, the average since
         # the newest episode's onset black (BGÓ 2026-11-12)
-        rate_lines(fig, [(tied_values(m[0], w, m[2]), w,
-                          colors[m[0]] if kind == "rtk" else "k", m[0])
-                         for kind in ("rtk_since", "rtk") for m in made
-                         if (w := rates.get(m[0], {}).get(kind)) is not None],
-                   start)  # fmt: skip
+        got_lines = [(m, k) for k in ("rtk_since", "rtk") for m in made
+                     if k in rates.get(m[0], {})]  # fmt: skip
+        rate_lines(fig, [(tied_values(m[0], rates[m[0]][k], m[2]), rates[m[0]][k],
+                          colors[m[0]] if k == "rtk" else "k", m[0])
+                         for m, k in got_lines], start,
+                   [azim[m[0]] for m, _ in got_lines])  # fmt: skip
         _save(fig, out / f"{'_'.join(names)}-tied-{span_name(days)}{tail}.png", prog)
 
     ylabels = _ylabels([azim[s] for s in stations]) if along else None
@@ -989,12 +1043,13 @@ def run(prog: str, argv: list[str]) -> int:
                 ax.axvline(x=when, color=colour, zorder=2)
         # the 14-day rate in the station's colour, the average since the
         # onset black (BGÓ 2026-11-12), as the polar figure's arrows
+        got_daily = [(s, k) for k in ("since", "daily") for s in stations
+                     if k in rates.get(s, {})]  # fmt: skip
         rate_lines(fig, [
-            (plotted(_zeroed(daily[s].loc[keep], start), azim[s]), w,
-             colors[s] if kind == "daily" else "k", s)
-            for kind in ("since", "daily") for s in stations
-            if (w := rates.get(s, {}).get(kind)) is not None
-        ], start)  # fmt: skip
+            (plotted(_zeroed(daily[s].loc[keep], start), azim[s]), rates[s][k],
+             colors[s] if k == "daily" else "k", s)
+            for s, k in got_daily
+        ], start, [azim[s] for s, _ in got_daily])  # fmt: skip
         name = names_of.get(days, f"{days:g}d")
         _save(fig, out / f"{'_'.join(stations)}-frame-{name}{tail}.png", prog)
     return 0

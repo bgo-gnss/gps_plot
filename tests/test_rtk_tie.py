@@ -229,3 +229,36 @@ def test_every_figure_saves_at_one_width() -> None:
     )
     bb = rt.save_bbox(fig)
     assert (bb.x0, bb.x1) == rt.SAVE_X
+
+
+def test_given_line_keeps_the_slope_and_fits_the_level() -> None:
+    t = pd.date_range("2026-11-01", periods=48, freq="1h")
+    x = np.arange(48) / 24.0
+    df = pd.DataFrame({"N": 2.0 * x + 5.0, "E": -x + 1.0, "U": np.nan}, index=t)
+    got = rt.given_line(df, t[0], t[-1], np.array([1.0, -1.0, 0.5]))
+    assert got is not None
+    slope, mid, tc = got
+    assert list(slope) == [1.0, -1.0, 0.5]  # as given, not refitted
+    at = (tc - t[0]) / pd.Timedelta(days=1)
+    assert mid[1] == pytest.approx(-at + 1.0)  # the right slope: on the data
+    assert mid[0] == pytest.approx(2.0 * at + 5.0)  # the level at the mean time
+    assert np.isnan(mid[2])
+
+
+def test_rotated_velocity_as_rotate() -> None:
+    v = rt.rotated_velocity((1.0, 0.0, 2.0), 90.0)
+    assert v == pytest.approx([0.0, -1.0, 2.0], abs=1e-12)
+    df = pd.DataFrame({"N": [1.0], "E": [0.0], "U": [2.0]})
+    assert rt.rotate(df, 90.0).iloc[0].to_numpy() == pytest.approx(v, abs=1e-12)
+    assert list(rt.rotated_velocity((1.0, 2.0, 3.0), None)) == [1.0, 2.0, 3.0]
+
+
+def test_read_rates_takes_the_polar_velocity(tmp_path) -> None:
+    import json
+
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"rovers": {"SVIN": {"rtk": {
+        "window_days": 3, "end": "2026-11-13T00:30", "shown": True, "speed": 2.8,
+        "neu_mm_per_day": [1.5, -2.3, None]}}}}))  # fmt: skip
+    w = rt.read_rates(str(path))["SVIN"]["rtk"]
+    assert w.neu is not None and w.neu[:2] == (1.5, -2.3) and np.isnan(w.neu[2])

@@ -89,6 +89,11 @@ def rtk_spec(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     # the daily light needs 2 σ; 0 = off. Also the accel rule's, through
     # rtk_thresholds.yaml significance_sigma
     spec["significance_sigma"] = float(raw.get("significance_sigma", 0.0))
+    # BGÓ 2026-11-13: + the rate rule (gps_plot.rtk_rate): the speed over
+    # 24 h / 72 h on the daily light's mm/d edges; the area takes the higher
+    from gps_plot import rtk_rate
+
+    spec["rate"] = rtk_rate.spec_of(raw.get("rate"))
     # T9: the area's level from the pairs (agree) or the coherent statistic
     spec["statistic"] = str(raw.get("statistic", "pairs"))
     if spec["statistic"] not in ("pairs", "coherent", "accel"):
@@ -462,10 +467,20 @@ def area_status(
             record["rule"] = "accel"
     elif spec.get("statistic") == "accel":
         record["rule"] += " (accel: not calibrated)"
+    # BGÓ 2026-11-13: the rate rule, a new steady pace of a few mm/d
+    if spec.get("rate") is not None:
+        from gps_plot import rtk_rate
+
+        got_rate = rtk_rate.live(read, list(spec["baselines"] or pairs), spec["rate"],
+                                 now, spec.get("significance_sigma") or rtk_rate.SIGNIFICANCE)  # fmt: skip
+        record["rate"] = got_rate
+        if got_rate["level"] is not None and got_rate["level"] > level:
+            level = got_rate["level"]
+            record["rule"] = "rate"
     record["level"] = level
     record["level_name"] = LEVEL_NAMES[level]
-    if record["rule"] == "accel":
-        pass  # one pair suffices: acceleration has no base-jump twin
+    if record["rule"] in ("accel", "rate"):
+        pass  # one pair suffices: no base-jump twin for a rate
     elif record["rule"] == "coherent":
         if coherent and coherent.get("red_unconfirmed"):  # the guard held it
             record["red_unconfirmed"] = True
