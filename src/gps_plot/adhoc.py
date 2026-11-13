@@ -140,11 +140,11 @@ def infer_area(targets: Sequence[str], areas: Mapping[str, Mapping[str, Any]]) -
         )
     hits: dict[str, set[str]] = {}
     for slug, area in areas.items():
-        pairs = set(area.get("baselines") or ())
+        pairs: set[str] = set(area.get("baselines") or ())
         for group in (area.get("stacks") or {}).values():
             pairs.update(group)
         pairs |= {"-".join(reversed(p.split("-"))) for p in pairs}
-        members = set(area.get("stations") or ())
+        members: set[str] = set(area.get("stations") or ())
         for pair in pairs:
             members.update(pair.split("-"))
         if all(fnmatch.filter(members, sta) for sta in stations):

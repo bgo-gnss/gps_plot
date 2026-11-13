@@ -195,9 +195,9 @@ def model_equation(param_names: Sequence[str]) -> str:
 def _provisional_days_default() -> float:
     """geo_dataread's own default, imported so the two cannot drift."""
     try:
-        from geo_dataread.gps_views import PROVISIONAL_DAYS_DEFAULT
+        from geo_dataread.gps_views import PROVISIONAL_DAYS
 
-        return float(PROVISIONAL_DAYS_DEFAULT)
+        return float(PROVISIONAL_DAYS)
     except Exception:  # pragma: no cover - older sibling
         return 14.0
 
@@ -205,6 +205,7 @@ def _provisional_days_default() -> float:
 def _require_qt() -> tuple[Any, Any]:
     """Import pyqtgraph, explaining itself if the dev group is absent."""
     try:
+        # pi-lens-ignore: reportMissingImports
         import pyqtgraph as pg
         from pyqtgraph.Qt import QtWidgets
     except Exception as exc:  # pragma: no cover - import guard

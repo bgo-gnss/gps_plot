@@ -595,7 +595,7 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
         ax.imshow(shade, extent=extent, origin="lower", cmap="gray", vmin=0, vmax=1,
                   zorder=0)  # fmt: skip
         angle, _ = terrain.slope_field(dem.z, dx)
-        ax.imshow(np.ma.masked_less(angle, STEEP_DEG), extent=extent, origin="lower",
+        ax.imshow(np.where(angle < STEEP_DEG, np.nan, angle), extent=extent, origin="lower",
                   cmap=STEEP_CMAP, vmin=20, vmax=60, alpha=0.35, zorder=0.5,
                   interpolation="nearest")  # fmt: skip
         ax.fill([np.nan] * 3, [np.nan] * 3, color=mpl.colormaps[STEEP_CMAP](0.55),
@@ -1027,7 +1027,7 @@ def polar_figure(
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
-    from matplotlib import cm
+    from matplotlib import cm, colors
 
     from gps_plot import profile as prf
     from gps_plot import timesmatplt as tplt
@@ -1074,7 +1074,7 @@ def polar_figure(
     # below the colour window: no fill, so the scatters' black edge is all
     vmin = max(0.0, vmax - colour_days) if colour_days > 0 else 0.0
     cmap = mpl.colormaps[CMAP].with_extremes(under="none")
-    norm = mpl.colors.Normalize(vmin=vmin, vmax=max(vmax, vmin + 1e-9))
+    norm = colors.Normalize(vmin=vmin, vmax=max(vmax, vmin + 1e-9))
     style = {"cmap": cmap, "norm": norm}
     if stacked:
         widths = [_square_map_ratio(size, fig.subplotpars), 1.0]
@@ -1093,7 +1093,7 @@ def polar_figure(
             holder = fig.add_subplot(where[panel])
             _map(holder, pairs, style, dem, half, path_half, centre, locator)
         elif panel == "profile":
-            gap = (PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
+            gap = float(PROFILE_GAP_IN / np.mean(heights)) if alone else 0.35
             axes, _ = prf.panel(fig, where[panel], pairs, style, profile_dem,
                                 p_half, small=not alone, hspace=gap)  # fmt: skip
             if "map" not in panels:
@@ -1114,7 +1114,7 @@ def polar_figure(
     if older:  # the bar as the last days: days before the newest (-28 … 0)
         newest = onset + dt.timedelta(days=vmax)
         label = f"last {colour_days:g} days (days before {newest:%d.%m.%Y})"
-        bar_norm = mpl.colors.Normalize(vmin=vmin - vmax, vmax=0.0)
+        bar_norm = colors.Normalize(vmin=vmin - vmax, vmax=0.0)
     if holder is not None:
         _inner_colorbar(fig, holder, cm.ScalarMappable(norm=bar_norm, cmap=cmap), label,
                         "lower center" if "map" in panels else "upper left",
