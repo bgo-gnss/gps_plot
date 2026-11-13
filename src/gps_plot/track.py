@@ -584,7 +584,11 @@ class FrameReference:
     @property
     def name(self) -> str:
         """``the mean of A, B, C`` (or the one station)."""
-        return self.used[0] if len(self.used) == 1 else "the mean of " + ", ".join(self.used)
+        return (
+            self.used[0]
+            if len(self.used) == 1
+            else "the mean of " + ", ".join(self.used)
+        )
 
 
 def frame_reference(
