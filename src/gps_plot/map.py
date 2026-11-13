@@ -413,6 +413,12 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "covers (default: the free spot nearest the bottom left)",
     )  # fmt: skip
     g.add_argument(
+        "--locator-beside-legend", nargs="?", const=5.0, type=float,
+        default=None, metavar="GAP_MM",
+        help="put the Iceland locator immediately to the right of the vector "
+        "legend, top-aligned, GAP millimetres apart (default 5)",
+    )  # fmt: skip
+    g.add_argument(
         "--scale-style", choices=SCALE_STYLES, default=None,
         help="scale bar: fancy (checkered, 'km' above; default) or plain "
         "(default on a full-Iceland overview)",
@@ -821,6 +827,12 @@ def build_parser(
         "END empty = now); repeat for more windows, one colour each",
     )  # fmt: skip
     p.add_argument(
+        "--window-colors", type=common.color_list, default=None,
+        metavar="COLOR[,COLOR...]",
+        help="colours for velocity windows in order: --window entries first, "
+        "then --last entries; cycles when fewer colours are supplied",
+    )  # fmt: skip
+    p.add_argument(
         "--pre-window", type=_window, default=None, metavar="START:END",
         help="--ref pre-onset: the reference days before the onset, "
         "YYYYMMDD:YYYYMMDD both included (e.g. 20230806:20231024)",
@@ -921,6 +933,27 @@ def build_parser(
         help="also write the velocities drawn, as a product set per window "
         "(.gmt/.csv/.jsonl), so the file and the map are the same numbers",
     )  # fmt: skip
+    p.add_argument(
+        "--legend-line-spacing",
+        type=_legend_spacing,
+        default=None,
+        metavar="FRACTION",
+        help="legend row spacing as a fraction of map height (e.g. 0.016 for compact rows)",
+    )
+    p.add_argument(
+        "--scale-exclude",
+        default=None,
+        metavar="STA[,STA...]",
+        help="stations ignored when choosing the automatic arrow scale only; "
+        "their arrows remain plotted at the common scale",
+    )
+    p.add_argument(
+        "--values",
+        default=None,
+        metavar="STA[,STA...]",
+        help="write each named station's horizontal speed at its arrow tips "
+        "(mm/yr, colour-coded per window), clamped inside the map frame",
+    )
     p.add_argument("--scale", type=float, default=None, metavar="CM_PER_UNIT",
                    help="arrow length per mm/yr [cm] (default: automatic)")  # fmt: skip
     p.add_argument("--scale-ref", type=float, default=None, metavar="MM_YR",
@@ -1047,7 +1080,9 @@ def resolve_baselines(
     return out
 
 
-def _baselines(args: Any, parser: Any, maps: Any, coords: Any) -> None:
+def _baselines(
+    args: Any, parser: argparse.ArgumentParser, maps: Any, coords: Any
+) -> None:
     """Resolve ``--baselines`` into ``args.baseline_overlay`` (:func:`_style`
     draws it). Stations left unnamed become the baselines' own: always on a
     station map, on the others when no --region selects them either."""
@@ -1173,7 +1208,7 @@ def _yearf(t: dt.datetime) -> float:
     return float(TimetoYearf(*t.timetuple()[:6]))
 
 
-def _request(args: argparse.Namespace, parser: Any, config: Any,
+def _request(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any,
              start: dt.datetime, end: dt.datetime) -> Any:  # fmt: skip
     from gps_plot.sources import gps as gps_source
 
@@ -1291,6 +1326,8 @@ def _style(
         )  # fmt: skip
     if getattr(args, "legend_at", None) is not None:
         kw["legend_anchor"] = args.legend_at
+    if getattr(args, "legend_line_spacing", None) is not None:
+        kw["legend_line_spacing"] = args.legend_line_spacing
     if getattr(args, "baseline_overlay", None) is not None:
         kw["overlays"] = (*kw.get("overlays", ()), args.baseline_overlay)
     if args.overlay:
@@ -1541,7 +1578,7 @@ def _in_inset(args: Any, points: Sequence[Any], maps: Any) -> list[Any]:
 
 def legend_box_cm(
     fig: Any, style: dict[str, Any], lines: float, width_cm: float = LEGEND_WIDTH_CM
-) -> tuple[float, ...]:
+) -> tuple[float, float, float, float]:
     """The vector legend's box (x0, x1, y0, y1) [cm], bottom left: ``lines``
     rows at the map functions' anchor and spacing (region fractions),
     ``width_cm`` wide (:func:`vector_legend_width_cm`)."""
@@ -1569,8 +1606,8 @@ def portrait_legend(style: dict[str, Any], maps: Any) -> dict[str, Any]:
     map, SEYD north of the fjord); nothing on any other map."""
     region = style.get("region")
     projection = str(style.get("projection", maps.DEFAULT_PROJECTION))
-    if "legend_anchor" in style:
-        return {}  # --legend-at: the user's place stands
+    if "legend_anchor" in style or "legend_line_spacing" in style:
+        return {}  # explicit placement/spacing stand
     if region is None or isinstance(region, maps.CornerRegion):
         return {}
     if not projection.upper().startswith("M"):
@@ -1664,13 +1701,14 @@ def _insets(
     sea.reserve((0.0, LOGO_BOX_CM[0], height - LOGO_BOX_CM[1], height))
     sea.reserve((width - SCALE_BOX_CM[0], width, 0.0, SCALE_BOX_CM[1]))
     on_legend = False
+    legend_box: tuple[float, float, float, float] | None = None
     if legend_lines:
-        box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
-        sea.reserve(box)  # type: ignore[arg-type]
+        legend_box = legend_box_cm(fig, style, legend_lines, legend_width_cm)
+        sea.reserve(legend_box)
         corner = getattr(args, "locator_corner", None)
         if locator_floor is None and corner in ("BL", "LB"):
             # a bottom-left locator sits on the legend
-            locator_floor = box[3] - layout.MARGIN_CM
+            locator_floor = legend_box[3] - layout.MARGIN_CM
             on_legend = True
     for b in reserve:
         sea.reserve(b)
@@ -1681,7 +1719,7 @@ def _insets(
     if arrows is not None and not isinstance(region, maps.CornerRegion):
         sea.block_points(*arrow_points(points, arrows, region, projection))
     zoom_spot = None
-    if zoom:
+    if zoom and args.inset is not None and zoom_symbols is not None:
         box = args.inset
         zoom_width = getattr(args, "inset_width", None) or insets.ZOOM_WIDTH_CM
         size = insets.size_cm(box, insets.zoom_projection(zoom_width))
@@ -1711,7 +1749,12 @@ def _insets(
                          radius=LOCATOR_NAME_CM)  # fmt: skip
         size = insets.locator_size()
         corner = getattr(args, "locator_corner", None)
-        if corner is not None:
+        beside_gap = getattr(args, "locator_beside_legend", None)
+        if beside_gap is not None and legend_box is not None:
+            # right of the legend, top-aligned, a small gap (BGÓ: inset beside legend)
+            gap_cm = beside_gap / 10.0
+            spot = insets.Spot(legend_box[1] + gap_cm, legend_box[3] - size[1], *size)
+        elif corner is not None:
             # on a box map clear of the latitude annotations inside the frame
             # on a legend (a vector or track map's): at the left edge, as
             # far left and down as it goes (BGÓ 2026-11-01)
@@ -1857,6 +1900,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
     import warnings
 
     import pygmt
+    from pygmt.exceptions import GMTCLibError
 
     from gps_plot import maps
 
@@ -1881,7 +1925,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         )
         try:  # the user's defaults win; GMT checks them on entry
             stack.enter_context(pygmt.config(**defaults))
-        except pygmt.exceptions.GMTCLibError as exc:
+        except GMTCLibError as exc:
             parser.error(f"--gmt-config: {str(exc).splitlines()[-1]}")
         stack.enter_context(gmt_overrides.overrides(layers))
         # a GMT letter in --gmt is the user's choice: no PyGMT nagging
@@ -1940,7 +1984,9 @@ def gmt_config(specs: Sequence[str]) -> dict[str, str]:
     return out
 
 
-def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
+def _run(
+    args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any, maps: Any
+) -> int:
     if any(str(getattr(args, o, None)).lower() == LIST for o in CMAP_OPTIONS):
         print_palettes(cpt_dir(config))
         return 0
@@ -1979,9 +2025,10 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
             args.dem_zone = list(args.dem_zone) + [steep_zone(args.steep)]
         except ValueError as exc:
             parser.error(str(exc))
-    try:
-        import pygmt
+    import pygmt
+    from pygmt.exceptions import GMTCLibError
 
+    try:
         resolve_palettes(args, pygmt, cpt_dir(config))
     except ValueError as exc:
         parser.error(str(exc))
@@ -1991,7 +2038,7 @@ def _run(args: argparse.Namespace, parser: Any, config: Any, maps: Any) -> int:
             args.region = maps.corner_region(
                 args.region, args.projection or maps.DEFAULT_PROJECTION
             )
-        except pygmt.exceptions.GMTCLibError as exc:
+        except GMTCLibError as exc:
             parser.error(f"--region {'/'.join(map(str, args.region))}+r: {exc}")
 
     def coords(markers: Sequence[str]) -> Any:
@@ -2051,7 +2098,7 @@ def tos_coords(stations: Sequence[Any], maps: Any, group_by: str | None = None) 
     return coords
 
 
-def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
+def _file_stations(args: Any, parser: argparse.ArgumentParser, maps: Any) -> list[Any]:
     from gps_plot.sources import station_files
 
     out = []
@@ -2068,7 +2115,11 @@ def _file_stations(args: Any, parser: Any, maps: Any) -> list[Any]:
 
 
 def _nearest_links(
-    args: Any, parser: Any, files: Sequence[Any], stations: Sequence[Any], maps: Any
+    args: Any,
+    parser: argparse.ArgumentParser,
+    files: Sequence[Any],
+    stations: Sequence[Any],
+    maps: Any,
 ) -> list[tuple[Any, Any]]:
     """``--nearest``: each file point's link to the nearest of ``stations``
     (the map's selection without its region: a station just off the map
@@ -2093,7 +2144,7 @@ def _nearest_links(
 
 
 def _links_from(
-    args: Any, parser: Any, stations: Sequence[Any], maps: Any
+    args: Any, parser: argparse.ArgumentParser, stations: Sequence[Any], maps: Any
 ) -> list[tuple[Any, Any]]:
     """``--nearest-from``: the links of a nearest list (``gpscoord nearest``),
     the ranks of ``--nearest-ranks`` (default 1); labels from its
@@ -2177,7 +2228,7 @@ def _write_nearest(
         print(path)
 
 
-def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
+def _tos_fleet(args: Any, parser: argparse.ArgumentParser) -> tuple[Any, str]:
     """The TOS stations of --tos / --tos-search and their legend grouping."""
     from gps_plot.sources import tos
 
@@ -2195,7 +2246,7 @@ def _tos_fleet(args: Any, parser: Any) -> tuple[Any, str]:
 
 
 def _draw_tracks(
-    fig: Any, args: Any, parser: Any, config: Any, style: dict[str, Any],
+    fig: Any, args: Any, parser: argparse.ArgumentParser, config: Any, style: dict[str, Any],
     stations: Sequence[Any], maps: Any,
 ) -> tuple[Any, list[tuple[str, Any]], Any, dict[str, Any] | None]:  # fmt: skip
     """``--track``: every station's track on ``fig``; what was drawn
@@ -2368,7 +2419,9 @@ def _draw_tracks(
     ], zoom, status  # fmt: skip
 
 
-def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
+def _run_station(
+    args: Any, parser: argparse.ArgumentParser, config: Any, maps: Any, coords: Any
+) -> int:
     if args.kind == BASE:
         args.markers = False
     use_tos = args.tos or args.tos_search is not None
@@ -2429,6 +2482,7 @@ def _run_station(args: Any, parser: Any, config: Any, maps: Any, coords: Any) ->
                                   rj=rj, avoid=avoid)  # fmt: skip
 
     drawn = status = None
+    zoom_draw = zoom_symbols
     series: list[tuple[str, Any]] = []
     if getattr(args, "track", None):  # the dots over the stations, as approved
         drawn, series, zoom_tracks, status = _draw_tracks(
@@ -2505,10 +2559,13 @@ class _Rate:
     sigma: Any
 
 
-def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any) -> int:
+def _run_velocity(
+    args: Any, parser: argparse.ArgumentParser, config: Any, maps: Any, stations: Any
+) -> int:
     now = args.end or dt.datetime.now()
     windows = resolve_windows(args.window, args.last, now)
     comp = 2 if args.vertical else None
+    window_colors = getattr(args, "window_colors", None) or WINDOW_COLORS
     vectors: list[Any] = []
     dropped: list[str] = []
     notes: list[str] = []
@@ -2566,7 +2623,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 and r.station in by_marker
             ]  # fmt: skip
             _add_records(maps, chosen, by_marker, label,
-                         WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
+                         window_colors[k % len(window_colors)], comp, groups,
                          vectors, dropped, args.min_fill)  # fmt: skip
         windows = [(_date_of(span[0]), _last_day(span[1])) for span, _at in spans]
     elif windows:
@@ -2584,7 +2641,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
                 )
                 print(paths["jsonl"])
             _add_records(maps, records, by_marker, label,
-                         WINDOW_COLORS[k % len(WINDOW_COLORS)], comp, groups,
+                         window_colors[k % len(window_colors)], comp, groups,
                          vectors, dropped, args.min_fill)  # fmt: skip
     else:
         # the stored records' secular rates (geo_dataread.products.secular_rate)
@@ -2654,7 +2711,15 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     if no_record and args.ref == "detrend":
         print(f"{no_record} without a stored detrend record: --ref plate draws "
               "them (plate velocity removed only)", file=sys.stderr)  # fmt: skip
-    scale, ref = auto_scale([math.hypot(v.east, v.north) for v in kept])
+    scale_exclude = {
+        s.strip().upper()
+        for s in (getattr(args, "scale_exclude", None) or "").split(",")
+        if s.strip()
+    }
+    scaling = [v for v in kept if v.marker.upper() not in scale_exclude]
+    if kept and not scaling and args.scale is None:
+        parser.error("--scale-exclude leaves no vectors for auto scale; give --scale")
+    scale, ref = auto_scale([math.hypot(v.east, v.north) for v in scaling])
     style = _style(
         args, args.region or _region_of(stations, args.margin, maps), config=config
     )
@@ -2717,10 +2782,25 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
         **zoom_style,
     )
 
+    if getattr(args, "values", None):
+        _velocity_value_labels(
+            fig,
+            kept,
+            args.values,
+            colors,
+            maps,
+            region,
+            str(style.get("projection", maps.DEFAULT_PROJECTION)),
+            args.scale or scale,
+        )
+
     # the inset's own scale: the map's arrows would leave its box
+    zoom_scaling = [v for v in zoomed if v.marker.upper() not in scale_exclude]
     zoom_scale, zoom_ref = auto_scale(
-        [math.hypot(v.east, v.north) for v in zoomed], target_cm=ZOOM_ARROW_CM
+        [math.hypot(v.east, v.north) for v in zoom_scaling], target_cm=ZOOM_ARROW_CM
     )
+    if zoomed and not zoom_scaling:
+        zoom_scale, zoom_ref = args.scale or scale, args.scale_ref or ref
     zoom_scale = min(zoom_scale, args.scale or scale)
 
     def zoom_symbols(f: Any, rj: str) -> None:
@@ -2760,7 +2840,7 @@ def _run_velocity(args: Any, parser: Any, config: Any, maps: Any, stations: Any)
     return 0
 
 
-def _product_settings(args: Any, parser: Any, config: Any) -> Any:
+def _product_settings(args: Any, parser: argparse.ArgumentParser, config: Any) -> Any:
     """The velocity product's settings from the map's series options."""
     from geo_dataread.velocity import VelocitySettings
 
@@ -2807,7 +2887,9 @@ NO_SEASONAL_SUFFIX = " (no seasonal)"
 FALLBACK_TRANSPARENCY = 55
 
 
-def _displacement_settings(args: Any, parser: Any, config: Any) -> Any:
+def _displacement_settings(
+    args: Any, parser: argparse.ArgumentParser, config: Any
+) -> Any:
     """The displacement product's settings from the map's series options."""
     from geo_dataread.products import DisplacementSettings, Source
 
@@ -2823,7 +2905,7 @@ def _displacement_settings(args: Any, parser: Any, config: Any) -> Any:
                 frame=args.frame or common.DEFAULT_PLOT_FRAME,
                 session=args.session or "24h",
                 view=args.view or "declared",
-                ref=refs.get(args.ref, args.ref),
+                ref=str(refs.get(args.ref, args.ref)),
                 uncert=float(args.uncert),
                 pos_dir=args.Dir or common.config_dir(config, "pos_dir", None),
             )
@@ -3004,7 +3086,7 @@ def relative_to(
     ref: str,
     index: dict[str, int],
     notes: list[str],
-    skip: set[str] = frozenset(),  # type: ignore[assignment]
+    skip: set[str] | frozenset[str] = frozenset(),
 ) -> list[Any]:
     """Each vector minus ``ref``'s vector of the same window (its legend
     group's :func:`window_index`), σ in quadrature (the correlation of the
@@ -3043,7 +3125,7 @@ STEP_NOISE_DAYS = 365
 
 def step_vectors(
     args: Any,
-    parser: Any,
+    parser: argparse.ArgumentParser,
     config: Any,
     maps: Any,
     stations: Sequence[Any],
@@ -3116,7 +3198,7 @@ def total_motion(
 
 def total_displacements(
     args: Any,
-    parser: Any,
+    parser: argparse.ArgumentParser,
     config: Any,
     stations: Sequence[Any],
     ref: str | None,
@@ -3253,7 +3335,7 @@ def _region_of(stations: Any, margin: float | None, maps: Any) -> Any:
 
 
 def _run_deformation(
-    args: Any, parser: Any, config: Any, maps: Any, stations: Any
+    args: Any, parser: argparse.ArgumentParser, config: Any, maps: Any, stations: Any
 ) -> int:
     from geo_dataread.products import estimate_displacements
     from geo_dataread.products.velocity_core import window_bounds
@@ -3402,6 +3484,18 @@ def _corner_code(value: str) -> str:
     return v
 
 
+def _legend_spacing(value: str) -> float:
+    try:
+        spacing = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "legend spacing must be a number in (0, 1]"
+        ) from None
+    if not 0 < spacing <= 1:
+        raise argparse.ArgumentTypeError("legend spacing must be in (0, 1]")
+    return spacing
+
+
 def _fractions(value: str) -> tuple[float, float]:
     """``--legend-at X,Y``: two map fractions in [0, 1]."""
     try:
@@ -3440,6 +3534,100 @@ def _value_labels(
     return out
 
 
+def _velocity_value_labels(
+    fig: Any,
+    vectors: Sequence[Any],
+    spec: str | None,
+    colors: Mapping[str | None, str],
+    maps: Any,
+    region: Any,
+    projection: str,
+    scale: float,
+) -> None:
+    """``--values`` on a velocity map: each named station's horizontal
+    speed (``42 mm/yr``) at the tip of each of its arrows, colour-coded by
+    window. An arrow that runs off the map has its label pulled back inside
+    the frame, so the magnitude stays readable."""
+    if not spec or region is None:
+        return
+    wanted = {s.strip().upper() for s in spec.split(",") if s.strip()}
+    from gps_plot import insets
+    from gps_plot.gmt_overrides import layer_kw
+
+    wcm, hcm = insets.size_cm(region, projection)
+    w, e, s, n = region[:4]
+    dlon_cm = (e - w) / wcm
+    dlat_cm = (n - s) / hcm
+    for v in vectors:
+        if v.marker.upper() not in wanted:
+            continue
+        if not (np.isfinite(v.east) and np.isfinite(v.north)):
+            continue
+        speed = math.hypot(v.east, v.north)
+        if speed <= 0:
+            continue
+        color = colors.get(v.method, "black") if v.method else "black"
+        dx = v.east * scale
+        dy = v.north * scale
+        size = math.hypot(dx, dy)
+        ux, uy = (dx / size, dy / size) if size > 0 else (0.0, 1.0)
+        tip_lon = v.lon + dx * dlon_cm
+        tip_lat = v.lat + dy * dlat_cm
+        border = 0.6  # cm an on-map arrowhead keeps from the frame
+        off = (
+            tip_lon < w + border * dlon_cm
+            or tip_lon > e - border * dlon_cm
+            or tip_lat < s + border * dlat_cm
+            or tip_lat > n - border * dlat_cm
+        )
+        if off:
+            # the arrow leaves the map: put the label ON the shaft, well
+            # inside the frame (and clear of the top-left logo), beside the
+            # line like an on-map arrow's label
+            keep = 2.2  # cm inside the frame
+            ts = []
+            if ux > 1e-9:
+                ts.append((e - keep * dlon_cm - v.lon) / (dx * dlon_cm))
+            elif ux < -1e-9:
+                ts.append((w + keep * dlon_cm - v.lon) / (dx * dlon_cm))
+            if uy > 1e-9:
+                ts.append((n - keep * dlat_cm - v.lat) / (dy * dlat_cm))
+            elif uy < -1e-9:
+                ts.append((s + keep * dlat_cm - v.lat) / (dy * dlat_cm))
+            t = max(0.05, min(ts) * 0.85)  # a little back from the border
+            side = 1.0 if (uy * ux >= 0) else -1.0  # either side of the shaft
+            offx, offy = -uy * 0.35 * side, ux * 0.35 * side
+            dlon_txt = dx * t + offx + 0.12 * ux  # along the shaft + beside it
+            dlat_txt = dy * t + offy + 0.12 * uy
+            if abs(offx) >= abs(offy):
+                justify = "LM" if offx > 0 else "RM"
+            else:
+                justify = "CB" if offy > 0 else "CT"
+            fig.text(
+                **layer_kw(
+                    "values", x=[v.lon], y=[v.lat], text=[f"{speed:.0f} mm/yr"],
+                    font=f"7p,Helvetica-Bold,{color}=~1p,white",
+                    justify=justify, offset=f"{dlon_txt:.3f}c/{dlat_txt:.3f}c",
+                )
+            )  # fmt: skip
+            continue
+        dx = (tip_lon - v.lon) / dlon_cm
+        dy = (tip_lat - v.lat) / dlat_cm
+        dx += maps.VALUE_GAP_CM * ux
+        dy += maps.VALUE_GAP_CM * uy
+        if abs(ux) >= abs(uy):
+            justify = "LM" if ux > 0 else "RM"
+        else:
+            justify = "CB" if uy > 0 else "CT"
+        fig.text(
+            **layer_kw(
+                "values", x=[v.lon], y=[v.lat], text=[f"{speed:.0f} mm/yr"],
+                font=f"7p,Helvetica-Bold,{color}=~1p,white",
+                justify=justify, offset=f"{dx:.3f}c/{dy:.3f}c",
+            )
+        )  # fmt: skip
+
+
 def _run_geojson(args: Any, config: Any, maps: Any) -> int:
     import json
 
@@ -3465,7 +3653,9 @@ def _run_geojson(args: Any, config: Any, maps: Any) -> int:
     return 0
 
 
-def _run_slip(args: Any, parser: Any, config: Any, maps: Any, coords: Any) -> int:
+def _run_slip(
+    args: Any, parser: argparse.ArgumentParser, config: Any, maps: Any, coords: Any
+) -> int:
     import json
 
     with open(args.product) as f:

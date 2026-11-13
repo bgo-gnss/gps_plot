@@ -53,7 +53,7 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
 MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations",
-            "layers", "gmt", "gmt_config", "area", "label")  # fmt: skip
+            "layers", "gmt", "gmt_config", "area", "label", "ts_args")  # fmt: skip
 #: keys of a plots.yaml ``map_categories:`` / ``map_areas:`` entry: the
 #: defaults of every map of that kind of area / of that area
 MAP_AREA_KEYS = ("layers", "gmt", "gmt_config", "args")
@@ -133,6 +133,7 @@ class Job:
 def load_yaml(path: str | Path) -> Any:
     import yaml
 
+    # pi-lens-ignore: unchecked-throwing-call-python
     with open(Path(path).expanduser()) as fh:
         return yaml.safe_load(fh) or {}
 
@@ -740,6 +741,12 @@ def map_jobs(
     spec = {**spec, "dir": out_dir}
     area = (areas or {}).get(str(spec.get("area") or ""), {})
     label = str(spec.get("label") or area.get("name") or pname)
+    # Keep area membership in station_areas.yaml, including its check series.
+    for key in ("stations", "ts_stations"):
+        if spec.get(key) == "area":
+            if not area:
+                raise ValueError(f"plots.yaml {pname}: {key}: area needs area:")
+            spec = {**spec, key: list(area["stations"])}
     stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
     checks = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
     names: set[str] = set()
@@ -784,7 +791,7 @@ CHECK_SUBDIR = "ts"
 
 #: map options that set a velocity map's windows and reference: the ones the
 #: check time series (``ts_stations:``) must repeat
-_MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end")
+_MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end", "--window-colors")
 
 #: a velocity map's --ref as the ts options that give the same rates
 _TS_REF: Mapping[str, tuple[str, ...]] = {
@@ -839,7 +846,8 @@ def map_ts_jobs(
         for sta in wanted:
             jobs.append(Job(pname, None, f"{spec['dir']}/{CHECK_SUBDIR}", (sta,),
                             ("--save", str(defaults.get("save", "png")),
-                             "-s", f"{start:%Y%m%d}", *argv,
+                             "--skip-missing", "-s", f"{start:%Y%m%d}", *argv,
+                             *extra_args(spec.get("ts_args")),
                              "--name", f"{stem}-{sta}"),
                             any(r.publish for r in runs), group=f"{stem}-{sta}",
                             captions=((f"{spec['dir']}/{CHECK_SUBDIR}", f"{stem}-{sta}",
@@ -853,7 +861,9 @@ def _window_options(pname: str, argv: Sequence[str]) -> tuple[str, ...]:
     it = iter(argv)
     for tok in it:
         opt, eq, value = tok.partition("=")
-        if opt in _MAP_WINDOW_OPTIONS:
+        if opt == "--no-short-tier":
+            out += [opt, "true"]
+        elif opt in _MAP_WINDOW_OPTIONS:
             out += [opt, value if eq else next(it, "")]
     if "--last" not in out and "--window" not in out:
         raise ValueError(
@@ -881,6 +891,10 @@ def _ts_check_argv(
         if opt == "--last":
             argv += ["--rate-last", value]
             days = max(days, int(value.partition(":")[0]))
+        elif opt == "--window-colors":
+            argv += ["--rate-colors", value]
+        elif opt == "--no-short-tier":
+            argv += ["--rate-no-short-tier"]
         elif opt == "--window":
             a, _, b = value.partition(":")
             b = b or f"{end:%Y%m%d}"
@@ -1007,7 +1021,9 @@ def _area_jobs(
         group_over = (overrides.get(f"{slug}/{group}") or {}) if group else {}
         over = {**area_over, **group_over}
         over_args = [
-            tok for o in (area_over, group_over) for tok in extra_args(o.get("args"))
+            item
+            for o in (area_over, group_over)
+            for item in _as_list(o.get("args") or [])
         ]
         for run in runs:
             if run.get("areas") is not None and slug not in _as_list(run["areas"]):
@@ -1023,7 +1039,13 @@ def _area_jobs(
                 merged, defaults, spec.get("args"), over_args, tool=tool
             ):
                 if ev and tool != "polar":
-                    argv = argv + ["--events", *ev]
+                    if "--events" in argv:
+                        # One argparse occurrence: retain display-only markers
+                        # supplied in args as well as the scientific catalogue.
+                        i = argv.index("--events") + 1
+                        argv = argv[:i] + ev + argv[i:]
+                    else:
+                        argv = argv + ["--events", *ev]
                 if group and tool == "polar":  # a group: its pairs in one figure
                     argv = argv + ["--together"]
                 elif group:

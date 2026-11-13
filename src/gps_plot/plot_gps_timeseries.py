@@ -15,8 +15,9 @@ import warnings
 # module is `ignore_errors` for mypy (see pyproject's typing policy), so
 # these signatures type the SEAM, not the module: detrend_workbench is
 # strict-checked and cannot call an untyped function.
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
+from typing import Any, cast
 
 # from gtimes.timefunc import TimefromYearf, currTime, TimetoYearf
 from gtimes.timefunc import currDatetime
@@ -143,6 +144,7 @@ def summarize(outcomes, manifest=None):
     failed = [o for o in outcomes if o.status == "failed"]
     files = sorted({os.path.abspath(f) for o in ok for f in o.files})
     if manifest:
+        # pi-lens-ignore: unchecked-throwing-call-python
         with open(manifest, "w") as fh:
             fh.writelines(f + "\n" for f in files)
     print(
@@ -188,9 +190,9 @@ def _install_raw_read_cache(maxsize=4):
             if "unhashable" not in str(exc):
                 raise
             yearf, data, ddata = uncached(sta, Dir=Dir, tType=tType, **kw)
-        return yearf.copy(), data.copy(), ddata.copy()
+        return None if yearf is None else yearf.copy(), data.copy(), ddata.copy()
 
-    cached_openGlobkTimes._gps_plot_raw_read_cache = True
+    setattr(cached_openGlobkTimes, "_gps_plot_raw_read_cache", True)
     gpsr.openGlobkTimes = cached_openGlobkTimes
 
 
@@ -808,6 +810,11 @@ def build_parser(
         "plate-periodic). Files end -rate",
     )
     parser.add_argument(
+        "--open-points",
+        action="store_true",
+        help="unfilled observation circles with a black outline; rate lines retain their colours",
+    )
+    parser.add_argument(
         "--rate-window",
         action="append",
         default=None,
@@ -827,6 +834,21 @@ def build_parser(
         "before the end (-e, default today), counted as gpsplot map velocity "
         "--last counts them, so a map's windows can be checked on the series "
         "(182:91 = the 3 months before the last 3); repeatable, implies --rate",
+    )
+    parser.add_argument(
+        "--rate-no-short-tier",
+        dest="rate_short_tier",
+        action="store_false",
+        help="refuse rate windows without the velocity product's required coverage, "
+        "rather than substituting a shorter high-signal fit (as map --no-short-tier)",
+    )
+    parser.add_argument(
+        "--rate-colors",
+        type=common.color_list,
+        default=None,
+        metavar="COLOR[,COLOR...]",
+        help="colours of --rate-window/--rate-last lines, in window order; "
+        "cycles when fewer colours are supplied (e.g. black,blue,red)",
     )
     parser.add_argument(
         "--rate-segments",
@@ -1311,7 +1333,8 @@ def run(
     special_allow = SPECIAL_ALLOW
 
     # processing command line arguments --------------
-    start, end = common.resolve_dates(args, currDatetime)
+    # No String selector: currDatetime returns datetime, never formatted text.
+    start, end = common.resolve_dates(args, cast(Callable[..., datetime], currDatetime))
 
     try:  # --eventf, then --events (common.resolve_events)
         eventDict.update(common.resolve_events(args))

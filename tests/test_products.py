@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import pytest
 
+from gps_plot import plot_gps_timeseries as driver
 from gps_plot import products
 
-AREAS_DOC = {
+AREAS_DOC: dict[str, Any] = {
     "category_labels": {"volcanic": "x"},
     "volcanic_areas": {
         "reykjanesskagi": {"cdn": "reykjanes", "stations": ["SENG", "ELDC  # x"]},
@@ -17,13 +23,13 @@ AREAS_DOC = {
     },
     "regional_areas": {"reykjanes": {"cdn": "reykjanes", "stations": ["SENG", "KRIV"]}},
 }
-EVENTS = [
+EVENTS: list[dict[str, Any]] = [
     {"region": "reykjanes", "kind": "eruption", "onset": dt.date(2021, 3, 19)},
     {"region": "reykjanes", "kind": "dike", "onset": "2021-02-24"},
     {"region": "reykjanes", "kind": "unknown", "onset": "2021-01-01"},
     {"region": "hekla", "kind": "eruption", "onset": "2000-02-26"},
 ]
-CFG = {
+CFG: dict[str, Any] = {
     "defaults": {"frame": "itrf14", "save": "png", "legacy_names": True},
     "products": {
         "standard": {
@@ -113,7 +119,9 @@ def test_run_argv_refuses_unknown_keys_and_empty_runs() -> None:
         products.run_argv({"ref": "plate"}, {})
 
 
-def test_run_refuses_an_unknown_prepare_step(tmp_path, monkeypatch, capsys) -> None:
+def test_run_refuses_an_unknown_prepare_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import yaml
 
     from gps_plot.cli import run as run_cli
@@ -125,7 +133,7 @@ def test_run_refuses_an_unknown_prepare_step(tmp_path, monkeypatch, capsys) -> N
             yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
         )
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
@@ -133,7 +141,9 @@ def test_run_refuses_an_unknown_prepare_step(tmp_path, monkeypatch, capsys) -> N
     assert "bogus" in capsys.readouterr().out
 
 
-def test_dry_run_lists_the_prepare_steps_first(tmp_path, monkeypatch, capsys) -> None:
+def test_dry_run_lists_the_prepare_steps_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import yaml
 
     from gps_plot.cli import run as run_cli
@@ -145,14 +155,17 @@ def test_dry_run_lists_the_prepare_steps_first(tmp_path, monkeypatch, capsys) ->
             yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
         )
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
-    called = []
-    monkeypatch.setitem(
-        run_cli.PREPARE_STEPS, "network_days", lambda w: called.append(w) or 0
-    )
+    called: list[object] = []
+
+    def prepare(w: object) -> int:
+        called.append(w)
+        return 0
+
+    monkeypatch.setitem(run_cli.PREPARE_STEPS, "network_days", prepare)
     assert run_cli.run("gpsplot run", [str(plots), "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert (
@@ -163,7 +176,7 @@ def test_dry_run_lists_the_prepare_steps_first(tmp_path, monkeypatch, capsys) ->
 
 
 def test_args_are_appended_general_to_specific() -> None:
-    cfg = {
+    cfg: dict[str, Any] = {
         "defaults": {"args": ["--traceback"]},
         "products": {
             "areas": {
@@ -210,7 +223,9 @@ def test_args_must_be_a_string_or_list() -> None:
         products.extra_args({"outlier_sigma": 3.5})
 
 
-def _run_cli(tmp_path, monkeypatch, cfg):
+def _run_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: dict[str, Any]
+) -> int:
     import yaml
 
     from gps_plot.cli import run as run_cli
@@ -222,7 +237,7 @@ def _run_cli(tmp_path, monkeypatch, cfg):
             yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
         )
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
@@ -230,16 +245,21 @@ def _run_cli(tmp_path, monkeypatch, cfg):
 
 
 def test_run_refuses_an_unknown_ts_option_before_anything(
-    tmp_path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cfg = {**CFG, "defaults": {**CFG["defaults"], "args": ["--no-such-flag"]}}
+    cfg: dict[str, Any] = {
+        **CFG,
+        "defaults": {**CFG["defaults"], "args": ["--no-such-flag"]},
+    }
     assert _run_cli(tmp_path, monkeypatch, cfg) == 2
     out = capsys.readouterr().out
     assert "nothing run" in out and "--no-such-flag" in out
 
 
-def test_run_reports_a_refused_args_key(tmp_path, monkeypatch, capsys) -> None:
-    cfg = {**CFG, "defaults": {**CFG["defaults"], "args": ["-j", "4"]}}
+def test_run_reports_a_refused_args_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg: dict[str, Any] = {**CFG, "defaults": {**CFG["defaults"], "args": ["-j", "4"]}}
     assert _run_cli(tmp_path, monkeypatch, cfg) == 2
     assert "gpsplot run -j" in capsys.readouterr().out
 
@@ -267,7 +287,7 @@ def test_select_stations_drops_jobs_without_a_wanted_station() -> None:
 
 
 def test_run_takes_stations_and_a_plots_file_in_any_order(
-    tmp_path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import yaml
 
@@ -280,7 +300,7 @@ def test_run_takes_stations_and_a_plots_file_in_any_order(
             yaml.safe_dump(AREAS_DOC if "areas" in name else {"events": []})
         )
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
@@ -294,7 +314,7 @@ def test_run_takes_stations_and_a_plots_file_in_any_order(
     assert "left out: QQQQ" in out and "no jobs" in out
 
 
-BL_AREAS_DOC = {
+BL_AREAS_DOC: dict[str, Any] = {
     "category_roots": {"infrastructure": "voktun/landsvirkjun"},
     "volcanic_areas": {
         "reykjanesskagi": {
@@ -317,7 +337,7 @@ BL_AREAS_DOC = {
         },
     },
 }
-BL_CFG = {
+BL_CFG: dict[str, Any] = {
     "defaults": {"frame": "itrf14", "save": "png", "legacy_names": True},
     "products": {
         "baselines": {
@@ -380,7 +400,7 @@ def test_area_stacks_refuse_malformed_groups(value: object, match: str) -> None:
 
 
 def test_same_slug_areas_merge_baselines_once_and_refuse_differing_stacks() -> None:
-    doc = {
+    doc: dict[str, Any] = {
         "volcanic_areas": {
             "a": {"cdn": "x", "baselines": ["AAAA-BBBB"], "stacks": {"g": ["AAAA-BBBB", "CCCC-BBBB"]}}
         },
@@ -440,19 +460,22 @@ def test_select_stations_matches_baselines_by_an_end_and_keeps_stacks_whole() ->
 
 
 def test_dry_run_checks_stack_options_with_the_stack_parser(
-    tmp_path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import yaml
 
     from gps_plot.cli import run as run_cli
 
-    cfg = {**BL_CFG, "products": {"stacks": BL_CFG["products"]["stacks"]}}
+    cfg: dict[str, Any] = {
+        **BL_CFG,
+        "products": {"stacks": BL_CFG["products"]["stacks"]},
+    }
     plots = tmp_path / "plots.yaml"
     plots.write_text(yaml.safe_dump(cfg))
     (tmp_path / "station_areas.yaml").write_text(yaml.safe_dump(BL_AREAS_DOC))
     (tmp_path / "events.yaml").write_text(yaml.safe_dump({"events": []}))
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
@@ -465,13 +488,17 @@ def test_dry_run_checks_stack_options_with_the_stack_parser(
     assert "--skip-missing" in capsys.readouterr().out
 
 
-def _fake_tool(run_cli):
+def _fake_tool(
+    run_cli: ModuleType,
+) -> Callable[..., tuple[Callable[..., int], argparse.ArgumentParser]]:
     """The real stack parser without the station-config lookup."""
     import argparse
 
     from gps_plot import stack
 
-    def tool(name, config, **kw):
+    def tool(
+        name: str, config: Any, **kw: Any
+    ) -> tuple[Callable[..., int], argparse.ArgumentParser]:
         assert name == "stack"
         parser = stack.build_parser(
             argparse.ArgumentParser(prog="gpsplot stack", **kw),
@@ -490,7 +517,7 @@ def test_stack_file_stem_uses_the_label() -> None:
 
 
 def test_stack_groups_take_their_own_overrides_after_the_area() -> None:
-    cfg = {
+    cfg: dict[str, Any] = {
         **BL_CFG,
         "products": {
             "stacks": {
@@ -548,7 +575,9 @@ def test_stack_groups_take_their_own_overrides_after_the_area() -> None:
         ),
     ],
 )
-def test_stack_output_stem(series, label, offset, pos_id, stem) -> None:
+def test_stack_output_stem(
+    series: list[str], label: str | None, offset: float, pos_id: str, stem: str
+) -> None:
     import datetime as _dt
 
     from gps_plot import stack
@@ -571,7 +600,7 @@ def test_stack_output_stem(series, label, offset, pos_id, stem) -> None:
 
 
 def test_a_stacked_group_need_not_be_plotted_pair_by_pair() -> None:
-    doc = {
+    doc: dict[str, Any] = {
         "infrastructure_areas": {
             "vatnsfell": {
                 "cdn": "vatnsfell",
@@ -588,7 +617,7 @@ def test_a_stacked_group_need_not_be_plotted_pair_by_pair() -> None:
 
 
 def test_stale_baseline_plots_are_the_pairs_and_groups_no_longer_configured(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     jobs = products.expand(BL_CFG, areas=products.area_table(BL_AREAS_DOC))
     folder = tmp_path / "locations/voktun/landsvirkjun/vatnsfell/graphs/baselines"
@@ -610,7 +639,7 @@ def test_stale_baseline_plots_are_the_pairs_and_groups_no_longer_configured(
     ]
 
 
-def test_a_filtered_run_judges_staleness_by_the_whole_config(tmp_path) -> None:
+def test_a_filtered_run_judges_staleness_by_the_whole_config(tmp_path: Path) -> None:
     areas = products.area_table(BL_AREAS_DOC)
     configured = products.expand(BL_CFG, areas=areas)
     stacks_only = products.expand(
@@ -622,7 +651,7 @@ def test_a_filtered_run_judges_staleness_by_the_whole_config(tmp_path) -> None:
     assert products.stale_baseline_plots(stacks_only, configured, tmp_path) == []
 
 
-MAP_CFG = {
+MAP_CFG: dict[str, Any] = {
     "defaults": {"save": "pdf,png"},
     "products": {
         "svartsengi_velocity": {
@@ -674,7 +703,7 @@ def test_map_products_expand_one_job_per_named_run() -> None:
         ({"runs": []}, "needs runs"),
     ],
 )
-def test_map_products_refuse_bad_specs(change: dict, match: str) -> None:
+def test_map_products_refuse_bad_specs(change: dict[str, Any], match: str) -> None:
     spec = {**MAP_CFG["products"]["svartsengi_velocity"], **change}
     with pytest.raises(ValueError, match=match):
         products.expand({"products": {"m": spec}}, areas={})
@@ -689,7 +718,7 @@ def test_select_stations_keeps_a_listed_map_whole_and_drops_a_region_map() -> No
 
 
 def test_dry_run_checks_map_options_with_the_map_parser(
-    tmp_path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import yaml
 
@@ -700,7 +729,7 @@ def test_dry_run_checks_map_options_with_the_map_parser(
     (tmp_path / "station_areas.yaml").write_text(yaml.safe_dump(AREAS_DOC))
     (tmp_path / "events.yaml").write_text(yaml.safe_dump({"events": []}))
     monkeypatch.setattr(
-        run_cli.driver,
+        driver,
         "_load_config",
         lambda: type("C", (), {"config_path": str(tmp_path)})(),
     )
@@ -715,7 +744,7 @@ def test_dry_run_checks_map_options_with_the_map_parser(
     assert "--bogus" in capsys.readouterr().out
 
 
-def _check_spec(**change: object) -> dict:
+def _check_spec(**change: object) -> dict[str, Any]:
     spec = {
         "tool": "map", "map": "velocity", "dir": "maps/svartsengi",
         "ts_stations": ["seng", "THOB"],
@@ -742,7 +771,7 @@ def test_ts_stations_draw_the_map_windows_once_per_window_set() -> None:
     assert six.tool == "ts" and six.stations == ("SENG",) and not six.publish
     assert six.out_dir == "maps/svartsengi/ts"
     assert six.argv == (
-        "--save", "png", "-s", "20251212",  # twice the 160 days back
+        "--save", "png", "--skip-missing", "-s", "20251212",  # twice the 160 days back
         "--ref", "detrend", "--detrend-terms", "periodic",  # the map's plate-periodic
         "--rate-last", "160", "--rate-last", "91", "--name", "sv-6man-3man-SENG",
     )  # fmt: skip
@@ -762,10 +791,62 @@ def test_ts_stations_draw_the_map_windows_once_per_window_set() -> None:
     ],
 )
 def test_ts_stations_refuse_what_a_series_cannot_repeat(
-    change: dict, match: str
+    change: dict[str, Any], match: str
 ) -> None:
     with pytest.raises(ValueError, match=match):
         products.expand({"products": {"m": _check_spec(**change)}}, areas={})
+
+
+def test_area_map_and_check_series_share_members_and_window_colors() -> None:
+    spec = _check_spec(
+        area="reykjanes",
+        stations="area",
+        ts_stations="area",
+        ts_args=["--open-points"],
+        runs=[
+            {
+                "name": "bb",
+                "args": "--window 20180301:20230228 --last 365 "
+                "--last 91 --window-colors black,blue,red --no-short-tier",
+            }
+        ],
+    )
+    jobs = products.map_jobs("bb", spec, {}, products.area_table(AREAS_DOC))
+    assert jobs[0].stations == ("SENG", "ELDC", "KRIV")
+    assert [j.stations for j in jobs[1:]] == [("SENG",), ("ELDC",), ("KRIV",)]
+    for j in jobs[1:]:
+        assert "--skip-missing" in j.argv
+        assert "--rate-no-short-tier" in j.argv
+        assert "--open-points" in j.argv
+        assert j.argv[j.argv.index("--rate-colors") + 1] == "black,blue,red"
+        assert "20180301:20230228" in j.argv
+        assert [j.argv[i + 1] for i, v in enumerate(j.argv) if v == "--rate-last"] == [
+            "365",
+            "91",
+        ]
+
+
+def test_catalog_events_do_not_replace_display_markers() -> None:
+    import copy
+    from gps_plot.cli.common import resolve_events
+
+    cfg = copy.deepcopy(CFG)
+    cfg["products"]["areas"]["overrides"]["reykjanes"]["args"] = [
+        "--events '20180301,gray,KISA approx. March 2018'"
+    ]
+    jobs = products.expand(
+        cfg,
+        areas=products.area_table(AREAS_DOC),
+        events=EVENTS,
+        product="areas",
+        area="reykjanes",
+    )
+    for j in jobs:
+        assert j.argv.count("--events") == 1
+        args = driver.build_parser().parse_args([*j.stations, *j.argv])
+        found = resolve_events(args)
+        assert found["20180301"] == ["gray", "KISA approx. March 2018"]
+        assert found["20210224"] == ["b"]
 
 
 def test_ts_check_argv_closes_an_open_window_and_keeps_the_end() -> None:
@@ -778,7 +859,7 @@ def test_ts_check_argv_closes_an_open_window_and_keeps_the_end() -> None:
     assert days == 31
 
 
-def test_stale_map_plots_are_files_no_run_writes(tmp_path) -> None:
+def test_stale_map_plots_are_files_no_run_writes(tmp_path: Path) -> None:
     jobs = products.expand({"products": {"sv": _check_spec()}}, areas={})
     folder = tmp_path / "maps/svartsengi"
     folder.mkdir(parents=True)
@@ -802,7 +883,7 @@ def test_stale_map_plots_are_files_no_run_writes(tmp_path) -> None:
     ]
 
 
-def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path) -> None:
+def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path: Path) -> None:
     spec = {"tool": "map", "map": "station", "dir": "maps/sv",
             "stations": ["SVIE", "SKFC"], "ts_stations": ["svie", "SKFC"],
             "args": "--track some-event", "runs": [{"name": "sv-track"}]}  # fmt: skip
@@ -822,7 +903,7 @@ def test_map_layers_and_gmt_from_plots_yaml() -> None:
             "gmt_config": {"MAP_FRAME_TYPE": "plain"},
             "runs": [{"name": "a", "layers": "roads",
                       "gmt": ["calderas:pen=3p,blue"]}]}  # fmt: skip
-    cfg = {
+    cfg: dict[str, Any] = {
         "defaults": {"save": "png", "map_layers": ["towns"]},
         "products": {"x": spec},
     }
@@ -844,7 +925,7 @@ def test_map_area_gives_dir_and_defaults_in_order() -> None:
          "monitoring_areas": {"svf": {"cdn": "svinafellsheidi", "stations": ["SVIE"]}},
          "volcanic_areas": {"rn": {"cdn": "reykjanes", "stations": ["SENG"]}}}
     )  # fmt: skip
-    cfg = {
+    cfg: dict[str, Any] = {
         "defaults": {"save": "png", "map_layers": ["roads"]},
         "map_categories": {"monitoring": {"layers": ["volcanic", "rural"],
                                           "gmt_config": {"MAP_FRAME_TYPE": "plain"}}},
@@ -882,7 +963,7 @@ def test_map_captions_in_icelandic_from_the_options() -> None:
     assert products._windows_text(["--last", "182:91"], today) == "30.04.–29.07.2026"
     v = products.map_caption("velocity", ["--vertical", "--last", "7"], "Svartsengi")
     assert v.startswith("Svartsengi: lóðréttur hraði (mm/ár), ")
-    events = [
+    events: list[dict[str, Any]] = [
         {"id": "svinafellsheidi-2026-09-landslide", "onset": dt.date(2026, 9, 23)}
     ]
     assert products.onset_text("svinafellsheidi", events) == "23.09.2026"
@@ -924,15 +1005,15 @@ def test_run_product_and_area_take_lists_and_repeats() -> None:
     assert runcli._names(p.parse_args([]).product) is None
 
 
-def test_update_pos_script_from_flag_or_plots_yaml(tmp_path, capsys) -> None:
+def test_update_pos_script_from_flag_or_plots_yaml(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from gps_plot.cli import run as run_cli
 
-    cfg = {"update_pos": "~/x/update_pos.sh"}
+    cfg: dict[str, Any] = {"update_pos": "~/x/update_pos.sh"}
     assert run_cli.update_script(None, cfg) is None
-    assert (
-        run_cli.update_script("", cfg) == run_cli.Path("~/x/update_pos.sh").expanduser()
-    )
-    assert run_cli.update_script("/a/b.sh", cfg) == run_cli.Path("/a/b.sh")
+    assert run_cli.update_script("", cfg) == Path("~/x/update_pos.sh").expanduser()
+    assert run_cli.update_script("/a/b.sh", cfg) == Path("/a/b.sh")
     # missing or failing: a warning, the run goes on
     assert not run_cli.update_pos(tmp_path / "none.sh", "gpsplot run")
     assert "not found" in capsys.readouterr().out
@@ -945,7 +1026,7 @@ def test_update_pos_script_from_flag_or_plots_yaml(tmp_path, capsys) -> None:
     good.write_text("#!/bin/sh\nexit 0\n")
     good.chmod(0o755)
     assert run_cli.update_pos(good, "gpsplot run")
-    assert not run_cli.update_pos(run_cli.Path(), "gpsplot run")
+    assert not run_cli.update_pos(Path(), "gpsplot run")
 
 
 def test_stacks_get_the_catalog_event_lines_too() -> None:
@@ -961,7 +1042,7 @@ def test_stacks_get_the_catalog_event_lines_too() -> None:
 
 
 def test_area_directions_parse_and_merge() -> None:
-    doc = {
+    doc: dict[str, Any] = {
         "landslide_areas": {
             "a": {
                 "cdn": "a",
@@ -999,7 +1080,7 @@ def test_area_directions_refuses(value: object, msg: str) -> None:
         products.area_directions(value)
 
 
-BASELINE_AREAS = {
+BASELINE_AREAS: dict[str, Any] = {
     "svinafellsheidi": {"key": "s", "root": "skridurogflod", "stations": [],
                         "baselines": ["SVIN-SKFC", "SVIE-SKFC"], "stacks": {}},
     "seydisfjordur": {"key": "y", "root": "skridurogflod", "stations": [],
@@ -1010,7 +1091,7 @@ BASELINE_AREAS = {
 
 
 def test_product_and_run_areas_keep_to_those_areas() -> None:
-    cfg = {"products": {"baselines": {
+    cfg: dict[str, Any] = {"products": {"baselines": {
         "stations": "area_baselines",
         "dir": "locations/{root}/{cdn}/graphs/baselines",
         "areas": ["svinafellsheidi", "seydisfjordur"],
@@ -1030,7 +1111,7 @@ def test_product_and_run_areas_keep_to_those_areas() -> None:
 
 
 def test_polar_product_one_job_per_area_and_period() -> None:
-    cfg = {"defaults": {"frame": "itrf14", "save": "png", "legacy_names": True},
+    cfg: dict[str, Any] = {"defaults": {"frame": "itrf14", "save": "png", "legacy_names": True},
            "products": {"polar": {
                "tool": "polar", "stations": "area_baselines",
                "dir": "locations/{root}/{cdn}/graphs/baselines",
@@ -1055,7 +1136,7 @@ def test_polar_product_one_job_per_area_and_period() -> None:
 def test_polar_over_stacks_is_one_together_figure_per_group() -> None:
     areas = {"svinafellsheidi": {**BASELINE_AREAS["svinafellsheidi"],
                                  "stacks": {"skfc": ["SVIN-SKFC", "SVIE-SKFC"]}}}  # fmt: skip
-    cfg = {"products": {"polar": {
+    cfg: dict[str, Any] = {"products": {"polar": {
         "tool": "polar", "stations": "area_stacks",
         "dir": "locations/{root}/{cdn}/graphs/baselines",
         "runs": [{"special": ["90d", "year"]}],
@@ -1081,7 +1162,7 @@ def test_motion_runs_keep_the_pairs_with_a_direction() -> None:
         "directions": {"SVIN-SKFC": {"motion": 292.0},
                        "SVIE-SKFC": {"motion": 334.0, "slope": (260.0, 21.0)}},
     }}  # fmt: skip
-    cfg = {"products": {"baselines": {
+    cfg: dict[str, Any] = {"products": {"baselines": {
         "stations": "area_baselines",
         "dir": "x/{cdn}",
         "runs": [
@@ -1126,7 +1207,7 @@ def test_station_args_give_a_station_its_own_job_after_each_ts_job() -> None:
 def test_watched_areas_from_plots_yaml_and_open_recent_events() -> None:
     areas = products.area_table(AREAS_DOC)
     today = dt.date(2026, 11, 2)
-    events = [
+    events: list[dict[str, Any]] = [
         {"id": "new", "region": "hengill", "onset": dt.date(2026, 9, 23), "end": None},
         {"id": "old", "region": "reykjanes", "onset": "2020-05-30", "end": None},
         {
@@ -1161,6 +1242,6 @@ def test_watch_first_moves_the_watched_jobs_ahead_in_order() -> None:
         j for j in jobs if j.area != "hengill"
     ]
     # a map product counts by its area:
-    cfg = {"products": {"m": {"tool": "map", "area": "hengill"}}}
+    cfg: dict[str, Any] = {"products": {"m": {"tool": "map", "area": "hengill"}}}
     job = products.Job("m", None, "d", (), (), False, tool="map")
     assert products.job_area(job, cfg) == "hengill"

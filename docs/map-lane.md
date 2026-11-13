@@ -589,6 +589,18 @@ can sit on land labels. Lava colour per eruption is not done (one fill).
 
 ## Velocity maps read the velocity product (2026-10-16)
 
+Fixed and running windows can share one map, e.g. Bárðarbunga:
+`--window 20180301:20230228 --last 365 --last 91
+--window-colors black,blue,red --no-short-tier`. Colours follow fixed
+`--window` entries first, then running `--last` entries (default palette
+unchanged). `plots.yaml` map `stations: area` and `ts_stations: area`
+resolve membership from its `area:` in station_areas.yaml. The standard
+associated series carry the same windows, `--rate-colors`, and
+`--rate-no-short-tier` coverage policy; a missing station is skipped.
+`--events 'YYYYMMDD,gray,approximate date'` adds a labelled display-only
+vertical marker, without changing the scientific event/step catalogues.
+
+
 Windowed velocity maps (`--window`, `--last`) no longer fit their own line:
 they call `geo_dataread.velocity.estimate_velocities`, the estimator of
 `gps-velocities`, so a map, a velocity file and a model input are the same
