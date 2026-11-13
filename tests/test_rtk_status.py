@@ -58,6 +58,7 @@ def test_area_status_levels_and_set_by() -> None:
 
     rec = rs.area_status("a", spec, ["QUIE-BASE", "MOVE-BASE"], read, NOW)
     assert rec["schema"] == rs.SCHEMA and rec["provisional"] is True
+    assert rec["significance_sigma"] == 0.0  # the offset rule's σ test, off here
     assert rec["level"] == 2 and rec["level_name"] == "orange"  # 25 mm ≥ 20
     assert rec["set_by"]["pair"] == "MOVE-BASE"
     assert rec["set_by"]["component"] == "horizontal"
