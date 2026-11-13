@@ -1059,19 +1059,16 @@ def _close_up(fig: Any, mapax: Any, column: list[Any]) -> None:
     only centres them), and the figure trimmed by the width freed on the
     right (BGÓ 2026-11-08)."""
     renderer = fig._get_renderer()
-    to_fig = fig.transFigure.inverted()
     width, height = fig.get_size_inches()
     box = mapax.get_position()
-    tight = [a.get_tightbbox(renderer).transformed(to_fig) for a in column]
-    shift = min(t.x0 for t in tight) - (box.x1 + STACKED_GAP_IN / width)
+    shift = _column_x0(fig, renderer, column) - (box.x1 + STACKED_GAP_IN / width)
     if shift <= 0:
         return
     for a in column:
         f = a.get_position(original=True)
         a.set_position((f.x0 - shift, f.y0, f.width, f.height))
         a.apply_aspect()
-    tight = [a.get_tightbbox(renderer).transformed(to_fig) for a in column]
-    spare = 1.0 - max(t.x1 for t in tight) - STACKED_GAP_IN / width
+    spare = 1.0 - _column_x1(fig, renderer, column) - STACKED_GAP_IN / width
     if spare <= 0:
         return
     scale = 1.0 / (1.0 - spare)  # the same inches in the narrower figure
@@ -1080,6 +1077,31 @@ def _close_up(fig: Any, mapax: Any, column: list[Any]) -> None:
         f = a.get_position(original=True)
         a.set_position((f.x0 * scale, f.y0, f.width * scale, f.height))
         a.apply_aspect()
+
+
+#: the label room [in] the column's trim keeps left / right of its frames
+#: at least, so the tick labels (``880`` or ``1000``) do not change the
+#: figure's width (BGÓ 2026-11-13: the daily and RTK figures one outline)
+COLUMN_LABELS_IN = (0.75, 0.3)
+
+
+def _column_x0(fig: Any, renderer: Any, column: list[Any]) -> float:
+    """The column's left edge [figure]: its labels', or its frames' less
+    :data:`COLUMN_LABELS_IN` when that is further left."""
+    to_fig = fig.transFigure.inverted()
+    w = fig.get_size_inches()[0]
+    return float(min(min(a.get_tightbbox(renderer).transformed(to_fig).x0,
+                   a.get_position().x0 - COLUMN_LABELS_IN[0] / w)
+               for a in column))  # fmt: skip
+
+
+def _column_x1(fig: Any, renderer: Any, column: list[Any]) -> float:
+    """The column's right edge [figure]: as :func:`_column_x0`."""
+    to_fig = fig.transFigure.inverted()
+    w = fig.get_size_inches()[0]
+    return float(max(max(a.get_tightbbox(renderer).transformed(to_fig).x1,
+                   a.get_position().x1 + COLUMN_LABELS_IN[1] / w)
+               for a in column))  # fmt: skip
 
 
 def _frame_on_map(fig: Any, mapax: Any, column: list[Any], title: str,
@@ -1846,10 +1868,11 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
                                    args.dem_res)  # fmt: skip
         profile_dem = None
         if "profile" in panels:  # its own window: the profiles reach past the map
-            from gps_plot.profile import PROFILE_HALF_M
+            from gps_plot.profile import GROUND_WIDE, PROFILE_HALF_M
 
-            profile_dem, _, _ = _place(pairs, config, ["map"], PROFILE_HALF_M + 30.0,
-                                    args.dem_res)  # fmt: skip
+            profile_dem, _, _ = _place(pairs, config, ["map"],
+                                       GROUND_WIDE * PROFILE_HALF_M + 30.0,
+                                       args.dem_res)  # fmt: skip
         note = f"{head}; " + "; ".join(n for _, n in group)
         # one onset for the figure (the earliest): every pair's days from it
         t0 = min(pp.t_on for pp in pairs)

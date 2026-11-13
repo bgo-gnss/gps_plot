@@ -29,8 +29,12 @@ PROFILE_HALF_M = 250.0
 #: weekly medians: days per bin from the onset, and the days a bin needs
 BIN_DAYS = 7.0
 MIN_PER_BIN = 3
-#: the profile's ground samples
-SAMPLES = 801
+#: the profile's ground samples (over ±``GROUND_WIDE`` × the half width)
+SAMPLES = 1601
+#: the ground is sampled this many half widths either side: a sub-panel
+#: whose points need more height than its box shows more ground sideways
+#: instead of growing (BGÓ 2026-11-13: both polar figures one outline)
+GROUND_WIDE = 2.0
 
 
 @dataclasses.dataclass
@@ -147,6 +151,9 @@ class Profile:
     plunge: Plunge | None
     lo: float
     hi: float
+    #: the box's height range [m]: the ground within ±half and the rover
+    #: (the same in every figure of the place); the points' when no ground
+    box: float = 0.0
 
     @property
     def west(self) -> bool:
@@ -193,7 +200,7 @@ def prepare(pp: Any, dem: Any, scale: float, half: float = PROFILE_HALF_M) -> Pr
     on ``dem`` (None: no ground, heights from the rover)."""
     a = np.radians(pp.motion)
     ux, uy = np.sin(a), np.cos(a)
-    s = np.linspace(-half, half, SAMPLES)
+    s = np.linspace(-GROUND_WIDE * half, GROUND_WIDE * half, SAMPLES)
     if dem is None:
         z, z0 = np.full_like(s, np.nan), 0.0
     else:
@@ -209,13 +216,35 @@ def prepare(pp: Any, dem: Any, scale: float, half: float = PROFILE_HALF_M) -> Pr
     t, along, up, s_along, s_up = daily_medians(pp.since[ok], along[ok], pp.d[2][ok],
                                                 s_along[ok], sig[2][ok])  # fmt: skip
     rtk_up = [d[2][np.isfinite(d[2])] for d in _points(pp)[1:]]
-    heights = np.r_[z[np.isfinite(z)], z0 + up * scale, z0,
+    near = (np.abs(s) <= half) & np.isfinite(z)  # the ground the box is for
+    heights = np.r_[z[near], z0 + up * scale, z0,
                     *(z0 + u * scale for u in rtk_up)]  # fmt: skip
-    span = float(np.ptp(heights)) if heights.size else 1.0
+    lo, hi = _padded(heights)
+    ground = np.r_[z[near], z0]
+    g_lo, g_hi = _padded(ground) if ground.size > 1 else (lo, hi)
     return Profile(pp, s, z, z0, t, along, up, s_along, s_up,
-                   plunge_fit(along, up, s_along, s_up),
-                   float(np.min(heights)) - max(15.0, 0.05 * span),
-                   float(np.max(heights)) + max(25.0, 0.1 * span))  # fmt: skip
+                   plunge_fit(along, up, s_along, s_up), lo, hi,
+                   g_hi - g_lo)  # fmt: skip
+
+
+def _padded(heights: Any) -> tuple[float, float]:
+    """``heights``' range with room below (15 m, 5 %) and above (25 m, 10 %)."""
+    span = float(np.ptp(heights)) if heights.size else 1.0
+    return (float(np.min(heights)) - max(15.0, 0.05 * span),
+            float(np.max(heights)) + max(25.0, 0.1 * span))  # fmt: skip
+
+
+def view(prof: Profile, half: float = PROFILE_HALF_M) -> tuple[Any, Any]:
+    """The sub-panel's (x, y) limits [m]: the box :attr:`Profile.box` high
+    and ±``half`` wide (the same shape in every figure of the place, BGÓ
+    2026-11-13), centred on the heights the ground and the points need;
+    when those need more than the box, zoomed out evenly (more ground
+    sideways, the shape kept)."""
+    need = prof.hi - prof.lo
+    zoom = max(1.0, need / prof.box) if prof.box > 0 else 1.0
+    mid = 0.5 * (prof.lo + prof.hi)
+    h = 0.5 * prof.box * zoom
+    return (-half * zoom, half * zoom), (mid - h, mid + h)
 
 
 def up_text(pp: Any) -> str:
@@ -235,7 +264,9 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
     sign = -1.0 if prof.west else 1.0
     lo, hi, z0 = prof.lo, prof.hi, prof.z0
     if np.isfinite(prof.z).any():
-        ax.fill_between(sign * prof.s, prof.z, lo, color="0.88", zorder=0)
+        # down past any lower limit the equal axes may take
+        ax.fill_between(sign * prof.s, prof.z, lo - 10.0 * (hi - lo), color="0.88",
+                        zorder=0)  # fmt: skip
         ax.plot(sign * prof.s, prof.z, color="0.2", lw=1.2, zorder=1)
     if pp.downslope is not None:
         dip = apparent_dip(pp.motion, pp.downslope)
@@ -305,7 +336,9 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
     ax.annotate(pp.rover, (0, z0), xytext=(8, 10), textcoords="offset points",
                 fontweight="bold", zorder=8, fontsize="small" if small else "medium",
                 bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
-    xb, yb = 0.6 * half, lo + 0.08 * (hi - lo)
+    x_lim, y_lim = view(prof, half)
+    xb = x_lim[0] + 0.8 * (x_lim[1] - x_lim[0])
+    yb = y_lim[0] + 0.08 * (y_lim[1] - y_lim[0])
     ax.plot([xb, xb + bar_mm * scale], [yb, yb], "o-", color="k", lw=2.0, ms=3,
             zorder=6)  # fmt: skip
     ax.annotate(f"{bar_mm:g} mm (dots)", (xb, yb), xytext=(0, 6),
@@ -315,8 +348,8 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
     left, right = (ahead, back) if prof.west else (back, ahead)
     what = f"along {pp.motion:.0f}° [m]"
     gap = r" \quad " if _usetex() else "   "
-    ax.set_xlim(-half, half)
-    ax.set_ylim(lo, hi)
+    ax.set_xlim(*x_lim)
+    ax.set_ylim(*y_lim)
     ax.set_aspect("equal")
     size = "small" if small else "medium"
     ax.set_xlabel(rf"{left} $\leftarrow${gap}{what}{gap}$\rightarrow$ {right}",
@@ -468,7 +501,7 @@ def panel(fig: Any, spec: Any, pairs: Sequence[Any], style: dict[str, Any], dem:
               for p in profiles)  # fmt: skip
     bar_mm = _nice(big / 4)
     sub = spec.subgridspec(len(profiles), 1, hspace=hspace,
-                           height_ratios=[p.hi - p.lo for p in profiles])  # fmt: skip
+                           height_ratios=[p.box for p in profiles])  # fmt: skip
     axes = []
     for k, prof in enumerate(profiles):
         axes.append(fig.add_subplot(sub[k]))
@@ -487,4 +520,4 @@ def spans(pairs: Sequence[Any], dem: Any, half: float = PROFILE_HALF_M) -> list[
     if not with_motion:
         return [half]
     scale = scale_for(with_motion, half)
-    return [(p := prepare(pp, dem, scale, half)).hi - p.lo for pp in with_motion]
+    return [prepare(pp, dem, scale, half).box for pp in with_motion]
