@@ -126,6 +126,11 @@ INTERVALS = {"1h": 1.0 / 24.0, "10min": 1.0 / 144.0, "1min": 1.0 / 1440.0}
 #: (a running median steps from bin to bin; the bins are medians already)
 PATH_DAYS = 12.0 / 24.0
 #: per pair of a --together figure: the RTK colour (beside polar.PAIR_STYLES)
+#: the level change since an episode's onset (:func:`level_change`): the
+#: median of this many days at each end; its σ from the scatter of
+#: consecutive such medians (BGÓ 2026-11-13: rate × days overshot a drop
+#: that had stopped)
+LEVEL_DAYS = 0.5
 RTK_COLOURS = ("maroon", "indigo", "chocolate", "teal")
 
 
@@ -224,6 +229,12 @@ class RtkOverlay:
     #: 1970), the RTK figure's black arrow (BGÓ 2026-11-12); None: not asked
     since: RtkRate | None = None
     since_t: float | None = None
+    #: the movement since ``since_t`` (:func:`level_change`): the change
+    #: (3,) [mm], its 1-σ (3,; at least √2 × the alignment's day scatter),
+    #: and the newest level (3,) on ``d``'s scale
+    since_change: Any = None
+    since_sigma: Any = None
+    since_end: Any = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -670,13 +681,54 @@ def overlay(
     )
     rate = pick_rate(rates)
     d = y[:, keep] + al.shift[:, None]
-    since_rate = None
+    since_rate = moved = None
     if since is not None and since < t.max():
         since_rate = estimate_rate(t, y, window=float(t.max()) - since, step=step)
+        moved = level_change(t, y, since)
+        if moved is not None:  # nor below the RTK's day-level error: its
+            # day medians' scatter about the daily solutions, at both ends
+            # (BGÓ 2026-11-13: SVIE's RTK Up drifts +45 mm, the daily not)
+            floor = math.sqrt(2.0) * np.asarray(al.scatter, dtype=float)
+            moved = (moved[0], np.fmax(moved[1], floor), moved[2])
     return RtkOverlay(t[keep], d, al, rate, interval, days,
                       rate.window if rate is not None else windows[-1],
                       running_mean(t[keep], d), rates, windows,
-                      since_rate, since)  # fmt: skip
+                      since_rate, since,
+                      *((moved[0], moved[1], moved[2] + al.shift) if moved
+                        else (None, None, None)))  # fmt: skip
+
+
+def level_change(
+    t: Any, y: Any, t0: float, block: float = LEVEL_DAYS
+) -> tuple[Any, Any, Any] | None:
+    """The movement from ``t0`` to the newest epoch: the median of the
+    ``block`` days from ``t0`` subtracted from the median of the newest
+    ``block`` days, per component (3,) [mm]; its 1-σ from the scatter of
+    consecutive ``block`` medians over the span (robust, of their
+    differences / √2: the time-correlated noise within a block is in it),
+    × √2 for the two ends; and the newest level (3,). None: an end
+    without data or fewer than 3 blocks."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if not t.size or t0 >= t.max():
+        return None
+    first = (t >= t0) & (t < t0 + block)
+    last = t > t.max() - block
+    if not first.any() or not last.any():
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        start = np.nanmedian(y[:, first], axis=1)
+        end = np.nanmedian(y[:, last], axis=1)
+        edges = np.arange(t0, t.max() + block, block)
+        meds = [np.nanmedian(y[:, (t >= a) & (t < a + block)], axis=1)
+                for a in edges[:-1] if ((t >= a) & (t < a + block)).any()]  # fmt: skip
+    if len(meds) < 3:
+        return None
+    diff = np.diff(np.asarray(meds), axis=0) / math.sqrt(2.0)
+    mad = np.nanmedian(np.abs(diff - np.nanmedian(diff, axis=0)), axis=0)
+    sigma = math.sqrt(2.0) * 1.4826 * mad
+    return end - start, sigma, end
 
 
 def _window_rate(
