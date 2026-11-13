@@ -154,14 +154,37 @@ class Profile:
         return bool(np.sin(np.radians(self.pp.motion)) < 0)
 
 
+#: the RTK points inside these percentiles set the scale and the height
+#: range; the hourly extremes beyond may leave the panel (one wild hour
+#: halved the scale)
+RTK_PCT = (1.0, 99.0)
+
+
+def _points(pp: Any) -> list[Any]:
+    """The (3, n) displacements [mm] that set the pair's sub-panel: the
+    daily ones and, with ``--rtk``, the RTK tail and its path (per
+    component inside :data:`RTK_PCT`)."""
+    out = [pp.d] if pp.d.shape[1] else []
+    rtk = getattr(pp, "rtk", None)
+    if rtk is not None and np.size(getattr(pp, "rtk_since", [])):
+        d = np.asarray(rtk.d, float)
+        if np.isfinite(d).any(axis=1).all():
+            lo, hi = np.nanpercentile(d, RTK_PCT, axis=1)
+            d = np.where((d >= lo[:, None]) & (d <= hi[:, None]), d, np.nan)
+        out += [d, np.asarray(rtk.path, float)]
+    return out
+
+
 def scale_for(pairs: Sequence[Any], half: float = PROFILE_HALF_M) -> float:
-    """The profile's m per mm: the largest displacement fills about half
+    """The profile's m per mm: the largest displacement drawn (the RTK
+    points too: BGÓ 2026-11-13, they ran out of the panel) fills about half
     of ``half``."""
     from gps_plot.polar import _nice
 
-    big = max((float(np.nanmax(np.hypot(np.hypot(pp.d[0], pp.d[1]),
-                                        np.nan_to_num(pp.d[2]))))
-               for pp in pairs if pp.d.shape[1]), default=1.0)  # fmt: skip
+    sizes = [np.hypot(np.hypot(d[0], d[1]), np.nan_to_num(d[2]))
+             for pp in pairs for d in _points(pp)]  # fmt: skip
+    big = max((float(np.nanmax(x)) for x in sizes if np.isfinite(x).any()),
+              default=1.0)  # fmt: skip
     return _nice(0.5 * half / max(big, 1e-6))
 
 
@@ -185,7 +208,9 @@ def prepare(pp: Any, dem: Any, scale: float, half: float = PROFILE_HALF_M) -> Pr
     ok = np.isfinite(along) & np.isfinite(pp.d[2])
     t, along, up, s_along, s_up = daily_medians(pp.since[ok], along[ok], pp.d[2][ok],
                                                 s_along[ok], sig[2][ok])  # fmt: skip
-    heights = np.r_[z[np.isfinite(z)], z0 + up * scale, z0]
+    rtk_up = [d[2][np.isfinite(d[2])] for d in _points(pp)[1:]]
+    heights = np.r_[z[np.isfinite(z)], z0 + up * scale, z0,
+                    *(z0 + u * scale for u in rtk_up)]  # fmt: skip
     span = float(np.ptp(heights)) if heights.size else 1.0
     return Profile(pp, s, z, z0, t, along, up, s_along, s_up,
                    plunge_fit(along, up, s_along, s_up),
@@ -274,6 +299,7 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                     label=(f"motion {'plunges' if pl.deg >= 0 else 'rises'} "
                            f"{abs(pl.deg):.0f} ± {pl.sigma:.0f}° ({pl.n} days)")
                     if lw > 1 else None)  # fmt: skip
+    _total_bar(ax, prof, sign, scale, half, small)
     ax.plot(0, z0, marker="^", ms=11 if small else 14, color="w", mec="k", mew=1.2,
             zorder=7)  # fmt: skip
     ax.annotate(pp.rover, (0, z0), xytext=(8, 10), textcoords="offset points",
@@ -305,6 +331,52 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
         ax.legend(loc="upper right", fontsize="xx-small" if small else "x-small",
                   framealpha=0.85, handlelength=1.5, borderpad=0.3,
                   labelspacing=0.25, scatterpoints=1)  # fmt: skip
+
+
+def end_along_up(prof: Profile) -> tuple[float, float] | None:
+    """The robust (along, Up) level [mm] of the newest days (as the map's T
+    line: :data:`gps_plot.polar.END_DAYS`); None without one."""
+    from gps_analysis.direction import end_level
+
+    from gps_plot.polar import END_DAYS
+
+    if not prof.t.size:
+        return None
+    newest = prof.t >= prof.t.max() - END_DAYS
+    y = np.vstack([prof.along[newest], prof.up[newest]])
+    sig = np.vstack([prof.s_along[newest], prof.s_up[newest]])
+    sig = np.where(np.isfinite(sig) & (sig > 0), sig, 1.0)
+    lvl, _, n = end_level(y, sig)
+    if n == 0 or not np.isfinite(lvl).all():
+        return None
+    return float(lvl[0]), float(lvl[1])
+
+
+def _total_bar(ax: Any, prof: Profile, sign: float, scale: float, half: float,
+               small: bool) -> None:  # fmt: skip
+    """The movement since the onset as a vertical T bar beside the rover
+    (BGÓ 2026-11-13): from the rover's height to the newest level's, capped
+    at both ends, at the dots' scale; beside it the total (along and Up)
+    and the Up of it [mm]."""
+    end = end_along_up(prof)
+    if end is None:
+        return
+    along, up = end
+    pp, z0 = prof.pp, prof.z0
+    x = -sign * 0.2 * half  # behind the rover, clear of its points and name
+    cap = 0.02 * half
+    y1 = z0 + up * scale
+    kw = {"color": pp.colour, "lw": 2.2, "zorder": 6.5, "solid_capstyle": "butt"}
+    ax.plot([x, x], [z0, y1], **kw)
+    for y in (z0, y1):
+        ax.plot([x - cap, x + cap], [y, y], **kw)
+    total = float(np.hypot(along, up))
+    ax.annotate(f"{total:.0f} mm total\nUp {up:+.0f} mm", (x, 0.5 * (z0 + y1)),
+                xytext=(-6 if sign > 0 else 6, 0), textcoords="offset points",
+                ha="right" if sign > 0 else "left", va="center",
+                fontsize="x-small" if small else "small", color=pp.colour,
+                zorder=8, bbox={"boxstyle": "round", "fc": "w", "alpha": 0.8,
+                                "ec": "none"})  # fmt: skip
 
 
 def panel(fig: Any, spec: Any, pairs: Sequence[Any], style: dict[str, Any], dem: Any,
