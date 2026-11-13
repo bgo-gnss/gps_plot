@@ -198,7 +198,7 @@ def test_rate_lines_draw_over_the_window(shown: bool) -> None:
     lines = [ln for ln in axes[0].get_lines() if ln.get_color() == "red"]
     assert len(lines) == 1
     assert lines[0].get_linestyle() == ("-" if shown else "--")
-    texts = [x.get_text() for x in axes[0].get_legend().get_texts()]
+    texts = [x.get_text() for x in axes[1].get_legend().get_texts()]  # middle panel
     assert any("SVIN 24 h: +1.00 mm/d" in x for x in texts)
     assert ("below its test" in texts[0]) is (not shown)
     assert axes[0].get_ylim() == (-10, 10)

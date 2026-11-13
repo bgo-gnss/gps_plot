@@ -44,6 +44,12 @@ COMP = ("N", "E", "U")
 NOON = pd.Timedelta(hours=12)
 #: data before the plotted span: the sidereal filter's 7 days + its 24 h median
 RTK_WARMUP = pd.Timedelta(days=9)
+#: RTK figures: the y range from the line's RTK_PCT – (100 − RTK_PCT)
+#: percentiles, so the extreme hours run off the axis (BGÓ 2026-11-13)
+RTK_PCT = 1.0
+#: margins below / above that range, of it, per panel: the top panel's
+#: logo, the middle (across, the quietest) panel's rates legend
+RTK_PAD = ((0.1, 0.15), (0.1, 0.35), (0.1, 0.1))
 
 
 # --- the series -------------------------------------------------------------
@@ -422,12 +428,21 @@ def figure(
         created=r"\large (Plot created on %s UTC)" % now.strftime("%b %d %Y %H:%M"),
         status_color=tplt.STATUS_CURRENT_COLOR if current else tplt.STATUS_STALE_COLOR,
     )  # fmt: skip
+    # RTK: the y range from the line's RTK_PCT percentiles (and every daily
+    # point) plus the RTK_PAD margins, so the noisiest hours run off the axis
+    # (BGÓ 2026-11-13: motion −15..30, not −20..40 for one spike)
+    robust = rtk and not ylim
     fig = compose.stack_figure(
         list(series), title=title, labels=[s.label for s in series],
-        start=start.to_pydatetime(), end=end.to_pydatetime(), ylim=ylim,
+        start=start.to_pydatetime(), end=end.to_pydatetime(),
+        ylim=[0.0] if robust else ylim,
         styles=list(styles), colors=list(colors), fig=tplt._reusable_figure(),
-        robust_lines=rtk, ylabels=ylabels,
+        robust_lines=rtk, robust_pct=RTK_PCT, ylabels=ylabels,
     )  # fmt: skip
+    if robust:
+        for ax, (below, above) in zip(fig.axes[:3], RTK_PAD, strict=True):
+            lo, hi = ax.get_ylim()
+            ax.set_ylim(lo - below * (hi - lo), hi + above * (hi - lo))
     if note:
         fig.axes[2].text(0.01, 0.98, note, transform=fig.axes[2].transAxes,
                          fontsize="x-small", color="0.3", va="top", wrap=True)  # fmt: skip
@@ -561,8 +576,8 @@ def rate_lines(
     over the window, drawn over it (from ``start`` at the earliest) on the
     three data panels, solid when the polar figure draws that arrow, dashed
     when not; their slopes in a legend of their own at the top left of the
-    first panel, under the logo (BGÓ 2026-11-12: labels on the lines hid
-    the data)."""
+    middle panel (BGÓ 2026-11-12: labels on the lines hid the data;
+    2026-11-13: across the motion is the quietest panel)."""
     from matplotlib.lines import Line2D
 
     handles, texts = [], []
@@ -600,9 +615,9 @@ def rate_lines(
         texts.append(f"{name} {span}: {slope[0]:+.2f} mm/d"
                      + ("" if win.shown else " (below its test)"))  # fmt: skip
     if handles:
-        # top left, under the logo (the 2σ bars hold the top right)
-        fig.axes[0].legend(handles, texts, loc="upper left",
-                           bbox_to_anchor=(0.005, 0.83), fontsize="small",
+        # top left of the middle panel (the 2σ bars hold the top right)
+        fig.axes[1].legend(handles, texts, loc="upper left",
+                           bbox_to_anchor=(0.005, 0.99), fontsize="small",
                            framealpha=0.85, title="rates (top panel)",
                            title_fontsize="x-small")  # fmt: skip
 
