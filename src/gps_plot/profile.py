@@ -333,9 +333,9 @@ def draw(ax: Any, prof: Profile, style: dict[str, Any], scale: float, bar_mm: fl
                   labelspacing=0.25, scatterpoints=1)  # fmt: skip
 
 
-def end_along_up(prof: Profile) -> tuple[float, float] | None:
+def end_along_up(prof: Profile) -> tuple[float, float, float, float] | None:
     """The robust (along, Up) level [mm] of the newest days (as the map's T
-    line: :data:`gps_plot.polar.END_DAYS`); None without one."""
+    line: :data:`gps_plot.polar.END_DAYS`) and their 1-σ; None without one."""
     from gps_analysis.direction import end_level
 
     from gps_plot.polar import END_DAYS
@@ -346,10 +346,10 @@ def end_along_up(prof: Profile) -> tuple[float, float] | None:
     y = np.vstack([prof.along[newest], prof.up[newest]])
     sig = np.vstack([prof.s_along[newest], prof.s_up[newest]])
     sig = np.where(np.isfinite(sig) & (sig > 0), sig, 1.0)
-    lvl, _, n = end_level(y, sig)
+    lvl, lsig, n = end_level(y, sig)
     if n == 0 or not np.isfinite(lvl).all():
         return None
-    return float(lvl[0]), float(lvl[1])
+    return float(lvl[0]), float(lvl[1]), float(lsig[0]), float(lsig[1])
 
 
 def _day_text(days_1970: float) -> str:
@@ -359,57 +359,91 @@ def _day_text(days_1970: float) -> str:
     return (dt.datetime(1970, 1, 1) + dt.timedelta(days=days_1970)).strftime("%d %b")
 
 
-def total_movement(prof: Profile) -> tuple[float, float, float, str, str, bool] | None:
-    """The movement the T bar shows: (start Up, end Up, total [mm], since
-    when, colour, above its test), Up relative to the rover. The RTK
-    figure (``--rate rtk`` with an episode onset): the RTK movement since that onset, the
-    black arrow's line over its window, ending at the newest RTK path
-    point, in black (BGÓ 2026-11-13); otherwise the newest daily level
-    since the figure's onset, in the pair's colour."""
+#: a movement (total, Up) is significant above this many σ
+MOVE_SIGMA = 2.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Movement:
+    """What the T bar shows: Up from ``u0`` to ``u1`` relative to the rover
+    [mm], the total movement and the Up of it with their 1-σ [mm], since
+    when, in what colour."""
+
+    u0: float
+    u1: float
+    total: float
+    s_total: float
+    up: float
+    s_up: float
+    when: str
+    colour: str
+
+
+def _norm_sigma(v: Any, sig: Any) -> tuple[float, float]:
+    """|v| and its 1-σ along v (independent components)."""
+    v, sig = np.asarray(v, dtype=float), np.asarray(sig, dtype=float)
+    size = float(np.linalg.norm(v))
+    if size == 0:
+        return 0.0, float(np.max(sig))
+    return size, float(np.sqrt(np.sum((v / size * sig) ** 2)))
+
+
+def total_movement(prof: Profile) -> Movement | None:
+    """The movement the T bar shows. The RTK figure (``--rate rtk`` with an
+    episode onset): the RTK level change since that onset
+    (:func:`gps_plot.polar_rtk.level_change`: where it is now − where it
+    was then, not rate × days, which overshot a drop that had stopped),
+    ending at the newest RTK level, in black (BGÓ 2026-11-13); otherwise
+    the newest daily level since the figure's onset, in the pair's colour."""
     pp = prof.pp
     rtk: Any = getattr(pp, "rtk", None)
-    since = getattr(rtk, "since", None) if pp.rate_from == "rtk" else None
-    if since is not None and rtk.since_t is not None and rtk.path is not None:
-        path = np.asarray(rtk.path, dtype=float)
-        ok = np.isfinite(path).all(axis=0)
-        if ok.any():
-            step = np.array([since.north, since.east, since.up]) * since.window
-            end = float(path[2][ok][-1])
-            return (end - float(step[2]), end, float(np.linalg.norm(step)),
-                    _day_text(rtk.since_t), "k", bool(since.significant))  # fmt: skip
-    end_lvl = end_along_up(prof)
-    if end_lvl is None:
+    if (pp.rate_from == "rtk" and rtk is not None and rtk.since_t is not None
+            and rtk.since_change is not None):  # fmt: skip
+        ch, sg = rtk.since_change, rtk.since_sigma
+        total, s_total = _norm_sigma(ch, sg)
+        end = float(rtk.since_end[2])
+        return Movement(end - float(ch[2]), end, total, s_total, float(ch[2]),
+                        float(sg[2]), _day_text(rtk.since_t), "k")  # fmt: skip
+    got = end_along_up(prof)
+    if got is None:
         return None
-    along, up = end_lvl
-    return 0.0, up, float(np.hypot(along, up)), _day_text(pp.t_on), pp.colour, True
+    along, up, s_along, s_up = got
+    total, s_total = _norm_sigma([along, up], [s_along, s_up])
+    return Movement(0.0, up, total, s_total, up, s_up, _day_text(pp.t_on), pp.colour)
+
+
+def _mm(what: str, x: float, s: float, signed: bool = False) -> str:
+    """``20 ± 6 mm total``, ", not significant" below :data:`MOVE_SIGMA` σ."""
+    v = f"{x:+.0f}" if signed else f"{x:.0f}"
+    quiet = "" if abs(x) > MOVE_SIGMA * s else ", not significant"
+    return f"{what}{v} ± {s:.0f} mm{quiet}"
 
 
 def _total_bar(ax: Any, prof: Profile, sign: float, scale: float, half: float,
                small: bool) -> None:  # fmt: skip
     """The movement (:func:`total_movement`) as a vertical T bar beside the
-    rover (BGÓ 2026-11-13): its Up at the dots' scale, capped at both ends;
-    beside it since when, the total and the Up of it [mm] (and "below its
-    test" when the RTK rate since then is)."""
-    got = total_movement(prof)
-    if got is None:
+    rover (BGÓ 2026-11-13): its Up at the dots' scale, capped at both ends,
+    dashed when the Up is not significant; beside it since when, the total
+    and the Up of it ± 1σ [mm], "not significant" below
+    :data:`MOVE_SIGMA` σ."""
+    mv = total_movement(prof)
+    if mv is None:
         return
-    u0, u1, total, when, colour, shown = got
     z0 = prof.z0
     x = -sign * 0.2 * half  # behind the rover, clear of its points and name
     cap = 0.02 * half
-    y0, y1 = z0 + u0 * scale, z0 + u1 * scale
-    kw = {"color": colour, "lw": 2.2, "zorder": 6.5, "solid_capstyle": "butt"}
-    ax.plot([x, x], [y0, y1], **kw)
+    y0, y1 = z0 + mv.u0 * scale, z0 + mv.u1 * scale
+    kw = {"color": mv.colour, "lw": 2.2, "zorder": 6.5, "solid_capstyle": "butt"}
+    up_ok = abs(mv.up) > MOVE_SIGMA * mv.s_up
+    ax.plot([x, x], [y0, y1], ls="-" if up_ok else "--", **kw)
     for y in (y0, y1):
         ax.plot([x - cap, x + cap], [y, y], **kw)
-    text = f"since {when}:\n{total:.0f} mm total\nUp {u1 - u0:+.0f} mm"
-    if not shown:  # as the black arrow's legend
-        text += "\n(below its test)"
-    ax.annotate(text,
-                (x, 0.5 * (y0 + y1)),
+    text = (f"since {mv.when}:\n{_mm('total ', mv.total, mv.s_total)}\n"
+            f"{_mm('Up ', mv.up, mv.s_up, signed=True)}")  # fmt: skip
+    ax.annotate(text, (x, 0.5 * (y0 + y1)),
                 xytext=(-6 if sign > 0 else 6, 0), textcoords="offset points",
                 ha="right" if sign > 0 else "left", va="center",
-                fontsize="x-small" if small else "small", color=colour,
+                fontsize="x-small" if small else "small", color=mv.colour,
                 zorder=8, bbox={"boxstyle": "round", "fc": "w", "alpha": 0.8,
                                 "ec": "none"})  # fmt: skip
 

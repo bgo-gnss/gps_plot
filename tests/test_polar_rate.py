@@ -158,3 +158,22 @@ def test_a_huge_rtk_arrow_leaves_the_sector_size() -> None:
         return float(got)
 
     assert rmax(300.0) == pytest.approx(rmax(3.0))
+
+
+def test_level_change_is_where_it_is_minus_where_it_was() -> None:
+    """A 20 mm drop over the first day, flat after: the change is the drop,
+    not a line's rate × days (BGÓ 2026-11-13)."""
+    from gps_plot import polar_rtk as pr
+
+    rng = np.random.default_rng(1)
+    t = np.arange(0.0, 5.0, 1.0 / 24.0)
+    up = np.where(t < 1.0, -20.0 * t, -20.0) + rng.normal(0.0, 3.0, t.size)
+    y = np.vstack([np.zeros_like(t), np.zeros_like(t), up])
+    got = pr.level_change(t, y, 0.0)
+    assert got is not None
+    change, sigma, end = got
+    # where it was: the first 12 h median, -5
+    assert change[2] == pytest.approx(-15.0, abs=2.0)
+    assert 0.0 < sigma[2] < 5.0
+    assert end[2] == pytest.approx(-20.0, abs=2.0)
+    assert pr.level_change(t, y, 10.0) is None

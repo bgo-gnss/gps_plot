@@ -160,5 +160,6 @@ def test_end_along_up_is_the_newest_level() -> None:
                        np.ones(10), None, 0.0, 1.0)  # fmt: skip
     got = prf.end_along_up(prof)
     assert got is not None
+    assert len(got) == 4
     assert got[0] == pytest.approx(-18.0, abs=2.1)
     assert got[1] == pytest.approx(-9.0, abs=1.1)
