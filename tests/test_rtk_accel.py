@@ -185,3 +185,13 @@ def test_input_noise_rises_with_scatter() -> None:
     )
     got = ra.input_noise(df, idx)
     assert got[6 * 30, 1] < 1.6 and got[-1, 1] > 3.5
+
+
+def test_ten_min_needs_its_minimum_count() -> None:
+    """BGÓ 2026-11-13: three sparse fixes in a gap made an hour ~70 mm off;
+    a 10-min bin needs ra.MIN_PER_TEN one-minute values."""
+    t = pd.date_range("2026-11-01 00:01", periods=10, freq="1min")
+    full = ra.ten_min(t.to_numpy(), np.zeros((3, 10)))
+    assert full.notna().all().all() and len(full) == 1
+    sparse = ra.ten_min(t[:3].to_numpy(), np.full((3, 3), 70.0))
+    assert sparse.isna().all().all()
