@@ -100,13 +100,22 @@ class Accel:
 # --- the chain (bench common.py + est_sg.py) ------------------------------
 
 
-def ten_min(t: np.ndarray, y_mm: np.ndarray) -> pd.DataFrame:
+#: one-minute values a 10-min bin needs (BGÓ 2026-11-13: an hour of 3
+#: sparse fixes in a gap, ~70 mm off, set the rtk-tie figure's scale)
+MIN_PER_TEN = 4
+
+
+def ten_min(
+    t: np.ndarray, y_mm: np.ndarray, min_count: int = MIN_PER_TEN
+) -> pd.DataFrame:
     """10-min medians (n, e, u [mm]) of one-minute rows, labelled by the
-    bin's end. ``y_mm``: (3, N)."""
+    bin's end; a bin with under ``min_count`` values is NaN. ``y_mm``:
+    (3, N)."""
     df = pd.DataFrame(
         np.asarray(y_mm, float).T, index=pd.DatetimeIndex(t), columns=["n", "e", "u"]
     )
-    return df.resample("10min", label="right", closed="right").median()
+    bins = df.resample("10min", label="right", closed="right")
+    return bins.median().where(bins.count() >= min_count)
 
 
 def despike_coarse(df: pd.DataFrame, hours: float = 3.0, nsig: float = 6.0,
