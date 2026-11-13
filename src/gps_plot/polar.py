@@ -270,7 +270,8 @@ PANELS = ("sector", "map", "profile", "section", "hodograph")
 #: BGÓ 2026-11-01: the profile replaces the section in production
 DEFAULT_PANELS = ("sector", "map", "profile")
 #: half-width [m] of the map panel's DEM window around the rover
-MAP_HALF_M = 120.0
+#: 180 since 2026-11-11 (BGÓ): room for the 14-day arrows
+MAP_HALF_M = 180.0
 #: per pair of a --together figure: marker, motion colour, downslope colour
 PAIR_STYLES = (
     ("o", "red", "saddlebrown"),
@@ -305,6 +306,9 @@ class PairPlot:
     #: the onset epoch of ``since`` [days since 1970]
     t_on: float = 0.0
     sig: Any = None
+    #: the rover's :class:`gps_plot.track.Track` relative to the reference
+    #: (daily pairs): its 14-day rate is the map's arrow, as on the track map
+    track: Any = None
 
     @property
     def rover(self) -> str:
@@ -379,6 +383,26 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             ray(pp.motion + 90.0, 0.3 * rmax, color="b", lw=1.0,
                 label="across" if pp is pairs[0] else None)  # fmt: skip
             ray(pp.motion - 90.0, 0.3 * rmax, color="b", lw=1.0)
+    # the 14-day rate: ARROW_DAYS of it from the newest position (no ellipse)
+    for pp in pairs:
+        step = rate_step(pp)
+        if step is None or not pp.d.shape[1] or (step[0], step[1]) == (0.0, 0.0):
+            continue
+        lvl, _, n = end_of(pp.since, pp.d, pp.sig)
+        if n == 0:
+            continue
+        tip = (lvl[0] + step[0], lvl[1] + step[1])
+
+        def polar_of(nn: float, ee: float) -> tuple[float, float]:
+            az = np.degrees(np.arctan2(ee, nn)) % 360.0
+            return float(np.radians((az - lo) % 360.0 + lo)), float(np.hypot(nn, ee))
+
+        ax.annotate("", xy=polar_of(*tip), xytext=polar_of(lvl[0], lvl[1]),
+                    zorder=6, arrowprops={"arrowstyle": "-|>", "color": pp.colour,
+                                          "lw": 1.8})  # fmt: skip
+        ax.plot([], [], color=pp.colour, lw=1.8,
+                label=_label(pp, many, f"{ARROW_DAYS:g} days at the 14-day rate"))  # fmt: skip
+        rmax = max(rmax, 1.05 * float(np.hypot(*tip)))
     ax.xaxis.set_major_formatter(
         FuncFormatter(lambda x, _p: f"{np.degrees(x) % 360:.0f}°")
     )
@@ -612,16 +636,12 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
                                     "ls": ls})  # fmt: skip
             ax.plot([], [], color=color, ls=ls, label=label)
 
-        if pp.motion is not None:
-            draw(
-                pp.motion,
-                arrow,
-                pp.colour,
-                _label(pp, many, f"motion {pp.motion:.0f}°"),
-            )
+        # the motion is the movement since the onset: drawn as its T line in
+        # the pair's colour (:func:`_movement_and_rate`), no arrow of its own
         if pp.downslope is not None:
             draw(pp.downslope[0], 0.8 * arrow, pp.slope_colour,
                  _label(pp, many, "downslope (DEM)"), "--")  # fmt: skip
+    _movement_and_rate(ax, pairs, half, scale, many)
     refs = {pp.ref[0]: pp for pp in pairs if pp.ref is not None}
     for name, pp in refs.items():  # toward each reference station, at the edge
         assert pp.ref is not None
@@ -644,7 +664,9 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
     ax.set_aspect("equal")
     _gmt_look(ax, half, centre, locator or {})
     # above the tick labels inside the frame
-    ax.legend(loc="lower left", fontsize="small", borderaxespad=1.8)
+    # clear of the tick labels inside the frame (BGÓ 2026-11-11)
+    ax.legend(loc="lower left", fontsize="x-small", borderaxespad=0.0,
+              bbox_to_anchor=(LABEL_CLEAR_X, LABEL_CLEAR_Y))  # fmt: skip
     what = "paths" if many else "path"
     src = f"{dem.source} DEM, " if dem is not None else ""
     ax.set_title(f"terrain ({src}{what} {scale:g} m per mm)")
@@ -654,6 +676,117 @@ def _map(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any], dem: Any,
 #: the 16 compass points, from north clockwise
 COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")  # fmt: skip
+
+
+#: days averaged for the end of the movement since the onset
+END_DAYS = 2.0
+
+
+def room_to_edge(x0: float, y0: float, az_deg: float, half: float) -> float:
+    """How far [m] from (x0, y0) toward ``az_deg`` before the map's edge
+    (the square ±``half``)."""
+    a = np.radians(az_deg)
+    out = np.inf
+    for p, u in ((x0, float(np.sin(a))), (y0, float(np.cos(a)))):
+        if abs(u) > 1e-12:
+            out = min(out, ((half if u > 0 else -half) - p) / u)
+    return float(max(out, 0.0))
+
+
+def arrow_scale(shown: Sequence[PairPlot], half: float, preferred: float) -> float:
+    """The arrows' m per mm/yr: ``preferred``, made smaller where an arrow
+    with its 1-σ ellipse would leave the map (BGÓ 2026-11-11: the scale
+    follows the room, no arrow off the map)."""
+    scale = preferred
+    for pp in shown:
+        r = pp.track.recent
+        reach = r.speed + max(r.sigma_north, r.sigma_east)  # tip + ellipse
+        room = 0.92 * room_to_edge(*pp.pos, r.azimuth, half)
+        if reach > 0:
+            scale = min(scale, room / reach)
+    return scale
+
+
+def _movement_and_rate(
+    ax: Any, pairs: Sequence[PairPlot], half: float, scale: float, many: bool
+) -> None:
+    """As the track map (BGÓ 2026-11-11, one look on every map): per rover
+    the movement since the onset, a T line in its colour at the dots' scale
+    (it is the pair's motion direction)
+    (its end the robust level of the newest ``END_DAYS``, 1-σ ellipse), and
+    its 14-day rate as an arrow in its colour only above
+    ``track.RECENT_SIGMA`` σ (1-σ ellipse), with a scale bar of its own."""
+    from matplotlib.patches import Ellipse, Wedge
+
+    from gps_plot import track
+
+    for pp in pairs:
+        if not pp.d.shape[1]:
+            continue
+        x0, y0 = pp.pos
+        lvl, lsig, n = end_of(pp.since, pp.d, pp.sig)
+        if n == 0 or not np.isfinite(lvl).all():
+            continue
+        ex, ey = x0 + lvl[1] * scale, y0 + lvl[0] * scale
+        length = float(np.hypot(ex - x0, ey - y0))
+        # BGÓ 2026-11-11: the T line is the motion, so in the pair's colour
+        what = (f"motion {pp.motion:.0f}° (movement since the onset)"
+                if pp.motion is not None else "movement since the onset")  # fmt: skip
+        ax.plot([x0, ex], [y0, ey], color=pp.colour, lw=2.4, zorder=4.4,
+                solid_capstyle="butt", label=_label(pp, many, what))  # fmt: skip
+        if length > 0:  # the T bar across the end
+            ux, uy = (ex - x0) / length, (ey - y0) / length
+            t = 0.025 * half
+            ax.plot([ex - uy * t, ex + uy * t], [ey + ux * t, ey - ux * t],
+                    color=pp.colour, lw=2.4, zorder=4.4)  # fmt: skip
+        ax.add_patch(Ellipse((ex, ey), 2 * lsig[1] * scale, 2 * lsig[0] * scale,
+                             fill=False, ec=pp.colour, lw=0.8, zorder=4.4))  # fmt: skip
+    shown = [pp for pp in pairs if pp.track is not None
+             and pp.track.recent is not None and pp.track.recent_shown]  # fmt: skip
+    quiet = [pp for pp in pairs if pp.track is not None and pp not in shown]
+    for pp in quiet:
+        ax.plot([], [], ls="none",
+                label=f"{pp.rover}: no motion above {track.RECENT_SIGMA:g} σ "
+                f"in the last {track.RECENT_DAYS} days")  # fmt: skip
+    if not shown:
+        return
+    fastest = max(pp.track.recent.speed for pp in shown)
+    # half the old length (BGÓ 2026-11-11: shorter arrows), less where the room is short
+    rscale = arrow_scale(shown, half, 0.21 * half / fastest)  # m per mm/yr
+    for pp in shown:
+        r = pp.track.recent
+        x0, y0 = pp.pos
+        tx, ty = x0 + r.east * rscale, y0 + r.north * rscale
+        ax.annotate("", xy=(tx, ty), xytext=(x0, y0), zorder=5.5,
+                    arrowprops={"arrowstyle": "-|>", "color": pp.colour, "lw": 2.2,
+                                "mutation_scale": 16})  # fmt: skip
+        ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
+                             2 * r.sigma_north * rscale, fill=False, ec=pp.colour,
+                             lw=1.0, zorder=5.5))  # fmt: skip
+        # the direction's 1-σ as a wedge (BGÓ 2026-11-11): σ across the
+        # rate over its speed
+        un, ue = r.north / r.speed, r.east / r.speed
+        across = float(np.hypot(ue * r.sigma_north, un * r.sigma_east))
+        spread = min(float(np.degrees(np.arctan2(across, r.speed))), 90.0)
+        # matplotlib angles: from east, counter-clockwise
+        mid = 90.0 - r.azimuth
+        ax.add_patch(Wedge((x0, y0), float(np.hypot(tx - x0, ty - y0)),
+                           mid - spread, mid + spread, fc=pp.colour, alpha=0.18,
+                           ec="none", zorder=5.3))  # fmt: skip
+        ax.plot([], [], color=pp.colour, lw=2.2,
+                label=_label(pp, many, f"last {pp.track.recent_window:.0f} days "
+                             f"{r.speed / YEAR_DAYS:.2f} ± "
+                             f"{r.sigma_speed / YEAR_DAYS:.2f} mm/d "
+                             f"toward {r.azimuth:.0f} ± {spread:.0f}°"))  # fmt: skip
+    # the arrows' scale, above the dots' (every sized arrow has one), in
+    # mm/d as the Vöktun page (BGÓ 2026-11-11)
+    bar = _nice(fastest / YEAR_DAYS / 2)
+    xb, yb = 0.55 * half, -0.78 * half
+    ax.annotate("", xy=(xb + bar * YEAR_DAYS * rscale, yb), xytext=(xb, yb), zorder=6,
+                arrowprops={"arrowstyle": "-|>", "color": "k", "lw": 2.0})  # fmt: skip
+    ax.annotate(f"{bar:g} mm/d (arrows)", (xb, yb), xytext=(0, 7),
+                textcoords="offset points", fontsize="small", zorder=6,
+                bbox={"boxstyle": "round", "fc": "w", "alpha": 0.85})  # fmt: skip
 
 
 def compass(deg: float) -> str:
@@ -834,7 +967,10 @@ def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
     high = 0.62 if older is None else 0.8
-    box = inset_axes(ax, width="36%", height=high, loc=loc, borderpad=0.5)
+    # above the bottom tick labels inside the frame (BGÓ 2026-11-11)
+    box = inset_axes(ax, width="36%", height=high, loc=loc, borderpad=0.5,
+                     bbox_to_anchor=(0.04, LABEL_CLEAR_Y, 1.0, 1.0),
+                     bbox_transform=ax.transAxes)  # fmt: skip
     box.set_facecolor((1.0, 1.0, 1.0, 0.85))
     box.set_zorder(20)
     box.set_xticks([])
@@ -1030,16 +1166,21 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     t_on = max(first if onset is None else dr_days(onset), first)
     when = dt.datetime(1970, 1, 1) + dt.timedelta(days=t_on)
     td, d, sd = displacement(t, y, s, t_on, window)
-    motion = (directions.get(name.upper()) or {}).get("motion")
-    how = "config/option"
-    if motion is None:
-        est, _, _ = dr.estimate(name, when, end, config, rtk=args.rtk,
-                                window=window, frame=args.frame)  # fmt: skip
-        if est.significant:
-            motion, how = est.azimuth, "estimated over the plot"
-        else:  # within its own noise: no direction to draw
-            how = "no significant motion over the plot"
     ok = np.isfinite(d[0]) & np.isfinite(d[1])
+    if getattr(args, "direction", None) is not None:  # asked for: as given
+        motion = (directions.get(name.upper()) or {}).get("motion")
+        how = "option"
+    else:
+        # BGÓ 2026-11-11: the direction is the movement since the onset (the
+        # map's grey T line), not the fixed station_areas.yaml directions:;
+        # the sector's and the profile's lines follow it as data arrive
+        motion = total_direction((np.asarray(td) - t_on)[ok], np.asarray(d)[:, ok],
+                                 np.asarray(sd)[:, ok])  # fmt: skip
+        how = (
+            "movement since the onset"
+            if motion is not None
+            else f"no movement above {MOTION_SIGMA:g} σ since the onset"
+        )
     pp = PairPlot(name, (np.asarray(td) - t_on)[ok], np.asarray(d)[:, ok], motion,
                   t_on=t_on, sig=np.asarray(sd)[:, ok])  # fmt: skip
     note = how if motion is None else f"motion {motion:.0f} deg ({how})"
@@ -1061,7 +1202,95 @@ def _read_pair(name: str, args: Any, config: Any, onset: Any, end: Any,
     if b0 is not None:  # the reference, seen from the rover
         pp.ref = (name[5:], float(np.degrees(np.arctan2(-b0[1], -b0[0])) % 360.0),
                   float(np.hypot(b0[0], b0[1])))  # fmt: skip
+    if not args.rtk:
+        try:
+            pp.track = pair_track(name, when, end, args.frame)
+        except (OSError, ValueError) as exc:
+            print(f"{name}: no 14-day rate ({exc})", file=sys.stderr)
     return pp, f"{name}: {note}"
+
+
+#: the map's legend and colour bar start this far in [axes fraction]: clear
+#: of the tick labels drawn inside the frame (left column, bottom row)
+LABEL_CLEAR_X = 0.085
+LABEL_CLEAR_Y = 0.04
+#: days per year: the track rates [mm/yr] shown in mm/d
+YEAR_DAYS = 365.25
+#: the movement since the onset gives the direction above this many σ
+MOTION_SIGMA = 2.0
+
+
+def end_of(since: Any, d: Any, sig: Any) -> tuple[Any, Any, int]:
+    """The robust (N, E) level of the newest ``END_DAYS`` and its σ [mm]
+    (:func:`gps_analysis.direction.end_level`): the end of the grey line."""
+    from gps_analysis.direction import end_level
+
+    newest = since >= since.max() - END_DAYS
+    s = sig if sig is not None else np.ones_like(d)
+    lvl, lsig, n = end_level(d[:2, newest], s[:2, newest])
+    return lvl, lsig, int(n)
+
+
+def total_direction(since: Any, d: Any, sig: Any) -> float | None:
+    """The azimuth [°] of the movement since the onset, when it stands out
+    of its noise (``MOTION_SIGMA`` σ along it); None otherwise."""
+    if not np.asarray(since).size:
+        return None
+    lvl, lsig, n = end_of(since, d, sig)
+    if n == 0 or not np.isfinite(lvl).all():
+        return None
+    size = float(np.hypot(lvl[0], lvl[1]))
+    if size == 0:
+        return None
+    sigma = float(np.hypot(lvl[0] / size * lsig[0], lvl[1] / size * lsig[1]))
+    if size <= MOTION_SIGMA * sigma:
+        return None
+    return float(np.degrees(np.arctan2(lvl[1], lvl[0])) % 360.0)
+
+
+def pair_track(name: str, onset: dt.datetime, end: Any, frame: str) -> Any:
+    """The rover's track relative to the pair's reference, as the track map
+    makes it (:func:`gps_plot.track.load_track`: pre-onset trend removed,
+    14-day rate with the noise-wander σ, recent mode so its arrow follows
+    ``RECENT_SIGMA``). BGÓ 2026-11-11: the polar figure's map shows the
+    same 14-day arrow and grey movement since the onset as the track map."""
+    from gps_plot import terrain, track
+
+    rover, ref = name[:4], name[5:]
+    day = onset.date()
+    pre = track.pre_window(day)
+    last = end.date() if isinstance(end, dt.datetime) else end
+    lon, lat = terrain.station_lonlat(rover)
+    t_ref, y_ref = track.load_series(ref, pre, frame=frame, end=last, up=True)
+    tr = track.load_track(
+        rover, lon, lat, day, pre, frame=frame, end=last,
+        reference=(t_ref, y_ref[:2]), up_reference=track.up_series(t_ref, y_ref),
+    )  # fmt: skip
+    return dataclasses.replace(tr, colour_recent=True)
+
+
+#: the sector's and the profile's rate arrows: this many days of motion at
+#: the 14-day rate, from the newest position (BGÓ 2026-11-11)
+ARROW_DAYS = 14.0
+
+
+def rate_step(pp: PairPlot) -> tuple[float, float, float] | None:
+    """(N, E, U) [mm]: ``ARROW_DAYS`` of motion at the pair's 14-day rate,
+    when the track map would draw its arrow (horizontal or Up above 2 σ):
+    then the whole velocity, Up included whatever its σ."""
+    tr = pp.track
+    if tr is None or tr.recent is None:
+        return None
+    vt = tr.vertical
+    up_shown = vt is not None and vt.recent is not None and tr.up_recent_shown
+    if not tr.recent_shown and not up_shown:
+        return None
+    # drawn, the whole velocity, each component its best estimate (BGÓ
+    # 2026-11-11: SVIN sinking at 1.7 σ, zeroed, drew a level arrow that
+    # said it was not sinking); the 2 σ rule decides only whether it is drawn
+    k = ARROW_DAYS / YEAR_DAYS
+    u = vt.recent[0] * k if vt is not None and vt.recent is not None else 0.0
+    return tr.recent.north * k, tr.recent.east * k, u
 
 
 def _place(pairs: Sequence[PairPlot], config: Any, panels: Sequence[str],
