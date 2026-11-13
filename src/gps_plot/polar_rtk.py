@@ -116,6 +116,10 @@ MIN_WINDOW_FRAC = 0.5
 MIN_BIN_FRAC = 0.25
 #: the RTK rate's arrow is drawn above this many σ (as the 14-day arrow)
 RTK_SIGMA = 2.0
+#: a shorter window that passed its change test must also stand this many σ
+#: above zero on its own (BGÓ 2026-11-13: a 6 h rate of 48.9 ± 24.5 mm/d,
+#: a half-hour weather excursion, passed the change test and set the scale)
+SHORT_SIGMA = 3.0
 #: the median intervals offered (``--rtk-interval``) and their length [days]
 INTERVALS = {"1h": 1.0 / 24.0, "10min": 1.0 / 144.0, "1min": 1.0 / 1440.0}
 #: the RTK path drawn through the bins: their running mean over this [days]
@@ -168,10 +172,11 @@ class RtkRate:
 
     @property
     def significant(self) -> bool:
-        """The change test's verdict, else the horizontal speed above
+        """The change test's verdict and the speed above
+        :data:`SHORT_SIGMA` σ, else the horizontal speed above
         :data:`RTK_SIGMA` σ."""
         if self.trigger is not None:
-            return self.trigger
+            return self.trigger and self.speed > SHORT_SIGMA * self.sigma_speed
         return self.speed > RTK_SIGMA * self.sigma_speed
 
     def as_track_rate(self) -> Any:

@@ -121,3 +121,40 @@ def test_frame_option_parses() -> None:
     args = parser.parse_args(["SVIN", "SVIE", "--refs", "SKFC,SLEC", "--rtk",
                               "--via", "SVIN-SVIE", "--via", "SVIE-SKFC"])  # fmt: skip
     assert args.refs == "SKFC,SLEC" and args.via == ["SVIN-SVIE", "SVIE-SKFC"]
+
+
+def test_short_window_needs_its_own_significance() -> None:
+    """BGÓ 2026-11-13: a 6 h rate of 48.9 ± 24.5 mm/d passed the change
+    test; a short window is drawn only above SHORT_SIGMA σ as well."""
+    import dataclasses
+
+    r = dataclasses.replace(_rate(48.9, 0.0, 24.5), trigger=True)
+    assert not r.significant  # 2.0 σ
+    assert dataclasses.replace(_rate(48.9, 0.0, 10.0), trigger=True).significant
+    assert not dataclasses.replace(_rate(48.9, 0.0, 1.0), trigger=False).significant
+
+
+def test_to_circle_cuts_a_step_at_the_radius() -> None:
+    f = polar.to_circle(0.0, 0.0, 10.0, 0.0, 4.0)
+    assert f == pytest.approx(0.4)
+    assert polar.to_circle(1.0, 0.0, 1.0, 0.0, 10.0) == 1.0  # never reaches it
+    assert polar.to_circle(3.0, 4.0, 10.0, 0.0, 6.0) == pytest.approx(
+        (-3.0 + np.sqrt(9.0 + 11.0)) / 10.0
+    )
+
+
+def test_a_huge_rtk_arrow_leaves_the_sector_size() -> None:
+    """BGÓ 2026-11-13: the sector is sized by the dots; an RTK arrow
+    longer than that stops at its edge."""
+
+    def rmax(north: float) -> float:
+        pp = _pair(True)
+        pp.rate_from = "rtk"
+        pp.rtk.rate = _rate(north, 0.0, 0.5)
+        fig = polar.polar_figure([pp], onset=dt.datetime(2025, 11, 9),
+                                 panels=("sector",))  # fmt: skip
+        got = next(ax.get_rmax() for ax in fig.axes if ax.name == "polar")
+        plt.close(fig)
+        return float(got)
+
+    assert rmax(300.0) == pytest.approx(rmax(3.0))

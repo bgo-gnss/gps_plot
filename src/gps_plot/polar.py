@@ -460,7 +460,10 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             ) % 360.0 + lo
             _rtk_dots(ax, np.radians(ra[ins]), rr[ins], pp.rtk_since[ins], style,
                       pp.marker, 5, (np.radians(pa), pr), pp.rtk_colour)  # fmt: skip
-    # the 14-day rate: ARROW_DAYS of it from the newest position (no ellipse)
+    # the 14-day rate: ARROW_DAYS of it from the newest position (no ellipse);
+    # the sector's size is the dots' (BGÓ 2026-11-13: one RTK arrow of 49
+    # mm/d made it 700 mm), an arrow longer than that stops at the edge
+    r_dots = rmax
     for pp in pairs:
         step = rate_step(pp)
         if step is None or not pp.d.shape[1] or (step[0], step[1]) == (0.0, 0.0):
@@ -469,6 +472,9 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
         if n == 0:
             continue
         tip = (lvl[0] + step[0], lvl[1] + step[1])
+        if float(np.hypot(*tip)) > r_dots:
+            f = to_circle(lvl[0], lvl[1], step[0], step[1], r_dots)
+            tip = (lvl[0] + f * step[0], lvl[1] + f * step[1])
 
         def polar_of(nn: float, ee: float) -> tuple[float, float]:
             az = np.degrees(np.arctan2(ee, nn)) % 360.0
@@ -479,7 +485,6 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
                                           "lw": 1.8})  # fmt: skip
         ax.plot([], [], color=pp.colour, lw=1.8,
                 label=_label(pp, many, rate_step_label(pp)))  # fmt: skip
-        rmax = max(rmax, 1.05 * float(np.hypot(*tip)))
     ax.xaxis.set_major_formatter(
         FuncFormatter(lambda x, _p: f"{np.degrees(x) % 360:.0f}°")
     )
@@ -786,6 +791,18 @@ COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 END_DAYS = 2.0
 
 
+def to_circle(n0: float, e0: float, dn: float, de: float, radius: float) -> float:
+    """The fraction f in [0, 1] of the step (dn, de) from (n0, e0) where
+    the point first reaches ``radius`` from the origin (1: never)."""
+    a = dn * dn + de * de
+    b = 2.0 * (n0 * dn + e0 * de)
+    c = n0 * n0 + e0 * e0 - radius * radius
+    if a <= 0 or c >= 0:  # no step, or it starts outside: no cut
+        return 1.0 if c < 0 else 0.0
+    f = (-b + np.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
+    return float(min(max(f, 0.0), 1.0))
+
+
 def room_to_edge(x0: float, y0: float, az_deg: float, half: float) -> float:
     """How far [m] from (x0, y0) toward ``az_deg`` before the map's edge
     (the square ±``half``)."""
@@ -873,9 +890,13 @@ def _movement_and_rate(
     arrows += [(pp.pos, since_rate(pp)[0]) for pp in since_shown]  # type: ignore[index]
     if not arrows:
         return
-    fastest = max(r.speed for _, r in arrows)
+    # the scale from the daily arrows when there are any (BGÓ 2026-11-13: one
+    # RTK arrow of 49 mm/d shrank them all); an RTK arrow too long for the
+    # room stops at the map's edge, its value in the legend
+    steady = arrows[: len(shown)] + arrows[len(shown) + len(rtk_shown) :]
+    fastest = max(r.speed for _, r in (steady or arrows))
     # half the old length (BGÓ 2026-11-11: shorter arrows), less where the room is short
-    rscale = arrow_scale(arrows, half, 0.21 * half / fastest)  # m per mm/yr
+    rscale = arrow_scale(steady or arrows, half, 0.21 * half / fastest)  # m per mm/yr
     for pp in shown:
         r = pp.track.recent
         x0, y0 = pp.pos
@@ -915,13 +936,16 @@ def _movement_and_rate(
     for pp in rtk_shown:  # as the 14-day arrow, its own colour, no wedge
         r = pp.rtk.rate.as_track_rate()
         x0, y0 = pp.pos
-        tx, ty = x0 + r.east * rscale, y0 + r.north * rscale
+        room = 0.92 * room_to_edge(x0, y0, r.azimuth, half)
+        k = min(rscale, room / r.speed) if r.speed > 0 else rscale
+        tx, ty = x0 + r.east * k, y0 + r.north * k
         ax.annotate("", xy=(tx, ty), xytext=(x0, y0), zorder=5.6,
                     arrowprops={"arrowstyle": "-|>", "color": pp.rtk_colour,
                                 "lw": 2.2, "mutation_scale": 16})  # fmt: skip
-        ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
-                             2 * r.sigma_north * rscale, fill=False,
-                             ec=pp.rtk_colour, lw=1.2, zorder=5.6))  # fmt: skip
+        if k == rscale:  # cut at the edge: no ellipse at a false tip
+            ax.add_patch(Ellipse((tx, ty), 2 * r.sigma_east * rscale,
+                                 2 * r.sigma_north * rscale, fill=False,
+                                 ec=pp.rtk_colour, lw=1.2, zorder=5.6))  # fmt: skip
         ax.plot([], [], color=pp.rtk_colour, lw=2.2,
                 label=_label(pp, many, polar_rtk.rate_label(pp.rtk.rate)))  # fmt: skip
     # the arrows' scale, above the dots' (every sized arrow has one), in
