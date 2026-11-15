@@ -895,6 +895,18 @@ def run(prog: str, argv: list[str]) -> int:
         return 1
     out.mkdir(parents=True, exist_ok=True)
 
+    def last_finite(df: pd.DataFrame) -> pd.Timestamp | None:
+        """The newest row carrying any finite value (None: the window is empty).
+
+        A rover that has gone quiet (SVIN stops delivering for days at a time)
+        leaves a span with no usable values at all; asking for ``index[-1]``
+        then raised IndexError and killed the WHOLE run, so every other
+        station's frame figures stopped being produced too. The figure for that
+        station and span is skipped with a line on stderr instead.
+        """
+        got = df.dropna(how="all")
+        return None if got.empty else pd.Timestamp(got.index[-1])
+
     def motion_note(names: Sequence[str]) -> str:
         """The motion axis of ``names``, on its own line of the note."""
         if not along:
@@ -950,6 +962,11 @@ def run(prog: str, argv: list[str]) -> int:
             if sta not in tied or (span_got := piece(sta, days)) is None:
                 continue
             main, zero, newest = span_got
+            span_last = last_finite(main.loc[start:])  # the figure's own span
+            if span_last is None:
+                print(f"{prog}: {sta} {span_name(days)}: no data in the window, "
+                      "figure skipped", file=sys.stderr)  # fmt: skip
+                continue
             made.append((sta, main, zero, newest))
             ser, sty, col = [], [], []
             cmp = compare.get(sta)
@@ -971,7 +988,7 @@ def run(prog: str, argv: list[str]) -> int:
                 f"solutions (daily medians, linear between noons); after "
                 f"{newest:%d %b}: provisional{motion_note([sta])}"
             )
-            last = min(main.dropna(how="all").index[-1].to_pydatetime(), now)
+            last = min(span_last.to_pydatetime(), now)
             fig = figure(ser, sty, col, main=f"{sta}: RTK + daily",
                          sub=f"frame: {frame_name}", start=start, end=end, last=last,
                          now=now, rtk=True,
@@ -1008,9 +1025,10 @@ def run(prog: str, argv: list[str]) -> int:
             + f", tied to the daily solutions; after {newest_all:%d %b}: provisional"
             + motion_note([m[0] for m in made])
         )
-        last = min(
-            max(m[1].dropna(how="all").index[-1] for m in made).to_pydatetime(), now
-        )
+        lasts = [f for m in made if (f := last_finite(m[1].loc[start:])) is not None]
+        if not lasts:  # nothing finite anywhere in this span
+            continue
+        last = min(max(lasts).to_pydatetime(), now)
         fig = figure(ser, sty, col, main=f"{', '.join(names)}: RTK + daily",
                      sub=f"frame: {frame_name}", start=start, end=end, last=last,
                      now=now, rtk=True,
@@ -1039,7 +1057,14 @@ def run(prog: str, argv: list[str]) -> int:
                        _zeroed(daily[s].loc[keep], start), sigma[s].loc[keep],
                        azim[s], "daily")
                for s in stations]  # fmt: skip
-        last_day = max(daily[s].dropna(how="all").index[-1] for s in stations)
+        last_days = [
+            f for s in stations if (f := last_finite(daily[s].loc[start:])) is not None
+        ]
+        if not last_days:
+            print(f"{prog}: daily {days:g} d: no daily data in the window, "
+                  "figure skipped", file=sys.stderr)  # fmt: skip
+            continue
+        last_day = max(last_days)
         fig = figure(ser, ["points"] * len(ser), [colors[s] for s in stations],
                      main=f"{', '.join(stations)}",
                      sub=f"frame: {frame_name}, plate removed",
