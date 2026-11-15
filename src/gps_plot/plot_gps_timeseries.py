@@ -818,6 +818,18 @@ def build_parser(
         "episodes; implies --rate",
     )
     parser.add_argument(
+        "--rate-ref",
+        default=None,
+        type=_rate_window,
+        metavar="START:END",
+        help="plot the series relative to the velocity product's rate over "
+        "START:END (YYYYMMDD:YYYYMMDD): v·(t − t0) is subtracted per "
+        "component, the window and its rate go in the title, and --rate "
+        "lines are reported relative to it (σ in quadrature). E.g. "
+        "--rate-ref 20130901:20140131 for Bárðarbunga before the 2014 unrest. "
+        "Daily .pos series only; adds -relrate to the file name",
+    )
+    parser.add_argument(
         "--rate-last",
         action="append",
         default=None,
@@ -1389,6 +1401,13 @@ def run(
         kwargs["rate"] = True
     if kwargs.get("ref") is None and kwargs.get("model") is None:
         kwargs["ref"] = "plate"  # the default since 2026-10-19
+    if kwargs["rate_ref"] is not None:
+        if kwargs["session"] != "24h":
+            parser.error("--rate-ref: daily series only (no --session 8h/both)")
+        if kwargs.get("ref") in (None, "all"):
+            parser.error("--rate-ref needs one --ref: plate or detrend")
+        if kwargs.get("model") is not None:
+            parser.error("--rate-ref and --model: give one")
     if kwargs["rate"] or kwargs["rate_windows"]:
         if kwargs["session"] != "24h":
             parser.error("--rate: daily series only (no --session 8h/both)")

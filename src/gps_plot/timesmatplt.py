@@ -1158,6 +1158,7 @@ def plotTime(
     rate: bool = False,
     rate_windows: Sequence[tuple[float, float]] | None = None,
     rate_segments: Sequence[str] | None = None,
+    rate_ref: tuple[float, float] | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
     segment_min_days: int = 30,
@@ -1452,6 +1453,31 @@ def plotTime(
         # detrend): the model was subtracted after getData's zeroing
         main_series = gps_source.rezero_detrended(sta, request, main_series)
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
+    ref_record = None
+    if rate_ref is not None:
+        # --rate-ref: the series relative to the product rate of a window
+        # (PLAN-ts-quakes Q-T4), zero kept at the first epoch
+        from gps_plot.layers.rate import (
+            rate_settings,
+            reference_rate,
+            subtract_rate,
+            window_label,
+        )
+
+        if pair is not None or tType != "POS" or overlay_pos_id is not None:
+            raise ValueError(f"{sta}: --rate-ref reads the daily .pos series only")
+        ref_settings = rate_settings(
+            ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
+            uncert=uncert, Dir=Dir, common_mode=common_mode,
+        )  # fmt: skip
+        ref_record = reference_rate(sta, rate_ref, ref_settings)
+        t_zero = float(np.asarray(yearf, dtype=float)[0])
+        data = subtract_rate(yearf, data, ref_record.rate, t_zero)
+        v = ref_record.rate
+        refTitle = (
+            f"{refTitle}, relative to the rate {window_label(rate_ref)} "
+            f"(N {v[0]:.1f}, E {v[1]:.1f}, U {v[2]:.1f} mm/yr)"
+        )
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
     iced = main_series.iced
@@ -1796,11 +1822,15 @@ def plotTime(
             windows = segment_windows(
                 yearf, fstart, fend, gaps, min_days=segment_min_days
             )
-            records = add_segment_rates(fig, sta, yearf, data, Ddata, windows, settings)
+            records = add_segment_rates(
+                fig, sta, yearf, data, Ddata, windows, settings, minus=ref_record
+            )
             print(segment_table(sta, records))
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
-            records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+            records = add_rate_lines(
+                fig, sta, yearf, data, Ddata, windows, settings, minus=ref_record
+            )
         # above the "network common mode removed" note when both are drawn
         fig.axes[2].text(
             0.99, 0.08 if cm_days else 0.02,
@@ -1908,6 +1938,8 @@ def plotTime(
             filend += "-model" if model == "curve" else "-resid"
             if model_terms:
                 filend += "-line-" + "-".join(model_terms)
+        if rate_ref is not None:
+            filend += "-relrate"  # the window is in the title, not the name
         if rate or rate_windows:
             filend += "-rate"
             if rate_segments is not None:

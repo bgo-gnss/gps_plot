@@ -17,6 +17,7 @@ whatever the plot's ``--view``). Each window gets:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Sequence
 from typing import Any
@@ -121,6 +122,60 @@ def default_window(
     return float(t0), float(t1)
 
 
+def reference_rate(sta: str, window: tuple[float, float], settings: Any) -> Any:
+    """The product rate of ``window`` for ``--rate-ref`` (the record).
+
+    Raises:
+        ValueError: the product refused the window or a component is NaN
+            (a reference that is not there cannot be subtracted).
+    """
+    from geo_dataread.velocity import estimate_station_velocity
+
+    r = estimate_station_velocity(sta, window[0], window[1], settings)
+    if not r.accepted:
+        raise ValueError(
+            f"{sta}: --rate-ref {window_label(window)}: rate refused ({r.refused})"
+        )
+    if not np.all(np.isfinite(r.rate)):
+        raise ValueError(
+            f"{sta}: --rate-ref {window_label(window)}: a component was not "
+            f"estimated ({getattr(r, 'parts_refused', {})})"
+        )
+    return r
+
+
+def subtract_rate(t: Any, y: Any, rate: Sequence[float], t0: float) -> Any:
+    """``y − v·(t − t0)`` per component: the series relative to rate ``v``.
+
+    ``t`` (N,) [yr], ``y`` (3, N) [mm], ``v`` (3,) [mm/yr]; ``t0`` is where
+    the subtracted line is zero (the plot's first epoch keeps its zero).
+    Returns a new array; ``y`` is not changed.
+    """
+    tt = np.asarray(t, dtype=float)
+    yy = np.atleast_2d(np.asarray(y, dtype=float))
+    v = np.asarray(rate, dtype=float)[:, None]
+    return yy - v * (tt - t0)[None, :]
+
+
+def relative_record(record: Any, ref: Any | None) -> Any:
+    """``record`` with ``ref``'s rate subtracted, σ in quadrature.
+
+    The two windows are taken as independent; for overlapping windows the
+    σ is an upper bound. The reference window itself keeps its own σ (rate
+    0 exactly; quadrature would count the same noise twice). ``ref`` None
+    returns ``record`` unchanged.
+    """
+    if ref is None or not record.accepted:
+        return record
+    rate = tuple(float(a - b) for a, b in zip(record.rate, ref.rate, strict=True))
+    if tuple(record.window) == tuple(ref.window):
+        return dataclasses.replace(record, rate=rate)
+    sigma = tuple(
+        float(np.hypot(a, b)) for a, b in zip(record.sigma, ref.sigma, strict=True)
+    )
+    return dataclasses.replace(record, rate=rate, sigma=sigma)
+
+
 def add_rate_lines(
     fig: Figure,
     sta: str,
@@ -129,12 +184,15 @@ def add_rate_lines(
     sigma: Any,
     windows: Sequence[tuple[float, float]],
     settings: Any,
+    *,
+    minus: Any | None = None,
 ) -> list[Any]:
     """Draw the product rate of each window on the first three axes.
 
     ``t``/``y``/``sigma`` are the plotted series (yearf, (3, N) mm); the
-    lines are anchored on them. Returns the product records, in window
-    order.
+    lines are anchored on them. ``minus``: a ``--rate-ref`` record whose
+    rate is subtracted from each (the plotted series is relative to it too).
+    Returns the product records, in window order.
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -145,7 +203,9 @@ def add_rate_lines(
     records = []
     for i, window in enumerate(windows):
         color = RATE_COLORS[i % len(RATE_COLORS)]
-        r = estimate_station_velocity(sta, window[0], window[1], settings)
+        r = relative_record(
+            estimate_station_velocity(sta, window[0], window[1], settings), minus
+        )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
         tag = window_label(window) + ": " if len(windows) > 1 else ""
@@ -282,13 +342,16 @@ def add_segment_rates(
     sigma: Any,
     windows: Sequence[tuple[float, float]],
     settings: Any,
+    *,
+    minus: Any | None = None,
 ) -> list[Any]:
     """Draw the product rate of each segment on the first three axes.
 
     Like :func:`add_rate_lines`, but for many windows: each line is labelled
     at its own middle (``rate ± σ``, mm/yr), alternating two heights, and a
     refused segment gets a ``×`` there (its reason is in the returned
-    record). Returns the product records, in window order.
+    record). ``minus`` as in :func:`add_rate_lines`. Returns the product
+    records, in window order.
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -300,7 +363,9 @@ def add_segment_rates(
     records = []
     for i, window in enumerate(windows):
         color = RATE_COLORS[i % 2]
-        r = estimate_station_velocity(sta, window[0], window[1], settings)
+        r = relative_record(
+            estimate_station_velocity(sta, window[0], window[1], settings), minus
+        )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
         mid = list(gpsr.toDateTime(np.array([0.5 * (window[0] + window[1])])))[0]
