@@ -1483,8 +1483,8 @@ def plotTime(
         data = subtract_rate(yearf, data, ref_record.rate, t_zero)
         v = ref_record.rate
         refTitle = (
-            f"{refTitle}, relative to the rate {window_label(rate_ref)} "
-            f"(N {v[0]:.1f}, E {v[1]:.1f}, U {v[2]:.1f} mm/yr)"
+            f"{refTitle}, miðað við hraða {window_label(rate_ref)} "
+            f"(N {v[0]:.1f}, A {v[1]:.1f}, U {v[2]:.1f} mm/ár)"
         )
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
