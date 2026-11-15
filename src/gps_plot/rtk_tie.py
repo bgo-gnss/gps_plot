@@ -33,7 +33,7 @@ import dataclasses
 import datetime as dt
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -401,6 +401,7 @@ def figure(
     ylabels: Sequence[str] | None = None,
     ylim: Sequence[Any] = (),
     note: str | None = None,
+    missing: Sequence[tuple[str, pd.Timestamp]] = (),
 ) -> Any:
     """The figure in the RTK / baseline-stack template (compose.stack_figure:
     the stack frame, logo, last-epoch title; with ``rtk`` the plot-time line)."""
@@ -446,6 +447,16 @@ def figure(
     if note:
         fig.axes[2].text(0.01, 0.98, note, transform=fig.axes[2].transAxes,
                          fontsize="x-small", color="0.3", va="top", wrap=True)  # fmt: skip
+    if missing:
+        # a station that has stopped delivering is NOT silently absent: the
+        # figure keeps updating for the others and says so, in red, top right
+        text = "no data: " + ", ".join(f"{s} since {t:%d %b}" for s, t in missing)
+        fig.axes[0].text(
+            0.995, 0.985, text, transform=fig.axes[0].transAxes,
+            fontsize="small", color="red", va="top", ha="right", zorder=20,
+            bbox={"boxstyle": "round,pad=0.3", "fc": "white", "ec": "red",
+                  "alpha": 0.9},
+        )  # fmt: skip
     if rtk:
         rtk_classic.now_line(fig.axes[:3], now=min(now, end.to_pydatetime()), last=last,
                              fontsize=12)  # fmt: skip
@@ -907,6 +918,31 @@ def run(prog: str, argv: list[str]) -> int:
         got = df.dropna(how="all")
         return None if got.empty else pd.Timestamp(got.index[-1])
 
+    def missing_since(
+        frame_of: Callable[[str], pd.DataFrame | None], names: Sequence[str]
+    ) -> list[tuple[str, pd.Timestamp]]:
+        """``[(station, its newest epoch)]`` for the stations lagging the rest.
+
+        A rover that has gone quiet (SVIN stops delivering for days) still gets
+        its figure — the others keep updating — but the gap is stated in red
+        rather than left to be inferred from a shorter series. A station counts
+        as missing once it is at least a day behind the newest among ``names``.
+        """
+        newest = {s: f for s in names
+                  if (frame := frame_of(s)) is not None
+                  and (f := last_finite(frame)) is not None}  # fmt: skip
+        if not newest:
+            return []
+        ref = max(newest.values())
+        return sorted(
+            ((s, t) for s, t in newest.items() if ref - t >= pd.Timedelta(days=1)),
+            key=lambda p: p[1],
+        )
+
+    def tied_frame(sta: str) -> pd.DataFrame | None:
+        got = tied.get(sta, {}).get("1h")
+        return None if got is None else got[0]
+
     def motion_note(names: Sequence[str]) -> str:
         """The motion axis of ``names``, on its own line of the note."""
         if not along:
@@ -1033,7 +1069,8 @@ def run(prog: str, argv: list[str]) -> int:
                      sub=f"frame: {frame_name}", start=start, end=end, last=last,
                      now=now, rtk=True,
                      ylabels=_ylabels([azim[s] for s in names]) if along else None,
-                     note=note)  # fmt: skip
+                     note=note,
+                     missing=missing_since(tied_frame, names))  # fmt: skip
         sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
                                                    azim[m[0]], days < 1))
                          for m in made])  # fmt: skip
@@ -1071,6 +1108,7 @@ def run(prog: str, argv: list[str]) -> int:
                      start=start, end=end, last=last_day.to_pydatetime(), now=now,
                      rtk=False, ylabels=ylabels,
                      ylim=[args.ylim] if args.ylim else [],
+                     missing=missing_since(daily.get, stations),
                      note=f"daily (24 h), cleaned, minus the weighted daily mean of "
                      f"{', '.join(refs)} (trend + seasonal removed); empirical "
                      f"$\\sigma$"
