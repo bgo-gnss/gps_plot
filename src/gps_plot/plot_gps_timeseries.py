@@ -612,6 +612,13 @@ def _rate_last(value: str) -> tuple[int, int]:
     return _last(value)
 
 
+def _parse_along(value: str) -> str:
+    """``--along opt|motion|AZ`` (gps_plot.direction.parse_along)."""
+    from gps_plot.direction import parse_along
+
+    return parse_along(value)
+
+
 def _rate_window(value: str) -> tuple[float, float]:
     """``START:END`` (YYYYMMDD) as a velocity-product window [yr], whole days."""
     import datetime as _dt
@@ -828,6 +835,17 @@ def build_parser(
         "lines are reported relative to it (σ in quadrature). E.g. "
         "--rate-ref 20130901:20140131 for Bárðarbunga before the 2014 unrest. "
         "Daily .pos series only; adds -relrate to the file name",
+    )
+    parser.add_argument(
+        "--along",
+        default=None,
+        type=_parse_along,
+        metavar="opt|motion|AZ",
+        help="one station along a direction: panels motion/across/up toward "
+        "AZ [deg]; 'opt' = the direction of the plotted motion (gpsplot "
+        "direction's estimator, after --rate-ref), 'motion' = the station's "
+        "station_areas.yaml directions: entry. --rate lines are rotated with "
+        "it. Single stations only (baselines: --axes motion); file -along[-opt|-motion]",
     )
     parser.add_argument(
         "--rate-last",
@@ -1401,6 +1419,8 @@ def run(
         kwargs["rate"] = True
     if kwargs.get("ref") is None and kwargs.get("model") is None:
         kwargs["ref"] = "plate"  # the default since 2026-10-19
+    if kwargs["along"] is not None and kwargs.get("model") is not None:
+        parser.error("--along and --model: give one")
     if kwargs["rate_ref"] is not None:
         if kwargs["session"] != "24h":
             parser.error("--rate-ref: daily series only (no --session 8h/both)")

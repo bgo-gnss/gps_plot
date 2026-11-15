@@ -1167,6 +1167,7 @@ def plotTime(
     rate_windows: Sequence[tuple[float, float]] | None = None,
     rate_segments: Sequence[str] | None = None,
     rate_ref: tuple[float, float] | None = None,
+    along: str | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
     segment_min_days: int = 30,
@@ -1460,7 +1461,6 @@ def plotTime(
         # re-zero a detrended station at its start (vshift again, after the
         # detrend): the model was subtracted after getData's zeroing
         main_series = gps_source.rezero_detrended(sta, request, main_series)
-    yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     ref_record = None
     if rate_ref is not None:
         # --rate-ref: the series relative to the product rate of a window
@@ -1479,13 +1479,37 @@ def plotTime(
             uncert=uncert, Dir=Dir, common_mode=common_mode,
         )  # fmt: skip
         ref_record = reference_rate(sta, rate_ref, ref_settings)
-        t_zero = float(np.asarray(yearf, dtype=float)[0])
-        data = subtract_rate(yearf, data, ref_record.rate, t_zero)
+        t_zero = float(np.asarray(main_series.t, dtype=float)[0])
+        main_series = dataclasses.replace(
+            main_series,
+            y=subtract_rate(main_series.t, main_series.y, ref_record.rate, t_zero),
+        )
         v = ref_record.rate
         refTitle = (
             f"{refTitle}, miðað við hraða {window_label(rate_ref)} "
             f"(N {v[0]:.1f}, A {v[1]:.1f}, U {v[2]:.1f} mm/ár)"
         )
+    along_axes = None
+    if along is not None:
+        # --along: one station's motion/across/up toward an azimuth
+        # (PLAN-ts-quakes Q-T5); after --rate-ref, so "opt" is the direction
+        # of the motion relative to that rate
+        from gps_plot.axes import orient, station_frame
+        from gps_plot.direction import along_azimuth
+        from gps_plot.plot_gps_timeseries import _load_config
+
+        if pair is not None:
+            raise ValueError(
+                f"{sta}: --along is for single stations; a baseline takes --axes motion"
+            )
+        az, along_note = along_azimuth(
+            sta, along, main_series.t, main_series.y, main_series.sigma,
+            _load_config() if along == "motion" else None,
+        )  # fmt: skip
+        along_axes = station_frame(az)
+        main_series = orient(main_series, along_axes)
+        refTitle = f"{refTitle}, {along_note}"
+    yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
     iced = main_series.iced
@@ -1530,6 +1554,10 @@ def plotTime(
         from gps_plot.axes import figure_labels
 
         ylabels = figure_labels([main_series], "en", "mm")
+    elif along_axes is not None:
+        from gps_plot import labels as _labels
+
+        ylabels = _labels.axis_labels(along_axes.keys, "en", "mm")
     fig = stdTimesPlot(
         x,
         data,
@@ -1831,13 +1859,29 @@ def plotTime(
                 yearf, fstart, fend, gaps, min_days=segment_min_days
             )
             records = add_segment_rates(
-                fig, sta, yearf, data, Ddata, windows, settings, minus=ref_record
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
             )
             print(segment_table(sta, records))
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
             records = add_rate_lines(
-                fig, sta, yearf, data, Ddata, windows, settings, minus=ref_record
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
             )
         # above the "network common mode removed" note when both are drawn
         fig.axes[2].text(
@@ -1948,6 +1992,9 @@ def plotTime(
                 filend += "-line-" + "-".join(model_terms)
         if rate_ref is not None:
             filend += "-relrate"  # the window is in the title, not the name
+        if along is not None:
+            # the mode, not the azimuth (plot names carry no tuning numbers)
+            filend += "-along" + (f"-{along}" if along in ("opt", "motion") else "")
         if rate or rate_windows:
             filend += "-rate"
             if rate_segments is not None:

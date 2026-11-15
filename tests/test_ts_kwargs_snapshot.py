@@ -36,6 +36,7 @@ ARGV: dict[str, list[str]] = {
     "dirs": ["HOFN", "-d", "/tmp/figs", "-i", "/tmp/pos"],
     "detrend": ["SENG", "--ref", "detrend", "--detrend-terms", "periodic"],
     "rateref": ["VONC", "--ref", "plate", "--rate-ref", "20130901:20140131"],
+    "along": ["VONC", "--ref", "plate", "--along", "opt"],
     "model": ["HOFN", "--model", "both", "--special", "year"],
     "modelterms": [
         "HOFN", "--model", "residual", "--detrend-terms", "periodic",

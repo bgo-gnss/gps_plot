@@ -113,6 +113,13 @@ def pair_frame(b: Any, mode: str, direction: Mapping[str, Any] | None = None) ->
     return _up_signed(along_axes(baseline_azimuth(b)), b)
 
 
+def station_frame(azimuth: float) -> Axes:
+    """Motion/across/up of a single station toward ``azimuth`` [°, clockwise
+    from north] (``gpsplot ts --along``): motion = N·cos a + E·sin a, across
+    90° clockwise of it, Up unchanged. No sign rule (that is for pairs)."""
+    return tilted_axes(np.radians(azimuth), 0.0, keys=("motion", "across", "up"))
+
+
 def direction_note(b: Any, mode: str, direction: Mapping[str, Any] | None) -> str:
     """The direction of a pair's axes for its legend: ``"334°"``, ``"210°/28°"``.
 

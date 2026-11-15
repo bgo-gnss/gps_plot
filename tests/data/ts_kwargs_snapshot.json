@@ -2,6 +2,7 @@
  "all": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -63,6 +64,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -124,6 +126,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -185,6 +188,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -246,6 +250,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -307,6 +312,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -368,6 +374,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -429,6 +436,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -490,6 +498,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -551,6 +560,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -612,6 +622,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -673,6 +684,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -734,6 +746,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -795,6 +808,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -856,6 +870,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -917,6 +932,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -978,6 +994,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1039,6 +1056,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1100,6 +1118,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1161,6 +1180,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1222,6 +1242,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1283,6 +1304,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1344,6 +1366,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1405,6 +1428,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1465,9 +1489,74 @@
    "ylim": "[]"
   }
  ],
+ "along": [
+  {
+   "Dir": "'/cfg/pos_dir'",
+   "along": "'opt'",
+   "annotate_steps": "False",
+   "baseline_axes": "'neu'",
+   "baseline_direction": "None",
+   "baseline_direction_from": "None",
+   "baseline_noise": "None",
+   "baseline_sigma": "'formal'",
+   "baseline_sign": "'apart'",
+   "baseline_slope": "None",
+   "common_mode": "True",
+   "convention": "'geodetic'",
+   "detrend_terms": "None",
+   "end": "None",
+   "events": "{}",
+   "events_catalog": "None",
+   "figDir": "'/cfg/fig_dir'",
+   "fix": "False",
+   "hide_icing": "True",
+   "hide_network": "True",
+   "hide_outliers": "True",
+   "hide_snow": "True",
+   "icing": "True",
+   "icing_mode": "'remove'",
+   "icing_ratio": "None",
+   "icing_tail": "None",
+   "legacy_names": "False",
+   "model_terms": "None",
+   "name": "None",
+   "network": "True",
+   "network_mode": "'remove'",
+   "network_tail": "None",
+   "outlier_overrides": "None",
+   "outlier_params": "None",
+   "outlier_tail": "None",
+   "pos_id": "'imo.24hr_itrf14'",
+   "provisional_days": "None",
+   "quakes": "[]",
+   "rate": "False",
+   "rate_ref": "None",
+   "rate_segments": "None",
+   "rate_windows": "None",
+   "ref": "'plate'",
+   "ref_position": "None",
+   "remove_kinds": "None",
+   "save": "'png'",
+   "segment_cut": "'span'",
+   "segment_kinds": "'dike,eruption'",
+   "segment_min_days": "30",
+   "show_ends": "False",
+   "snow": "True",
+   "snow_mode": "'remove'",
+   "snow_tail": "None",
+   "special": "None",
+   "sta": "'VONC'",
+   "start": "None",
+   "tType": "'POS'",
+   "uncert": "10",
+   "view": "'raw'",
+   "ylim": "[]"
+  }
+ ],
  "baseline": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1531,6 +1620,7 @@
  "cleaned": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1594,6 +1684,7 @@
  "dates": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1657,6 +1748,7 @@
  "detrend": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1720,6 +1812,7 @@
  "dirs": [
   {
    "Dir": "'/tmp/pos'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1783,6 +1876,7 @@
  "fix": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1846,6 +1940,7 @@
  "frame08": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1909,6 +2004,7 @@
  "model": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -1971,6 +2067,7 @@
   },
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2035,6 +2132,7 @@
  "modelterms": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2099,6 +2197,7 @@
  "name": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2162,6 +2261,7 @@
  "plain": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2225,6 +2325,7 @@
  "rate": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2288,6 +2389,7 @@
  "rateref": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2351,6 +2453,7 @@
  "ratewindow": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2414,6 +2517,7 @@
  "session8h": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2477,6 +2581,7 @@
  "sessionboth": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2541,6 +2646,7 @@
  "shiftD": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2604,6 +2710,7 @@
  "special": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2667,6 +2774,7 @@
  "steps": [
   {
    "Dir": "'/cfg/pos_dir'",
+   "along": "None",
    "annotate_steps": "True",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",
@@ -2730,6 +2838,7 @@
  "tot": [
   {
    "Dir": "'/cfg/totPath'",
+   "along": "None",
    "annotate_steps": "False",
    "baseline_axes": "'neu'",
    "baseline_direction": "None",

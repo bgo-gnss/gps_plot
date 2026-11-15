@@ -176,6 +176,28 @@ def relative_record(record: Any, ref: Any | None) -> Any:
     return dataclasses.replace(record, rate=rate, sigma=sigma)
 
 
+def rotate_record(record: Any, axes: Any | None) -> Any:
+    """``record``'s N/E/U rate and σ along ``axes`` (``--along``): R·v, and
+    σ from R·C·Rᵀ with C built from σ and the record's N–E correlation
+    (``corr_en``; Up uncorrelated). ``axes`` None returns ``record``."""
+    if axes is None or not record.accepted:
+        return record
+    from geofunc.axes import rotate
+
+    s = np.asarray(record.sigma, dtype=float)
+    rho = float(getattr(record, "corr_en", 0.0) or 0.0)
+    cov = np.diag(s**2)
+    if np.isfinite(rho) and np.all(np.isfinite(s[:2])):
+        cov[0, 1] = cov[1, 0] = rho * s[0] * s[1]
+    r = rotate(np.asarray(record.rate, dtype=float), axes, cov=cov)
+    assert r.sigma is not None
+    return dataclasses.replace(
+        record,
+        rate=tuple(float(x) for x in r.values),
+        sigma=tuple(float(x) for x in r.sigma),
+    )
+
+
 def add_rate_lines(
     fig: Figure,
     sta: str,
@@ -186,12 +208,14 @@ def add_rate_lines(
     settings: Any,
     *,
     minus: Any | None = None,
+    axes: Any | None = None,
 ) -> list[Any]:
     """Draw the product rate of each window on the first three axes.
 
     ``t``/``y``/``sigma`` are the plotted series (yearf, (3, N) mm); the
     lines are anchored on them. ``minus``: a ``--rate-ref`` record whose
-    rate is subtracted from each (the plotted series is relative to it too).
+    rate is subtracted from each (the plotted series is relative to it too);
+    ``axes``: the ``--along`` frame the rates are rotated into.
     Returns the product records, in window order.
     """
     import geo_dataread.gps_read as gpsr
@@ -203,8 +227,11 @@ def add_rate_lines(
     records = []
     for i, window in enumerate(windows):
         color = RATE_COLORS[i % len(RATE_COLORS)]
-        r = relative_record(
-            estimate_station_velocity(sta, window[0], window[1], settings), minus
+        r = rotate_record(
+            relative_record(
+                estimate_station_velocity(sta, window[0], window[1], settings), minus
+            ),
+            axes,
         )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
@@ -344,6 +371,7 @@ def add_segment_rates(
     settings: Any,
     *,
     minus: Any | None = None,
+    axes: Any | None = None,
 ) -> list[Any]:
     """Draw the product rate of each segment on the first three axes.
 
@@ -363,8 +391,11 @@ def add_segment_rates(
     records = []
     for i, window in enumerate(windows):
         color = RATE_COLORS[i % 2]
-        r = relative_record(
-            estimate_station_velocity(sta, window[0], window[1], settings), minus
+        r = rotate_record(
+            relative_record(
+                estimate_station_velocity(sta, window[0], window[1], settings), minus
+            ),
+            axes,
         )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
