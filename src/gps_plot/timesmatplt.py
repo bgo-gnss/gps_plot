@@ -150,8 +150,16 @@ def init_plot_style(force: bool = False) -> None:
     mpl.rcParams["text.usetex"] = True
     # NOTE: the legacy code called mpl.rc("text.latex", preamble=...) twice,
     # so only the second line (color) was actually active; both are kept here.
+    #
+    # T1 font encoding: Icelandic letters (ð, þ, æ) in titles and labels;
+    # OT1 has no \dh ("Command \dh unavailable in encoding OT1"). cm-super
+    # supplies the T1 fonts as Type 1.
     mpl.rcParams["text.latex.preamble"] = "\n".join(
-        [r"\usepackage[utf8]{inputenc}", r"\usepackage{color}"]
+        [
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage[utf8]{inputenc}",
+            r"\usepackage{color}",
+        ]
     )
     mpl.rc("font", family="Times New Roman")
 
