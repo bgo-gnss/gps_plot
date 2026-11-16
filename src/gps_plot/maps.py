@@ -2825,6 +2825,9 @@ def total_reference(
 #: [cm] and how far it sits above the bottom annotation band [cm]
 MAP_NOTE_LEFT_CM = 1.15
 MAP_NOTE_LIFT_CM = 1.0
+#: how far [cm] the box keeps off a station: its symbol AND its name, which the
+#: declutter places a little way out from the marker
+MAP_NOTE_BLOCK_CM = 3.0
 
 #: font of the values written at the arrow tips (deformation --values)
 DEFAULT_VALUE_FONT = "7p,Helvetica-Bold,black=~1p,white"
@@ -3167,18 +3170,29 @@ def velocity_map(
         def lat_of(cm: float) -> float:
             return region_point(region, 0.0, cm / height_cm)[1]
 
-        # clear of the frame's own annotations: the latitude labels sit inside
-        # the left edge, the longitude band along the bottom (BGÓ 2026-11-16:
-        # the box was covering "64°15'N")
-        x0 = MAP_NOTE_LEFT_CM
-        y0 = layout.BOTTOM_LABELS_CM + MAP_NOTE_LIFT_CM
-        if legend_box is not None:  # stack on the legend when it has the corner
+        # A free spot at the lower left, not a fixed offset: the layout engine
+        # already keeps clear of the frame's own annotations (the latitude
+        # labels inside the left edge, the longitude band along the bottom), the
+        # logo and the scale bar, and block_points keeps it off the station
+        # symbols and their names (BGÓ 2026-11-16: the box covered "64°15'N",
+        # then "JOKU").
+        sea = getattr(fig, "gpsplot_layout", None)
+        if not isinstance(sea, layout.SeaLayout):
+            sea = layout.build_box(region, projection)
+        if legend_box is not None:  # the vector legend keeps its place
             xs, ys = legend_box
-            left_cm = (xs[3] - w) / (e - w) * width_cm
-            bottom_cm = (ys[0] - s) / (n - s) * height_cm
-            top_cm = (ys[3] - s) / (n - s) * height_cm
-            if bottom_cm < 0.25 * height_cm and left_cm < 0.4 * width_cm:
-                x0, y0 = max(x0, left_cm), top_cm + 0.3
+            sea.reserve((
+                (min(xs) - w) / (e - w) * width_cm,
+                (max(xs) - w) / (e - w) * width_cm,
+                (min(ys) - s) / (n - s) * height_cm,
+                (max(ys) - s) / (n - s) * height_cm,
+            ))
+        sea.block_points(lons.tolist(), lats.tolist(), radius=MAP_NOTE_BLOCK_CM)
+        spot = sea.place((wide, tall), ("BL", "BR", "TL", "TR"), on_land=True)
+        if spot is not None:
+            x0, y0 = spot
+        else:  # nothing free anywhere: the map's own bottom margin
+            x0, y0 = MAP_NOTE_LEFT_CM, layout.BOTTOM_LABELS_CM + MAP_NOTE_LIFT_CM
         fig.plot(
             x=[lon_of(x0), lon_of(x0 + wide), lon_of(x0 + wide), lon_of(x0),
                lon_of(x0)],

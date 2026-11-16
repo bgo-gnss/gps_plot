@@ -1206,6 +1206,51 @@ def _inner_colorbar(fig: Any, ax: Any, mappable: Any, label: str, loc: str,
     bar.set_label(label, fontsize="x-small", labelpad=2)
 
 
+def missing_stations(
+    pairs: Sequence[PairPlot], onset: dt.datetime, tolerance_days: float = 1.0
+) -> list[tuple[str, dt.date]]:
+    """``[(station, its newest day)]`` for the stations lagging the figure's.
+
+    A rover that has stopped delivering (SVIN: none since 2026-11-13) otherwise
+    leaves only a shorter tail; the figure says so in red instead. A station
+    counts as missing once its newest day is ``tolerance_days`` behind the
+    newest of the pairs drawn.
+    """
+    newest: dict[str, float] = {}
+    for pp in pairs:
+        if not np.size(pp.since):
+            continue
+        last = float(np.nanmax(pp.since))
+        if not np.isfinite(last):
+            continue
+        for sta in (pp.rover, *((pp.ref[0],) if pp.ref else ())):
+            newest[sta] = max(newest.get(sta, last), last)
+    if not newest:
+        return []
+    ref = max(newest.values())
+    out = [
+        (sta, (onset + dt.timedelta(days=days)).date())
+        for sta, days in newest.items()
+        if ref - days >= tolerance_days
+    ]
+    return sorted(out, key=lambda p: p[1])
+
+
+def _missing_note(
+    fig: Any, pairs: Sequence[PairPlot], onset: dt.datetime
+) -> None:
+    """The red "no data" note, top right of the figure (the title is centred)."""
+    missing = missing_stations(pairs, onset)
+    if not missing:
+        return
+    text = "no data: " + ", ".join(f"{sta} since {d:%d.%m}" for sta, d in missing)
+    fig.text(
+        0.995, 0.995, text, ha="right", va="top", fontsize="small", color="red",
+        bbox={"boxstyle": "round,pad=0.3", "fc": "white", "ec": "red",
+              "alpha": 0.9}, zorder=30,
+    )  # fmt: skip
+
+
 def polar_figure(
     pairs: Sequence[PairPlot],
     *,
@@ -1354,6 +1399,7 @@ def polar_figure(
         title = rf"\Huge {rovers} -- {', '.join(refs)} movement since {onset:%Y-%m-%d}"
     if stacked and holder is not None:
         _frame_on_map(fig, holder, column, title, title_status, status_color)
+        _missing_note(fig, pairs, onset)
         return fig
     # the logo in the band above the panels, left of the title (BGÓ 2026-11-03):
     # at most half the band high and a fifth of the figure wide (the logo is
@@ -1370,6 +1416,7 @@ def polar_figure(
                  title_status, ha="center", fontsize="large",
                  color=status_color)  # fmt: skip
     # no footnote (BGÓ 2026-11-02): run() prints it to the log
+    _missing_note(fig, pairs, onset)
     return fig
 
 
