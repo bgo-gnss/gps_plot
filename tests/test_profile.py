@@ -95,9 +95,12 @@ def test_prepare_puts_the_rover_on_the_ground(motion: float, west: bool) -> None
     assert prof.z0 == pytest.approx(760.0)  # 800 - 0.4 * 100
     assert prof.plunge is not None
     assert prof.plunge.deg == pytest.approx(np.degrees(np.arctan(0.5)), abs=0.1)
-    # the range holds the ground and the scaled points
-    assert prof.lo < min(np.nanmin(prof.z), prof.z0 - 5 * 5.0)
-    assert prof.hi > np.nanmax(prof.z)
+    # the range holds the ground within the half width and the scaled points
+    near = prof.z[np.abs(prof.s) <= prf.PROFILE_HALF_M]
+    assert prof.lo < min(np.nanmin(near), prof.z0 - 5 * 5.0)
+    assert prof.hi > np.nanmax(near)
+    # the box: the ground and the rover, padded
+    assert prof.box == pytest.approx(np.nanmax(near) - np.nanmin(near) + 15 + 25, abs=1)
     # past the DEM edge (the profile reaches 250 m from a rover at 300 m)
     edge = prf.prepare(_pair(90.0, pos=(300.0, 0.0)), _dem(), scale=5.0)
     assert np.isnan(edge.z).any() and np.isfinite(edge.z).any()
@@ -136,3 +139,30 @@ def test_no_motion_at_all() -> None:
                              panels=("sector", "profile"))  # fmt: skip
     assert any(t.get_text() == "no motion direction" for ax in fig.axes
                for t in ax.texts)  # fmt: skip
+
+
+def test_scale_counts_rtk_points_but_not_one_wild_hour() -> None:
+    from types import SimpleNamespace
+
+    daily = np.array([[0.0, -10.0], [0.0, 0.0], [0.0, -10.0]])  # 14 mm
+    pp = SimpleNamespace(d=daily, rtk=None, rtk_since=np.array([]))
+    alone = prf.scale_for([pp])
+    up = np.r_[np.linspace(-40.0, 0.0, 200), 500.0]  # one wild hour
+    rtk = np.vstack([np.zeros_like(up), np.zeros_like(up), up])
+    pp_rtk = SimpleNamespace(d=daily, rtk=SimpleNamespace(d=rtk, path=rtk[:, :1]),
+                             rtk_since=np.arange(up.size))  # fmt: skip
+    with_rtk = prf.scale_for([pp_rtk])
+    assert with_rtk < alone  # the RTK points fit in too
+    assert with_rtk >= polar._nice(0.5 * prf.PROFILE_HALF_M / 60.0)  # not the 500
+
+
+def test_end_along_up_is_the_newest_level() -> None:
+    t = np.arange(10.0)
+    along, up = -2.0 * t, -t
+    prof = prf.Profile(None, None, None, 0.0, t, along, up, np.ones(10),
+                       np.ones(10), None, 0.0, 1.0)  # fmt: skip
+    got = prf.end_along_up(prof)
+    assert got is not None
+    assert len(got) == 4
+    assert got[0] == pytest.approx(-18.0, abs=2.1)
+    assert got[1] == pytest.approx(-9.0, abs=1.1)
