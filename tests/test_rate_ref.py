@@ -64,3 +64,31 @@ def test_the_ts_parser_takes_rate_ref_and_refuses_it_with_model():
         run(bad, parser)
     with pytest.raises(SystemExit):
         parser.parse_args(["VONC", "--rate-ref", "20140131:20130901"])
+
+
+@pytest.mark.parametrize(
+    ("given", "ref", "terms"),
+    [
+        ({"rate_ref": (2013.67, 2014.08)}, "detrend", ("periodic",)),
+        ({"along": "opt"}, "detrend", ("periodic",)),
+        ({"rate_ref": (2013.67, 2014.08), "ref": "plate"}, "plate", None),
+        ({"along": "opt", "detrend_terms": ("linear",)}, None, ("linear",)),
+        ({"rate_ref": (2013.67, 2014.08), "model": "curve"}, None, None),
+        ({}, None, None),
+    ],
+)
+def test_seasonal_free_default(given, ref, terms):
+    from gps_plot.plot_gps_timeseries import seasonal_free_default
+
+    kw = {"ref": None, "model": None, "detrend_terms": None, "rate_ref": None,
+          "along": None, **given}  # fmt: skip
+    seasonal_free_default(kw)
+    assert kw["ref"] == ref and kw["detrend_terms"] == terms
+
+
+def test_seasonal_kept():
+    assert lr.seasonal_kept("plate", None)
+    assert lr.seasonal_kept("itrf2008", None)
+    assert not lr.seasonal_kept("detrend", None)  # default terms remove it
+    assert not lr.seasonal_kept("detrend", ("periodic",))
+    assert lr.seasonal_kept("detrend", ("linear",))

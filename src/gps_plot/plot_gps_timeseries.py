@@ -654,6 +654,28 @@ def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
     return tuple(t for t in DETREND_TERM_GROUPS if t in want)
 
 
+def seasonal_free_default(kwargs: dict[str, Any]) -> None:
+    """``--rate-ref`` / ``--along`` without ``--ref``: read the series with the
+    seasonal removed (``--ref detrend --detrend-terms periodic``, the
+    product's plate-periodic), in place.
+
+    BGÓ 2026-11-16: rates and directions are read with the seasonal removed.
+    A few months' reference rate on a series that keeps its seasonal took
+    ~9° off VONC's direction (N rate 2.7 instead of 5.4 mm/yr). The stored
+    LINE is not removed: it can be fitted to too short a quiet span before
+    a volcano's signal (VONC). An explicit ``--ref``, ``--detrend-terms`` or
+    ``--model`` is left as given.
+    """
+    if (
+        kwargs.get("ref") is None
+        and kwargs.get("model") is None
+        and kwargs.get("detrend_terms") is None
+        and (kwargs.get("rate_ref") is not None or kwargs.get("along") is not None)
+    ):
+        kwargs["ref"] = "detrend"
+        kwargs["detrend_terms"] = ("periodic",)
+
+
 def _model_terms(raw: str | None) -> tuple[str, ...] | None:
     """Parse ``--model-terms``: comma list → canonical-order tuple."""
     if raw is None:
@@ -1461,6 +1483,7 @@ def run(
             k.strip() for k in kwargs["segment_kinds"].split(",") if k.strip()
         )
         kwargs["rate"] = True
+    seasonal_free_default(kwargs)
     if kwargs.get("ref") is None and kwargs.get("model") is None:
         kwargs["ref"] = "plate"  # the default since 2026-10-19
     if kwargs["along"] is not None and kwargs.get("model") is not None:

@@ -1467,8 +1467,10 @@ def plotTime(
         # --rate-ref: the series relative to the product rate of a window
         # (PLAN-ts-quakes Q-T4), zero kept at the first epoch
         from gps_plot.layers.rate import (
+            SEASONAL_SAFE_YEARS,
             rate_settings,
             reference_rate,
+            seasonal_kept,
             subtract_rate,
             window_label,
         )
@@ -1480,6 +1482,17 @@ def plotTime(
             uncert=uncert, Dir=Dir, common_mode=common_mode,
         )  # fmt: skip
         ref_record = reference_rate(sta, rate_ref, ref_settings)
+        if seasonal_kept(ref, detrend_terms) and (
+            rate_ref[1] - rate_ref[0] < SEASONAL_SAFE_YEARS
+        ):
+            warnings.warn(
+                f"{sta}: --rate-ref {window_label(rate_ref)} is shorter than a "
+                "year on a series that keeps its seasonal: the reference rate "
+                "takes the seasonal's slope with it (use --ref detrend "
+                "--detrend-terms periodic)",
+                UserWarning,
+                stacklevel=2,
+            )
         t_zero = float(np.asarray(main_series.t, dtype=float)[0])
         main_series = dataclasses.replace(
             main_series,

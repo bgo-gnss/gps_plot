@@ -288,8 +288,11 @@ def resolve_directions(
 
 #: --along keywords: the motion over the plotted window, or directions:
 ALONG_KEYWORDS = ("opt", "motion")
-#: --along opt: the end-level window [days], as gpsplot direction's default
-ALONG_WINDOW_DAYS = 7.0
+#: --along opt: the end-level window [days]. 30, not gpsplot direction's 7:
+#: a direction over years wants steady end levels (VONC 2018–: 286.0° with
+#: 7 d, 284.8° with 30 d and with the old 60-point rule); halved for short
+#: plots (at most half the plotted span)
+ALONG_WINDOW_DAYS = 30.0
 
 
 def parse_along(value: str) -> str:

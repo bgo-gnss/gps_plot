@@ -98,6 +98,19 @@ def _tex(text: str) -> str:
     return out.replace("<", "$<$").replace(">", "$>$")
 
 
+#: a rate window at least this long [yr] averages the seasonal out
+SEASONAL_SAFE_YEARS = 1.0
+
+
+def seasonal_kept(ref: str | None, detrend_terms: Sequence[str] | None) -> bool:
+    """True when the plotted series still carries the seasonal signal:
+    ``--ref plate`` (or an ITRF series), or ``--ref detrend`` whose terms
+    leave ``periodic`` in (the default terms remove it)."""
+    if ref != "detrend":
+        return True
+    return detrend_terms is not None and "periodic" not in detrend_terms
+
+
 def window_label(window: tuple[float, float]) -> str:
     """``2026.62–2026.79`` of a window [yr]."""
     return f"{window[0]:.2f}--{window[1]:.2f}"
