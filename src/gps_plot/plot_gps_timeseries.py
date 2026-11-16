@@ -759,6 +759,45 @@ def build_parser(
         "(epicentral distance to the station, or to each end of a baseline). "
         "Repeatable. E.g. --quake 2026-10-19,64.63,-17.53,5.2,BB",
     )
+    parser.add_argument(
+        "--quakes",
+        dest="quake_catalogue",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="REGION",
+        help="catalogue earthquakes on the top panel: magnitudes and the "
+        "cumulative seismic moment on right-hand axes (SIL before 2026-02-01, "
+        "SeisComP after; the seam is marked and the moment after it is "
+        "estimated from the magnitudes). REGION = a name in quake_regions.yaml, "
+        "W,S,E,N or LAT,LON,KM; without it the station area's default region. "
+        "Options --quake-*; adds -quakes to the file name",
+    )
+    parser.add_argument(
+        "--quake-star",
+        type=float,
+        default=4.5,
+        metavar="M",
+        help="--quakes: a red star from this magnitude (default 4.5)",
+    )
+    parser.add_argument(
+        "--quake-label",
+        type=float,
+        default=5.0,
+        metavar="M",
+        help="--quakes: write the magnitude from this one (default 5)",
+    )
+    parser.add_argument(
+        "--no-moment",
+        action="store_true",
+        help="--quakes: magnitudes only, no cumulative moment",
+    )
+    try:
+        from geo_dataread.gpsquake import add_quake_args
+    except ImportError:  # an older geo_dataread (before its seismic merge)
+        pass  # --quakes is then refused in run(); every other plot still works
+    else:
+        add_quake_args(parser, prefix="quake-")
     common.add_period_options(parser, specials=special_allow, multi=True)
     common.add_selection_options(parser)
     common.add_output_options(parser, config)
@@ -1359,6 +1398,11 @@ def run(
         kwargs["quakes"] = [parse_quake(q) for q in kwargs.pop("quake") or ()]
     except ValueError as err:
         parser.error(str(err))
+    from gps_plot.layers.quakes import request_from_args
+
+    if kwargs.get("quake_catalogue") is not None and "quake_source" not in kwargs:
+        parser.error("--quakes needs geo_dataread with the seismic package (gpsquake)")
+    kwargs["quake_request"] = request_from_args(kwargs)
     # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
     # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
     # --stages sets the enable flags; an explicit --outlier-param still wins,

@@ -1173,6 +1173,7 @@ def plotTime(
     segment_min_days: int = 30,
     events_catalog: str | None = None,
     quakes: Sequence[Any] | None = None,
+    quake_request: Any = None,
     legacy_names: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
@@ -1944,6 +1945,30 @@ def plotTime(
 
         add_quake_marks(fig, quakes, station_points(sta))
 
+    if quake_request is not None:
+        # catalogue quakes + cumulative moment on the top panel's twin axes
+        # (--quakes, PLAN-ts-quakes Q-T6): SIL before the seam, SeisComP after
+        import matplotlib.dates as mdates
+
+        from gps_plot.layers.quakes import add_quake_panel, load_quakes
+
+        top = fig.axes[0]
+        q_lo, q_hi = (
+            mdates.num2date(v).replace(tzinfo=None)  # type: ignore[no-untyped-call]
+            for v in top.get_xlim()
+        )
+        q_df, q_report, q_region = load_quakes(sta, quake_request, q_lo, q_hi)
+        q_info = add_quake_panel(
+            top, q_df, q_report, q_region,
+            star=quake_request.star, label=quake_request.label,
+            moment=quake_request.moment,
+        )  # fmt: skip
+        print(
+            f"{sta} quakes {q_region}: n = {q_info.n} "
+            f"({q_info.n_automatic} automatic), moment {q_info.moment_nm:.3g} N·m; "
+            f"{q_info.summary}"
+        )
+
     if logo:
         inpLogo(fig)
 
@@ -1992,6 +2017,8 @@ def plotTime(
                 filend += "-line-" + "-".join(model_terms)
         if rate_ref is not None:
             filend += "-relrate"  # the window is in the title, not the name
+        if quake_request is not None:
+            filend += "-quakes"  # the region is in the legend, not the name
         if along is not None:
             # the mode, not the azimuth (plot names carry no tuning numbers)
             filend += "-along" + (f"-{along}" if along in ("opt", "motion") else "")
