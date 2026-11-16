@@ -53,7 +53,7 @@ figures"). plots.yaml `tool: map` products run maps through `gpsplot run` (Svart
 year + 3 months on one map, `--min-fill 0.6` per window, vertical arrows of
 the windows side by side; `--last FROM:TO` = a window FROM to TO days back,
 e.g. 3 + 3 months; `ts_stations:` adds check series = `ts --rate-last`
-with the map's windows and ref, the arrows' numbers; stale map files are
+with the map's windows and ref, the arrows' numbers; stale map files (no run writes them, unmodified for 2 days) are
 deleted; design doc "Map products"). `map station --track EVENT`
 = daily positions since an event as time-coloured dots + rate arrows
 (`track.py`; map-lane doc); colour bar small in the upper right;

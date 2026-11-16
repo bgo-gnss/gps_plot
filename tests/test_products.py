@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -869,7 +871,7 @@ def test_stale_map_plots_are_files_no_run_writes(tmp_path: Path) -> None:
     for stem in ("sv-6man-3man-SENG", "sv-6man-3man-HS02"):
         (folder / "ts" / f"{stem}.png").write_text("x")
     (folder / "notes.txt").write_text("x")
-    stale = products.stale_map_plots(jobs, jobs, tmp_path)
+    stale = products.stale_map_plots(jobs, jobs, tmp_path, min_age_days=0)
     assert [f.relative_to(folder).as_posix() for f in stale] == [
         "sv-6man-3man-SENG.png",  # a check series moved to ts/
         "sv-ar-3man-larett.png",
@@ -877,10 +879,30 @@ def test_stale_map_plots_are_files_no_run_writes(tmp_path: Path) -> None:
     ]
     # a dir a time-series product also writes to is left alone
     ts = products.Job("graphs", None, "maps/svartsengi", ("SENG",), (), False)
-    left = products.stale_map_plots(jobs, [*jobs, ts], tmp_path)
+    left = products.stale_map_plots(jobs, [*jobs, ts], tmp_path, min_age_days=0)
     assert [f.relative_to(folder).as_posix() for f in left] == [
         "ts/sv-6man-3man-HS02.png"
     ]
+
+
+def test_stale_map_plots_spare_a_file_another_writer_keeps_fresh(
+    tmp_path: Path,
+) -> None:
+    m = products.Job("m", None, "maps/rn", (), (), False, tool="map",
+                     group="rn-map")  # fmt: skip
+    folder = tmp_path / "maps/rn"
+    folder.mkdir(parents=True)
+    for stem in ("rn-map", "rn-rtk-12klst", "old-run"):
+        (folder / f"{stem}.png").write_text("x")
+    now = time.time()
+    day = 86400.0
+    os.utime(folder / "old-run.png", (now - 3 * day, now - 3 * day))
+    os.utime(folder / "rn-rtk-12klst.png", (now - 600, now - 600))
+    stale = products.stale_map_plots([m], [m], tmp_path, now=now)
+    assert [f.name for f in stale] == ["old-run.png"]
+    # the leftover of a dropped writer goes once it is old enough
+    later = products.stale_map_plots([m], [m], tmp_path, now=now + 3 * day)
+    assert [f.name for f in later] == ["old-run.png", "rn-rtk-12klst.png"]
 
 
 def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path: Path) -> None:
@@ -892,7 +914,7 @@ def test_a_track_map_draws_its_own_series_and_keeps_them(tmp_path: Path) -> None
     (tmp_path / "maps/sv/ts").mkdir(parents=True)
     for stem in ("sv-track-SVIE", "sv-track-SVIN"):
         (tmp_path / "maps/sv/ts" / f"{stem}.png").write_text("x")
-    stale = products.stale_map_plots([job], [job], tmp_path)
+    stale = products.stale_map_plots([job], [job], tmp_path, min_age_days=0)
     assert [f.name for f in stale] == ["sv-track-SVIN.png"]
 
 
@@ -1283,7 +1305,7 @@ def test_named_ts_product_is_a_kort_figure(tmp_path) -> None:
         (folder / f"{stem}.png").write_text("x")
     m = products.Job("m", None, job.out_dir, (), (), False, tool="map",
                      group="hengill-map")  # fmt: skip
-    stale = products.stale_map_plots([m], [m, job], tmp_path)
+    stale = products.stale_map_plots([m], [m, job], tmp_path, min_age_days=0)
     assert [f.name for f in stale] == ["old.png"]
 
 
