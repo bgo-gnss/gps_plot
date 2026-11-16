@@ -33,7 +33,7 @@ import dataclasses
 import datetime as dt
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,58 @@ RTK_PCT = 1.0
 #: margins below / above that range, of it, per panel: the top panel's
 #: logo, the middle (across, the quietest) panel's rates legend
 RTK_PAD = ((0.1, 0.15), (0.1, 0.35), (0.1, 0.1))
+#: an RTK station counts as silent once its newest hour is this old (the
+#: title's red "Last epoch" rule)
+RTK_STALE = pd.Timedelta(hours=1)
+
+
+def silent_stations(
+    newest: dict[str, pd.Timestamp],
+    now: dt.datetime,
+    rtk: bool,
+    via: dict[str, str] | None = None,
+) -> list[tuple[str, pd.Timestamp]]:
+    """``[(label, newest epoch)]`` of the stations that have gone silent,
+    oldest first: a day behind the newest of them, or stale against the
+    clock (RTK: :data:`RTK_STALE`; daily: the title's ``data_is_current``).
+
+    Comparing the stations only with each other missed the one that
+    stopped last: on 2026-11-16 SVIE went quiet at 13:03, was still the
+    newest, and the note blamed SVIN alone, whose RTK pair (SVIN-SVIE)
+    needs SVIE. An RTK label names its pair, so that dependence shows.
+    """
+    from gps_plot import timesmatplt as tplt
+
+    if not newest:
+        return []
+    ref = max(newest.values())
+
+    def stale(t: pd.Timestamp) -> bool:
+        if ref - t >= pd.Timedelta(days=1):
+            return True
+        if rtk:
+            return bool(pd.Timestamp(now) - t >= RTK_STALE)
+        return not tplt.data_is_current(t.to_pydatetime())
+
+    def label(s: str) -> str:
+        return f"{s} (via {via[s]})" if rtk and via and s in via else s
+
+    return [(label(s), t) for s, t in sorted(newest.items(), key=lambda p: p[1])
+            if stale(t)]  # fmt: skip
+
+
+def silence_text(
+    missing: Sequence[tuple[str, pd.Timestamp]], now: dt.datetime, rtk: bool
+) -> str:
+    """The red note: ``no data: SVIN (via SVIN-SVIE) since 14 Nov, SVIE
+    (via SVIE-SKFC) since 16 Nov 13:00`` (RTK silences under a day with the
+    hour)."""
+
+    def when(t: pd.Timestamp) -> str:
+        recent = rtk and pd.Timestamp(now) - t < pd.Timedelta(days=1)
+        return f"{t:%d %b %H:%M}" if recent else f"{t:%d %b}"
+
+    return "no data: " + ", ".join(f"{s} since {when(t)}" for s, t in missing)
 
 
 # --- the series -------------------------------------------------------------
@@ -401,6 +453,7 @@ def figure(
     ylabels: Sequence[str] | None = None,
     ylim: Sequence[Any] = (),
     note: str | None = None,
+    missing: Sequence[tuple[str, pd.Timestamp]] = (),
 ) -> Any:
     """The figure in the RTK / baseline-stack template (compose.stack_figure:
     the stack frame, logo, last-epoch title; with ``rtk`` the plot-time line)."""
@@ -446,6 +499,16 @@ def figure(
     if note:
         fig.axes[2].text(0.01, 0.98, note, transform=fig.axes[2].transAxes,
                          fontsize="x-small", color="0.3", va="top", wrap=True)  # fmt: skip
+    if missing:
+        # a station that has stopped delivering is NOT silently absent: the
+        # figure keeps updating for the others and says so, in red, top right
+        text = silence_text(missing, now, rtk)
+        fig.axes[0].text(
+            0.995, 0.985, text, transform=fig.axes[0].transAxes,
+            fontsize="small", color="red", va="top", ha="right", zorder=20,
+            bbox={"boxstyle": "round,pad=0.3", "fc": "white", "ec": "red",
+                  "alpha": 0.9},
+        )  # fmt: skip
     if rtk:
         rtk_classic.now_line(fig.axes[:3], now=min(now, end.to_pydatetime()), last=last,
                              fontsize=12)  # fmt: skip
@@ -895,6 +958,38 @@ def run(prog: str, argv: list[str]) -> int:
         return 1
     out.mkdir(parents=True, exist_ok=True)
 
+    def last_finite(df: pd.DataFrame) -> pd.Timestamp | None:
+        """The newest row carrying any finite value (None: the window is empty).
+
+        A rover that has gone quiet (SVIN stops delivering for days at a time)
+        leaves a span with no usable values at all; asking for ``index[-1]``
+        then raised IndexError and killed the WHOLE run, so every other
+        station's frame figures stopped being produced too. The figure for that
+        station and span is skipped with a line on stderr instead.
+        """
+        got = df.dropna(how="all")
+        return None if got.empty else pd.Timestamp(got.index[-1])
+
+    def missing_since(
+        frame_of: Callable[[str], pd.DataFrame | None],
+        names: Sequence[str],
+        rtk: bool,
+    ) -> list[tuple[str, pd.Timestamp]]:
+        """:func:`silent_stations` over each station's newest finite epoch.
+
+        A rover that has gone quiet (SVIN stops delivering for days) still gets
+        its figure — the others keep updating — but the gap is stated in red
+        rather than left to be inferred from a shorter series.
+        """
+        newest = {s: f for s in names
+                  if (frame := frame_of(s)) is not None
+                  and (f := last_finite(frame)) is not None}  # fmt: skip
+        return silent_stations(newest, now, rtk, via_of)
+
+    def tied_frame(sta: str) -> pd.DataFrame | None:
+        got = tied.get(sta, {}).get("1h")
+        return None if got is None else got[0]
+
     def motion_note(names: Sequence[str]) -> str:
         """The motion axis of ``names``, on its own line of the note."""
         if not along:
@@ -950,6 +1045,11 @@ def run(prog: str, argv: list[str]) -> int:
             if sta not in tied or (span_got := piece(sta, days)) is None:
                 continue
             main, zero, newest = span_got
+            span_last = last_finite(main.loc[start:])  # the figure's own span
+            if span_last is None:
+                print(f"{prog}: {sta} {span_name(days)}: no data in the window, "
+                      "figure skipped", file=sys.stderr)  # fmt: skip
+                continue
             made.append((sta, main, zero, newest))
             ser, sty, col = [], [], []
             cmp = compare.get(sta)
@@ -971,7 +1071,7 @@ def run(prog: str, argv: list[str]) -> int:
                 f"solutions (daily medians, linear between noons); after "
                 f"{newest:%d %b}: provisional{motion_note([sta])}"
             )
-            last = min(main.dropna(how="all").index[-1].to_pydatetime(), now)
+            last = min(span_last.to_pydatetime(), now)
             fig = figure(ser, sty, col, main=f"{sta}: RTK + daily",
                          sub=f"frame: {frame_name}", start=start, end=end, last=last,
                          now=now, rtk=True,
@@ -1008,14 +1108,16 @@ def run(prog: str, argv: list[str]) -> int:
             + f", tied to the daily solutions; after {newest_all:%d %b}: provisional"
             + motion_note([m[0] for m in made])
         )
-        last = min(
-            max(m[1].dropna(how="all").index[-1] for m in made).to_pydatetime(), now
-        )
+        lasts = [f for m in made if (f := last_finite(m[1].loc[start:])) is not None]
+        if not lasts:  # nothing finite anywhere in this span
+            continue
+        last = min(max(lasts).to_pydatetime(), now)
         fig = figure(ser, sty, col, main=f"{', '.join(names)}: RTK + daily",
                      sub=f"frame: {frame_name}", start=start, end=end, last=last,
                      now=now, rtk=True,
                      ylabels=_ylabels([azim[s] for s in names]) if along else None,
-                     note=note)  # fmt: skip
+                     note=note,
+                     missing=missing_since(tied_frame, names, True))  # fmt: skip
         sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
                                                    azim[m[0]], days < 1))
                          for m in made])  # fmt: skip
@@ -1039,13 +1141,21 @@ def run(prog: str, argv: list[str]) -> int:
                        _zeroed(daily[s].loc[keep], start), sigma[s].loc[keep],
                        azim[s], "daily")
                for s in stations]  # fmt: skip
-        last_day = max(daily[s].dropna(how="all").index[-1] for s in stations)
+        last_days = [
+            f for s in stations if (f := last_finite(daily[s].loc[start:])) is not None
+        ]
+        if not last_days:
+            print(f"{prog}: daily {days:g} d: no daily data in the window, "
+                  "figure skipped", file=sys.stderr)  # fmt: skip
+            continue
+        last_day = max(last_days)
         fig = figure(ser, ["points"] * len(ser), [colors[s] for s in stations],
                      main=f"{', '.join(stations)}",
                      sub=f"frame: {frame_name}, plate removed",
                      start=start, end=end, last=last_day.to_pydatetime(), now=now,
                      rtk=False, ylabels=ylabels,
                      ylim=[args.ylim] if args.ylim else [],
+                     missing=missing_since(daily.get, stations, False),
                      note=f"daily (24 h), cleaned, minus the weighted daily mean of "
                      f"{', '.join(refs)} (trend + seasonal removed); empirical "
                      f"$\\sigma$"
