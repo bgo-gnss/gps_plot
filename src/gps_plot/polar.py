@@ -1974,7 +1974,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
             else common.config_dir(config, "fig_dir", "")
         )
         tplt.saveFig(os.path.join(fig_dir, stem), args.save, fig)
-        written = list(getattr(fig, "_gps_files", ()))
+        written: list[str] = list(getattr(fig, "_gps_files", ()))
         if args.rtk and args.rate == "rtk":  # the arrows' windows, for rtk-tie
             path = os.path.join(fig_dir, f"{base}-rtk-rates.json")
             write_rates(path, pairs, now)

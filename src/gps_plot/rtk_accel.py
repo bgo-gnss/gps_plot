@@ -37,7 +37,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -51,16 +51,24 @@ ORDER = 2
 BG_H = 48.0
 MIN_FRAC = 0.6
 MIN_FRAC_BG = 0.5
-STEP = pd.Timedelta("10min")
+# The durations are pandas Timedeltas, never NaT: pinning the type keeps
+# pyright from carrying ``Timedelta | NaTType`` into rolling()/floor(), which
+# take a frequency (BGÓ 2026-11-16).
+STEP: pd.Timedelta = cast(pd.Timedelta, pd.Timedelta("10min"))
 STEP_H = 1.0 / 6.0
-GRID = pd.Timedelta("15min")
+GRID: pd.Timedelta = cast(pd.Timedelta, pd.Timedelta("15min"))
 GRID_H = 0.25
+#: the same two steps as strings, for floor()/freq= (the stubs take a Frequency)
+STEP_FREQ = "10min"
+GRID_FREQ = "15min"
 PERSIST_FRAC = 0.5
-SID = pd.Timedelta(seconds=86164)  # GPS ground-track repeat
+SID: pd.Timedelta = cast(
+    pd.Timedelta, pd.Timedelta(seconds=86164)
+)  # GPS ground-track repeat
 SIDEREAL_DAYS = 7
 #: data before ``now`` the chain needs: 7 sidereal days + 12 h (centred 24 h
 #: median) before the oldest row of 96 h of SG window + background, + slack
-HISTORY = pd.Timedelta(days=12)
+HISTORY: pd.Timedelta = cast(pd.Timedelta, pd.Timedelta(days=12))
 MONTH_H = 30.44 * 24
 TARGETS = {"yellow": 1.0, "orange": 4.0 / 12.0, "red": 1.0 / 12.0}
 K_GRID = np.round(np.geomspace(0.5, 40.0, 300), 4)
@@ -115,24 +123,30 @@ def ten_min(
         np.asarray(y_mm, float).T, index=pd.DatetimeIndex(t), columns=["n", "e", "u"]
     )
     bins = df.resample("10min", label="right", closed="right")
-    return bins.median().where(bins.count() >= min_count)
+    counts = cast(pd.DataFrame, bins.count())
+    return bins.median().where(counts >= min_count)
 
 
 def despike_coarse(df: pd.DataFrame, hours: float = 3.0, nsig: float = 6.0,
                    floor_mm: float = 5.0) -> pd.DataFrame:  # fmt: skip
     """Trailing Hampel: a value further than nsig robust sigmas (≥ floor)
     from the trailing median becomes NaN."""
-    win = pd.Timedelta(hours=hours)
+    win = cast(pd.Timedelta, pd.Timedelta(hours=hours))
     med = df.rolling(win, min_periods=6).median()
     mad = (df - med).abs().rolling(win, min_periods=6).median() * 1.4826
-    lim = np.maximum(nsig * mad, floor_mm)
+    lim = (nsig * mad).clip(lower=floor_mm)  # a frame, so a frame comparison
     return df.where((df - med).abs() <= lim)
 
 
 def sidereal(df: pd.DataFrame, days: int = SIDEREAL_DAYS) -> pd.DataFrame:
     """Minus the multipath model: the median over the previous ``days``
     sidereal days of the high-passed series (causal)."""
-    hp = df - df.rolling(pd.Timedelta(hours=24), center=True, min_periods=36).median()
+    hp = (
+        df
+        - df.rolling(
+            cast(pd.Timedelta, pd.Timedelta(hours=24)), center=True, min_periods=36
+        ).median()
+    )
     shifted = [
         hp.shift(freq=SID * k).reindex(
             df.index, method="nearest", tolerance=pd.Timedelta("5min")
@@ -194,8 +208,13 @@ def estimate(df: pd.DataFrame, grid: pd.DatetimeIndex) -> np.ndarray:
     d = df[["n", "e", "u"]].dropna(how="all")
     if d.empty or not len(grid):
         return out
-    idx = pd.date_range(d.index.min().floor(STEP), d.index.max().floor(STEP), freq=STEP)
-    y = d.groupby(d.index.floor(STEP)).median().reindex(idx)
+    idx = pd.date_range(
+        _ts(d.index.min()).floor(STEP_FREQ),
+        _ts(d.index.max()).floor(STEP_FREQ),
+        freq=STEP,
+    )
+    # pd.Grouper floors the same way as index.floor(freq) and is typed
+    y = d.groupby(pd.Grouper(freq=STEP_FREQ)).median().reindex(idx)
     y = despike_fine(y - y.median())
     Y = y.to_numpy(float)
     ok = np.isfinite(Y).all(axis=1)
@@ -243,8 +262,10 @@ def input_noise(df: pd.DataFrame, grid: pd.DatetimeIndex) -> np.ndarray:
     d = df[["n", "e", "u"]]
     if d.dropna(how="all").empty or not len(grid):
         return out
-    resid = d - d.rolling(pd.Timedelta(hours=1), min_periods=3).median()
-    win = pd.Timedelta(hours=NOISE_H)
+    resid = (
+        d - d.rolling(cast(pd.Timedelta, pd.Timedelta(hours=1)), min_periods=3).median()
+    )
+    win = cast(pd.Timedelta, pd.Timedelta(hours=NOISE_H))
     iqr = (
         resid.rolling(win, min_periods=36).quantile(0.75)
         - resid.rolling(win, min_periods=36).quantile(0.25)
@@ -253,6 +274,18 @@ def input_noise(df: pd.DataFrame, grid: pd.DatetimeIndex) -> np.ndarray:
     both = pd.DataFrame({"h": h, "u": iqr["u"]})
     got = both.reindex(grid, method="ffill", tolerance=pd.Timedelta("20min"))
     return np.asarray(got.to_numpy(float), dtype=float)
+
+
+def _ts(value: Any) -> pd.Timestamp:
+    """Any time as a pandas Timestamp (pandas unions the overloads, and these
+    values are never NaT)."""
+    return cast(pd.Timestamp, pd.Timestamp(value))
+
+
+def _naive(ts: Any) -> dt.datetime:
+    """A pandas time as a naive datetime (pandas types to_pydatetime() as
+    ``datetime | NaTType``, and a grid step is never NaT)."""
+    return cast(dt.datetime, pd.Timestamp(ts).to_pydatetime())
 
 
 def pair_series(
@@ -407,10 +440,10 @@ def live(
 ) -> dict[str, Any]:
     """The acceleration part of the area's status at ``now`` (naive UTC):
     the level, and what set it (pair, scale, component, a_T, Δv)."""
-    end = pd.Timestamp(now).floor(GRID)
+    end = pd.Timestamp(now).floor(GRID_FREQ)
     hold = max(persist_steps(t) for t in SCALES)
     grid = pd.date_range(end - GRID * (hold + 1), end, freq=GRID)
-    start = (end - HISTORY).to_pydatetime()
+    start = _naive(end - HISTORY)
     rows: list[dict[str, Any]] = []
     best: tuple[float, float, dict[str, Any]] | None = None
     for pair in pairs:
@@ -520,9 +553,7 @@ def calibrate(
         grid = pd.date_range(ta, tb, freq=GRID, inclusive="left")
         got = {}
         for p in pairs:
-            pv = pair_series(
-                read, p, (ta - HISTORY).to_pydatetime(), tb.to_pydatetime(), grid
-            )
+            pv = pair_series(read, p, _naive(ta - HISTORY), _naive(tb), grid)
             if pv is not None:
                 got[p] = components(pv[0])
                 raw_v.setdefault(p, []).append(pv[0])
