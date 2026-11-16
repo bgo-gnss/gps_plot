@@ -14,6 +14,7 @@ import datetime as dt
 import os
 import re
 import shlex
+import time
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1244,8 +1245,19 @@ def stale_baseline_plots(
     return stale
 
 
+#: a plot is only stale once it has not been rewritten for this long: a file
+#: another writer keeps fresh in a map product's directory (the rtk-map timer's
+#: reykjanes-rtk-12klst.png) stays, a dropped run's leftover goes days later
+STALE_MIN_AGE_DAYS = 2.0
+
+
 def stale_map_plots(
-    jobs: Sequence[Job], configured: Sequence[Job], root: Path
+    jobs: Sequence[Job],
+    configured: Sequence[Job],
+    root: Path,
+    *,
+    min_age_days: float = STALE_MIN_AGE_DAYS,
+    now: float | None = None,
 ) -> list[Path]:
     """Plots in a map product's directory that no configured job writes.
 
@@ -1254,8 +1266,11 @@ def stale_map_plots(
     taken out of ``ts_stations:``, leaves its old file behind. Only the
     directories of the selected map jobs are looked at, against the names
     of every configured job writing there (``configured`` is unfiltered).
-    A directory other (time-series) products also write to is left alone.
+    A directory other (time-series) products also write to is left alone,
+    and so is a file modified within ``min_age_days`` (another writer, such
+    as a timer outside plots.yaml, keeps it fresh).
     """
+    cutoff = (time.time() if now is None else now) - min_age_days * 86400.0
     names: dict[str, set[str]] = {}
     shared: set[str] = set()  # a dir other products write to: left alone
     for job in configured:
@@ -1279,7 +1294,10 @@ def stale_map_plots(
         stale += [
             f
             for f in sorted(folder.iterdir())
-            if f.is_file() and f.suffix in (".png", ".pdf") and f.stem not in keep
+            if f.is_file()
+            and f.suffix in (".png", ".pdf")
+            and f.stem not in keep
+            and f.stat().st_mtime < cutoff
         ]
     return stale
 
