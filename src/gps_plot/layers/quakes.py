@@ -159,6 +159,10 @@ def station_points(sta: str) -> dict[str, tuple[float, float]]:
 MAG_MID = 4.0
 MAG_STAR = 4.5
 MAG_LABEL = 5.0
+#: fill of an automatic solution: it has a location, not a class (no
+#: magnitude is claimed for it, see :func:`quake_classes`)
+AUTO_COLOR = "0.72"
+
 SEAM_COLOR = "tab:red"
 MOMENT_FILL = "0.85"
 #: the outer right axis (moment) sits this far right of the panel, in axes
@@ -313,6 +317,49 @@ def _seam(report: object) -> dt.datetime | None:
     return t.tz_convert("UTC").tz_localize(None).to_pydatetime()  # type: ignore[no-any-return]
 
 
+def quake_classes(
+    df: object, *, star: float = MAG_STAR, label: float = MAG_LABEL
+) -> dict[str, Any]:
+    """The magnitude classes and the label mask, from REVIEWED rows only.
+
+    An automatic solution carries ``aut.mag``, which is not a measured
+    magnitude: the lane refuses to make a moment from it
+    (:func:`geo_dataread.seismic.moment.moment_estimate`), and in the
+    Bárðarbunga box every automatic row claiming M>=4.5 is an artefact at the
+    fixed default depth 5.2 km (four of them on 2022-12-27 within 75 minutes
+    at four scattered sites), while all 23 reviewed M>=4.5 sit in the caldera
+    (BGÓ 2026-11-16). So an automatic row gets no class, no star and no label;
+    it is drawn as one pale dot with no size and no outline.
+
+    Returns ``reviewed``, ``automatic``, ``grey``, ``blue``, ``star`` and
+    ``label`` as boolean arrays over ``df``'s rows.
+    """
+    import numpy as np
+    import pandas as pd  # type: ignore[import-untyped]
+
+    assert isinstance(df, pd.DataFrame)
+    mag = (
+        pd.to_numeric(df["magnitude"]).to_numpy(dtype=float, na_value=np.nan)
+        if len(df)
+        else np.zeros(0)
+    )
+    auto = (
+        (df["evaluation_mode"].astype(object) == "automatic").to_numpy(dtype=bool)
+        if len(df)
+        else np.zeros(0, dtype=bool)
+    )
+    ok = np.isfinite(mag) & (mag >= 0)
+    reviewed = ok & ~auto
+    return {
+        "reviewed": reviewed,
+        "automatic": auto,
+        "grey": reviewed & (mag < MAG_MID),
+        "blue": reviewed & (mag >= MAG_MID) & (mag < star),
+        "star": reviewed & (mag >= star),
+        "label": reviewed & (mag >= label),
+    }
+
+
 def add_quake_panel(
     ax: object,
     df: object,
@@ -326,9 +373,10 @@ def add_quake_panel(
 ) -> QuakeLayerInfo:
     """Quakes and their cumulative moment on twin axes of ``ax``.
 
-    Magnitudes on a right axis (stem + dot per event; grey < 4, blue
-    4–``star``, a red star from ``star``, the value written from ``label``;
-    automatic events hollow). The cumulative moment on an outer right axis:
+    Magnitudes on a right axis (stem + dot per REVIEWED event; grey < 4, blue
+    4–``star``, a red star from ``star``, the value written from ``label``).
+    No quake has an outline; an automatic row is a pale dot with no class.
+    The cumulative moment on an outer right axis:
     grey fill behind the data, a black step line in front, solid on SIL,
     dashed from the seam (moment estimated from SeisComP magnitudes, PLAN-
     ts-quakes Q4). A red dashed line marks the seam. ``ax`` keeps its
@@ -336,7 +384,7 @@ def add_quake_panel(
     """
     import matplotlib.dates as mdates
     import numpy as np
-    import pandas as pd  # type: ignore[import-untyped]
+    import pandas as pd
     from matplotlib.axes import Axes
 
     assert isinstance(ax, Axes) and isinstance(df, pd.DataFrame)
@@ -375,35 +423,30 @@ def add_quake_panel(
 
     handles: list[object] = []
     ok = np.isfinite(mag) & (mag >= 0)
+    cls = quake_classes(df, star=star, label=label)
     axm.vlines(x[ok], 0, mag[ok], color="0.8", lw=0.25, zorder=1)
+    # no outline on a quake (BGÓ 2026-11-16): the fill carries the class
     classes: tuple[tuple[Any, dict[str, Any], str], ...] = (
-        (ok & (mag < MAG_MID), dict(marker="o", color="0.55", ms=2.0, alpha=0.7),
+        (cls["grey"], dict(marker="o", color="0.55", ms=2.0, alpha=0.7),
          rf"M $<$ {MAG_MID:g}"),
-        (ok & (mag >= MAG_MID) & (mag < star), dict(marker="o", color="tab:blue", ms=3.5),
+        (cls["blue"], dict(marker="o", color="tab:blue", ms=3.5),
          rf"{MAG_MID:g} $\leq$ M $<$ {star:g}"),
-        (ok & (mag >= star), dict(marker="*", color="tab:red", mec="k", mew=0.5, ms=11),
+        (cls["star"], dict(marker="*", color="tab:red", ms=11),
          rf"M $\geq$ {star:g}"),
     )  # fmt: skip
     for sel, style, text in classes:
         if not sel.any():
             continue
-        for hollow in (False, True):
-            s = sel & (auto if hollow else ~auto)
-            if not s.any():
-                continue
-            kw: dict[str, Any] = dict(style)
-            if hollow:
-                kw["mfc"] = "none"
-                kw["mec"] = kw.get("color")
-            (h,) = axm.plot(x[s], mag[s], ls="none", zorder=3, **kw)
-            if not hollow:
-                h.set_label(text)
-                handles.append(h)
-    if auto.any():
-        (h,) = axm.plot([], [], ls="none", marker="o", mfc="none", mec="0.4", ms=4,
-                        label="automatic (hollow)")  # fmt: skip
+        (h,) = axm.plot(x[sel], mag[sel], ls="none", zorder=3, **style)
+        h.set_label(text)
         handles.append(h)
-    for xi, mi in zip(x[ok & (mag >= label)], mag[ok & (mag >= label)]):
+    if cls["automatic"].any():
+        # one size, the palest fill: an automatic row claims no magnitude
+        (h,) = axm.plot(x[cls["automatic"]], mag[cls["automatic"]], ls="none",
+                        marker="o", color=AUTO_COLOR, ms=2.0, zorder=2,
+                        label="automatic (no class)")  # fmt: skip
+        handles.append(h)
+    for xi, mi in zip(x[cls["label"]], mag[cls["label"]]):
         axm.annotate(f"{mi:.1f}", (xi, mi), xytext=(4, 4), textcoords="offset points",
                      fontsize=8, fontweight="bold", color="tab:red")  # fmt: skip
     top = float(np.nanmax(mag[ok])) if ok.any() else 0.0
@@ -480,4 +523,202 @@ def add_quake_panel(
         moment_automatic_nm=total_auto,
         seam=seam,
         summary=summary,
+    )
+
+
+# --------------------------------------------------------------------------
+# The same catalogue on a GMT map (gpsplot map --quakes, PLAN-ts-quakes T19)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MapQuakeInfo:
+    """What a map's quake layer drew, for the console line and tests."""
+
+    n: int
+    n_automatic: int
+    n_labelled: int
+
+
+#: a map's own sizes [cm]: circle = base + scale x (M - min_mag); a star is
+#: bigger, so a strong event still reads inside a dense cluster; an automatic
+#: row is one small pale dot
+MAP_CIRCLE_BASE_CM = 0.05
+MAP_CIRCLE_SCALE_CM = 0.05
+MAP_STAR_BASE_CM = 0.20
+MAP_STAR_SCALE_CM = 0.05
+MAP_STAR_MAX_CM = 0.42
+MAP_AUTO_CM = 0.07
+#: the automatic fill as GMT wants it: a bare "0.72" is not a grey name and
+#: falls back to black (matplotlib's AUTO_COLOR is "0.72", GMT's is "gray72")
+MAP_AUTO_FILL = "gray72"
+#: a label row's height [cm], for the greedy placement
+MAP_LABEL_ROW_CM = 0.22
+MAP_LEGEND_CM = 0.24  # swatch
+MAP_LEGEND_ROW_CM = 0.32
+MAP_LEGEND_PAD_CM = 0.16
+MAP_LEGEND_FONT = "7p,Helvetica"
+MAP_LABEL_FONT = "5.5p,Helvetica-Bold,red"
+
+
+def _map_cm_grid(region: Any, size_cm: tuple[float, float]) -> tuple[Any, Any, Any]:
+    """``(lon_of, lat_of, cm_of)`` for a region: cm -> lon/lat and back."""
+    from gps_plot import maps
+
+    width, height = size_cm
+
+    def lon_of(cm: float) -> float:
+        return float(maps.region_point(region, cm / width, 0.0)[0])
+
+    def lat_of(cm: float) -> float:
+        return float(maps.region_point(region, 0.0, cm / height)[1])
+
+    def solve(f: Any, target: float) -> float:
+        """Bisection: a Mercator y axis is not linear in latitude."""
+        lo, hi = 0.0, 1.0
+        rising = f(hi) >= f(lo)
+        for _ in range(40):
+            mid = (lo + hi) / 2
+            if (f(mid) < target) == rising:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    def cm_of(lon: float, lat: float) -> tuple[float, float]:
+        return (
+            solve(lambda fx: maps.region_point(region, fx, 0.0)[0], lon) * width,
+            solve(lambda fy: maps.region_point(region, 0.0, fy)[1], lat) * height,
+        )
+
+    return lon_of, lat_of, cm_of
+
+
+def add_quake_map_points(
+    fig: Any,
+    df: object,
+    *,
+    region: Any,
+    min_mag: float,
+    size_cm: tuple[float, float] | None = None,
+    projection: str | None = None,
+    star: float = MAG_STAR,
+    label: float = MAG_LABEL,
+    legend: bool = True,
+    legend_from: tuple[float, float] = (0.35, 2.55),
+    font: str = MAP_LEGEND_FONT,
+) -> MapQuakeInfo:
+    """The catalogue on a GMT map: the classes, then the labels, then a legend.
+
+    The same rule as :func:`add_quake_panel`: grey dots below 4, blue 4-``star``,
+    a red star from ``star``, the value written from ``label`` — all from
+    REVIEWED rows, no outlines anywhere, an automatic row a pale dot of one size
+    with no class. Not used by matplotlib, so ``fig`` is a
+    :class:`pygmt.Figure` (``.plot`` and ``.text`` only).
+
+    ``size_cm`` is the map size, which GMT reports (``insets.size_cm``); pass it
+    to avoid a GMT call in a test. ``legend_from`` is the legend's top-left, in
+    cm from the map's west edge and down from its north edge (under the logo).
+    """
+    import numpy as np
+    import pandas as pd
+
+    from gps_plot import maps
+
+    assert isinstance(df, pd.DataFrame)
+    if size_cm is None:
+        size_cm = maps._map_size_cm(region, projection or maps.DEFAULT_PROJECTION)
+    lon_of, lat_of, cm_of = _map_cm_grid(region, size_cm)
+    cls = quake_classes(df, star=star, label=label)
+    lon = df["longitude"].to_numpy(dtype=float)
+    lat = df["latitude"].to_numpy(dtype=float)
+    mag = pd.to_numeric(df["magnitude"]).to_numpy(dtype=float, na_value=np.nan)
+
+    for sel, colour, big in (
+        (cls["grey"], "gray55", False),
+        (cls["blue"], "blue", False),
+        (cls["star"], "red", True),
+    ):
+        if not sel.any():
+            continue
+        size = (
+            np.clip(
+                MAP_STAR_BASE_CM + MAP_STAR_SCALE_CM * (mag[sel] - star),
+                MAP_STAR_BASE_CM,
+                MAP_STAR_MAX_CM,
+            )
+            if big
+            else np.clip(
+                MAP_CIRCLE_BASE_CM + MAP_CIRCLE_SCALE_CM * (mag[sel] - min_mag),
+                0.04,
+                0.45,
+            )
+        )
+        # no pen: the fill carries the class (BGÓ 2026-11-16)
+        fig.plot(x=lon[sel], y=lat[sel], style="a" if big else "c", size=size,
+                 fill=colour)  # fmt: skip
+    if cls["automatic"].any():
+        auto = cls["automatic"]
+        fig.plot(x=lon[auto], y=lat[auto], style=f"c{MAP_AUTO_CM}c", fill=MAP_AUTO_FILL)
+
+    # the value next to each big event: biggest first, right of the star, then
+    # left, above, below; skipped when every slot is taken by a label already
+    placed: list[tuple[float, float, float, float]] = []
+    rows = df[cls["label"]].sort_values("magnitude", ascending=False)
+    for _, row in rows.iterrows():
+        text = f"{row['magnitude']:.1f}"
+        w = maps.text_width_cm(text, MAP_LABEL_FONT)
+        x0, y0 = cm_of(float(row["longitude"]), float(row["latitude"]))
+        for dx, dy, just in (
+            (0.22, 0.0, "LM"), (-0.22, 0.0, "RM"),
+            (0.0, 0.20, "CB"), (0.0, -0.20, "CT"),
+        ):  # fmt: skip
+            left = x0 + dx if just == "LM" else x0 + dx - w
+            if just in ("CB", "CT"):
+                left = x0 - w / 2
+            box = (left, y0 + dy - MAP_LABEL_ROW_CM / 2,
+                   left + w, y0 + dy + MAP_LABEL_ROW_CM / 2)  # fmt: skip
+            if any(
+                box[0] < p[2] and box[2] > p[0] and box[1] < p[3] and box[3] > p[1]
+                for p in placed
+            ):
+                continue
+            placed.append(box)
+            fig.text(x=lon_of(x0 + dx), y=lat_of(y0 + dy), text=text,
+                     font=MAP_LABEL_FONT, justify=just)  # fmt: skip
+            break
+
+    if legend:
+        title = f"Skjálftar M≥{min_mag:g}"
+        n_auto = int(cls["automatic"].sum())
+        items: list[tuple[str, str, str]] = [
+            ("c", "gray55", f"M < {MAG_MID:g}"),
+            ("c", "blue", f"{MAG_MID:g} ≤ M < {star:g}"),
+            ("a", "red", f"M ≥ {star:g}"),
+            ("c", MAP_AUTO_FILL, f"sjálfvirk, engin stærð ({n_auto})"),
+        ]
+        text_cm = max(
+            [maps.text_width_cm(title, font)]
+            + [maps.text_width_cm(t, font) + MAP_LEGEND_CM for _s, _c, t in items]
+        )
+        wide = text_cm + 2 * MAP_LEGEND_PAD_CM
+        tall = (2 + len(items)) * MAP_LEGEND_ROW_CM + 2 * MAP_LEGEND_PAD_CM
+        x0, down = legend_from
+        width, height = size_cm
+        top = height - down
+        y0 = top - tall
+        edge = [(x0, y0), (x0 + wide, y0), (x0 + wide, top), (x0, top), (x0, y0)]
+        fig.plot(x=[lon_of(cx) for cx, _ in edge], y=[lat_of(cy) for _, cy in edge],
+                 fill="white", pen="0.4p,gray40", close=True)  # fmt: skip
+        fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM),
+                 y=lat_of(top - MAP_LEGEND_PAD_CM - 0.5 * MAP_LEGEND_ROW_CM),
+                 text=title, font=font, justify="LM")  # fmt: skip
+        for k, (style, colour, text) in enumerate(items):
+            y = top - MAP_LEGEND_PAD_CM - (k + 1.5) * MAP_LEGEND_ROW_CM
+            fig.plot(x=[lon_of(x0 + MAP_LEGEND_PAD_CM + 0.5 * MAP_LEGEND_CM)],
+                     y=[lat_of(y)], style=f"{style}{MAP_LEGEND_CM}c", fill=colour)  # fmt: skip
+            fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + MAP_LEGEND_CM + 0.15),
+                     y=lat_of(y), text=text, font=font, justify="LM")  # fmt: skip
+    return MapQuakeInfo(
+        n=len(df), n_automatic=int(cls["automatic"].sum()), n_labelled=len(placed)
     )

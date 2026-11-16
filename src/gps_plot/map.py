@@ -503,6 +503,30 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "from its SW corner (default 0.03,0.09: bottom left), e.g. 0.4,0.7 "
         "to put it on open sea (velocity and deformation maps)",
     )  # fmt: skip
+    q = p.add_argument_group("quakes")
+    q.add_argument(
+        "--quakes", nargs="?", default=None, const="", metavar="REGION",
+        dest="quake_catalogue",
+        help="draw the earthquake catalogue of REGION (a name from "
+        "quake_regions.yaml, e.g. bardarbunga-map; none: the station area's "
+        "default region) over the map, with its magnitude classes, the values "
+        "of M >= 5 and a legend; magnitudes are REVIEWED ones only",
+    )  # fmt: skip
+    q.add_argument(
+        "--quake-star", type=float, default=None, metavar="M",
+        help="magnitude a red star starts at (default 4.5)",
+    )  # fmt: skip
+    q.add_argument(
+        "--quake-label", type=float, default=None, metavar="M",
+        help="magnitude its value is written from (default 5)",
+    )  # fmt: skip
+    try:
+        from geo_dataread.gpsquake import add_quake_args
+    except Exception:  # noqa: BLE001 - an old geo_dataread: the option waits
+        add_quake_args = None
+    if add_quake_args is not None:
+        add_quake_args(p, prefix="quake-")
+
     out = p.add_argument_group("output")
     out.add_argument(
         "--save", nargs="?", default=None, const="pdf",
@@ -2559,6 +2583,68 @@ class _Rate:
     sigma: Any
 
 
+def _draw_map_quakes(
+    fig: Any,
+    args: Any,
+    style: dict[str, Any],
+    windows: Sequence[tuple[dt.datetime, dt.datetime]],
+    now: dt.datetime,
+) -> None:
+    """The catalogue over a map (``--quakes REGION``, PLAN-ts-quakes T19).
+
+    The catalogue spans the map's own earliest window start to now, so the
+    quakes are the ones the arrows describe. The layer draws REVIEWED
+    magnitudes only: an automatic row is a pale dot with no class, no star and
+    no label (BGÓ 2026-11-16).
+    """
+    if getattr(args, "quake_catalogue", None) is None:
+        return
+    from geo_dataread import gpsquake as gq
+    from geo_dataread.seismic.moment import moment_estimate
+    from geo_dataread.seismic.selection import catalogue_for
+
+    from gps_plot.layers import quakes as ql
+
+    region = args.quake_catalogue or None  # "" = the area's default region
+    if region is None and getattr(args, "quake_polygon", None) is None:
+        print(
+            "gpsplot map: --quakes needs a REGION on a map "
+            "(e.g. --quakes bardarbunga-map)",
+            file=sys.stderr,
+        )
+        return
+    # a map needs a magnitude floor: without one the catalogue is every
+    # detection in the box (22 981 in the Bárðarbunga map against 568 at M2.5)
+    min_mag = (
+        float(args.quake_min_mag) if getattr(args, "quake_min_mag", None) is not None
+        else 2.5
+    )
+    ns = argparse.Namespace(**{k: getattr(args, k, None) for k in ql.QUAKE_ARG_KEYS})
+    ns.quake_min_mag = min_mag  # the selection, not only the circle sizes
+    sel = gq.quake_selection(ns, region, prefix="quake-")
+    start = min((s for s, _e in windows), default=now - dt.timedelta(days=365))
+    frame, _report = catalogue_for(
+        sel, start, now, **gq.quake_kwargs(ns, prefix="quake-")
+    )
+    if not len(frame):
+        print(f"no quakes in {sel.name}", file=sys.stderr)
+        return
+    info = ql.add_quake_map_points(
+        fig,
+        moment_estimate(frame),
+        region=style.get("region"),
+        projection=style.get("projection"),
+        min_mag=min_mag,
+        star=getattr(args, "quake_star", None) or ql.MAG_STAR,
+        label=getattr(args, "quake_label", None) or ql.MAG_LABEL,
+    )
+    print(
+        f"quakes {sel.name}: {info.n} events, {info.n_automatic} automatic, "
+        f"{info.n_labelled} labelled",
+        file=sys.stderr,
+    )
+
+
 def _run_velocity(
     args: Any, parser: argparse.ArgumentParser, config: Any, maps: Any, stations: Any
 ) -> int:
@@ -2853,6 +2939,7 @@ def _run_velocity(
         ) + (maps.TOTAL_MAX_CM + maps.T_LINE_GAP_CM if totals else 0.0),
         arrows=used_scale,
     )  # fmt: skip
+    _draw_map_quakes(fig, args, style, windows, now)
     # dict.fromkeys: a transient set's dates share one fit window
     span = "_".join(dict.fromkeys(f"{s:%Y%m%d}-{e:%Y%m%d}" for s, e in windows))
     span = span or "secular"
