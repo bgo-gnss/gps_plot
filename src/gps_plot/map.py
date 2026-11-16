@@ -2569,6 +2569,7 @@ def _run_velocity(
     vectors: list[Any] = []
     dropped: list[str] = []
     notes: list[str] = []
+    ends: dict[str, float] = {}  # station -> data end [yearf], for the red note
     groups: list[tuple[str | None, str]] = []
     by_marker = {c.marker: c for c in stations}
     if args.velocities:
@@ -2624,7 +2625,7 @@ def _run_velocity(
             ]  # fmt: skip
             _add_records(maps, chosen, by_marker, label,
                          window_colors[k % len(window_colors)], comp, groups,
-                         vectors, dropped, args.min_fill)  # fmt: skip
+                         vectors, dropped, args.min_fill, ends)  # fmt: skip
         windows = [(_date_of(span[0]), _last_day(span[1])) for span, _at in spans]
     elif windows:
         # the velocity product's own estimator: the numbers of gps-velocities
@@ -2642,7 +2643,7 @@ def _run_velocity(
                 print(paths["jsonl"])
             _add_records(maps, records, by_marker, label,
                          window_colors[k % len(window_colors)], comp, groups,
-                         vectors, dropped, args.min_fill)  # fmt: skip
+                         vectors, dropped, args.min_fill, ends)  # fmt: skip
     else:
         # the stored records' secular rates (geo_dataread.products.secular_rate)
         from geo_dataread.products import secular_rate
@@ -2756,6 +2757,21 @@ def _run_velocity(
     nothing = (
         [] if kept else [(f"no arrow: no motion above the noise, {days}", "black")]
     )
+    # a station whose data stop before the map's window ended is stated on the
+    # map in red, not only on stderr (SVIN: none since 2026-11-13); the newest
+    # station sets the reference, so the ordinary one-day processing lag is not
+    # called a gap
+    if ends:
+        newest_end = max(ends.values())
+        lagging = sorted(
+            (sta, end) for sta, end in ends.items()
+            if newest_end - end >= 1.0 / 365.25
+        )  # fmt: skip
+        if lagging:
+            gap_text = ", ".join(
+                f"{sta} since {_date_of(end).date():%d.%m}" for sta, end in lagging
+            )
+            nothing = [*nothing, (f"no data: {gap_text}", "red")]
     corner: tuple[str, str] | None = None
     if newest is not None:
         # as the track maps: green when the newest day is the map's day or
@@ -2926,11 +2942,13 @@ def _add_records(
     vectors: list[Any],
     dropped: list[str],
     min_fill: float = 0.0,
+    ends: dict[str, float] | None = None,
 ) -> None:
     """Velocity product records as one window's vectors: refused ones
     dropped with their reason, plate-only fallbacks as a pale group, and
     records with fewer than ``min_fill`` of the window's days
-    (:func:`window_fill`) dropped."""
+    (:func:`window_fill`) dropped. ``ends``: filled with each station's data
+    end [yearf] (``span_used``), for the map's missing-data note."""
     pre_onset = any(r.ref == "pre-onset" for r in records)
     pale = label + (NO_SEASONAL_SUFFIX if pre_onset else FALLBACK_SUFFIX)
     groups.append((label, color))
@@ -2942,6 +2960,9 @@ def _add_records(
         if not r.accepted:
             dropped.append(f"{r.station} {label}: {r.refused}")
             continue
+        if ends is not None and r.span_used:
+            after = float(r.span_used[1])
+            ends[r.station] = max(ends.get(r.station, after), after)
         fill = window_fill(r) if min_fill > 0 else 1.0
         if fill < min_fill:
             dropped.append(f"{r.station} {label}: fill={fill:.2f}<{min_fill:g}")
