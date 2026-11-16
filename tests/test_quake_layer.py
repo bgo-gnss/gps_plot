@@ -92,6 +92,44 @@ def test_panel_draws_classes_moment_and_seam() -> None:
     plt.close(fig)
 
 
+AUTOMATIC_BIG = [
+    ("2025-06-01", 1.0, "Mlw", "manual", 1e12),
+    ("2025-09-01", 4.2, "Mlw", "manual", 1e15),
+    # the artefact shape BGÓ rejected 2026-11-16: an automatic row claiming
+    # M5.7 (in the box: eight such rows, all at the fixed default depth 5.2 km)
+    ("2025-10-01", 5.7, "aut.mag", "automatic", np.nan),
+    # a reviewed M5.1, which must get the star AND the label
+    ("2025-11-01", 5.1, "Mlw", "manual", 3e16),
+]
+
+
+def test_automatic_never_gets_a_class_star_or_label() -> None:
+    """A class, a star and a label come from a REVIEWED magnitude only."""
+    fig, ax = panel()
+    info = ql.add_quake_panel(ax, frame(AUTOMATIC_BIG), BOTH, "bb-caldera")
+    mag_ax = next(a for a in fig.axes if a.get_ylabel() == "Magnitude")
+    drawn = {
+        ln.get_label(): np.asarray(ln.get_xdata(), dtype=float)
+        for ln in mag_ax.get_lines()
+        if ln.get_label() and not ln.get_label().startswith("_")
+    }
+    auto_x = float(mdates.date2num(dt.datetime(2025, 10, 1)))
+    reviewed_x = float(mdates.date2num(dt.datetime(2025, 11, 1)))
+    star_label = next(k for k in drawn if "geq" in k)  # "M $\geq$ 4.5"
+    assert reviewed_x in drawn[star_label]
+    assert auto_x not in drawn[star_label]  # the artefact is not a star
+    # the pale automatic line carries it instead
+    assert any(auto_x in v for k, v in drawn.items() if "automatic" in k)
+    texts = [c.get_text() for a in fig.axes for c in a.texts]
+    assert "5.1" in texts  # reviewed M >= 5: labelled
+    assert "5.7" not in texts  # automatic: no label, whatever it claims
+    # no outline on any quake (BGÓ 2026-11-16)
+    for ln in mag_ax.get_lines():
+        assert ln.get_markeredgewidth() == 0.0 or ln.get_markeredgecolor() == ln.get_color()
+    assert info.n_automatic == 1
+    plt.close(fig)
+
+
 def test_no_seam_and_no_moment() -> None:
     fig, ax = panel()
     sil = report(("sil-files", "2025-01-01", "2026-01-01"))
