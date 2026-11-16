@@ -156,4 +156,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-16 (ts --quakes: catalogue quakes + moment, PLAN-ts-quakes Q-T6). Previous 2026-11-13 (polar --refs/--via: the reference-mean frame, --rate, the rates file; rtk_rate; rtk-tie --since/--rates). Previous 2026-11-12 (polar --rtk). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-16 (ts --quakes: catalogue quakes + moment, Q-T6; --rate-segments auto + --one-panel, Q-T3/Q-T7). Previous 2026-11-13 (polar --refs/--via: the reference-mean frame, --rate, the rates file; rtk_rate; rtk-tie --since/--rates). Previous 2026-11-12 (polar --rtk). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows) — history in `git log --follow CLAUDE.md docs/`.*

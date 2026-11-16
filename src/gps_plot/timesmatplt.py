@@ -1171,6 +1171,8 @@ def plotTime(
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
     segment_min_days: int = 30,
+    break_gain: float | None = None,
+    one_panel: bool = False,
     events_catalog: str | None = None,
     quakes: Sequence[Any] | None = None,
     quake_request: Any = None,
@@ -1586,6 +1588,7 @@ def plotTime(
         highlight_last=highlight_last,
     )
 
+    panels = list(fig.axes[:3])  # before any twin axis joins them
     if empty:
         for ax in fig.axes:
             ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
@@ -1869,6 +1872,25 @@ def plotTime(
                 sta, rate_segments, kinds=segment_kinds, cut=segment_cut,
                 steps=steps_catalog, events=events_catalog,
             )  # fmt: skip
+            if "auto" in rate_segments:
+                # rate changes found in the plotted series (PLAN-ts-quakes
+                # Q-T3, gps_analysis.breaks), drawn as lines on every panel
+                from gps_plot.layers.rate import (
+                    BREAK_COLOR,
+                    auto_breaks,
+                    break_gaps,
+                    break_note,
+                )
+
+                found = auto_breaks(
+                    sta, yearf, data, Ddata, along_axes, min_bic_gain=break_gain
+                )
+                print(f"{sta}: {break_note(found)}")
+                gaps = [*gaps, *break_gaps(found)]
+                for b in found.breaks:
+                    xb = list(gpsr.toDateTime(np.array([b])))[0]
+                    for ax_ in fig.axes[:3]:
+                        ax_.axvline(xb, color=BREAK_COLOR, lw=1.0, alpha=0.8, zorder=4)
             windows = segment_windows(
                 yearf, fstart, fend, gaps, min_days=segment_min_days
             )
@@ -1974,7 +1996,7 @@ def plotTime(
         q_info = add_quake_panel(
             top, q_df, q_report, q_region,
             star=quake_request.star, label=quake_request.label,
-            moment=quake_request.moment,
+            moment=quake_request.moment, legend_below=one_panel,
         )  # fmt: skip
         print(
             f"{sta} quakes {q_region}: n = {q_info.n} "
@@ -1982,8 +2004,13 @@ def plotTime(
             f"{q_info.summary}"
         )
 
+    if one_panel:
+        # the first panel alone (--one-panel, PLAN-ts-quakes Q-T7): with
+        # --along the motion toward the azimuth, its quakes and rates
+        keep_one_panel(fig, panels, quakes=quake_request is not None)
+
     if logo:
-        inpLogo(fig)
+        inpLogo(fig, width=ONE_PANEL_LOGO_WIDTH if one_panel else 0.38)
 
     if save and name:
         # fixed basename: bypass the whole filend construction so repeated
@@ -2032,6 +2059,8 @@ def plotTime(
             filend += "-relrate"  # the window is in the title, not the name
         if quake_request is not None:
             filend += "-quakes"  # the region is in the legend, not the name
+        if one_panel:
+            filend += "-1panel"
         if along is not None:
             # the mode, not the azimuth (plot names carry no tuning numbers)
             filend += "-along" + (f"-{along}" if along in ("opt", "motion") else "")
@@ -2077,6 +2106,36 @@ def plotTime(
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
     fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
     return fig
+
+
+#: --one-panel figure: size [in] and the panel's box (figure fractions)
+ONE_PANEL_SIZE = (13.0, 5.33)
+ONE_PANEL_BOX = (0.08, 0.11, 0.9, 0.80)  # left, bottom, right, top
+#: the right edge with the quake axes (magnitude + moment), and the bottom
+#: with their legend under the date axis
+ONE_PANEL_RIGHT_QUAKES = 0.82
+ONE_PANEL_BOTTOM_QUAKES = 0.26
+#: the logo's share of the panel width in the one-panel figure
+ONE_PANEL_LOGO_WIDTH = 0.18
+
+
+def keep_one_panel(fig: Figure, panels: Sequence[Any], *, quakes: bool = False) -> None:
+    """Drop every panel but the first and reshape the figure around it.
+
+    ``panels`` are the three panels as drawn (twin axes of the first follow
+    it). What only the dropped panels carried goes with them (notes on the
+    Up panel); the rates and the quakes are on the first.
+    """
+    for ax in panels[1:]:
+        fig.delaxes(ax)
+    fig.set_size_inches(*ONE_PANEL_SIZE)
+    left, bottom, right, top = ONE_PANEL_BOX
+    if quakes:  # the magnitude + moment axes right, their legend below
+        right, bottom = ONE_PANEL_RIGHT_QUAKES, ONE_PANEL_BOTTOM_QUAKES
+    panels[0].set_position((left, bottom, right - left, top - bottom))
+    if fig._suptitle is not None:  # type: ignore[attr-defined]
+        fig._suptitle.set_y(0.985)  # type: ignore[attr-defined]
+        fig._suptitle.set_va("top")  # type: ignore[attr-defined]
 
 
 def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:

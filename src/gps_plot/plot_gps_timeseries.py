@@ -909,6 +909,13 @@ def build_parser(
         "it. Single stations only (baselines: --axes motion); file -along[-opt|-motion]",
     )
     parser.add_argument(
+        "--one-panel",
+        action="store_true",
+        help="the first panel alone, 13 x 5.33 in: with --along the motion "
+        "toward the azimuth (its rates, breaks and --quakes on it; notes of "
+        "the other panels are dropped). File -1panel",
+    )
+    parser.add_argument(
         "--rate-last",
         action="append",
         default=None,
@@ -920,6 +927,14 @@ def build_parser(
         "(182:91 = the 3 months before the last 3); repeatable, implies --rate",
     )
     parser.add_argument(
+        "--break-gain",
+        type=float,
+        default=None,
+        metavar="G",
+        help="--rate-segments auto: least BIC drop for a new rate break "
+        "(default gps_analysis.breaks' 25)",
+    )
+    parser.add_argument(
         "--rate-segments",
         default=None,
         metavar="SOURCE[,SOURCE]",
@@ -927,7 +942,11 @@ def build_parser(
         "'steps' splits at the station's declared steps (steps.yaml), "
         "'events' at the events of the event catalog (events.yaml) whose "
         "region holds the station (--segment-kinds, --segment-cut); "
-        "'steps,events' at both. Each line is labelled rate ± σ mm/yr at its "
+        "'steps,events' at both; 'auto' at the rate changes found in the "
+        "plotted series (gps_analysis.breaks: weekly medians, continuous "
+        "hinge + BIC, --break-gain; with --along its first component, else "
+        "the horizontal motion along its own direction), drawn as brown "
+        "lines; combines with the others. Each line is labelled rate ± σ mm/yr at its "
         "middle (× = refused) and the table is printed. Seasonal removed "
         "with --ref detrend --detrend-terms periodic (plate-periodic); "
         "implies --rate. Files end -rate-seg<source>",

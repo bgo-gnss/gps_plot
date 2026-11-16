@@ -298,7 +298,7 @@ def rate_note(records: Sequence[Any], *, segments: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 #: --rate-segments sources: the station's declared steps, or the events
-SEGMENT_SOURCES = ("steps", "events")
+SEGMENT_SOURCES = ("steps", "events", "auto")
 #: shortest span between two events that gets a rate [days]
 MIN_SEGMENT_DAYS = 30
 
@@ -528,6 +528,84 @@ def segment_gaps(
                 )
             evs = station_events(sta, catalog, areas, kinds=kinds)
             gaps += event_gaps(evs, cut=cut)
+        elif source == "auto":
+            continue  # from the plotted data: auto_break_gaps
         else:
             raise ValueError(f"--rate-segments {source!r}: one of {SEGMENT_SOURCES}")
     return gaps
+
+
+#: colour of the --rate-segments auto break lines
+BREAK_COLOR = "saddlebrown"
+
+
+@dataclasses.dataclass(frozen=True)
+class AutoBreaks:
+    """``--rate-segments auto``: where the rate changes, and on what."""
+
+    breaks: tuple[float, ...]  # fractional years
+    bic_gains: tuple[float, ...]  # BIC drop of each accepted break, in order
+    series: str  # what was searched: "along 284.0°", "motion 284.0°"
+    min_gap: float
+    min_bic_gain: float
+
+
+def break_component(
+    sta: str, t: Any, y: Any, sigma: Any, axes: Any | None
+) -> tuple[Any, str]:
+    """The one series the breaks are looked for in.
+
+    With ``--along`` the plotted first component (motion toward its
+    azimuth); otherwise the horizontals projected on the direction of the
+    plotted motion (``--along opt``'s estimator), so a station gets one set
+    of breaks for all its panels.
+    """
+    yy = np.atleast_2d(np.asarray(y, dtype=float))
+    if axes is not None:
+        return yy[0], str(axes.keys[0])
+    from gps_plot.direction import along_azimuth
+
+    az, _ = along_azimuth(sta, "opt", t, yy, sigma)
+    a = np.radians(az)
+    return yy[0] * np.cos(a) + yy[1] * np.sin(a), f"motion {az:.1f}°"
+
+
+def auto_breaks(
+    sta: str,
+    t: Any,
+    y: Any,
+    sigma: Any,
+    axes: Any | None = None,
+    *,
+    min_bic_gain: float | None = None,
+) -> AutoBreaks:
+    """Rate changes of the plotted series (:func:`gps_analysis.breaks.
+    rate_breaks`, its defaults unless ``min_bic_gain`` is given)."""
+    from gps_analysis.breaks import MIN_BIC_GAIN, rate_breaks
+
+    comp, label = break_component(sta, t, y, sigma, axes)
+    tt = np.asarray(t, dtype=float)
+    ok = np.isfinite(tt) & np.isfinite(comp)
+    gain = MIN_BIC_GAIN if min_bic_gain is None else float(min_bic_gain)
+    rb = rate_breaks(tt[ok], comp[ok], min_bic_gain=gain)
+    gains = tuple(float(a - b) for a, b in zip(rb.bic[:-1], rb.bic[1:], strict=True))
+    return AutoBreaks(tuple(rb.breaks), gains, label, rb.min_gap, gain)
+
+
+def break_gaps(found: AutoBreaks) -> list[tuple[dt.date, dt.date]]:
+    """The breaks as one-day gaps (each break's day splits the series)."""
+    return step_gaps(found.breaks)
+
+
+def break_note(found: AutoBreaks) -> str:
+    """Console line: the breaks, their BIC gains and the settings."""
+    if not found.breaks:
+        return (
+            f"rate breaks ({found.series}): none (BIC gain >= {found.min_bic_gain:g})"
+        )
+    bits = ", ".join(f"{b:.2f}" for b in found.breaks)
+    gains = ", ".join(f"{g:.0f}" for g in found.bic_gains)
+    return (
+        f"rate breaks ({found.series}): {bits}; BIC gains {gains} "
+        f"(>= {found.min_bic_gain:g}, min gap {found.min_gap:.2f} yr)"
+    )

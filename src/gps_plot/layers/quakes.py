@@ -322,6 +322,7 @@ def add_quake_panel(
     star: float = MAG_STAR,
     label: float = MAG_LABEL,
     moment: bool = True,
+    legend_below: bool = False,
 ) -> QuakeLayerInfo:
     """Quakes and their cumulative moment on twin axes of ``ax``.
 
@@ -459,9 +460,13 @@ def add_quake_panel(
         title += f", {n_auto} automatic"
     if total > 0 and total_auto >= 0.005 * total:
         title += f" ({100 * total_auto / total:.0f}\\% of the moment)"
-    # below the logo, which sits in the top left corner of the top panel
-    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.0, LEGEND_TOP),
-              ncol=3, fontsize="small",
+    # below the logo, which sits in the top left corner of the top panel;
+    # under the date axis in the one-panel figure (--one-panel), frameless:
+    # above it is the title and the status line
+    ax.legend(handles=handles, loc="upper left",
+              bbox_to_anchor=(0.0, -0.13) if legend_below else (0.0, LEGEND_TOP),
+              frameon=not legend_below, ncol=6 if legend_below else 3,
+              fontsize="small",
               title=title, title_fontsize="small", framealpha=0.8,
               numpoints=1)  # fmt: skip
     if isinstance(fig, Figure) and fig.subplotpars.right > QUAKES_FIG_RIGHT:
