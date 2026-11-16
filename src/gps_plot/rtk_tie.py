@@ -50,6 +50,58 @@ RTK_PCT = 1.0
 #: margins below / above that range, of it, per panel: the top panel's
 #: logo, the middle (across, the quietest) panel's rates legend
 RTK_PAD = ((0.1, 0.15), (0.1, 0.35), (0.1, 0.1))
+#: an RTK station counts as silent once its newest hour is this old (the
+#: title's red "Last epoch" rule)
+RTK_STALE = pd.Timedelta(hours=1)
+
+
+def silent_stations(
+    newest: dict[str, pd.Timestamp],
+    now: dt.datetime,
+    rtk: bool,
+    via: dict[str, str] | None = None,
+) -> list[tuple[str, pd.Timestamp]]:
+    """``[(label, newest epoch)]`` of the stations that have gone silent,
+    oldest first: a day behind the newest of them, or stale against the
+    clock (RTK: :data:`RTK_STALE`; daily: the title's ``data_is_current``).
+
+    Comparing the stations only with each other missed the one that
+    stopped last: on 2026-11-16 SVIE went quiet at 13:03, was still the
+    newest, and the note blamed SVIN alone, whose RTK pair (SVIN-SVIE)
+    needs SVIE. An RTK label names its pair, so that dependence shows.
+    """
+    from gps_plot import timesmatplt as tplt
+
+    if not newest:
+        return []
+    ref = max(newest.values())
+
+    def stale(t: pd.Timestamp) -> bool:
+        if ref - t >= pd.Timedelta(days=1):
+            return True
+        if rtk:
+            return bool(pd.Timestamp(now) - t >= RTK_STALE)
+        return not tplt.data_is_current(t.to_pydatetime())
+
+    def label(s: str) -> str:
+        return f"{s} (via {via[s]})" if rtk and via and s in via else s
+
+    return [(label(s), t) for s, t in sorted(newest.items(), key=lambda p: p[1])
+            if stale(t)]  # fmt: skip
+
+
+def silence_text(
+    missing: Sequence[tuple[str, pd.Timestamp]], now: dt.datetime, rtk: bool
+) -> str:
+    """The red note: ``no data: SVIN (via SVIN-SVIE) since 14 Nov, SVIE
+    (via SVIE-SKFC) since 16 Nov 13:00`` (RTK silences under a day with the
+    hour)."""
+
+    def when(t: pd.Timestamp) -> str:
+        recent = rtk and pd.Timestamp(now) - t < pd.Timedelta(days=1)
+        return f"{t:%d %b %H:%M}" if recent else f"{t:%d %b}"
+
+    return "no data: " + ", ".join(f"{s} since {when(t)}" for s, t in missing)
 
 
 # --- the series -------------------------------------------------------------
@@ -450,7 +502,7 @@ def figure(
     if missing:
         # a station that has stopped delivering is NOT silently absent: the
         # figure keeps updating for the others and says so, in red, top right
-        text = "no data: " + ", ".join(f"{s} since {t:%d %b}" for s, t in missing)
+        text = silence_text(missing, now, rtk)
         fig.axes[0].text(
             0.995, 0.985, text, transform=fig.axes[0].transAxes,
             fontsize="small", color="red", va="top", ha="right", zorder=20,
@@ -919,25 +971,20 @@ def run(prog: str, argv: list[str]) -> int:
         return None if got.empty else pd.Timestamp(got.index[-1])
 
     def missing_since(
-        frame_of: Callable[[str], pd.DataFrame | None], names: Sequence[str]
+        frame_of: Callable[[str], pd.DataFrame | None],
+        names: Sequence[str],
+        rtk: bool,
     ) -> list[tuple[str, pd.Timestamp]]:
-        """``[(station, its newest epoch)]`` for the stations lagging the rest.
+        """:func:`silent_stations` over each station's newest finite epoch.
 
         A rover that has gone quiet (SVIN stops delivering for days) still gets
         its figure — the others keep updating — but the gap is stated in red
-        rather than left to be inferred from a shorter series. A station counts
-        as missing once it is at least a day behind the newest among ``names``.
+        rather than left to be inferred from a shorter series.
         """
         newest = {s: f for s in names
                   if (frame := frame_of(s)) is not None
                   and (f := last_finite(frame)) is not None}  # fmt: skip
-        if not newest:
-            return []
-        ref = max(newest.values())
-        return sorted(
-            ((s, t) for s, t in newest.items() if ref - t >= pd.Timedelta(days=1)),
-            key=lambda p: p[1],
-        )
+        return silent_stations(newest, now, rtk, via_of)
 
     def tied_frame(sta: str) -> pd.DataFrame | None:
         got = tied.get(sta, {}).get("1h")
@@ -1070,7 +1117,7 @@ def run(prog: str, argv: list[str]) -> int:
                      now=now, rtk=True,
                      ylabels=_ylabels([azim[s] for s in names]) if along else None,
                      note=note,
-                     missing=missing_since(tied_frame, names))  # fmt: skip
+                     missing=missing_since(tied_frame, names, True))  # fmt: skip
         sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
                                                    azim[m[0]], days < 1))
                          for m in made])  # fmt: skip
@@ -1108,7 +1155,7 @@ def run(prog: str, argv: list[str]) -> int:
                      start=start, end=end, last=last_day.to_pydatetime(), now=now,
                      rtk=False, ylabels=ylabels,
                      ylim=[args.ylim] if args.ylim else [],
-                     missing=missing_since(daily.get, stations),
+                     missing=missing_since(daily.get, stations, False),
                      note=f"daily (24 h), cleaned, minus the weighted daily mean of "
                      f"{', '.join(refs)} (trend + seasonal removed); empirical "
                      f"$\\sigma$"
