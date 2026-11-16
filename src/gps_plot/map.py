@@ -2775,9 +2775,8 @@ def _run_velocity(
             # one station per line: a wide one-liner runs off the map when
             # several have gone quiet at once
             gap_note = "\n".join(
-                ["no data:"] + [
-                    f"{sta} since {_date_of(end).date():%d.%m}" for sta, end in lagging
-                ]
+                ["no data:"]
+                + [f"{sta} since {_date_of(end).date():%d.%m}" for sta, end in lagging]
             )
     corner: tuple[str, str] | None = None
     if newest is not None:

@@ -1025,9 +1025,7 @@ def missing_stations(
     return sorted(out, key=lambda p: p[1])
 
 
-def _missing_note(
-    fig: Any, pairs: Sequence[PairPlot], onset: dt.datetime
-) -> None:
+def _missing_note(fig: Any, pairs: Sequence[PairPlot], onset: dt.datetime) -> None:
     """The red "no data" note, top right of the figure (the title is centred)."""
     missing = missing_stations(pairs, onset)
     if not missing:
