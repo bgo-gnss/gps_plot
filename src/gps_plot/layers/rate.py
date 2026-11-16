@@ -437,9 +437,12 @@ def add_segment_rates(
     return records
 
 
-def segment_table(sta: str, records: Sequence[Any]) -> str:
-    """The segments' rates as text (one line each), for the terminal."""
-    rows = [f"{sta}: rates between events (mm/yr, N E U ± σ)"]
+def segment_table(
+    sta: str, records: Sequence[Any], keys: Sequence[str] = ("N", "E", "U")
+) -> str:
+    """The segments' rates as text (one line each), for the terminal;
+    ``keys`` name the components (``--along``: the axes' keys)."""
+    rows = [f"{sta}: rates between events (mm/yr, {' '.join(keys)} ± σ)"]
     for r in records:
         span = f"{r.window[0]:.3f}–{r.window[1]:.3f}"
         if not r.accepted:

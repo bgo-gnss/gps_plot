@@ -271,6 +271,28 @@ Runs and products may carry `areas: [...]`; baselines runs with `--axes
 along|motion`, the `polar` product (`tool: polar`) and the rtk `7d-along`
 run are described in [`baselines.md`](baselines.md#plotsyaml).
 
+## Named ts figures under Kort (2026-11-16)
+
+One station's ts figure beside the area's maps, with a fixed name and a
+caption (PLAN-ts-quakes Q-T8, the Bárðarbunga VONC + quakes figure):
+
+```yaml
+bardarbunga_vonc_skjalftar:
+  tool: ts
+  area: bardarbunga        # dir: locations/<root>/<area>/maps (or dir:)
+  stations: [VONC]         # exactly one
+  runs:
+    - name: bardarbunga-vonc-skjalftar   # the file's basename (--name)
+      fixedstart: [2018-01-01]           # one special: or one fixedstart:
+      args: [--along opt --rate-ref 20130901:20140131, --quakes --one-panel]
+      caption: "…"                       # captions.json beside the maps
+```
+
+A run takes the usual ts run keys plus `name:` and `caption:`, and makes
+one figure. The fixed name keeps the maps dir's stale-plot pruning on;
+a ts product without names writing there would switch it off (the dir
+then counts as shared). An `--area` filter keeps the product of that area.
+
 ## Map products (2026-10-27)
 
 Velocity maps as plots.yaml products, first for Svartsengi (BGÓ: past

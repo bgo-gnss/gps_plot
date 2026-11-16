@@ -89,6 +89,23 @@ def test_keep_one_panel():
     plt.close(fig)
 
 
+def test_keep_one_panel_breaks_the_title():
+    from gps_plot.timesmatplt import (
+        ONE_PANEL_TOP_TWO_LINES,
+        keep_one_panel,
+    )
+
+    fig, axes = plt.subplots(3, 1)
+    fig.suptitle(r"\Huge Vonarskard (VONC) \ \Large Reference frame: x")
+    keep_one_panel(fig, list(axes))
+    title = fig._suptitle.get_text()
+    assert title == "\\Huge Vonarskard (VONC)\n\\Large Reference frame: x"
+    _, _, _, height = axes[0].get_position().bounds
+    assert axes[0].get_position().y1 == pytest.approx(ONE_PANEL_TOP_TWO_LINES)
+    assert height > 0
+    plt.close(fig)
+
+
 def test_cli_options():
     from gps_plot.plot_gps_timeseries import build_parser
 

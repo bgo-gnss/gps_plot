@@ -1905,7 +1905,8 @@ def plotTime(
                 minus=ref_record,
                 axes=along_axes,
             )
-            print(segment_table(sta, records))
+            keys = along_axes.keys if along_axes is not None else ("N", "E", "U")
+            print(segment_table(sta, records, keys))
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
             records = add_rate_lines(
@@ -2117,6 +2118,11 @@ ONE_PANEL_RIGHT_QUAKES = 0.82
 ONE_PANEL_BOTTOM_QUAKES = 0.26
 #: the logo's share of the panel width in the one-panel figure
 ONE_PANEL_LOGO_WIDTH = 0.18
+#: where the one-panel title breaks: between the name and the reference
+#: (make_title's main is ``\Huge NAME \ \Large REFERENCE``)
+ONE_PANEL_TITLE_SPLIT = r" \ \Large "
+#: the panel top under a two-line title
+ONE_PANEL_TOP_TWO_LINES = 0.74
 
 
 def keep_one_panel(fig: Figure, panels: Sequence[Any], *, quakes: bool = False) -> None:
@@ -2132,10 +2138,18 @@ def keep_one_panel(fig: Figure, panels: Sequence[Any], *, quakes: bool = False) 
     left, bottom, right, top = ONE_PANEL_BOX
     if quakes:  # the magnitude + moment axes right, their legend below
         right, bottom = ONE_PANEL_RIGHT_QUAKES, ONE_PANEL_BOTTOM_QUAKES
+    title = fig._suptitle  # type: ignore[attr-defined]
+    if title is not None:
+        # the name and the reference on two lines: one line is wider than
+        # the 13 in figure once --rate-ref/--along add to it, and the tight
+        # bounding box then widens the image to the title
+        text = title.get_text()
+        if ONE_PANEL_TITLE_SPLIT in text:
+            title.set_text(text.replace(ONE_PANEL_TITLE_SPLIT, "\n\\Large ", 1))
+            top = ONE_PANEL_TOP_TWO_LINES
+        title.set_y(0.985)
+        title.set_va("top")
     panels[0].set_position((left, bottom, right - left, top - bottom))
-    if fig._suptitle is not None:  # type: ignore[attr-defined]
-        fig._suptitle.set_y(0.985)  # type: ignore[attr-defined]
-        fig._suptitle.set_va("top")  # type: ignore[attr-defined]
 
 
 def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:
