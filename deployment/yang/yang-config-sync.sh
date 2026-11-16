@@ -19,7 +19,9 @@ ENV_FILE=$REPO/environments/yang-d01.vedur.is.env
 # yang's plots do not read.
 # rtk_thresholds.yaml: the RTK warning's calibrated edges (rtk-bench
 # --calibrate on the laptop, copied into the repo by hand; BGÓ 2026-11-13)
+# quake_regions.yaml: named quake regions for gpsplot ts --quakes
 FILES=(plots.yaml map_layers.yaml station_areas.yaml stations.cfg rtk_thresholds.yaml
+    quake_regions.yaml
     detrend_itrf2008.csv station-plate station_coord.xyz
     analysis-lane/analysis.yaml analysis-lane/detrend_params.itrf14.json
     analysis-lane/events.yaml analysis-lane/steps.yaml

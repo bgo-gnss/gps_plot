@@ -72,6 +72,23 @@ sudo systemctl daemon-reload && sudo mount -a
 ls /mnt_data/rtgpsdata | head -3
 ```
 
+## 4c. NFS from granit.vedur.is (SIL quakes for `ts --quakes`)
+
+Exported to everyone; `sil_dir` in yang-d01.vedur.is.env points here.
+Done on yang 2026-11-16.
+
+```bash
+sudo mkdir -p /mnt_data/sildata
+O=ro,soft,timeo=50,retrans=2,nofail,_netdev
+O=$O,x-systemd.automount
+O=$O,x-systemd.mount-timeout=10
+O=$O,x-systemd.idle-timeout=600
+H=granit.vedur.is:/mnt/sdc1/sk2
+echo "$H /mnt_data/sildata nfs $O 0 0" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount -a
+ls /mnt_data/sildata/2026 | head -3
+```
+
 ## 5. nginx at `/gps/`
 
 From the gps_plot checkout. Check the `allow` ranges in the file first.
