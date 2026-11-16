@@ -2821,6 +2821,11 @@ def total_reference(
     return ref, max_cm * ref / top
 
 
+#: the map's own missing-data box (gap_note): its distance from the left frame
+#: [cm] and how far it sits above the bottom annotation band [cm]
+MAP_NOTE_LEFT_CM = 1.15
+MAP_NOTE_LIFT_CM = 1.0
+
 #: font of the values written at the arrow tips (deformation --values)
 DEFAULT_VALUE_FONT = "7p,Helvetica-Bold,black=~1p,white"
 #: gap between an arrow's tip and its value [cm]
@@ -3162,8 +3167,11 @@ def velocity_map(
         def lat_of(cm: float) -> float:
             return region_point(region, 0.0, cm / height_cm)[1]
 
-        x0 = 0.25
-        y0 = layout.BOTTOM_LABELS_CM + 0.25
+        # clear of the frame's own annotations: the latitude labels sit inside
+        # the left edge, the longitude band along the bottom (BGÓ 2026-11-16:
+        # the box was covering "64°15'N")
+        x0 = MAP_NOTE_LEFT_CM
+        y0 = layout.BOTTOM_LABELS_CM + MAP_NOTE_LIFT_CM
         if legend_box is not None:  # stack on the legend when it has the corner
             xs, ys = legend_box
             left_cm = (xs[3] - w) / (e - w) * width_cm
