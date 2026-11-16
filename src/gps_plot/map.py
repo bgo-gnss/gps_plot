@@ -2698,6 +2698,7 @@ def _run_velocity(
             args.short_downslope, args.short_coherent, notes,
         )  # fmt: skip
     kept = [v for v in vectors if snr(v) >= args.min_snr]
+    gap_note: str | None = None  # the missing-data alarm's own red box
     notes += [f"{v.marker} {v.method}: |v|/|2σ| = {snr(v):.2f} < {args.min_snr:g}"
               for v in vectors if snr(v) < args.min_snr]  # fmt: skip
     _report(dropped + notes)
@@ -2763,15 +2764,21 @@ def _run_velocity(
     # called a gap
     if ends:
         newest_end = max(ends.values())
+        # a few days' tolerance: the stations legitimately end a little apart
+        # (processing lag, one solved a day earlier), and flagging that would
+        # name half the network on every map
         lagging = sorted(
             (sta, end) for sta, end in ends.items()
-            if newest_end - end >= 1.0 / 365.25
+            if newest_end - end >= GAP_TOLERANCE_DAYS / 365.25
         )  # fmt: skip
         if lagging:
-            gap_text = ", ".join(
-                f"{sta} since {_date_of(end).date():%d.%m}" for sta, end in lagging
+            # one station per line: a wide one-liner runs off the map when
+            # several have gone quiet at once
+            gap_note = "\n".join(
+                ["no data:"] + [
+                    f"{sta} since {_date_of(end).date():%d.%m}" for sta, end in lagging
+                ]
             )
-            nothing = [*nothing, (f"no data: {gap_text}", "red")]
     corner: tuple[str, str] | None = None
     if newest is not None:
         # as the track maps: green when the newest day is the map's day or
@@ -2795,6 +2802,7 @@ def _run_velocity(
         totals=totals,
         notes=nothing,
         corner_note=corner,
+        gap_note=gap_note,
         **zoom_style,
     )
 
@@ -3092,6 +3100,10 @@ def snr(v: Any) -> float:
     m = math.hypot(v.east, v.north)
     return math.inf if s == 0 else m / s
 
+
+#: a station counts as missing only when its data end this many days before the
+#: newest station's: the ordinary processing lag is shorter (velocity maps)
+GAP_TOLERANCE_DAYS = 3
 
 #: a window of at most this many days is "short": --short-snr filters it
 SHORT_WINDOW_DAYS = 31
