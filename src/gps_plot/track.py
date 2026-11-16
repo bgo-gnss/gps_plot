@@ -1042,6 +1042,30 @@ def newest_day(tracks: Sequence[Track]) -> dt.date | None:
     return dt.date.fromordinal(int(day_key(np.array([max(ends)]))[0]))
 
 
+def missing_entries(
+    tracks: Sequence["Track"], newest: dt.date | None
+) -> list[tuple[str, str]]:
+    """Legend lines for the stations whose own newest day is behind the map's.
+
+    A station that has stopped delivering (SVIN: weekly days, then nothing from
+    2026-11-13) used to be a silently shorter trail; the legend now says it in
+    red, under the rates it can still show. A station counts as missing once it
+    is at least a day behind the newest day of the shown tracks.
+    """
+    if newest is None:
+        return []
+    pool = [tr for tr in tracks if tr.shown] or list(tracks)
+    out: list[tuple[str, str]] = []
+    for tr in pool:
+        if not tr.t.size:
+            out.append((f"no data: {tr.marker}", STALE_COLOR))
+            continue
+        last = dt.date.fromordinal(int(day_key(np.array([tr.t[-1]]))[0]))
+        if (newest - last).days >= 1:
+            out.append((f"no data: {tr.marker} since {last:%d.%m}", STALE_COLOR))
+    return out
+
+
 def newest_text(day: dt.date, today: dt.date | None = None) -> tuple[str, str]:
     """The legend's newest-day text and its colour: green when the newest
     day is yesterday or today (the time series' "Last datapoint" rule),
@@ -1493,6 +1517,8 @@ def draw_tracks(
                                   "black")]  # fmt: skip
     if note:  # e.g. the reference station: what the motion is relative to
         entries = [(note, "black"), *entries]
+    # a station that has gone quiet is stated, not left as a short trail
+    entries = [*entries, *missing_entries(tracks, newest_day(tracks))]
     entries = [*entries, *keys]  # (text, colour) of the map's own, e.g. --steep
     top, right = _draw_legend(
         fig, entries, region=region,
@@ -1829,6 +1855,7 @@ def series_figure(
               (tr.recent, RECENT_COLOR, float(tr.days[-1]) - tr.recent_window,
                f"last {tr.recent_window:.0f} days"))
     )  # fmt: skip
+    dots: Any = None  # set in the loop below (always: two component axes)
     for comp, (ax, name) in enumerate(zip(axes[:2], ("North", "East"), strict=True)):
         y = (tr.north, tr.east)[comp]
         ax.plot(when, y, color="0.6", lw=0.5, ls=":", zorder=1)
@@ -1868,11 +1895,11 @@ def series_figure(
         _up_panel(axes[2], vt, onset, t0, lo, hi, before_days, recent_days, cmap,
                   tr.colour, recent_mode, open_days)  # fmt: skip
     if open_days > 0:  # as the map: the last N days, open dots before them
-        import matplotlib as mpl
+        from matplotlib import cm as mpl_cm, colors as mpl_colors
 
         newest = onset + dt.timedelta(days=round(hi))
         fig.colorbar(
-            mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(lo - hi, 0.0), cmap=cmap),
+            mpl_cm.ScalarMappable(norm=mpl_colors.Normalize(lo - hi, 0.0), cmap=cmap),
             ax=axes, shrink=0.6, aspect=30,
             label=f"last {open_days:g} days (days before {newest:%d.%m.%Y}); "
             f"open: since {onset:%d.%m.%Y} until {open_days:g} days ago",

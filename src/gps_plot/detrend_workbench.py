@@ -48,7 +48,7 @@ import sys
 import textwrap
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 from matplotlib.figure import Figure
@@ -1501,6 +1501,7 @@ def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
     """
     from gtimes.timefunc import TimefromYearf
 
+    # Matplotlib supports datetime xdata, despite its float-only stub.
     window = record.get("window") or ()
     if len(window) != 2:
         return
@@ -1511,7 +1512,7 @@ def _add_window_edges(fig: Figure, record: dict[str, Any], yearf: Any) -> None:
             continue  # open bound: the data itself is the boundary
         for ax in fig.axes:
             ax.axvline(
-                TimefromYearf(edge),
+                cast(Any, TimefromYearf(edge)),
                 color=FIT_COLOR,
                 linestyle="--",
                 lw=1.0,

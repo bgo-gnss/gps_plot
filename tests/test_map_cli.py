@@ -13,13 +13,21 @@ import os
 import subprocess
 import sys
 import types
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Never
 
 import numpy as np
 import pytest
 
 from gps_plot import map as gmap
 from gps_plot.cli.map import join_negative_values
-from gps_plot.maps import StationCoordinate, VelocityVector
+from gps_plot.maps import DemChoice, StationCoordinate, VelocityVector
+
+if TYPE_CHECKING:
+    from geo_dataread.velocity import VelocityRecord
+
+    from gps_plot.sources.tos import TosStation
 
 COORDS = {
     "SENG": (-22.43, 63.87),
@@ -31,7 +39,7 @@ COORDS = {
 STATIONS = [*COORDS, "NOCO"]  # NOCO: a section without coordinates
 
 
-def coords(markers):
+def coords(markers: Sequence[str]) -> tuple[StationCoordinate, ...]:
     m = markers[0]
     if m not in COORDS:
         raise ValueError(f"{m} has no latitude/longitude")
@@ -43,7 +51,7 @@ def coords(markers):
 # ---------------------------------------------------------------------------
 
 
-def test_negative_values_are_joined_to_their_option():
+def test_negative_values_are_joined_to_their_option() -> None:
     argv = ["velocity", "--region", "-22.8/-21.9/63.7/64.1", "--mogi", "-22.4,63,4,1"]
     assert join_negative_values(argv) == [
         "velocity", "--region=-22.8/-21.9/63.7/64.1", "--mogi=-22.4,63,4,1",
@@ -63,12 +71,12 @@ def test_negative_values_are_joined_to_their_option():
         (gmap._date, "2023-10-27"),
     ],
 )
-def test_bad_values_are_refused(func, value):
+def test_bad_values_are_refused(func: Callable[[str], object], value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         func(value)
 
 
-def test_corner_region_is_parsed_as_corners():
+def test_corner_region_is_parsed_as_corners() -> None:
     """``LON/LAT/LON/LAT+r`` (or GMT4's trailing ``r``) gives corners,
     lower-left first; W/E/S/N stays a plain box."""
     for value in ("-25/63/-12.8/66.7+r", "-25/63/-12.8/66.7r"):
@@ -78,7 +86,7 @@ def test_corner_region_is_parsed_as_corners():
     assert not isinstance(plain, gmap.Corners)
 
 
-def test_dem_zone_spec_finds_the_file_and_its_cmap(tmp_path):
+def test_dem_zone_spec_finds_the_file_and_its_cmap(tmp_path: Path) -> None:
     (tmp_path / "vector").mkdir()
     poly = tmp_path / "vector" / "swarms.xy"
     poly.write_text("0 0\n1 0\n1 1\n0 0\n")
@@ -92,7 +100,7 @@ def test_dem_zone_spec_finds_the_file_and_its_cmap(tmp_path):
         gmap.zone_spec("vector/none.xy:red", gis)
 
 
-def test_windows_and_last_days():
+def test_windows_and_last_days() -> None:
     now = dt.datetime(2026, 10, 14, 12)
     w = [gmap._window("20231027:20231109"), gmap._window("20231123:")]
     assert gmap.resolve_windows(w, [7], now) == [
@@ -100,10 +108,12 @@ def test_windows_and_last_days():
         (dt.datetime(2023, 11, 23), now),
         (now - dt.timedelta(days=6), now),  # seven whole days
     ]
-    assert gmap.window_label(*w[0]) == "2023/10/27 - 2023/11/09"
+    start, end = w[0]
+    assert end is not None
+    assert gmap.window_label(start, end) == "2023/10/27 - 2023/11/09"
 
 
-def test_last_from_to_days():
+def test_last_from_to_days() -> None:
     """--last FROM:TO: windows that follow each other or overlap."""
     now = dt.datetime(2026, 10, 28, 12)
     day = dt.timedelta(days=1)
@@ -123,7 +133,7 @@ def test_last_from_to_days():
     assert args.last == [(182, 91), (91, 0)]
 
 
-def test_auto_scale_and_scale_bar():
+def test_auto_scale_and_scale_bar() -> None:
     assert gmap._nice(730) == 500 and gmap._nice(0.03) == 0.02
     scale, ref = gmap.auto_scale([1.0, 2.0, 1000.0, np.nan, 0.0])
     assert ref == gmap._nice(float(np.percentile([1, 2, 1000], 90)))
@@ -137,7 +147,7 @@ def test_auto_scale_and_scale_bar():
     assert gmap.scale_bar_km((-22.72, -22.17, 63.76, 63.945)) == 5.0
 
 
-def test_parser_kinds_and_defaults():
+def test_parser_kinds_and_defaults() -> None:
     p = gmap.build_parser(config=None)
     a = p.parse_args(["velocity", "SEY?", "--window", "20231027:20231109", "--save"])
     assert (a.kind, a.Stations, a.save, a.ref, a.vertical) == (
@@ -156,7 +166,7 @@ def test_parser_kinds_and_defaults():
 # ---------------------------------------------------------------------------
 
 
-def test_select_by_pattern_region_and_exclude():
+def test_select_by_pattern_region_and_exclude() -> None:
     got, dropped = gmap.select_stations(
         ["SEY?", "HOFN"], STATIONS, coords, region=None, exclude="SEY2"
     )
@@ -167,7 +177,7 @@ def test_select_by_pattern_region_and_exclude():
     assert [c.marker for c in got] == ["SENG", "SKSH"]
 
 
-def test_select_reports_only_named_stations_without_coordinates():
+def test_select_reports_only_named_stations_without_coordinates() -> None:
     _, dropped = gmap.select_stations(
         ["*"], STATIONS, coords, region=None, exclude=None
     )
@@ -183,7 +193,9 @@ def test_select_reports_only_named_stations_without_coordinates():
     [([], None, "--region"), (["XX?"], None, "matches no station"),
      (["HOFN"], (-23.0, -22.0, 63.5, 64.0), "no station")],
 )  # fmt: skip
-def test_select_refuses(specs, region, msg):
+def test_select_refuses(
+    specs: list[str], region: tuple[float, float, float, float] | None, msg: str
+) -> None:
     with pytest.raises(ValueError, match=msg):
         gmap.select_stations(specs, STATIONS, coords, region=region, exclude=None)
 
@@ -193,7 +205,7 @@ def test_select_refuses(specs, region, msg):
 # ---------------------------------------------------------------------------
 
 
-def test_vector_horizontal_and_vertical_conventions():
+def test_vector_horizontal_and_vertical_conventions() -> None:
     from gps_plot import maps
 
     c = StationCoordinate("SENG", -22.43, 63.87)
@@ -204,7 +216,7 @@ def test_vector_horizontal_and_vertical_conventions():
     assert (v.east, v.north, v.sigma_east, v.sigma_north) == (0.0, 3.0, 0.0, 0.3)
 
 
-def test_snr():
+def test_snr() -> None:
     v = VelocityVector("A", 0, 0, east=3.0, north=4.0, sigma_east=0.0, sigma_north=1.0)
     assert gmap.snr(v) == pytest.approx(2.5)
     assert gmap.snr(VelocityVector("A", 0, 0, 1.0, 0.0)) == np.inf
@@ -223,38 +235,40 @@ def test_snr():
 class _Fig:
     region = (-23.0, -21.0, 63.0, 64.5)
 
-    def __init__(self):
-        self.saved, self.calls = [], []
+    def __init__(self) -> None:
+        self.saved: list[str] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def scalebar(self, **kw):
+    def scalebar(self, **kw: Any) -> None:
         self.calls.append(("scalebar", kw))
 
-    def image(self, **kw):
+    def image(self, **kw: Any) -> None:
         self.calls.append(("image", kw))
 
-    def savefig(self, path):
+    def savefig(self, path: str) -> None:
         self.saved.append(path)
 
 
 class _Config:
-    def getStationInfo(self):
+    def getStationInfo(self) -> list[str]:
         return STATIONS
 
-    def getPostProcessDir(self, option):
+    def getPostProcessDir(self, option: str) -> str:
         return "/cfg/pos" if option == "pos_dir" else ""
 
 
 @pytest.fixture
-def fake_maps(monkeypatch):
+def fake_maps(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     from gps_plot import maps
 
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    def record(name):
-        def draw(*args, **kw):
+    def record(name: str) -> Callable[..., _Fig]:
+        def draw(*args: Any, **kw: Any) -> _Fig:
             seen[name] = (args, kw)
-            seen["fig"] = _Fig()
-            return seen["fig"]
+            fig = _Fig()
+            seen["fig"] = fig
+            return fig
 
         return draw
 
@@ -269,10 +283,12 @@ def fake_maps(monkeypatch):
         config=lambda **kw: __import__("contextlib").nullcontext()))  # fmt: skip
     monkeypatch.setitem(sys.modules, "pygmt.params", types.SimpleNamespace(
         Position=lambda *a, **kw: (a, kw)))  # fmt: skip
+    monkeypatch.setitem(sys.modules, "pygmt.exceptions", types.SimpleNamespace(
+        GMTCLibError=RuntimeError))  # fmt: skip
     return seen
 
 
-def _run(argv, tmp_path):
+def _run(argv: list[str], tmp_path: Path) -> int:
     p = gmap.build_parser(config=None)
     args = p.parse_args(
         join_negative_values([*argv, "--save", "png", "-d", str(tmp_path)])
@@ -280,7 +296,9 @@ def _run(argv, tmp_path):
     return gmap.run(args, p, _Config())
 
 
-def test_default_logo_is_the_two_line_logo_30_percent_transparent(fake_maps, tmp_path):
+def test_default_logo_is_the_two_line_logo_30_percent_transparent(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     assert _run(["station", "SEY?"], tmp_path) == 0
     kw = dict(fake_maps["fig"].calls)["image"]
     assert kw["imagefile"].endswith("VI_Two_Line_Blue.png")
@@ -288,7 +306,7 @@ def test_default_logo_is_the_two_line_logo_30_percent_transparent(fake_maps, tmp
     assert "box" not in kw
 
 
-def test_station_map_dispatch(fake_maps, tmp_path):
+def test_station_map_dispatch(fake_maps: dict[str, Any], tmp_path: Path) -> None:
     assert _run(["station", "SEY?", "--logo", "none"], tmp_path) == 0
     args, kw = fake_maps["station_map"]
     assert [c.marker for c in args[0]] == ["SEY1", "SEY2"] and kw["labels"] is True
@@ -299,7 +317,14 @@ def test_station_map_dispatch(fake_maps, tmp_path):
     assert [c[0] for c in fig.calls] == ["scalebar"]
 
 
-def _product_record(sta, rate, *, refused=None, flags=(), ref="plate-periodic"):
+def _product_record(
+    sta: str,
+    rate: Sequence[float],
+    *,
+    refused: str | None = None,
+    flags: Sequence[str] = (),
+    ref: str = "plate-periodic",
+) -> VelocityRecord:
     """A velocity product record as gps-velocities would return it."""
     from geo_dataread.velocity import VelocityRecord
 
@@ -307,9 +332,9 @@ def _product_record(sta, rate, *, refused=None, flags=(), ref="plate-periodic"):
         station=sta, lon=0.0, lat=0.0, frame="itrf2014", plate="NOAM",
         ref="plate" if "fallback:plate" in flags else ref, ref_requested=ref,
         series="imo.24hr_itrf14", view="cleaned", uncert=10.0,
-        window=(2023.8, 2023.9), span_used=(2023.8, 2023.9), n_epochs=(30,) * 3,
+        window=(2023.8, 2023.9), span_used=(2023.8, 2023.9), n_epochs=(30, 30, 30),
         largest_gap=0.003, method="wls", model="linear",
-        rate=tuple(rate) if refused is None else (np.nan,) * 3,
+        rate=(rate[0], rate[1], rate[2]) if refused is None else (np.nan, np.nan, np.nan),
         sigma=(1.0, 1.0, 1.0), sigma_formal=(0.2, 0.2, 0.2),
         sigma_method="empirical_k", k=(5.0, 5.0, 5.0), k_source={}, corr_en=0.0,
         record=None, steps_in_window=(), outlier_abort=False, n_flagged=0,
@@ -318,16 +343,24 @@ def _product_record(sta, rate, *, refused=None, flags=(), ref="plate-periodic"):
 
 
 @pytest.fixture
-def fake_product(monkeypatch):
+def fake_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[list[str], dt.date, dt.date, Any]]:
     """geo_dataread.velocity.estimate_velocities replaced: SENG and SKSH
     have rates, SKSH only on plate (no record), every other station is
     refused. Records each call's (stations, start, end, settings)."""
     from geo_dataread import velocity as vprod
 
     rates = {"SENG": [100.0, -300.0, 50.0], "SKSH": [0.0, 400.0, 0.0]}
-    calls = []
+    calls: list[tuple[list[str], dt.date, dt.date, Any]] = []
 
-    def estimate(stations, start, end, settings, progress=None):
+    def estimate(
+        stations: Sequence[str],
+        start: dt.date,
+        end: dt.date,
+        settings: Any,
+        progress: Any = None,
+    ) -> list[VelocityRecord]:
         calls.append((list(stations), start, end, settings))
         out = []
         for sta in sorted(stations):
@@ -343,7 +376,12 @@ def fake_product(monkeypatch):
     return calls
 
 
-def test_velocity_windows_one_colour_each(fake_maps, fake_product, tmp_path, capsys):
+def test_velocity_windows_one_colour_each(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     argv = ["velocity", "--region", "-23/-14/63/66", "--window", "20231027:20231109",
             "--window", "20231123:20231205", "--min-snr", "1",
             "--ref", "detrend"]  # fmt: skip
@@ -370,9 +408,101 @@ def test_velocity_windows_one_colour_each(fake_maps, fake_product, tmp_path, cap
     )
 
 
+def test_velocity_scale_exclusion_keeps_every_arrow(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
+    assert (
+        _run(
+            ["velocity", "SENG", "SKSH", "--last", "365", "--scale-exclude", "seng"],
+            tmp_path,
+        )
+        == 0
+    )
+    (vectors,), kw = fake_maps["velocity_map"]
+    assert {v.marker for v in vectors} == {"SENG", "SKSH"}
+    scale, ref = gmap.auto_scale([400.0])  # SKSH alone sets it
+    assert kw["scale"] == pytest.approx(scale)
+    assert kw["scale_ref"] == ref
+
+
+def test_velocity_scale_exclusion_without_remaining_vectors_is_refused(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit):
+        _run(["velocity", "SENG", "--last", "365", "--scale-exclude", "SENG"], tmp_path)
+
+
+def test_velocity_legend_compact_placement(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
+    assert (
+        _run(
+            [
+                "velocity",
+                "SENG",
+                "--last",
+                "365",
+                "--legend-at",
+                "0.49,0.87",
+                "--legend-line-spacing",
+                "0.016",
+            ],
+            tmp_path,
+        )
+        == 0
+    )
+    _vectors, kw = fake_maps["velocity_map"]
+    assert kw["legend_anchor"] == (0.49, 0.87)
+    assert kw["legend_line_spacing"] == 0.016
+    for bad in ("0", "-0.1", "nan", "2"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            gmap._legend_spacing(bad)
+
+
+def test_velocity_window_colors_fixed_then_running(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
+    argv = [
+        "velocity",
+        "SENG",
+        "--window",
+        "20180301:20230228",
+        "--last",
+        "365",
+        "--last",
+        "91",
+        "--window-colors",
+        "black,blue,red",
+    ]
+    assert _run(argv, tmp_path) == 0
+    _vectors, kw = fake_maps["velocity_map"]
+    assert list(kw["method_colors"].values()) == ["black", "blue", "red"]
+    assert len(fake_product) == 3
+    assert fake_product[0][1:3] == (dt.date(2018, 3, 1), dt.date(2023, 2, 28))
+    assert {c[3].ref for c in fake_product} == {"plate-periodic"}
+
+
+@pytest.mark.parametrize("colors", ["", "black,,red", "notacolor"])
+def test_bad_velocity_window_colors_are_refused(colors: str) -> None:
+    with pytest.raises(SystemExit):
+        gmap.build_parser(None).parse_args(
+            ["velocity", "KISA", "--window-colors", colors]
+        )
+
+
 def test_velocity_windows_default_to_plate_periodic_declared(
-    fake_maps, fake_product, tmp_path
-):
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
     assert _run(["velocity", "SENG", "--last", "14"], tmp_path) == 0
     (settings,) = {c[3] for c in fake_product}
     assert (settings.ref, settings.view, settings.frame) == (
@@ -381,7 +511,11 @@ def test_velocity_windows_default_to_plate_periodic_declared(
     assert (settings.min_obs, settings.short_tier) == (5, True)
 
 
-def test_velocity_pre_onset_takes_its_reference_days(fake_maps, fake_product, tmp_path):
+def test_velocity_pre_onset_takes_its_reference_days(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
     argv = ["velocity", "SENG", "--last", "7", "--ref", "pre-onset"]
     assert _run([*argv, "--pre-window", "20230806:20231024"], tmp_path) == 0
     (settings,) = {c[3] for c in fake_product}
@@ -395,7 +529,11 @@ def test_velocity_pre_onset_takes_its_reference_days(fake_maps, fake_product, tm
         _run(argv, tmp_path)
 
 
-def test_velocity_windows_refuse_tot_take_8h(fake_maps, fake_product, tmp_path):
+def test_velocity_windows_refuse_tot_take_8h(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
     with pytest.raises(SystemExit):
         _run(["velocity", "SENG", "--last", "14", "--tType", "TOT"], tmp_path)
     # 8 h sessions: the product has them since gpsprod step 3
@@ -403,7 +541,9 @@ def test_velocity_windows_refuse_tot_take_8h(fake_maps, fake_product, tmp_path):
     assert fake_product[-1][3].session == "8h"
 
 
-def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path, capsys):
+def test_velocity_set_from_file_draws_the_same_vectors(
+    fake_maps: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from geo_dataread import velocity as vprod
 
     recs = [_product_record("SENG", [1.0, 2.0, 3.0]),
@@ -422,8 +562,13 @@ def test_velocity_set_from_file_draws_the_same_vectors(fake_maps, tmp_path, caps
               str(paths["csv"])], tmp_path)  # fmt: skip
 
 
-def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, capsys):
-    def fail(sta, req):
+def test_velocity_nothing_plotted_exits_1(
+    fake_maps: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail(sta: str, req: Any) -> Never:
         raise ValueError("no stored detrend record to draw")
 
     from gps_plot.sources import gps as gps_source
@@ -434,7 +579,7 @@ def test_velocity_nothing_plotted_exits_1(fake_maps, monkeypatch, tmp_path, caps
     assert "nothing plotted" in err and "--ref plate" not in err
 
 
-def test_velocity_from_geojson(fake_maps, tmp_path):
+def test_velocity_from_geojson(fake_maps: dict[str, Any], tmp_path: Path) -> None:
     feats = [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
          "properties": {"marker": m, "east": 1.0, "north": 2.0, "sigma_east": 0.1,
@@ -448,14 +593,18 @@ def test_velocity_from_geojson(fake_maps, tmp_path):
     assert [v.marker for v in vectors] == ["SEY1", "SEY2"]
 
 
-def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
+def test_deformation_with_mogi(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot import maps
 
     import types
 
     import geo_dataread.products as gprod
 
-    def displacements(stations, period, settings):
+    def displacements(
+        stations: Sequence[str], period: Any, settings: Any
+    ) -> list[types.SimpleNamespace]:
         assert settings.method == "ends" and settings.source.ref == "background"
         return [
             types.SimpleNamespace(station=sta, accepted=True, refused=None,
@@ -464,7 +613,7 @@ def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
         ]  # fmt: skip
 
     monkeypatch.setattr(gprod, "estimate_displacements", displacements)
-    seen = {}
+    seen: dict[str, Any] = {}
     monkeypatch.setattr(maps, "mogi_model_field",
                         lambda *a, **kw: seen.setdefault("mogi", (a, kw)))  # fmt: skip
     argv = ["deformation", "SENG", "SKSH", "-s", "20231101", "-e", "20231115",
@@ -482,12 +631,16 @@ def test_deformation_with_mogi(fake_maps, monkeypatch, tmp_path):
     )
 
 
-def test_deformation_vertical_draws_up_north(fake_maps, monkeypatch, tmp_path):
+def test_deformation_vertical_draws_up_north(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     import types
 
     import geo_dataread.products as gprod
 
-    def displacements(stations, period, settings):
+    def displacements(
+        stations: Sequence[str], period: Any, settings: Any
+    ) -> list[types.SimpleNamespace]:
         return [
             types.SimpleNamespace(station=sta, accepted=True, refused=None,
                                   displacement=(1.0, 2.0, 30.0), sigma=(1.0, 1.0, 3.0))
@@ -508,12 +661,16 @@ def test_deformation_vertical_draws_up_north(fake_maps, monkeypatch, tmp_path):
         _run(argv + ["--mogi", "-22.46,63.87,4.5,1.2e7"], tmp_path)
 
 
-def test_deformation_values_and_late_start(fake_maps, monkeypatch, tmp_path):
+def test_deformation_values_and_late_start(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     import types
 
     import geo_dataread.products as gprod
 
-    def displacements(stations, period, settings):
+    def displacements(
+        stations: Sequence[str], period: Any, settings: Any
+    ) -> list[types.SimpleNamespace]:
         assert settings.late_start is True
         flags = {"SKSH": ("start_at:2023-11-02",)}
         return [
@@ -538,15 +695,17 @@ def test_deformation_values_and_late_start(fake_maps, monkeypatch, tmp_path):
 
 
 def test_deformation_with_vertical_adds_a_coloured_up_field(
-    fake_maps, monkeypatch, tmp_path
-):
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     import types
 
     import geo_dataread.products as gprod
 
     from gps_plot import map as gmap
 
-    def displacements(stations, period, settings):
+    def displacements(
+        stations: Sequence[str], period: Any, settings: Any
+    ) -> list[types.SimpleNamespace]:
         return [
             types.SimpleNamespace(station=sta, accepted=True, refused=None, flags=(),
                                   displacement=(1330.0, -2547.0, -40.0),
@@ -573,7 +732,7 @@ def test_deformation_with_vertical_adds_a_coloured_up_field(
         _run(argv + ["--vertical"], tmp_path)
 
 
-def test_end_lag_marks_only_stations_behind_the_newest():
+def test_end_lag_marks_only_stations_behind_the_newest() -> None:
     from gps_plot import map as gmap
 
     assert gmap._end_lag(("steps_in_period", "end_early:24d")) == 24.0
@@ -581,7 +740,7 @@ def test_end_lag_marks_only_stations_behind_the_newest():
     assert gmap.ENDED_DAYS == 30
 
 
-def test_legend_at_and_scale_bar_at_parse():
+def test_legend_at_and_scale_bar_at_parse() -> None:
     from gps_plot import map as gmap
 
     p = gmap.build_parser(config=None)
@@ -594,7 +753,7 @@ def test_legend_at_and_scale_bar_at_parse():
             p.parse_args(["deformation", "-s", "20231101", *bad])
 
 
-def test_gpsplot_help_lists_map_without_pygmt():
+def test_gpsplot_help_lists_map_without_pygmt() -> None:
     code = (
         "import sys; from gps_plot.cli import main; main(['--help']); "
         "from gps_plot import map; map.build_parser(config=None).format_help(); "
@@ -610,7 +769,7 @@ def test_gpsplot_help_lists_map_without_pygmt():
 # ---------------------------------------------------------------------------
 
 
-def test_velocity_map_renders(monkeypatch, tmp_path):
+def test_velocity_map_renders(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     pytest.importorskip("pygmt")
     from gps_plot import maps
 
@@ -632,7 +791,7 @@ def test_velocity_map_renders(monkeypatch, tmp_path):
     assert (tmp_path / "smoke.png").stat().st_size > 1000
 
 
-def test_slip_dispatch(fake_maps, tmp_path):
+def test_slip_dispatch(fake_maps: dict[str, Any], tmp_path: Path) -> None:
     from test_maps import _slip_product
 
     path = tmp_path / "reykjanes_slip.json"
@@ -651,7 +810,7 @@ def test_slip_dispatch(fake_maps, tmp_path):
     assert fig.saved[0].endswith(f"map_slip_{product['region']}-plane.png")
 
 
-def test_overlay_segments_polygons_holes_lines_and_crs():
+def test_overlay_segments_polygons_holes_lines_and_crs() -> None:
     from gps_plot.maps import overlay_segments
 
     square = [[0, 0], [1, 0], [1, 1], [0, 0]]
@@ -676,7 +835,9 @@ def test_overlay_segments_polygons_holes_lines_and_crs():
         overlay_segments(isn93)
 
 
-def test_overlay_options_reach_the_map(fake_maps, tmp_path):
+def test_overlay_options_reach_the_map(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     from gps_plot.maps import MapOverlay
 
     argv = ["station", "SEY?", "--logo", "none", "--overlay", "a.geojson",
@@ -699,7 +860,7 @@ AREAS = {
 }
 
 
-def test_resolve_baselines_pairs_groups_and_areas():
+def test_resolve_baselines_pairs_groups_and_areas() -> None:
     assert gmap.resolve_baselines(["seng-kast,GEVK-SUDV"], dict) == [
         "SENG-KAST", "GEVK-SUDV",
     ]  # fmt: skip
@@ -716,12 +877,12 @@ def test_resolve_baselines_pairs_groups_and_areas():
     ("spec", "words"),
     [("nowhere/yfirlit", "reykjanes"), ("reykjanes/nogroup", "eldc, yfirlit")],
 )
-def test_resolve_baselines_names_what_exists(spec, words):
+def test_resolve_baselines_names_what_exists(spec: str, words: str) -> None:
     with pytest.raises(ValueError, match=words):
         gmap.resolve_baselines([spec], lambda: AREAS)
 
 
-def test_baseline_overlay_is_a_line_per_pair():
+def test_baseline_overlay_is_a_line_per_pair() -> None:
     from gps_plot import maps
 
     coords = [
@@ -730,11 +891,14 @@ def test_baseline_overlay_is_a_line_per_pair():
     ]
     ov = maps.baseline_overlay(["SENG-KAST"], coords)
     assert (ov.pen, ov.fill, ov.step) == (maps.DEFAULT_BASELINE_PEN, None, "baselines")
+    assert ov.geojson is not None
     _polys, lines = maps.overlay_segments(ov.geojson)
     assert "-22.4" in lines and "-22.2" in lines
 
 
-def test_baselines_pick_the_stations_of_a_station_map(fake_maps, tmp_path):
+def test_baselines_pick_the_stations_of_a_station_map(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     argv = ["station", "--baselines", "SEY1-SEY2,SEY2-HOFN", "--logo", "none",
             "--baseline-pen", "2p,blue"]  # fmt: skip
     assert _run(argv, tmp_path) == 0
@@ -745,7 +909,9 @@ def test_baselines_pick_the_stations_of_a_station_map(fake_maps, tmp_path):
     assert len(ov.geojson["features"]) == 2
 
 
-def test_baselines_keep_the_stations_named(fake_maps, tmp_path):
+def test_baselines_keep_the_stations_named(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     argv = ["station", "SEY1", "--baselines", "SEY2-HOFN", "--logo", "none"]
     assert _run(argv, tmp_path) == 0
     args, kw = fake_maps["station_map"]
@@ -753,7 +919,7 @@ def test_baselines_keep_the_stations_named(fake_maps, tmp_path):
     assert len(kw["overlays"]) == 1
 
 
-def _tos_fleet():
+def _tos_fleet() -> tuple[TosStation, ...]:
     from gps_plot.sources.tos import TosStation
 
     return (
@@ -765,13 +931,13 @@ def _tos_fleet():
 
 
 def test_station_tos_carries_status_and_reaches_stations_cfg_gaps(
-    fake_maps, monkeypatch, tmp_path
-):
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot.sources import tos
 
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    def fleet(*, refresh=False):
+    def fleet(*, refresh: bool = False) -> tuple[TosStation, ...]:
         seen["refresh"] = refresh
         return _tos_fleet()
 
@@ -794,7 +960,9 @@ def test_station_tos_carries_status_and_reaches_stations_cfg_gaps(
     assert len(fake_maps["station_map"][0][0]) == 4
 
 
-def test_station_labels_off_above_the_limit(fake_maps, monkeypatch, tmp_path):
+def test_station_labels_off_above_the_limit(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot.sources import tos
     from gps_plot.sources.tos import TosStation
 
@@ -809,7 +977,9 @@ def test_station_labels_off_above_the_limit(fake_maps, monkeypatch, tmp_path):
     assert fake_maps["station_map"][1]["labels"] is True
 
 
-def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_path):
+def test_dem_iceland_picks_a_level_and_the_coast(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot import maps
 
     gis = tmp_path / "gis"
@@ -843,7 +1013,9 @@ def test_dem_iceland_picks_a_level_and_the_coast(fake_maps, monkeypatch, tmp_pat
     assert "glaciers" not in kw and kw["lakes"] == "my_lakes.gmt"
 
 
-def test_colour_map_options_reach_the_map(fake_maps, tmp_path):
+def test_colour_map_options_reach_the_map(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     argv = ["station", "SEY?", "--logo", "none", "--dem", "grid.nc"]
     assert _run([*argv, "--bathymetry-cmap", "none", "--glacier-cmap", "batlow"],
                 tmp_path) == 0  # fmt: skip
@@ -852,7 +1024,9 @@ def test_colour_map_options_reach_the_map(fake_maps, tmp_path):
     assert (kw["bathymetry_cmap"], kw["glacier_cmap"]) == ("none", "batlow")
 
 
-def test_resolve_palettes_finds_yours_and_suggests_the_name_meant(tmp_path):
+def test_resolve_palettes_finds_yours_and_suggests_the_name_meant(
+    tmp_path: Path,
+) -> None:
     pygmt = pytest.importorskip("pygmt")
     (tmp_path / "mine.cpt").write_text("0 red 3000 white\n")
     ok = argparse.Namespace(dem_cmap="mine", bathymetry_cmap="none",
@@ -865,12 +1039,14 @@ def test_resolve_palettes_finds_yours_and_suggests_the_name_meant(tmp_path):
         gmap.resolve_palettes(bad, pygmt, str(tmp_path))
 
 
-def test_gmt_overrides_hold_while_the_map_is_drawn(fake_maps, monkeypatch, tmp_path):
+def test_gmt_overrides_hold_while_the_map_is_drawn(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot import gmt_overrides, maps
 
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    def station_map(*args, **kw):
+    def station_map(*args: Any, **kw: Any) -> types.SimpleNamespace:
         seen["glaciers"] = gmt_overrides.layer_kw("glaciers", pen="a", fill="b")
         return types.SimpleNamespace(savefig=lambda path: None, region=(0, 1, 0, 1))
 
@@ -895,7 +1071,9 @@ def test_gmt_overrides_hold_while_the_map_is_drawn(fake_maps, monkeypatch, tmp_p
         gmap.gmt_config(["MAP_FRAME_TYPE"])
 
 
-def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
+def test_base_map_and_no_stations(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot import maps
 
     # no stations, no region: all Iceland, in the iceland3 overview frame
@@ -919,7 +1097,9 @@ def test_base_map_and_no_stations(fake_maps, monkeypatch, tmp_path):
     ]
 
 
-def test_stations_files_alone_or_beside_tos(fake_maps, monkeypatch, tmp_path):
+def test_stations_files_alone_or_beside_tos(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot.sources import tos
 
     monkeypatch.setattr(tos, "tos_gps_stations", lambda *, refresh=False: _tos_fleet())
@@ -946,18 +1126,20 @@ def test_stations_files_alone_or_beside_tos(fake_maps, monkeypatch, tmp_path):
     assert {c.status for c in stations} == {gmap.STATIONS_CFG_GROUP, "Planned"}
 
 
-def test_tos_search_selects_and_groups(fake_maps, monkeypatch, tmp_path):
+def test_tos_search_selects_and_groups(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from gps_plot.sources import tos
     from gps_plot.sources.tos import TosStation
 
-    seen = {}
+    seen: dict[str, Any] = {}
     fleet = (
         TosStation("SENG", -22.43, 63.87, "Svartsengi", "active", None, "GPS stöð",
                    {"continuity": "continuous"}),
         TosStation("SIL1", -22.40, 63.90, "Sil", "active", None, "SIL stöð", {}),
     )  # fmt: skip
 
-    def search(text, *, refresh=False):
+    def search(text: str, *, refresh: bool = False) -> tuple[TosStation, ...]:
         seen.update(text=text, refresh=refresh)
         if text == "bad":
             raise ValueError("tos search: bad")
@@ -979,7 +1161,11 @@ def test_tos_search_selects_and_groups(fake_maps, monkeypatch, tmp_path):
         _run(["station", "--tos-search", "bad"], tmp_path)
 
 
-def test_no_stations_reaches_the_vector_maps(fake_maps, fake_product, tmp_path):
+def test_no_stations_reaches_the_vector_maps(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
     argv = ["velocity", "SEY?", "--window", "20231027:20231109", "--no-stations"]
     assert _run([*argv, "--logo", "none"], tmp_path) == 1  # every SEY? refused
     argv = ["velocity", "SENG", "--window", "20231027:20231109", "--no-stations"]
@@ -987,16 +1173,14 @@ def test_no_stations_reaches_the_vector_maps(fake_maps, fake_product, tmp_path):
     assert fake_maps["velocity_map"][1]["markers"] is False
 
 
-def test_full_iceland_overview_only_when_everything_fits():
+def test_full_iceland_overview_only_when_everything_fits() -> None:
     """All Iceland with no --region/--projection: the overview frame; a
     small extent, a station outside the frame (Kolbeinsey), or a
     projection of one's own keep the plain box."""
-    from types import SimpleNamespace
-
     from gps_plot import maps
 
-    def args(**kw):
-        return SimpleNamespace(
+    def args(**kw: Any) -> argparse.Namespace:
+        return argparse.Namespace(
             **{"region": None, "projection": None, "margin": None, **kw}
         )
 
@@ -1012,12 +1196,14 @@ def test_full_iceland_overview_only_when_everything_fits():
     assert gmap._overview(args(projection="M12c"), None, spread) is None
 
 
-def test_overview_defaults_to_the_iceland_dem(fake_maps, monkeypatch, tmp_path):
+def test_overview_defaults_to_the_iceland_dem(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A full-Iceland map takes --dem iceland when it is built; --dem none
     keeps flat land; without the DEM on the host, no DEM."""
     from gps_plot import maps
 
-    def choice(gis, region, proj, **kw):
+    def choice(gis: str, region: Any, proj: str, **kw: Any) -> DemChoice:
         return maps.DemChoice("dem.nc", None)
 
     monkeypatch.setattr(maps, "iceland_dem", choice)
@@ -1034,7 +1220,9 @@ def test_overview_defaults_to_the_iceland_dem(fake_maps, monkeypatch, tmp_path):
     assert "dem_grid" not in kw
 
 
-def test_fissure_swarms_flag(fake_maps, monkeypatch, tmp_path):
+def test_fissure_swarms_flag(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """--fissure-swarms: the closed FutureVolc polygons as zones (no
     outline), the GeoJSON as outline overlays; a missing file stops."""
     from gps_plot import maps
@@ -1061,7 +1249,9 @@ def test_fissure_swarms_flag(fake_maps, monkeypatch, tmp_path):
     assert all(o.fill is None for o in kw["overlays"])
 
 
-def test_a_short_tier_record_draws_only_its_standing_part(fake_maps, tmp_path, capsys):
+def test_a_short_tier_record_draws_only_its_standing_part(
+    fake_maps: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     import dataclasses
 
     from geo_dataread import velocity as vprod
@@ -1080,7 +1270,7 @@ def test_a_short_tier_record_draws_only_its_standing_part(fake_maps, tmp_path, c
     assert "SENG" in err and "up snr=1.2<5" in err, err
 
 
-def test_a_product_window_labels_its_own_days():
+def test_a_product_window_labels_its_own_days() -> None:
     """A window's start midnight must not round into the day before."""
     from geo_dataread.velocity import window_bounds
 
@@ -1090,7 +1280,9 @@ def test_a_product_window_labels_its_own_days():
         assert gmap._last_day(b).date() == day
 
 
-def test_pre_onset_fallbacks_are_labelled_no_seasonal(monkeypatch):
+def test_pre_onset_fallbacks_are_labelled_no_seasonal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from types import SimpleNamespace
 
     monkeypatch.setattr(gmap, "_record_vector", lambda maps, c, r, comp, m: m)
@@ -1098,15 +1290,17 @@ def test_pre_onset_fallbacks_are_labelled_no_seasonal(monkeypatch):
         station="ELDC", accepted=True, ref="pre-onset", rate=(1.0, 2.0, 3.0),
         flags=("fallback:plate", "seasonal:none"), parts_refused={},
     )  # fmt: skip
-    groups: list = []
-    vectors: list = []
+    groups: list[tuple[str | None, str]] = []
+    vectors: list[Any] = []
     gmap._add_records(None, [rec], {"ELDC": object()}, "w", "blue", None,
                       groups, vectors, [])  # fmt: skip
     assert vectors == ["w" + gmap.NO_SEASONAL_SUFFIX]
     assert groups[1][0] == "w (no seasonal)"
 
 
-def test_velocity_pre_onset_set_names_its_reference_days(fake_maps, tmp_path):
+def test_velocity_pre_onset_set_names_its_reference_days(
+    fake_maps: dict[str, Any], tmp_path: Path
+) -> None:
     import dataclasses
 
     from geo_dataread import velocity as vprod
@@ -1127,7 +1321,11 @@ def test_velocity_pre_onset_set_names_its_reference_days(fake_maps, tmp_path):
               "--pre-window", "20230801:20231024"], tmp_path)  # fmt: skip
 
 
-def test_velocity_no_short_tier_and_manifest(fake_maps, fake_product, tmp_path):
+def test_velocity_no_short_tier_and_manifest(
+    fake_maps: dict[str, Any],
+    fake_product: list[tuple[list[str], dt.date, dt.date, Any]],
+    tmp_path: Path,
+) -> None:
     man = tmp_path / "files.txt"
     argv = ["velocity", "SENG", "--last", "365", "--no-short-tier",
             "--manifest", str(man)]  # fmt: skip
@@ -1142,7 +1340,9 @@ def test_velocity_no_short_tier_and_manifest(fake_maps, fake_product, tmp_path):
     assert fake_maps["velocity_map"][1]["scale_vertical"] is True
 
 
-def test_arrow_points_follow_each_arrow_to_its_tip(monkeypatch):
+def test_arrow_points_follow_each_arrow_to_its_tip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from gps_plot import insets, maps
 
     monkeypatch.setattr(insets, "size_cm", lambda region, projection: (10.0, 10.0))
@@ -1153,7 +1353,7 @@ def test_arrow_points_follow_each_arrow_to_its_tip(monkeypatch):
     assert len(lons) == 4
 
 
-def test_vector_legend_width_fits_the_longest_label():
+def test_vector_legend_width_fits_the_longest_label() -> None:
     from gps_plot import maps
 
     short = gmap.vector_legend_width_cm(["100 mm/yr"], 1.5)
@@ -1161,12 +1361,20 @@ def test_vector_legend_width_fits_the_longest_label():
     assert long > short >= 1.8 + 2 * maps.LEGEND_BOX_PAD_CM
 
 
-def test_min_fill_drops_a_window_with_too_few_days(fake_maps, monkeypatch, tmp_path):
+def test_min_fill_drops_a_window_with_too_few_days(
+    fake_maps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     import dataclasses
 
     from geo_dataread import velocity as vprod
 
-    def estimate(stations, start, end, settings, progress=None):
+    def estimate(
+        stations: Sequence[str],
+        start: dt.date,
+        end: dt.date,
+        settings: Any,
+        progress: Any = None,
+    ) -> list[VelocityRecord]:
         days = (end - start).days + 1
         n = 13 if days > 300 else 80  # SAFH-like in the year, full in 91 days
         rec = _product_record("SENG", [10.0, 10.0, 50.0])
@@ -1183,7 +1391,7 @@ def test_min_fill_drops_a_window_with_too_few_days(fake_maps, monkeypatch, tmp_p
     assert gmap.window_fill(year) == pytest.approx(191 / 365.25)
 
 
-def test_vertical_windows_stand_side_by_side(monkeypatch):
+def test_vertical_windows_stand_side_by_side(monkeypatch: pytest.MonkeyPatch) -> None:
     from gps_plot import insets
 
     monkeypatch.setattr(insets, "size_cm", lambda region, projection: (10.0, 10.0))
@@ -1208,7 +1416,7 @@ def test_at_label_names_the_date_of_a_transient_rate() -> None:
     assert at_label(dt.datetime(2026, 10, 25)) == "rate on 2026/10/25"
 
 
-def test_locator_corner_is_exact():
+def test_locator_corner_is_exact() -> None:
     from gps_plot import insets
     from gps_plot.layout import BOTTOM_LABELS_CM, MARGIN_CM
 
@@ -1224,7 +1432,7 @@ def test_locator_corner_is_exact():
     assert args.locator_corner == "BL"
 
 
-def test_steep_zone_spec():
+def test_steep_zone_spec() -> None:
     from gps_plot import maps
     from gps_plot.map import steep_zone
 
@@ -1236,7 +1444,7 @@ def test_steep_zone_spec():
             steep_zone(bad)
 
 
-def test_steep_tint_is_the_insets_only_and_named_in_the_legend():
+def test_steep_tint_is_the_insets_only_and_named_in_the_legend() -> None:
     from gps_plot import maps
     from gps_plot.map import map_zones, steep_key
 
@@ -1260,7 +1468,7 @@ def test_steep_tint_is_the_insets_only_and_named_in_the_legend():
     assert steep_key(types.SimpleNamespace(dem_zone=[zone], inset=None)) is None
 
 
-def test_narrow_maps_get_decimal_minutes():
+def test_narrow_maps_get_decimal_minutes() -> None:
     from gps_plot.map import Corners, geo_format
 
     assert geo_format((-16.84, -16.785, 63.99, 64.02)) == {
@@ -1273,14 +1481,16 @@ def test_narrow_maps_get_decimal_minutes():
     assert geo_format(None) == {}
 
 
-def _v(marker, east, north, method, sigma=10.0):
+def _v(
+    marker: str, east: float, north: float, method: str, sigma: float = 10.0
+) -> VelocityVector:
     return VelocityVector(
         marker=marker, lon=-14.0, lat=65.26, east=east, north=north,
         sigma_east=sigma, sigma_north=sigma, method=method,
     )  # fmt: skip
 
 
-def test_vectors_relative_to_a_reference_station():
+def test_vectors_relative_to_a_reference_station() -> None:
     index = {"year": 0, "week": 1}
     vs = [_v("SEYD", 5, 5, "year", 3), _v("SEY1", 15, 5, "year", 4),
           _v("SEY1", 100, 0, "week"), _v("SEY2", 1, 1, "week")]  # fmt: skip
@@ -1295,7 +1505,7 @@ def test_vectors_relative_to_a_reference_station():
     assert "no SEYD rate" in notes[-1]
 
 
-def test_short_window_arrows_show_only_when_they_stand_out():
+def test_short_window_arrows_show_only_when_they_stand_out() -> None:
     index = {"year": 0, "week": 1}
     down = {"SEY1": 300.0, "SEY2": 300.0, "SEY3": 300.0}
     west = (-100.0, 50.0)  # azimuth 297: downslope, |v|/|2σ| = 3.95
@@ -1315,11 +1525,11 @@ def test_short_window_arrows_show_only_when_they_stand_out():
     assert "fewer than 2" in notes[-1]
 
 
-def test_window_days_counts_both_ends():
+def test_window_days_counts_both_ends() -> None:
     assert gmap.window_days(dt.datetime(2025, 1, 25), dt.datetime(2025, 1, 31)) == 7
 
 
-def test_total_motion_is_first_days_to_last_days():
+def test_total_motion_is_first_days_to_last_days() -> None:
     """--total: median(last n) - median(first n) of E, N; the series'
     first epoch; None when the series is shorter than 2 n."""
     t = 2021.0 + np.arange(100) / 365.25
@@ -1328,13 +1538,15 @@ def test_total_motion_is_first_days_to_last_days():
     y[1, 60:] = -40.0  # 40 mm west
     y[2, 60:] = 500.0  # the vertical does not count
     y[:, 5] = np.nan
-    east, north, first, last = gmap.total_motion(t, y, n=14)
+    motion = gmap.total_motion(t, y, n=14)
+    assert motion is not None
+    east, north, first, last = motion
     assert (east, north) == pytest.approx((-40.0, 30.0))
     assert first == pytest.approx(2021.0) and last == pytest.approx(t[-1])
     assert gmap.total_motion(t[:20], y[:, :20], n=14) is None
 
 
-def test_track_onset_days_back_moves_with_today():
+def test_track_onset_days_back_moves_with_today() -> None:
     """--track Nd: the onset N days before today, for a daily product."""
     day, label = gmap.track_onset("365d", today=dt.date(2026, 11, 1))
     assert day == dt.date(2025, 11, 1) and label == "the last 365 days"
@@ -1342,7 +1554,7 @@ def test_track_onset_days_back_moves_with_today():
     assert day == dt.date(2025, 1, 21) and label == "2025-01-21"
 
 
-def test_portrait_legend_only_on_a_tall_mercator_map():
+def test_portrait_legend_only_on_a_tall_mercator_map() -> None:
     """A map taller than wide keeps its legend's size in cm: the anchor
     and spacing scale by width/height; a wide map or another projection
     is left alone."""
