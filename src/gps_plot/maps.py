@@ -3181,12 +3181,14 @@ def velocity_map(
             sea = layout.build_box(region, projection)
         if legend_box is not None:  # the vector legend keeps its place
             xs, ys = legend_box
-            sea.reserve((
-                (min(xs) - w) / (e - w) * width_cm,
-                (max(xs) - w) / (e - w) * width_cm,
-                (min(ys) - s) / (n - s) * height_cm,
-                (max(ys) - s) / (n - s) * height_cm,
-            ))
+            sea.reserve(
+                (
+                    (min(xs) - w) / (e - w) * width_cm,
+                    (max(xs) - w) / (e - w) * width_cm,
+                    (min(ys) - s) / (n - s) * height_cm,
+                    (max(ys) - s) / (n - s) * height_cm,
+                )
+            )
         sea.block_points(lons.tolist(), lats.tolist(), radius=MAP_NOTE_BLOCK_CM)
         spot = sea.place((wide, tall), ("BL", "BR", "TL", "TR"), on_land=True)
         if spot is not None:

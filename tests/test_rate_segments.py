@@ -103,6 +103,8 @@ def test_segment_table_lists_rates_and_refusals():
     text = lr.segment_table("GRVM", [R(), R("cover=0.5<0.8")])
     assert "-2.0 ±  0.2" in text and "[seasonal:regional]" in text
     assert "refused: cover=0.5<0.8" in text
+    along = lr.segment_table("VONC", [R()], ("motion", "across", "up"))
+    assert "mm/yr, motion across up ± σ" in along
 
 
 def test_the_ts_parser_refuses_segments_with_windows():

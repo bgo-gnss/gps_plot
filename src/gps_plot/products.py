@@ -574,6 +574,10 @@ def expand(
                     colours,
                     events,
                 )
+        elif any("name" in run for run in runs) or spec.get("area"):
+            # a named ts figure (a Kort product): an area filter keeps its area's
+            if want_areas is None or spec.get("area") in want_areas:
+                jobs += named_ts_jobs(pname, spec, defaults, areas, cfg)
         else:
             if want_areas is not None:
                 continue
@@ -783,6 +787,70 @@ def map_jobs(
     if not jobs:
         raise ValueError(f"plots.yaml {pname}: a map product needs runs:")
     return jobs + map_ts_jobs(pname, spec, jobs, defaults)
+
+
+#: product keys of a named ts figure (:func:`named_ts_jobs`)
+NAMED_TS_KEYS = ("tool", "dir", "area", "stations", "args", "runs")
+
+
+def named_ts_jobs(
+    pname: str,
+    spec: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    areas: Mapping[str, Mapping[str, Any]],
+    cfg: Mapping[str, Any],
+) -> list[Job]:
+    """The jobs of a named ts product: one station, each run one figure
+    with a fixed file name (``name:``) and a caption (``caption:``), e.g. the
+    Bárðarbunga VONC + quakes figure under Kort (PLAN-ts-quakes §5).
+
+    ``area:`` (a station_areas.yaml cdn slug) puts it in the area's
+    ``maps/`` dir beside the map products, unless ``dir:`` is given. The
+    fixed names keep that dir's stale-plot pruning on
+    (:func:`stale_map_plots`), and the captions go to its captions.json.
+    The run keys are the usual ts ones (:data:`RUN_KEYS`) plus ``name:``
+    and ``caption:``; a run makes exactly one figure (one ``special:`` or
+    one ``fixedstart:``), since every period would write the same file.
+
+    Raises:
+        ValueError: An unknown key, not exactly one station, a run without
+            its own name, or a run with more than one period.
+    """
+    unknown = set(spec) - set(NAMED_TS_KEYS)
+    if unknown:
+        raise ValueError(f"plots.yaml {pname}: unknown key(s) {sorted(unknown)}")
+    if spec.get("tool", "ts") != "ts":
+        raise ValueError(f"plots.yaml {pname}: named runs are for tool: ts")
+    area_dir, _ = map_area_defaults(pname, spec, areas, cfg)
+    out_dir = str(spec.get("dir") or area_dir or "")
+    if not out_dir:
+        raise ValueError(f"plots.yaml {pname}: a named ts product needs dir: or area:")
+    stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
+    if len(stations) != 1 or stations[0].lower() in STATION_KEYWORDS:
+        raise ValueError(f"plots.yaml {pname}: a named ts product plots one station")
+    names: set[str] = set()
+    jobs = []
+    for run in spec.get("runs") or []:
+        name = str(run.get("name") or "")
+        if not name or name in names:
+            raise ValueError(f"plots.yaml {pname}: each run needs its own name:")
+        names.add(name)
+        plain = {k: v for k, v in run.items() if k not in ("name", "caption")}
+        argvs = run_argv(plain, defaults, spec.get("args"))
+        periods = len(_as_list(plain.get("special") or [])) + len(
+            _as_list(plain.get("fixedstart") or [])
+        )
+        if periods != 1:
+            raise ValueError(
+                f"plots.yaml {pname} run {name}: one special: or one fixedstart:"
+            )
+        caption = str(run.get("caption") or f"{stations[0]}: {name}")
+        jobs.append(Job(pname, None, out_dir, stations, (*argvs[0], "--name", name),
+                        bool(run.get("publish", False)), group=name,
+                        captions=((out_dir, name, caption),)))  # fmt: skip
+    if not jobs:
+        raise ValueError(f"plots.yaml {pname}: a named ts product needs runs:")
+    return jobs
 
 
 #: where a map product's check series go, under its dir (aflogun shows

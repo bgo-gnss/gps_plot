@@ -1245,3 +1245,66 @@ def test_watch_first_moves_the_watched_jobs_ahead_in_order() -> None:
     cfg: dict[str, Any] = {"products": {"m": {"tool": "map", "area": "hengill"}}}
     job = products.Job("m", None, "d", (), (), False, tool="map")
     assert products.job_area(job, cfg) == "hengill"
+
+
+NAMED_TS = {
+    "tool": "ts",
+    "area": "hengill",
+    "stations": ["olke"],
+    "args": ["--along opt", "--quakes"],
+    "runs": [
+        {"name": "hengill-olke-skjalftar", "fixedstart": ["2018-01-01"],
+         "args": "--one-panel", "caption": "OLKE og skjálftar"},
+    ],
+}  # fmt: skip
+
+
+def test_named_ts_product_is_a_kort_figure(tmp_path) -> None:
+    cfg = {"defaults": CFG["defaults"], "products": {"k": NAMED_TS}}
+    areas = products.area_table(AREAS_DOC)
+    (job,) = products.expand(cfg, areas=areas)
+    assert job.tool == "ts" and job.stations == ("OLKE",)
+    assert job.out_dir == "locations/volcanos/hengill/maps"
+    assert job.group == "hengill-olke-skjalftar"
+    assert job.argv[-2:] == ("--name", "hengill-olke-skjalftar")
+    for opt in ("--along", "--quakes", "--one-panel", "fixedstart", "20180101"):
+        assert opt in job.argv
+    assert job.captions == ((job.out_dir, job.group, "OLKE og skjálftar"),)
+    assert products.map_captions([job], [job]) == {
+        job.out_dir: {"hengill-olke-skjalftar": "OLKE og skjálftar"}
+    }
+    # the area filter keeps it; another area drops it
+    assert products.expand(cfg, areas=areas, area="hengill") == [job]
+    assert products.expand(cfg, areas=areas, area="reykjanes") == []
+    # its fixed name keeps a map product's pruning on in the shared maps/ dir
+    folder = tmp_path / job.out_dir
+    folder.mkdir(parents=True)
+    for stem in ("hengill-olke-skjalftar", "hengill-map", "old"):
+        (folder / f"{stem}.png").write_text("x")
+    m = products.Job("m", None, job.out_dir, (), (), False, tool="map",
+                     group="hengill-map")  # fmt: skip
+    stale = products.stale_map_plots([m], [m, job], tmp_path)
+    assert [f.name for f in stale] == ["old.png"]
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"stations": ["OLKE", "SENG"]}, "one station"),
+        ({"stations": "active"}, "one station"),
+        ({"runs": [{"fixedstart": ["2018-01-01"]}]}, "own name"),
+        ({"runs": [{"name": "a", "fixedstart": ["2018-01-01", "2020-01-01"]}]},
+         "one special: or one fixedstart:"),
+        ({"runs": [{"name": "a", "special": ["90d", "year"]}]},
+         "one special: or one fixedstart:"),
+        ({"area": None}, "needs dir: or area:"),
+        ({"ts_stations": ["X"]}, "unknown key"),
+    ],
+)  # fmt: skip
+def test_named_ts_product_errors(change: dict, match: str) -> None:
+    spec = {**NAMED_TS, **change}
+    if spec.get("area") is None and "runs" not in change:
+        spec.pop("area")
+        spec["runs"] = [{"name": "a", "fixedstart": ["2018-01-01"]}]
+    with pytest.raises(ValueError, match=match):
+        products.expand({"products": {"k": spec}}, areas=products.area_table(AREAS_DOC))
