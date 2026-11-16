@@ -84,6 +84,18 @@ def special_list(specials: Sequence[str]) -> Callable[[str], str]:
     return check
 
 
+def color_list(value: str) -> tuple[str, ...]:
+    """Comma-separated matplotlib/GMT-compatible colours for window layers."""
+    from matplotlib.colors import is_color_like
+
+    colors = tuple(c.strip() for c in value.split(","))
+    if not colors or any(not c or not is_color_like(c) for c in colors):
+        raise argparse.ArgumentTypeError(
+            "use comma-separated colour names or hex colours, e.g. black,blue,red"
+        )
+    return colors
+
+
 def add_period_options(
     parser: Any, *, specials: Sequence[str], multi: bool = False
 ) -> None:
@@ -126,9 +138,10 @@ def add_event_options(parser: Any) -> None:
         "--events",
         nargs="+",
         default=None,
-        metavar="YYYYMMDD[,COLOR]",
+        metavar="YYYYMMDD[,COLOR[,LABEL]]",
         help="list of individual events to add: a line on every panel at "
-        "each date, in COLOR (default red), e.g. --events 20140816,b 20140831",
+        "each date, in COLOR (default red); optional LABEL on the top panel. "
+        "Quote labels with spaces, e.g. --events '20180301,gray,approx. March 2018'",
     )
     parser.add_argument(
         "--eventf",

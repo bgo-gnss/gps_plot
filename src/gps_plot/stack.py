@@ -26,8 +26,9 @@ import sys
 import textwrap
 import warnings
 import dataclasses
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
+from typing import Any, cast
 
 import numpy as np
 
@@ -499,7 +500,9 @@ def zero_date(value: str, events: Mapping[str, Any], fstart: float | None,
     from gtimes.timefunc import currYearfDate
 
     def year(day: str) -> float:
-        return float(currYearfDate(refday=dt.datetime.strptime(day, "%Y%m%d")))
+        return float(
+            cast(float, currYearfDate(refday=dt.datetime.strptime(day, "%Y%m%d")))
+        )
 
     if value != "event":
         try:
@@ -713,7 +716,7 @@ def run(args: argparse.Namespace, parser: argparse.ArgumentParser, config: Any) 
         own_colors = parse_colors(args.colors)
     except ValueError as exc:
         parser.error(str(exc))
-    start, end = common.resolve_dates(args, currDatetime)
+    start, end = common.resolve_dates(args, cast(Callable[..., datetime], currDatetime))
     try:
         events = common.resolve_events(args)
     except ValueError as exc:

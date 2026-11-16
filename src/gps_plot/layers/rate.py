@@ -40,6 +40,7 @@ def rate_settings(
     uncert: float,
     Dir: str | None,
     common_mode: bool = True,
+    short_tier: bool = True,
 ) -> Any:
     """The velocity product's settings matching a ``gpsplot ts`` plot
     (``common_mode``: the plot's ``--common-mode``, the product's default).
@@ -86,7 +87,7 @@ def rate_settings(
     session = "8h" if pos_id and ".08hr_" in pos_id else "24h"
     return VelocitySettings(
         frame=frame_name(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
-        pos_dir=Dir, session=session, common_mode=common_mode,
+        pos_dir=Dir, session=session, common_mode=common_mode, short_tier=short_tier,
     )  # fmt: skip
 
 
@@ -222,6 +223,7 @@ def add_rate_lines(
     *,
     minus: Any | None = None,
     axes: Any | None = None,
+    colors: Sequence[str] | None = None,
 ) -> list[Any]:
     """Draw the product rate of each window on the first three axes.
 
@@ -238,8 +240,9 @@ def add_rate_lines(
     yy = np.atleast_2d(np.asarray(y, dtype=float))
     ss = np.atleast_2d(np.asarray(sigma, dtype=float))
     records = []
+    palette = colors or RATE_COLORS
     for i, window in enumerate(windows):
-        color = RATE_COLORS[i % len(RATE_COLORS)]
+        color = palette[i % len(palette)]
         r = rotate_record(
             relative_record(
                 estimate_station_velocity(sta, window[0], window[1], settings), minus
