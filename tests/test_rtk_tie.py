@@ -262,3 +262,53 @@ def test_read_rates_takes_the_polar_velocity(tmp_path) -> None:
         "neu_mm_per_day": [1.5, -2.3, None]}}}}))  # fmt: skip
     w = rt.read_rates(str(path))["SVIN"]["rtk"]
     assert w.neu is not None and w.neu[:2] == (1.5, -2.3) and np.isnan(w.neu[2])
+
+
+# --- the red "no data" note (2026-11-16) -----------------------------------
+
+NOW = dt.datetime(2026, 11, 16, 21, 32)
+
+
+def test_silent_rtk_station_flagged_against_the_clock() -> None:
+    # SVIE stopped at 13:00 and is the newest: comparing the stations with
+    # each other alone never flagged it
+    newest = {"SVIN": pd.Timestamp("2026-11-14 02:00"),
+              "SVIE": pd.Timestamp("2026-11-16 13:00")}  # fmt: skip
+    via = {"SVIN": "SVIN-SVIE", "SVIE": "SVIE-SKFC"}
+    got = rt.silent_stations(newest, NOW, rtk=True, via=via)
+    assert got == [("SVIN (via SVIN-SVIE)", newest["SVIN"]),
+                   ("SVIE (via SVIE-SKFC)", newest["SVIE"])]  # fmt: skip
+    assert rt.silence_text(got, NOW, rtk=True) == (
+        "no data: SVIN (via SVIN-SVIE) since 14 Nov, "
+        "SVIE (via SVIE-SKFC) since 16 Nov 13:00"
+    )
+
+
+def test_current_rtk_stations_not_flagged() -> None:
+    newest = {"SVIN": pd.Timestamp("2026-11-16 22:00"),
+              "SVIE": pd.Timestamp("2026-11-16 21:00")}  # fmt: skip
+    assert rt.silent_stations(newest, NOW, rtk=True) == []
+
+
+def test_rtk_station_a_day_behind_still_flagged() -> None:
+    newest = {"A": pd.Timestamp("2026-11-16 22:00"),
+              "B": pd.Timestamp("2026-11-15 21:00")}  # fmt: skip
+    assert [s for s, _ in rt.silent_stations(newest, NOW, rtk=True)] == ["B"]
+
+
+def test_daily_uses_the_title_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gps_plot import timesmatplt as tplt
+
+    # current = through yesterday (15 Nov), as the title's green
+    monkeypatch.setattr(
+        tplt, "data_is_current", lambda last: last.date() >= dt.date(2026, 11, 15)
+    )
+    newest = {"SVIN": pd.Timestamp("2026-11-15 12:00"),
+              "SVIE": pd.Timestamp("2026-11-14 12:00")}  # fmt: skip
+    got = rt.silent_stations(newest, NOW, rtk=False, via={"SVIE": "SVIE-SKFC"})
+    assert got == [("SVIE", newest["SVIE"])]  # daily labels carry no pair
+    assert rt.silence_text(got, NOW, rtk=False) == "no data: SVIE since 14 Nov"
+
+
+def test_no_stations_no_note() -> None:
+    assert rt.silent_stations({}, NOW, rtk=True) == []
