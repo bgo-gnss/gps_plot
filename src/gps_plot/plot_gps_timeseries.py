@@ -612,6 +612,13 @@ def _rate_last(value: str) -> tuple[int, int]:
     return _last(value)
 
 
+def _parse_along(value: str) -> str:
+    """``--along opt|motion|AZ`` (gps_plot.direction.parse_along)."""
+    from gps_plot.direction import parse_along
+
+    return parse_along(value)
+
+
 def _rate_window(value: str) -> tuple[float, float]:
     """``START:END`` (YYYYMMDD) as a velocity-product window [yr], whole days."""
     import datetime as _dt
@@ -645,6 +652,28 @@ def _detrend_terms(raw: str | None) -> tuple[str, ...] | None:
             f"use any of {', '.join(DETREND_TERM_GROUPS)}"
         )
     return tuple(t for t in DETREND_TERM_GROUPS if t in want)
+
+
+def seasonal_free_default(kwargs: dict[str, Any]) -> None:
+    """``--rate-ref`` / ``--along`` without ``--ref``: read the series with the
+    seasonal removed (``--ref detrend --detrend-terms periodic``, the
+    product's plate-periodic), in place.
+
+    BGÓ 2026-11-16: rates and directions are read with the seasonal removed.
+    A few months' reference rate on a series that keeps its seasonal took
+    ~9° off VONC's direction (N rate 2.7 instead of 5.4 mm/yr). The stored
+    LINE is not removed: it can be fitted to too short a quiet span before
+    a volcano's signal (VONC). An explicit ``--ref``, ``--detrend-terms`` or
+    ``--model`` is left as given.
+    """
+    if (
+        kwargs.get("ref") is None
+        and kwargs.get("model") is None
+        and kwargs.get("detrend_terms") is None
+        and (kwargs.get("rate_ref") is not None or kwargs.get("along") is not None)
+    ):
+        kwargs["ref"] = "detrend"
+        kwargs["detrend_terms"] = ("periodic",)
 
 
 def _model_terms(raw: str | None) -> tuple[str, ...] | None:
@@ -752,6 +781,45 @@ def build_parser(
         "(epicentral distance to the station, or to each end of a baseline). "
         "Repeatable. E.g. --quake 2026-10-19,64.63,-17.53,5.2,BB",
     )
+    parser.add_argument(
+        "--quakes",
+        dest="quake_catalogue",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="REGION",
+        help="catalogue earthquakes on the top panel: magnitudes and the "
+        "cumulative seismic moment on right-hand axes (SIL before 2026-02-01, "
+        "SeisComP after; the seam is marked and the moment after it is "
+        "estimated from the magnitudes). REGION = a name in quake_regions.yaml, "
+        "W,S,E,N or LAT,LON,KM; without it the station area's default region. "
+        "Options --quake-*; adds -quakes to the file name",
+    )
+    parser.add_argument(
+        "--quake-star",
+        type=float,
+        default=4.5,
+        metavar="M",
+        help="--quakes: a red star from this magnitude (default 4.5)",
+    )
+    parser.add_argument(
+        "--quake-label",
+        type=float,
+        default=5.0,
+        metavar="M",
+        help="--quakes: write the magnitude from this one (default 5)",
+    )
+    parser.add_argument(
+        "--no-moment",
+        action="store_true",
+        help="--quakes: magnitudes only, no cumulative moment",
+    )
+    try:
+        from geo_dataread.gpsquake import add_quake_args
+    except ImportError:  # an older geo_dataread (before its seismic merge)
+        pass  # --quakes is then refused in run(); every other plot still works
+    else:
+        add_quake_args(parser, prefix="quake-")
     common.add_period_options(parser, specials=special_allow, multi=True)
     common.add_selection_options(parser)
     common.add_output_options(parser, config)
@@ -818,6 +886,36 @@ def build_parser(
         "episodes; implies --rate",
     )
     parser.add_argument(
+        "--rate-ref",
+        default=None,
+        type=_rate_window,
+        metavar="START:END",
+        help="plot the series relative to the velocity product's rate over "
+        "START:END (YYYYMMDD:YYYYMMDD): v·(t − t0) is subtracted per "
+        "component, the window and its rate go in the title, and --rate "
+        "lines are reported relative to it (σ in quadrature). E.g. "
+        "--rate-ref 20130901:20140131 for Bárðarbunga before the 2014 unrest. "
+        "Daily .pos series only; adds -relrate to the file name",
+    )
+    parser.add_argument(
+        "--along",
+        default=None,
+        type=_parse_along,
+        metavar="opt|motion|AZ",
+        help="one station along a direction: panels motion/across/up toward "
+        "AZ [deg]; 'opt' = the direction of the plotted motion (gpsplot "
+        "direction's estimator, after --rate-ref), 'motion' = the station's "
+        "station_areas.yaml directions: entry. --rate lines are rotated with "
+        "it. Single stations only (baselines: --axes motion); file -along[-opt|-motion]",
+    )
+    parser.add_argument(
+        "--one-panel",
+        action="store_true",
+        help="the first panel alone, 13 x 5.33 in: with --along the motion "
+        "toward the azimuth (its rates, breaks and --quakes on it; notes of "
+        "the other panels are dropped). File -1panel",
+    )
+    parser.add_argument(
         "--rate-last",
         action="append",
         default=None,
@@ -829,6 +927,14 @@ def build_parser(
         "(182:91 = the 3 months before the last 3); repeatable, implies --rate",
     )
     parser.add_argument(
+        "--break-gain",
+        type=float,
+        default=None,
+        metavar="G",
+        help="--rate-segments auto: least BIC drop for a new rate break "
+        "(default gps_analysis.breaks' 25)",
+    )
+    parser.add_argument(
         "--rate-segments",
         default=None,
         metavar="SOURCE[,SOURCE]",
@@ -836,7 +942,11 @@ def build_parser(
         "'steps' splits at the station's declared steps (steps.yaml), "
         "'events' at the events of the event catalog (events.yaml) whose "
         "region holds the station (--segment-kinds, --segment-cut); "
-        "'steps,events' at both. Each line is labelled rate ± σ mm/yr at its "
+        "'steps,events' at both; 'auto' at the rate changes found in the "
+        "plotted series (gps_analysis.breaks: weekly medians, continuous "
+        "hinge + BIC, --break-gain; with --along its first component, else "
+        "the horizontal motion along its own direction), drawn as brown "
+        "lines; combines with the others. Each line is labelled rate ± σ mm/yr at its "
         "middle (× = refused) and the table is printed. Seasonal removed "
         "with --ref detrend --detrend-terms periodic (plate-periodic); "
         "implies --rate. Files end -rate-seg<source>",
@@ -1329,6 +1439,11 @@ def run(
         kwargs["quakes"] = [parse_quake(q) for q in kwargs.pop("quake") or ()]
     except ValueError as err:
         parser.error(str(err))
+    from gps_plot.layers.quakes import request_from_args
+
+    if kwargs.get("quake_catalogue") is not None and "quake_source" not in kwargs:
+        parser.error("--quakes needs geo_dataread with the seismic package (gpsquake)")
+    kwargs["quake_request"] = request_from_args(kwargs)
     # argparse dest 'outlier_param' (repeatable strings) -> plotTime's
     # 'outlier_params' (one OutlierParams, or None to defer to the catalog)
     # --stages sets the enable flags; an explicit --outlier-param still wins,
@@ -1387,8 +1502,18 @@ def run(
             k.strip() for k in kwargs["segment_kinds"].split(",") if k.strip()
         )
         kwargs["rate"] = True
+    seasonal_free_default(kwargs)
     if kwargs.get("ref") is None and kwargs.get("model") is None:
         kwargs["ref"] = "plate"  # the default since 2026-10-19
+    if kwargs["along"] is not None and kwargs.get("model") is not None:
+        parser.error("--along and --model: give one")
+    if kwargs["rate_ref"] is not None:
+        if kwargs["session"] != "24h":
+            parser.error("--rate-ref: daily series only (no --session 8h/both)")
+        if kwargs.get("ref") in (None, "all"):
+            parser.error("--rate-ref needs one --ref: plate or detrend")
+        if kwargs.get("model") is not None:
+            parser.error("--rate-ref and --model: give one")
     if kwargs["rate"] or kwargs["rate_windows"]:
         if kwargs["session"] != "24h":
             parser.error("--rate: daily series only (no --session 8h/both)")

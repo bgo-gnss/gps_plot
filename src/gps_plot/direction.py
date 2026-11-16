@@ -286,6 +286,81 @@ def resolve_directions(
     return out
 
 
+#: --along keywords: the motion over the plotted window, or directions:
+ALONG_KEYWORDS = ("opt", "motion")
+#: --along opt: the end-level window [days]. 30, not gpsplot direction's 7:
+#: a direction over years wants steady end levels (VONC 2018–: 286.0° with
+#: 7 d, 284.8° with 30 d and with the old 60-point rule); halved for short
+#: plots (at most half the plotted span)
+ALONG_WINDOW_DAYS = 30.0
+
+
+def parse_along(value: str) -> str:
+    """``--along opt|motion|AZ``: a keyword, or an azimuth 0..360 [°]."""
+    if value in ALONG_KEYWORDS:
+        return value
+    try:
+        az = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r}: use opt, motion or an azimuth in degrees"
+        ) from None
+    if not 0 <= az < 360:
+        raise argparse.ArgumentTypeError(f"{value!r}: azimuth 0..360")
+    return value
+
+
+def along_azimuth(
+    sta: str,
+    along: str,
+    t: Any,
+    y: Any,
+    sigma: Any,
+    config: Any = None,
+    *,
+    window_days: float = ALONG_WINDOW_DAYS,
+) -> tuple[float, str]:
+    """(azimuth [°], title note) of ``gpsplot ts --along`` for one station.
+
+    ``opt``: :func:`gps_analysis.direction.motion_direction` of the PLOTTED
+    series ``t`` [yr], ``y``/``sigma`` (3, N) [mm] between its first and last
+    epoch with data (so a ``--rate-ref`` series gives the direction relative
+    to that rate) — the estimator of ``gpsplot direction`` and
+    ``--direction-from``, end levels over ``window_days``. ``motion``: the
+    station's station_areas.yaml ``directions:`` entry. A number: itself.
+
+    Raises:
+        ValueError: ``motion`` without a directions: entry, or ``opt``
+            without enough data for the end levels.
+    """
+    if along == "motion":
+        got = config_directions(config).get(sta.upper(), {}).get("motion")
+        if got is None:
+            raise ValueError(
+                f"{sta}: --along motion: no directions: entry in station_areas.yaml"
+            )
+        return float(got) % 360.0, f"stefna {float(got):.1f}° (directions:)"
+    if along != "opt":
+        az = float(along) % 360.0
+        return az, f"stefna {az:.1f}°"
+    from gps_analysis.direction import motion_direction
+
+    tt = np.asarray(t, dtype=float) * 365.25  # days: the window is in days
+    yy = np.asarray(y, dtype=float)
+    ss = np.asarray(sigma, dtype=float)
+    have = np.isfinite(yy[:2]).all(axis=0)
+    if have.sum() < 4:
+        raise ValueError(f"{sta}: --along opt: too little data for a direction")
+    first, last = float(tt[have].min()), float(tt[have].max())
+    d = motion_direction(tt, yy, ss, first, last, min(window_days, (last - first) / 2))
+    mark = "" if d.significant else ", EKKI marktæk"
+    print(
+        f"{sta}: --along opt: {d.azimuth:.1f}° ±{d.sigma_azimuth:.1f}°{mark}",
+        file=sys.stderr,
+    )
+    return d.azimuth, f"besta stefna {d.azimuth:.1f}° ±{d.sigma_azimuth:.1f}°{mark}"
+
+
 def add_direction_options(parser: argparse.ArgumentParser, dest: str = "") -> None:
     """``--direction`` / ``--slope`` / ``--direction-from`` (``dest`` prefix)."""
     parser.add_argument(

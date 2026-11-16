@@ -150,8 +150,16 @@ def init_plot_style(force: bool = False) -> None:
     mpl.rcParams["text.usetex"] = True
     # NOTE: the legacy code called mpl.rc("text.latex", preamble=...) twice,
     # so only the second line (color) was actually active; both are kept here.
+    #
+    # T1 font encoding: Icelandic letters (ð, þ, æ) in titles and labels;
+    # OT1 has no \dh ("Command \dh unavailable in encoding OT1"). cm-super
+    # supplies the T1 fonts as Type 1.
     mpl.rcParams["text.latex.preamble"] = "\n".join(
-        [r"\usepackage[utf8]{inputenc}", r"\usepackage{color}"]
+        [
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage[utf8]{inputenc}",
+            r"\usepackage{color}",
+        ]
     )
     mpl.rc("font", family="Times New Roman")
 
@@ -1158,11 +1166,16 @@ def plotTime(
     rate: bool = False,
     rate_windows: Sequence[tuple[float, float]] | None = None,
     rate_segments: Sequence[str] | None = None,
+    rate_ref: tuple[float, float] | None = None,
+    along: str | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
     segment_min_days: int = 30,
+    break_gain: float | None = None,
+    one_panel: bool = False,
     events_catalog: str | None = None,
     quakes: Sequence[Any] | None = None,
+    quake_request: Any = None,
     legacy_names: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
@@ -1451,6 +1464,67 @@ def plotTime(
         # re-zero a detrended station at its start (vshift again, after the
         # detrend): the model was subtracted after getData's zeroing
         main_series = gps_source.rezero_detrended(sta, request, main_series)
+    ref_record = None
+    if rate_ref is not None:
+        # --rate-ref: the series relative to the product rate of a window
+        # (PLAN-ts-quakes Q-T4), zero kept at the first epoch
+        from gps_plot.layers.rate import (
+            SEASONAL_SAFE_YEARS,
+            rate_settings,
+            reference_rate,
+            seasonal_kept,
+            subtract_rate,
+            window_label,
+        )
+
+        if pair is not None or tType != "POS" or overlay_pos_id is not None:
+            raise ValueError(f"{sta}: --rate-ref reads the daily .pos series only")
+        ref_settings = rate_settings(
+            ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
+            uncert=uncert, Dir=Dir, common_mode=common_mode,
+        )  # fmt: skip
+        ref_record = reference_rate(sta, rate_ref, ref_settings)
+        if seasonal_kept(ref, detrend_terms) and (
+            rate_ref[1] - rate_ref[0] < SEASONAL_SAFE_YEARS
+        ):
+            warnings.warn(
+                f"{sta}: --rate-ref {window_label(rate_ref)} is shorter than a "
+                "year on a series that keeps its seasonal: the reference rate "
+                "takes the seasonal's slope with it (use --ref detrend "
+                "--detrend-terms periodic)",
+                UserWarning,
+                stacklevel=2,
+            )
+        t_zero = float(np.asarray(main_series.t, dtype=float)[0])
+        main_series = dataclasses.replace(
+            main_series,
+            y=subtract_rate(main_series.t, main_series.y, ref_record.rate, t_zero),
+        )
+        v = ref_record.rate
+        refTitle = (
+            f"{refTitle}, miðað við hraða {window_label(rate_ref)} "
+            f"(N {v[0]:.1f}, A {v[1]:.1f}, U {v[2]:.1f} mm/ár)"
+        )
+    along_axes = None
+    if along is not None:
+        # --along: one station's motion/across/up toward an azimuth
+        # (PLAN-ts-quakes Q-T5); after --rate-ref, so "opt" is the direction
+        # of the motion relative to that rate
+        from gps_plot.axes import orient, station_frame
+        from gps_plot.direction import along_azimuth
+        from gps_plot.plot_gps_timeseries import _load_config
+
+        if pair is not None:
+            raise ValueError(
+                f"{sta}: --along is for single stations; a baseline takes --axes motion"
+            )
+        az, along_note = along_azimuth(
+            sta, along, main_series.t, main_series.y, main_series.sigma,
+            _load_config() if along == "motion" else None,
+        )  # fmt: skip
+        along_axes = station_frame(az)
+        main_series = orient(main_series, along_axes)
+        refTitle = f"{refTitle}, {along_note}"
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
@@ -1496,6 +1570,10 @@ def plotTime(
         from gps_plot.axes import figure_labels
 
         ylabels = figure_labels([main_series], "en", "mm")
+    elif along_axes is not None:
+        from gps_plot import labels as _labels
+
+        ylabels = _labels.axis_labels(along_axes.keys, "en", "mm")
     fig = stdTimesPlot(
         x,
         data,
@@ -1510,6 +1588,7 @@ def plotTime(
         highlight_last=highlight_last,
     )
 
+    panels = list(fig.axes[:3])  # before any twin axis joins them
     if empty:
         for ax in fig.axes:
             ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
@@ -1793,14 +1872,53 @@ def plotTime(
                 sta, rate_segments, kinds=segment_kinds, cut=segment_cut,
                 steps=steps_catalog, events=events_catalog,
             )  # fmt: skip
+            if "auto" in rate_segments:
+                # rate changes found in the plotted series (PLAN-ts-quakes
+                # Q-T3, gps_analysis.breaks), drawn as lines on every panel
+                from gps_plot.layers.rate import (
+                    BREAK_COLOR,
+                    auto_breaks,
+                    break_gaps,
+                    break_note,
+                )
+
+                found = auto_breaks(
+                    sta, yearf, data, Ddata, along_axes, min_bic_gain=break_gain
+                )
+                print(f"{sta}: {break_note(found)}")
+                gaps = [*gaps, *break_gaps(found)]
+                for b in found.breaks:
+                    xb = list(gpsr.toDateTime(np.array([b])))[0]
+                    for ax_ in fig.axes[:3]:
+                        ax_.axvline(xb, color=BREAK_COLOR, lw=1.0, alpha=0.8, zorder=4)
             windows = segment_windows(
                 yearf, fstart, fend, gaps, min_days=segment_min_days
             )
-            records = add_segment_rates(fig, sta, yearf, data, Ddata, windows, settings)
+            records = add_segment_rates(
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
+            )
             print(segment_table(sta, records))
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
-            records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+            records = add_rate_lines(
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
+            )
         # above the "network common mode removed" note when both are drawn
         fig.axes[2].text(
             0.99, 0.08 if cm_days else 0.02,
@@ -1862,8 +1980,37 @@ def plotTime(
 
         add_quake_marks(fig, quakes, station_points(sta))
 
+    if quake_request is not None:
+        # catalogue quakes + cumulative moment on the top panel's twin axes
+        # (--quakes, PLAN-ts-quakes Q-T6): SIL before the seam, SeisComP after
+        import matplotlib.dates as mdates
+
+        from gps_plot.layers.quakes import add_quake_panel, load_quakes
+
+        top = fig.axes[0]
+        q_lo, q_hi = (
+            mdates.num2date(v).replace(tzinfo=None)  # type: ignore[no-untyped-call]
+            for v in top.get_xlim()
+        )
+        q_df, q_report, q_region = load_quakes(sta, quake_request, q_lo, q_hi)
+        q_info = add_quake_panel(
+            top, q_df, q_report, q_region,
+            star=quake_request.star, label=quake_request.label,
+            moment=quake_request.moment, legend_below=one_panel,
+        )  # fmt: skip
+        print(
+            f"{sta} quakes {q_region}: n = {q_info.n} "
+            f"({q_info.n_automatic} automatic), moment {q_info.moment_nm:.3g} N·m; "
+            f"{q_info.summary}"
+        )
+
+    if one_panel:
+        # the first panel alone (--one-panel, PLAN-ts-quakes Q-T7): with
+        # --along the motion toward the azimuth, its quakes and rates
+        keep_one_panel(fig, panels, quakes=quake_request is not None)
+
     if logo:
-        inpLogo(fig)
+        inpLogo(fig, width=ONE_PANEL_LOGO_WIDTH if one_panel else 0.38)
 
     if save and name:
         # fixed basename: bypass the whole filend construction so repeated
@@ -1908,6 +2055,15 @@ def plotTime(
             filend += "-model" if model == "curve" else "-resid"
             if model_terms:
                 filend += "-line-" + "-".join(model_terms)
+        if rate_ref is not None:
+            filend += "-relrate"  # the window is in the title, not the name
+        if quake_request is not None:
+            filend += "-quakes"  # the region is in the legend, not the name
+        if one_panel:
+            filend += "-1panel"
+        if along is not None:
+            # the mode, not the azimuth (plot names carry no tuning numbers)
+            filend += "-along" + (f"-{along}" if along in ("opt", "motion") else "")
         if rate or rate_windows:
             filend += "-rate"
             if rate_segments is not None:
@@ -1950,6 +2106,36 @@ def plotTime(
     fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
     fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
     return fig
+
+
+#: --one-panel figure: size [in] and the panel's box (figure fractions)
+ONE_PANEL_SIZE = (13.0, 5.33)
+ONE_PANEL_BOX = (0.08, 0.11, 0.9, 0.80)  # left, bottom, right, top
+#: the right edge with the quake axes (magnitude + moment), and the bottom
+#: with their legend under the date axis
+ONE_PANEL_RIGHT_QUAKES = 0.82
+ONE_PANEL_BOTTOM_QUAKES = 0.26
+#: the logo's share of the panel width in the one-panel figure
+ONE_PANEL_LOGO_WIDTH = 0.18
+
+
+def keep_one_panel(fig: Figure, panels: Sequence[Any], *, quakes: bool = False) -> None:
+    """Drop every panel but the first and reshape the figure around it.
+
+    ``panels`` are the three panels as drawn (twin axes of the first follow
+    it). What only the dropped panels carried goes with them (notes on the
+    Up panel); the rates and the quakes are on the first.
+    """
+    for ax in panels[1:]:
+        fig.delaxes(ax)
+    fig.set_size_inches(*ONE_PANEL_SIZE)
+    left, bottom, right, top = ONE_PANEL_BOX
+    if quakes:  # the magnitude + moment axes right, their legend below
+        right, bottom = ONE_PANEL_RIGHT_QUAKES, ONE_PANEL_BOTTOM_QUAKES
+    panels[0].set_position((left, bottom, right - left, top - bottom))
+    if fig._suptitle is not None:  # type: ignore[attr-defined]
+        fig._suptitle.set_y(0.985)  # type: ignore[attr-defined]
+        fig._suptitle.set_va("top")  # type: ignore[attr-defined]
 
 
 def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:

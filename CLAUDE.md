@@ -47,6 +47,7 @@ gps_plot/
 │   ├── series.py                     # Series: what every source returns, plots draw
 │   ├── sources/gps.py                # station / baseline -> Series (fetch); model line (fetch_model)
 │   ├── layers/model.py               # the stored-model line (gpsplot ts --model)
+│   ├── layers/quakes.py              # --quake marks; --quakes REGION: catalogue quakes + cumulative moment on the top panel's twin axes (geo_dataread catalogue_for across the 2026-02-01 SIL→SeisComP seam, moment_estimate; --quake-* = gpsquake.add_quake_args)
 │   ├── trajectory.py                 # model sampled for drawing (dense grid, steps bracketed)
 │   ├── timesmatplt.py                # time-series matplotlib plots
 │   ├── gasmatplt.py                  # GAS plots (legacy, ruff-excluded)
@@ -155,4 +156,4 @@ Signatures, inputs and the GMT install story are in the doc; config guide:
 
 ---
 
-*Last reviewed: 2026-11-13 (polar --refs/--via: the reference-mean frame, --rate, the rates file; rtk_rate; rtk-tie --since/--rates). Previous 2026-11-12 (polar --rtk). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows) — history in `git log --follow CLAUDE.md docs/`.*
+*Last reviewed: 2026-11-16 (ts --quakes: catalogue quakes + moment, Q-T6; --rate-segments auto + --one-panel, Q-T3/Q-T7). Previous 2026-11-13 (polar --refs/--via: the reference-mean frame, --rate, the rates file; rtk_rate; rtk-tie --since/--rates). Previous 2026-11-12 (polar --rtk). Previous 2026-11-11 (polar: motion from the movement since the onset, track-map arrows) — history in `git log --follow CLAUDE.md docs/`.*
