@@ -29,7 +29,12 @@ import inspect
 import math
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, cast
+
+from numpy.typing import ArrayLike, NDArray
 
 import numpy as np
 import pytest
@@ -51,6 +56,10 @@ from gps_plot.maps import (
     velocity_vectors,
     velocity_vectors_from_geojson,
 )
+
+if TYPE_CHECKING:
+    import xarray as xr
+
 
 # ---------------------------------------------------------------------------
 # Fixture: a minimal deployed gpsconfig (stations.cfg + postprocess.cfg)
@@ -77,7 +86,7 @@ station_name = Vantar hnit
 
 
 @pytest.fixture
-def gpsconfig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def gpsconfig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Point gps_parser at a tmp config dir with two known stations."""
     cfg_dir = tmp_path / "gpsconfig"
     cfg_dir.mkdir()
@@ -95,7 +104,7 @@ def gpsconfig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 # ---------------------------------------------------------------------------
 
 
-def test_station_coordinates_from_config(gpsconfig) -> None:
+def test_station_coordinates_from_config(gpsconfig: Any) -> None:
     coords = station_coordinates(["RHOF", "AKUR"], parser=gpsconfig)
     assert [c.marker for c in coords] == ["RHOF", "AKUR"]  # order preserved
     rhof, akur = coords
@@ -106,12 +115,12 @@ def test_station_coordinates_from_config(gpsconfig) -> None:
     assert akur.name == "Akureyri"
 
 
-def test_station_coordinates_unknown_marker(gpsconfig) -> None:
+def test_station_coordinates_unknown_marker(gpsconfig: Any) -> None:
     with pytest.raises(KeyError, match="FAKE.*stations.cfg"):
         station_coordinates(["FAKE"], parser=gpsconfig)
 
 
-def test_station_coordinates_missing_latlon(gpsconfig) -> None:
+def test_station_coordinates_missing_latlon(gpsconfig: Any) -> None:
     with pytest.raises(ValueError, match="NOCOORD.*latitude/longitude"):
         station_coordinates(["NOCOORD"], parser=gpsconfig)
 
@@ -159,7 +168,7 @@ def no_pygmt(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulate absent pygmt regardless of the real environment."""
     real_import = builtins.__import__
 
-    def fake_import(name: str, *args: object, **kwargs: object):
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> ModuleType:
         if name == "pygmt" or name.startswith("pygmt."):
             raise ImportError("No module named 'pygmt'")
         return real_import(name, *args, **kwargs)
@@ -249,7 +258,7 @@ VELOCITIES_GEOJSON = {
 }
 
 
-def test_velocity_vectors_from_arrays(gpsconfig) -> None:
+def test_velocity_vectors_from_arrays(gpsconfig: Any) -> None:
     """Arrays + stations.cfg positions -> velo-schema records."""
     vectors = velocity_vectors(
         ["RHOF", "AKUR"],
@@ -270,7 +279,7 @@ def test_velocity_vectors_from_arrays(gpsconfig) -> None:
     assert rhof.method == "wls"
 
 
-def test_velocity_vectors_length_mismatch(gpsconfig) -> None:
+def test_velocity_vectors_length_mismatch(gpsconfig: Any) -> None:
     with pytest.raises(ValueError, match="north must have shape"):
         velocity_vectors(
             ["RHOF", "AKUR"], east=[1.0, 2.0], north=[1.0], parser=gpsconfig
@@ -324,7 +333,7 @@ def test_mogi_model_field_matches_gps_analysis_forward() -> None:
 
 #: A SlipDistributionResult-shaped product (gps_api models/<region>_slip.json)
 #: — 2 x 1 patches on a 60-degree-dipping plane, opening component.
-def _slip_product() -> dict:
+def _slip_product() -> dict[str, Any]:
     origin_lon, origin_lat = -22.43, 63.88
     return {
         "region": "svartsengi",
@@ -450,7 +459,7 @@ _SKIP_REASON = _pygmt_unavailable_reason()
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_station_map_renders_png(gpsconfig, tmp_path: Path) -> None:
+def test_station_map_renders_png(gpsconfig: Any, tmp_path: Path) -> None:
     """End-to-end: stations.cfg -> gps_parser -> PyGMT -> non-empty PNG."""
     out = tmp_path / "north_iceland_stations.png"
     fig = station_map(
@@ -524,7 +533,7 @@ def test_total_lengths_and_text() -> None:
     assert maps.total_text(1240.0) == "1.24 m"
 
 
-def test_scale_text_switches_to_metres_from_a_metre():
+def test_scale_text_switches_to_metres_from_a_metre() -> None:
     from gps_plot import maps
 
     assert maps.scale_text(500.0, "mm") == "500 mm"
@@ -599,7 +608,7 @@ def test_slip_map_renders_png_plane_view(tmp_path: Path) -> None:
     assert os.path.getsize(out) > 1024
 
 
-def test_map_width_cm_reads_width_forms():
+def test_map_width_cm_reads_width_forms() -> None:
     from gps_plot.maps import map_width_cm
 
     assert map_width_cm("M12c") == 12.0
@@ -609,13 +618,18 @@ def test_map_width_cm_reads_width_forms():
     assert map_width_cm("m1:1000000") is None
 
 
-def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
+def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path: Path) -> None:
     from gps_plot import maps
 
     (tmp_path / maps.GIS_DEM).mkdir()
     for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
         (tmp_path / maps.GIS_DEM / name).write_text("")
-    pick = lambda region, proj="M12c": maps.iceland_dem(tmp_path, region, proj)  # noqa: E731
+
+    def pick(
+        region: tuple[float, float, float, float], proj: str = "M12c"
+    ) -> maps.DemChoice:
+        return maps.iceland_dem(tmp_path, region, proj)
+
     # Iceland at 18 cm: ~20" pixels -> 15"; no vector files -> none drawn
     assert pick((-24.8, -13.2, 63.2, 66.7), "M18c") == maps.DemChoice(
         str(tmp_path / "dem" / "iceland_topobathy_15s.nc"), None, None, None, None
@@ -647,7 +661,9 @@ def test_iceland_dem_level_is_no_finer_than_the_pixels(tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
+def test_dem_colours_stitch_land_sea_and_ice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import pygmt
     import xarray as xr
 
@@ -662,7 +678,10 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     grid = xr.DataArray(z + 0.00351562, coords={"lat": lat, "lon": lon},
                         dims=("lat", "lon"))  # fmt: skip
     grid.gmt.registration, grid.gmt.gtype = 0, 1
-    shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
+    # PyGMT accepts GMT normalization modifiers beyond its annotated literals.
+    shade = cast(Callable[..., xr.DataArray], pygmt.grdgradient)(
+        grid=grid, azimuth=315, normalize="e0.6"
+    )
     poly = tmp_path / "ice.gmt"
     poly.write_text("-19.8 64.1\n-19.5 64.1\n-19.5 64.3\n-19.8 64.3\n-19.8 64.1\n")
 
@@ -680,6 +699,7 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
     assert (shifted[inside] == maps.GLACIER_Z_OFFSET).all()
     assert (shifted[~inside] == 0).all()
     assert comp.gmt.registration == grid.gmt.registration
+    assert ice is not None
     assert np.isfinite(ice.values).sum() == inside.sum()
     slices = palettes.parse(open(cpt).read())
     assert slices[0].lo == float(grid.where(~inside).min())  # gpsplot's sea
@@ -700,6 +720,7 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
         )  # fmt: skip
         palettes.check_gaps(open(cpt).read())
         if sea == "none":  # flat water: no sea-floor relief
+            assert s is not None
             assert (s.values[grid.values < 0] == 0).all()
 
     # a land-only box: no sea slices
@@ -710,7 +731,9 @@ def test_dem_colours_stitch_land_sea_and_ice(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_dem_zones_recolour_land_under_the_land_hillshade(tmp_path, monkeypatch):
+def test_dem_zones_recolour_land_under_the_land_hillshade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The iceland3 swarms: land inside a zone moves into its own slices,
     keeps the land hillshade; sea stays sea; a later zone and the ice
     take the cells they overlap."""
@@ -725,14 +748,17 @@ def test_dem_zones_recolour_land_under_the_land_hillshade(tmp_path, monkeypatch)
     z = -300.0 + 60.0 * np.add.outer(np.arange(lat.size), np.arange(lon.size))
     grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
     grid.gmt.registration, grid.gmt.gtype = 0, 1
-    shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
+    # PyGMT accepts GMT normalization modifiers beyond its annotated literals.
+    shade = cast(Callable[..., xr.DataArray], pygmt.grdgradient)(
+        grid=grid, azimuth=315, normalize="e0.6"
+    )
 
-    def box(name, w, e, s, n):
+    def box(name: str, w: float, e: float, s: float, n: float) -> str:
         path = tmp_path / name
         path.write_text(f"{w} {s}\n{e} {s}\n{e} {n}\n{w} {n}\n{w} {s}\n")
         return str(path)
 
-    def inside(w, e, s, n):
+    def inside(w: float, e: float, s: float, n: float) -> NDArray[np.bool_]:
         eps = 1e-6
         return ((lon[None, :] >= w - eps) & (lon[None, :] <= e + eps)
                 & (lat[:, None] >= s - eps) & (lat[:, None] <= n + eps))  # fmt: skip
@@ -755,6 +781,7 @@ def test_dem_zones_recolour_land_under_the_land_hillshade(tmp_path, monkeypatch)
     assert (shifted[~(in_ice | in_volc | in_swarm)] == 0).all()  # sea stays sea
     assert in_swarm.any() and (~land & inside(-20.0, -19.4, 64.0, 64.5)).any()
     # zones keep the land hillshade (the ice has its own)
+    assert shading is not None
     assert np.allclose(shading.values[in_swarm], shade.values[in_swarm])
     text = open(cpt).read()
     palettes.check_gaps(text)
@@ -762,7 +789,9 @@ def test_dem_zones_recolour_land_under_the_land_hillshade(tmp_path, monkeypatch)
     assert {"119/136/153", "255/0/0"} <= colours
 
 
-def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
+def test_dem_smooth_softens_the_hillshade_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import pygmt
     import xarray as xr
 
@@ -775,27 +804,28 @@ def test_dem_smooth_softens_the_hillshade_only(tmp_path, monkeypatch):
     grid = xr.DataArray(rough, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
     grid.gmt.registration, grid.gmt.gtype = 0, 1
 
-    seen: dict[str, list] = {"gradient": [], "image": []}
+    seen: dict[str, list[Any]] = {"gradient": [], "image": []}
 
     class Spy:
-        def __getattr__(self, name):
+        def __getattr__(self, name: str) -> Any:
             return getattr(pygmt, name)
 
-        def grdgradient(self, **kw):
+        def grdgradient(self, **kw: Any) -> Any:
             seen["gradient"].append(kw["grid"])
             return pygmt.grdgradient(**kw)
 
-    def bumpiness(g):
+    def bumpiness(g: ArrayLike) -> float:
         return float(np.nanstd(np.diff(np.asarray(g), axis=1)))
 
     for smooth in (0.0, 5.0):
         fig = pygmt.Figure()
         image = fig.grdimage
-        monkeypatch.setattr(
-            fig,
-            "grdimage",
-            lambda **kw: (seen["image"].append(kw["grid"]), image(**kw)),
-        )
+
+        def record_image(**kw: Any) -> tuple[None, Any]:
+            seen["image"].append(kw["grid"])
+            return None, image(**kw)
+
+        monkeypatch.setattr(fig, "grdimage", record_image)
         maps._draw_basemap(
             Spy(), fig, region=(-20.0, -19.0, 64.0, 64.5), projection="M6c",
             resolution="crude", land="gray", water="white", shorelines="thin",
@@ -823,15 +853,17 @@ def test_frame_title_joins_the_axes_spec() -> None:
     assert maps._frame_args(maps.DEFAULT_FRAME, None) == list(maps.DEFAULT_FRAME)
 
 
-def test_frame_is_drawn_last_and_the_grid_under_the_stations(monkeypatch) -> None:
+def test_frame_is_drawn_last_and_the_grid_under_the_stations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The frame's annotations sit inside the map: the frame comes after
     every layer, the dashed graticule before the station markers."""
     from gps_plot import maps
 
-    calls: list[tuple[str, dict]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
 
     class _Fig:
-        def __getattr__(self, name):
+        def __getattr__(self, name: str) -> Any:
             return lambda **kw: calls.append((name, kw))
 
     class _Pygmt:
@@ -884,7 +916,7 @@ def test_corner_region_is_the_oblique_rectangle() -> None:
 
 
 def test_place_names_cut_by_the_frame_or_under_the_logo_are_left_out(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from gps_plot import maps
 
@@ -907,23 +939,23 @@ def test_place_names_cut_by_the_frame_or_under_the_logo_are_left_out(
 
 
 def test_vector_legend_sits_in_a_box_and_points_up_on_a_vertical_map(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from gps_plot import maps
 
     monkeypatch.setattr(maps, "_map_size_cm", lambda region, projection: (10.0, 10.0))
-    calls: list[tuple[str, dict]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
     vectors: list[tuple[float, float]] = []
 
     class _Fig:
-        def __getattr__(self, name):
+        def __getattr__(self, name: str) -> Any:
             return lambda **kw: calls.append((name, kw))
 
     monkeypatch.setattr(
         maps, "_draw_vector_layer",
         lambda fig, x, y, e, n, **kw: vectors.append((float(e[0]), float(n[0]))),
     )  # fmt: skip
-    common = dict(
+    common: dict[str, Any] = dict(
         region=(-23.0, -22.0, 63.0, 64.0), entries=[("2025/10/28 - 2026/10/27", "blue")],
         scale_ref=100.0, scale_unit="mm/yr", scale=0.01, confidence=0.95,
         head="0.3c", pen_width="1p", font=maps.DEFAULT_LEGEND_FONT,
@@ -952,9 +984,9 @@ def test_smooth_sea_changes_the_sea_floor_alone() -> None:
 
     z = np.array([[-50.0, -40.0, 10.0], [-30.0, np.nan, 300.0]])
     grid = xr.DataArray(z, dims=("lat", "lon"))
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    def grdfilter(grid, filter, distance):
+    def grdfilter(grid: xr.DataArray, filter: str, distance: str) -> xr.DataArray:
         seen["in"] = grid.values.copy()
         seen["filter"] = filter
         return xr.DataArray(np.full(z.shape, -0.1), dims=("lat", "lon"))
@@ -968,7 +1000,16 @@ def test_smooth_sea_changes_the_sea_floor_alone() -> None:
     assert v[0, 2] == 10.0 and v[1, 2] == 300.0 and np.isnan(v[1, 1])
 
 
-def _area_grid(path, w, s, n_lon, n_lat, dlon=4.1e-5, dlat=1.8e-5, z=None):
+def _area_grid(
+    path: Path,
+    w: float,
+    s: float,
+    n_lon: int,
+    n_lat: int,
+    dlon: float = 4.1e-5,
+    dlat: float = 1.8e-5,
+    z: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.floating[Any]], NDArray[np.floating[Any]]]:
     """A lon/lat netCDF grid like the arcticdem_2m_ll ones (netCDF3)."""
     import xarray as xr
 
@@ -981,7 +1022,9 @@ def _area_grid(path, w, s, n_lon, n_lat, dlon=4.1e-5, dlat=1.8e-5, z=None):
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
+def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(
+    tmp_path: Path,
+) -> None:
     """A zoom finer than the 1" level takes the 2 m area grid that covers
     it, with the fine shading flag; a map it does not cover, or one the
     Iceland levels are fine enough for, keeps the Iceland DEM."""
@@ -990,7 +1033,12 @@ def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
     (tmp_path / maps.GIS_DEM).mkdir()
     for name, _cell, _box in maps.ICELAND_DEM_LEVELS:
         (tmp_path / maps.GIS_DEM / name).write_text("")
-    pick = lambda region, proj="M5c": maps.iceland_dem(tmp_path, region, proj)  # noqa: E731
+
+    def pick(
+        region: tuple[float, float, float, float], proj: str = "M5c"
+    ) -> maps.DemChoice:
+        return maps.iceland_dem(tmp_path, region, proj)
+
     zoom = (-16.84, -16.785, 63.998, 64.022)  # the Svínafellsheiði inset
     assert not pick(zoom).fine  # no area grids on this host
     folder = tmp_path / maps.ARCTICDEM_LL_DIR
@@ -1022,7 +1070,9 @@ def test_iceland_dem_takes_a_2m_area_grid_finer_than_every_level(tmp_path):
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_sea_spliced_puts_the_sea_floor_off_the_coast(tmp_path, monkeypatch):
+def test_sea_spliced_puts_the_sea_floor_off_the_coast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """ArcticDEM's water surface (+17 m) off the coast polygon takes the
     Iceland DEM's depth (at most -1 m); land and NaN cells stay; the
     result is cached and rebuilt when an input is newer."""
@@ -1051,7 +1101,7 @@ def test_sea_spliced_puts_the_sea_floor_off_the_coast(tmp_path, monkeypatch):
     assert maps.sea_spliced(str(fine), str(sea), str(coast)) == out  # cached
 
 
-def test_steep_mask_finds_the_slope_and_drops_specks():
+def test_steep_mask_finds_the_slope_and_drops_specks() -> None:
     """Land steeper than the threshold, from a lon/lat grid with ~2 m cells:
     a 45° ramp is steep, the flats are not, a steep speck under the
     minimum area is dropped, the NaN edge leaves no false slope."""
@@ -1082,7 +1132,9 @@ def test_steep_mask_finds_the_slope_and_drops_specks():
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_steep_zone_recolours_the_steep_land(tmp_path, monkeypatch):
+def test_steep_zone_recolours_the_steep_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import pygmt
     import xarray as xr
 
@@ -1098,7 +1150,10 @@ def test_steep_zone_recolours_the_steep_land(tmp_path, monkeypatch):
     z = 100.0 + np.clip(y - 40 * dy, 0.0, 40 * dy)
     grid = xr.DataArray(z, coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
     grid.gmt.registration, grid.gmt.gtype = 0, 1
-    shade = pygmt.grdgradient(grid=grid, azimuth=315, normalize="e0.6")
+    # PyGMT accepts GMT normalization modifiers beyond its annotated literals.
+    shade = cast(Callable[..., xr.DataArray], pygmt.grdgradient)(
+        grid=grid, azimuth=315, normalize="e0.6"
+    )
     comp, _shading, cpt, _ice = maps._dem_colours(
         pygmt, grid, shade, land="lightgrey", zones=(maps.SteepZone(min_slope=30.0),)
     )
@@ -1111,7 +1166,9 @@ def test_steep_zone_recolours_the_steep_land(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_fine_on_map_resamples_and_fills_the_sea_and_the_rest(tmp_path, monkeypatch):
+def test_fine_on_map_resamples_and_fills_the_sea_and_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """--dem arcticdem: the 2 m grid box-filtered onto the map's lattice;
     land off its box from the Iceland DEM, sea from the Iceland depth (at
     most -1 m, ArcticDEM's +17 m water surface gone); cached."""
@@ -1144,7 +1201,7 @@ def test_fine_on_map_resamples_and_fills_the_sea_and_the_rest(tmp_path, monkeypa
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_smooth_sea_on_a_fine_lattice_keeps_the_grid_and_the_land():
+def test_smooth_sea_on_a_fine_lattice_keeps_the_grid_and_the_land() -> None:
     """Cells far finer than the filter: block-averaged, filtered, put back;
     same shape, land untouched, the sea below the shallowest level."""
     import pygmt
@@ -1183,7 +1240,9 @@ def test_draw_links_on_a_station_map(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-def test_fine_on_map_grid_covering_part_of_the_map(tmp_path: Path, monkeypatch) -> None:
+def test_fine_on_map_grid_covering_part_of_the_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A 2 m grid over part of the map, its edges off the map's lattice:
     grdfilter once refused it ("Output grid domain incompatible")."""
     import numpy as np
@@ -1194,7 +1253,9 @@ def test_fine_on_map_grid_covering_part_of_the_map(tmp_path: Path, monkeypatch) 
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    def grid(path: Path, w: float, e: float, s: float, n: float, d: float, z: float) -> str:
+    def grid(
+        path: Path, w: float, e: float, s: float, n: float, d: float, z: float
+    ) -> str:
         lon = np.arange(w, e + d / 2, d)
         lat = np.arange(s, n + d / 2, d)
         g = xr.DataArray(np.full((lat.size, lon.size), z, dtype=np.float32),
@@ -1202,11 +1263,29 @@ def test_fine_on_map_grid_covering_part_of_the_map(tmp_path: Path, monkeypatch) 
         pygmt.grdcut(g, region=[w, e, s, n], outgrid=str(path))
         return str(path)
 
-    fine = grid(tmp_path / "fine.nc", -22.5111315, -22.3476332, 63.8517079, 63.9031599, 0.0005, 50.0)
+    fine = grid(
+        tmp_path / "fine.nc",
+        -22.5111315,
+        -22.3476332,
+        63.8517079,
+        63.9031599,
+        0.0005,
+        50.0,
+    )
     sea = grid(tmp_path / "sea.nc", -22.8, -22.0, 63.75, 64.05, 0.005, 10.0)
     coast = tmp_path / "coast.txt"
-    coast.write_text("-22.8 63.75\n-22.0 63.75\n-22.0 64.05\n-22.8 64.05\n-22.8 63.75\n")
+    coast.write_text(
+        "-22.8 63.75\n-22.0 63.75\n-22.0 64.05\n-22.8 64.05\n-22.8 63.75\n"
+    )
     out = fine_on_map(fine, sea, str(coast), (-22.76, -22.07, 63.80, 63.975), 0.0016)
-    z = pygmt.grdtrack(points=np.array([[-22.43, 63.88], [-22.70, 63.82]]), grid=out,
-                       output_type="numpy")[:, 2]  # fmt: skip
+    # The numpy output selector returns an array, not a DataFrame or None.
+    tracked = cast(
+        NDArray[np.float64],
+        pygmt.grdtrack(
+            points=np.array([[-22.43, 63.88], [-22.70, 63.82]]),
+            grid=out,
+            output_type="numpy",
+        ),
+    )
+    z = tracked[:, 2]
     assert z.tolist() == pytest.approx([50.0, 10.0], abs=1.0)  # 2 m grid / Iceland DEM

@@ -1806,7 +1806,7 @@ def _draw_vector_legend(
     vertical: bool = False,
     t_lines: Mapping[int, float] | None = None,
     corner: tuple[str, str] | None = None,
-) -> None:
+) -> tuple[list[float], list[float]] | None:
     """Scale-reference arrow + color-coded legend lines (SW corner block).
 
     ``entries`` are ``(label, color)`` pairs drawn bottom-up from the
@@ -1820,6 +1820,9 @@ def _draw_vector_legend(
     entry starts with a sample T line that long (``--total``'s scale), its
     text after it. ``corner`` (text, colour): right-adjusted on the
     legend's top row (the "last datapoint" of the track maps' legends).
+
+    Returns the white box's corners ``(lons, lats)`` (None when unboxed), so a
+    caller can place its own box on the legend's top edge.
     """
     t_lines = dict(t_lines or {})
     entries = list(entries)
@@ -1828,6 +1831,7 @@ def _draw_vector_legend(
         return region_point(region, anchor[0], anchor[1] + line * line_spacing)
 
     boxed = projection is not None and not isinstance(region, CornerRegion)
+    box: tuple[list[float], list[float]] | None = None
     vertical = vertical and boxed and scale_ref is not None
     if corner is not None and (not boxed or vertical):
         entries.append(corner)  # no box to adjust it in: a line of its own
@@ -1859,7 +1863,7 @@ def _draw_vector_legend(
         )  # fmt: skip
 
     if corner is not None and boxed:
-        assert projection is not None
+        assert projection is not None and box is not None
         map_width_cm = _map_size_cm(region, projection)[0]
         row = len(entries) + 0.8 if scale_ref is not None else len(entries) - 1
         _, y = at(row)
@@ -1918,6 +1922,7 @@ def _draw_vector_legend(
             font=f"{font},black",
             justify="LM",
         )
+    return box
 
 
 def text_width_cm(text: str, font: str) -> float:
@@ -2816,6 +2821,14 @@ def total_reference(
     return ref, max_cm * ref / top
 
 
+#: the map's own missing-data box (gap_note): its distance from the left frame
+#: [cm] and how far it sits above the bottom annotation band [cm]
+MAP_NOTE_LEFT_CM = 1.15
+MAP_NOTE_LIFT_CM = 1.0
+#: how far [cm] the box keeps off a station: its symbol AND its name, which the
+#: declutter places a little way out from the marker
+MAP_NOTE_BLOCK_CM = 3.0
+
 #: font of the values written at the arrow tips (deformation --values)
 DEFAULT_VALUE_FONT = "7p,Helvetica-Bold,black=~1p,white"
 #: gap between an arrow's tip and its value [cm]
@@ -2940,6 +2953,7 @@ def velocity_map(
     totals: Mapping[str, tuple[float, float]] | None = None,
     notes: Sequence[tuple[str, str]] = (),
     corner_note: tuple[str, str] | None = None,
+    gap_note: str | None = None,
     scale_vertical: bool = False,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
@@ -3017,6 +3031,8 @@ def velocity_map(
         notes: More legend lines, ``(text, colour)``, under the others.
         corner_note: ``(text, colour)`` right-adjusted on the legend's top
             row (the "last datapoint").
+        gap_note: Red text in its own box on the legend's top edge, e.g.
+            "no data: SVIN since 13.11" (the missing-data alarm).
         scale_vertical: The vectors are vertical rates drawn north: the
             legend's reference arrow points up too.
         dem_grid: Optional DEM grid for a hillshade background.
@@ -3114,8 +3130,9 @@ def velocity_map(
         t_lines[len(legend_entries)] = ref_cm
         legend_entries.append((f"{ref_mm:g} mm moved since installed", TOTAL_COLOR))
 
+    legend_box = None
     if legend:
-        _draw_vector_legend(
+        legend_box = _draw_vector_legend(
             fig,
             region=region,
             entries=legend_entries,
@@ -3133,6 +3150,63 @@ def velocity_map(
             t_lines=t_lines,
             corner=corner_note,
         )
+    if gap_note:
+        # a station's silence is an alarm, not a legend row: its own red box in
+        # the lower left (BGÓ 2026-11-16). Drawn here rather than as one GMT
+        # text, because GMT flattens "\n" (the lines ran off a wide map).
+        from gps_plot import layout
+
+        width_cm, height_cm = _map_size_cm(region, projection)
+        w, e, s, n = region[:4]
+        lines = gap_note.split("\n")
+        font = f"{legend_font},red"
+        line_cm, pad = 0.34, 0.18
+        wide = max(text_width_cm(t, font) for t in lines) + 2 * pad
+        tall = len(lines) * line_cm + 2 * pad
+
+        def lon_of(cm: float) -> float:
+            return region_point(region, cm / width_cm, 0.0)[0]
+
+        def lat_of(cm: float) -> float:
+            return region_point(region, 0.0, cm / height_cm)[1]
+
+        # A free spot at the lower left, not a fixed offset: the layout engine
+        # already keeps clear of the frame's own annotations (the latitude
+        # labels inside the left edge, the longitude band along the bottom), the
+        # logo and the scale bar, and block_points keeps it off the station
+        # symbols and their names (BGÓ 2026-11-16: the box covered "64°15'N",
+        # then "JOKU").
+        sea = getattr(fig, "gpsplot_layout", None)
+        if not isinstance(sea, layout.SeaLayout):
+            sea = layout.build_box(region, projection)
+        if legend_box is not None:  # the vector legend keeps its place
+            xs, ys = legend_box
+            sea.reserve(
+                (
+                    (min(xs) - w) / (e - w) * width_cm,
+                    (max(xs) - w) / (e - w) * width_cm,
+                    (min(ys) - s) / (n - s) * height_cm,
+                    (max(ys) - s) / (n - s) * height_cm,
+                )
+            )
+        sea.block_points(lons.tolist(), lats.tolist(), radius=MAP_NOTE_BLOCK_CM)
+        spot = sea.place((wide, tall), ("BL", "BR", "TL", "TR"), on_land=True)
+        if spot is not None:
+            x0, y0 = spot
+        else:  # nothing free anywhere: the map's own bottom margin
+            x0, y0 = MAP_NOTE_LEFT_CM, layout.BOTTOM_LABELS_CM + MAP_NOTE_LIFT_CM
+        fig.plot(
+            x=[lon_of(x0), lon_of(x0 + wide), lon_of(x0 + wide), lon_of(x0),
+               lon_of(x0)],
+            y=[lat_of(y0), lat_of(y0), lat_of(y0 + tall), lat_of(y0 + tall),
+               lat_of(y0)],
+            fill=LEGEND_BOX_FILL, pen="0.6p,red", close=True,
+        )  # fmt: skip
+        for i, line in enumerate(reversed(lines)):  # first line on top
+            fig.text(
+                x=lon_of(x0 + pad), y=lat_of(y0 + pad + (i + 0.5) * line_cm),
+                text=line, font=font, justify="LM",
+            )  # fmt: skip
 
     _draw_frame(fig, _frame_args(frame, title))
 

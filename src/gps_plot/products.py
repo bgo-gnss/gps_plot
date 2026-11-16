@@ -53,7 +53,7 @@ RESERVED_OPTIONS: Mapping[str, str] = {
 
 #: plots.yaml keys of a map product (``tool: map``) and of each of its runs
 MAP_KEYS = ("tool", "map", "dir", "stations", "args", "runs", "ts_stations",
-            "layers", "gmt", "gmt_config", "area", "label")  # fmt: skip
+            "layers", "gmt", "gmt_config", "area", "label", "ts_args")  # fmt: skip
 #: keys of a plots.yaml ``map_categories:`` / ``map_areas:`` entry: the
 #: defaults of every map of that kind of area / of that area
 MAP_AREA_KEYS = ("layers", "gmt", "gmt_config", "args")
@@ -133,6 +133,7 @@ class Job:
 def load_yaml(path: str | Path) -> Any:
     import yaml
 
+    # pi-lens-ignore: unchecked-throwing-call-python
     with open(Path(path).expanduser()) as fh:
         return yaml.safe_load(fh) or {}
 
@@ -573,6 +574,10 @@ def expand(
                     colours,
                     events,
                 )
+        elif any("name" in run for run in runs) or spec.get("area"):
+            # a named ts figure (a Kort product): an area filter keeps its area's
+            if want_areas is None or spec.get("area") in want_areas:
+                jobs += named_ts_jobs(pname, spec, defaults, areas, cfg)
         else:
             if want_areas is not None:
                 continue
@@ -740,6 +745,12 @@ def map_jobs(
     spec = {**spec, "dir": out_dir}
     area = (areas or {}).get(str(spec.get("area") or ""), {})
     label = str(spec.get("label") or area.get("name") or pname)
+    # Keep area membership in station_areas.yaml, including its check series.
+    for key in ("stations", "ts_stations"):
+        if spec.get(key) == "area":
+            if not area:
+                raise ValueError(f"plots.yaml {pname}: {key}: area needs area:")
+            spec = {**spec, key: list(area["stations"])}
     stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
     checks = [str(s).upper() for s in _as_list(spec.get("ts_stations") or [])]
     names: set[str] = set()
@@ -778,13 +789,77 @@ def map_jobs(
     return jobs + map_ts_jobs(pname, spec, jobs, defaults)
 
 
+#: product keys of a named ts figure (:func:`named_ts_jobs`)
+NAMED_TS_KEYS = ("tool", "dir", "area", "stations", "args", "runs")
+
+
+def named_ts_jobs(
+    pname: str,
+    spec: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    areas: Mapping[str, Mapping[str, Any]],
+    cfg: Mapping[str, Any],
+) -> list[Job]:
+    """The jobs of a named ts product: one station, each run one figure
+    with a fixed file name (``name:``) and a caption (``caption:``), e.g. the
+    Bárðarbunga VONC + quakes figure under Kort (PLAN-ts-quakes §5).
+
+    ``area:`` (a station_areas.yaml cdn slug) puts it in the area's
+    ``maps/`` dir beside the map products, unless ``dir:`` is given. The
+    fixed names keep that dir's stale-plot pruning on
+    (:func:`stale_map_plots`), and the captions go to its captions.json.
+    The run keys are the usual ts ones (:data:`RUN_KEYS`) plus ``name:``
+    and ``caption:``; a run makes exactly one figure (one ``special:`` or
+    one ``fixedstart:``), since every period would write the same file.
+
+    Raises:
+        ValueError: An unknown key, not exactly one station, a run without
+            its own name, or a run with more than one period.
+    """
+    unknown = set(spec) - set(NAMED_TS_KEYS)
+    if unknown:
+        raise ValueError(f"plots.yaml {pname}: unknown key(s) {sorted(unknown)}")
+    if spec.get("tool", "ts") != "ts":
+        raise ValueError(f"plots.yaml {pname}: named runs are for tool: ts")
+    area_dir, _ = map_area_defaults(pname, spec, areas, cfg)
+    out_dir = str(spec.get("dir") or area_dir or "")
+    if not out_dir:
+        raise ValueError(f"plots.yaml {pname}: a named ts product needs dir: or area:")
+    stations = tuple(str(s).upper() for s in _as_list(spec.get("stations") or []))
+    if len(stations) != 1 or stations[0].lower() in STATION_KEYWORDS:
+        raise ValueError(f"plots.yaml {pname}: a named ts product plots one station")
+    names: set[str] = set()
+    jobs = []
+    for run in spec.get("runs") or []:
+        name = str(run.get("name") or "")
+        if not name or name in names:
+            raise ValueError(f"plots.yaml {pname}: each run needs its own name:")
+        names.add(name)
+        plain = {k: v for k, v in run.items() if k not in ("name", "caption")}
+        argvs = run_argv(plain, defaults, spec.get("args"))
+        periods = len(_as_list(plain.get("special") or [])) + len(
+            _as_list(plain.get("fixedstart") or [])
+        )
+        if periods != 1:
+            raise ValueError(
+                f"plots.yaml {pname} run {name}: one special: or one fixedstart:"
+            )
+        caption = str(run.get("caption") or f"{stations[0]}: {name}")
+        jobs.append(Job(pname, None, out_dir, stations, (*argvs[0], "--name", name),
+                        bool(run.get("publish", False)), group=name,
+                        captions=((out_dir, name, caption),)))  # fmt: skip
+    if not jobs:
+        raise ValueError(f"plots.yaml {pname}: a named ts product needs runs:")
+    return jobs
+
+
 #: where a map product's check series go, under its dir (aflogun shows
 #: them in a tab of their own, BGÓ 2026-10-28)
 CHECK_SUBDIR = "ts"
 
 #: map options that set a velocity map's windows and reference: the ones the
 #: check time series (``ts_stations:``) must repeat
-_MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end")
+_MAP_WINDOW_OPTIONS = ("--last", "--window", "--ref", "-e", "--end", "--window-colors")
 
 #: a velocity map's --ref as the ts options that give the same rates
 _TS_REF: Mapping[str, tuple[str, ...]] = {
@@ -839,7 +914,8 @@ def map_ts_jobs(
         for sta in wanted:
             jobs.append(Job(pname, None, f"{spec['dir']}/{CHECK_SUBDIR}", (sta,),
                             ("--save", str(defaults.get("save", "png")),
-                             "-s", f"{start:%Y%m%d}", *argv,
+                             "--skip-missing", "-s", f"{start:%Y%m%d}", *argv,
+                             *extra_args(spec.get("ts_args")),
                              "--name", f"{stem}-{sta}"),
                             any(r.publish for r in runs), group=f"{stem}-{sta}",
                             captions=((f"{spec['dir']}/{CHECK_SUBDIR}", f"{stem}-{sta}",
@@ -853,7 +929,9 @@ def _window_options(pname: str, argv: Sequence[str]) -> tuple[str, ...]:
     it = iter(argv)
     for tok in it:
         opt, eq, value = tok.partition("=")
-        if opt in _MAP_WINDOW_OPTIONS:
+        if opt == "--no-short-tier":
+            out += [opt, "true"]
+        elif opt in _MAP_WINDOW_OPTIONS:
             out += [opt, value if eq else next(it, "")]
     if "--last" not in out and "--window" not in out:
         raise ValueError(
@@ -881,6 +959,10 @@ def _ts_check_argv(
         if opt == "--last":
             argv += ["--rate-last", value]
             days = max(days, int(value.partition(":")[0]))
+        elif opt == "--window-colors":
+            argv += ["--rate-colors", value]
+        elif opt == "--no-short-tier":
+            argv += ["--rate-no-short-tier"]
         elif opt == "--window":
             a, _, b = value.partition(":")
             b = b or f"{end:%Y%m%d}"
@@ -1007,7 +1089,9 @@ def _area_jobs(
         group_over = (overrides.get(f"{slug}/{group}") or {}) if group else {}
         over = {**area_over, **group_over}
         over_args = [
-            tok for o in (area_over, group_over) for tok in extra_args(o.get("args"))
+            item
+            for o in (area_over, group_over)
+            for item in _as_list(o.get("args") or [])
         ]
         for run in runs:
             if run.get("areas") is not None and slug not in _as_list(run["areas"]):
@@ -1023,7 +1107,13 @@ def _area_jobs(
                 merged, defaults, spec.get("args"), over_args, tool=tool
             ):
                 if ev and tool != "polar":
-                    argv = argv + ["--events", *ev]
+                    if "--events" in argv:
+                        # One argparse occurrence: retain display-only markers
+                        # supplied in args as well as the scientific catalogue.
+                        i = argv.index("--events") + 1
+                        argv = argv[:i] + ev + argv[i:]
+                    else:
+                        argv = argv + ["--events", *ev]
                 if group and tool == "polar":  # a group: its pairs in one figure
                     argv = argv + ["--together"]
                 elif group:

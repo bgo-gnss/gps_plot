@@ -35,6 +35,10 @@ ARGV: dict[str, list[str]] = {
     "tot": ["REYK", "--tType", "TOT"],
     "dirs": ["HOFN", "-d", "/tmp/figs", "-i", "/tmp/pos"],
     "detrend": ["SENG", "--ref", "detrend", "--detrend-terms", "periodic"],
+    "rateref": ["VONC", "--ref", "plate", "--rate-ref", "20130901:20140131"],
+    "along": ["VONC", "--ref", "plate", "--along", "opt"],
+    "segauto": ["VONC", "--along", "opt", "--rate-segments", "auto", "--one-panel"],
+    "quakes": ["VONC", "--quakes", "--quake-min-q", "40", "--quake-mode", "reviewed"],
     "model": ["HOFN", "--model", "both", "--special", "year"],
     "modelterms": [
         "HOFN", "--model", "residual", "--detrend-terms", "periodic",

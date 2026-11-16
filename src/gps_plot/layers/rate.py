@@ -17,6 +17,7 @@ whatever the plot's ``--view``). Each window gets:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections.abc import Sequence
 from typing import Any
@@ -39,6 +40,7 @@ def rate_settings(
     uncert: float,
     Dir: str | None,
     common_mode: bool = True,
+    short_tier: bool = True,
 ) -> Any:
     """The velocity product's settings matching a ``gpsplot ts`` plot
     (``common_mode``: the plot's ``--common-mode``, the product's default).
@@ -85,7 +87,7 @@ def rate_settings(
     session = "8h" if pos_id and ".08hr_" in pos_id else "24h"
     return VelocitySettings(
         frame=frame_name(pos_id), ref=vref, view=DEFAULT_VIEW, uncert=float(uncert),
-        pos_dir=Dir, session=session, common_mode=common_mode,
+        pos_dir=Dir, session=session, common_mode=common_mode, short_tier=short_tier,
     )  # fmt: skip
 
 
@@ -95,6 +97,19 @@ def _tex(text: str) -> str:
     for ch in ("\\", "_", "%", "&", "#", "$", "{", "}"):
         out = out.replace(ch, "\\" + ch)
     return out.replace("<", "$<$").replace(">", "$>$")
+
+
+#: a rate window at least this long [yr] averages the seasonal out
+SEASONAL_SAFE_YEARS = 1.0
+
+
+def seasonal_kept(ref: str | None, detrend_terms: Sequence[str] | None) -> bool:
+    """True when the plotted series still carries the seasonal signal:
+    ``--ref plate`` (or an ITRF series), or ``--ref detrend`` whose terms
+    leave ``periodic`` in (the default terms remove it)."""
+    if ref != "detrend":
+        return True
+    return detrend_terms is not None and "periodic" not in detrend_terms
 
 
 def window_label(window: tuple[float, float]) -> str:
@@ -121,6 +136,82 @@ def default_window(
     return float(t0), float(t1)
 
 
+def reference_rate(sta: str, window: tuple[float, float], settings: Any) -> Any:
+    """The product rate of ``window`` for ``--rate-ref`` (the record).
+
+    Raises:
+        ValueError: the product refused the window or a component is NaN
+            (a reference that is not there cannot be subtracted).
+    """
+    from geo_dataread.velocity import estimate_station_velocity
+
+    r = estimate_station_velocity(sta, window[0], window[1], settings)
+    if not r.accepted:
+        raise ValueError(
+            f"{sta}: --rate-ref {window_label(window)}: rate refused ({r.refused})"
+        )
+    if not np.all(np.isfinite(r.rate)):
+        raise ValueError(
+            f"{sta}: --rate-ref {window_label(window)}: a component was not "
+            f"estimated ({getattr(r, 'parts_refused', {})})"
+        )
+    return r
+
+
+def subtract_rate(t: Any, y: Any, rate: Sequence[float], t0: float) -> Any:
+    """``y − v·(t − t0)`` per component: the series relative to rate ``v``.
+
+    ``t`` (N,) [yr], ``y`` (3, N) [mm], ``v`` (3,) [mm/yr]; ``t0`` is where
+    the subtracted line is zero (the plot's first epoch keeps its zero).
+    Returns a new array; ``y`` is not changed.
+    """
+    tt = np.asarray(t, dtype=float)
+    yy = np.atleast_2d(np.asarray(y, dtype=float))
+    v = np.asarray(rate, dtype=float)[:, None]
+    return yy - v * (tt - t0)[None, :]
+
+
+def relative_record(record: Any, ref: Any | None) -> Any:
+    """``record`` with ``ref``'s rate subtracted, σ in quadrature.
+
+    The two windows are taken as independent; for overlapping windows the
+    σ is an upper bound. The reference window itself keeps its own σ (rate
+    0 exactly; quadrature would count the same noise twice). ``ref`` None
+    returns ``record`` unchanged.
+    """
+    if ref is None or not record.accepted:
+        return record
+    rate = tuple(float(a - b) for a, b in zip(record.rate, ref.rate, strict=True))
+    if tuple(record.window) == tuple(ref.window):
+        return dataclasses.replace(record, rate=rate)
+    sigma = tuple(
+        float(np.hypot(a, b)) for a, b in zip(record.sigma, ref.sigma, strict=True)
+    )
+    return dataclasses.replace(record, rate=rate, sigma=sigma)
+
+
+def rotate_record(record: Any, axes: Any | None) -> Any:
+    """``record``'s N/E/U rate and σ along ``axes`` (``--along``): R·v, and
+    σ from R·C·Rᵀ with C built from σ and the record's N–E correlation
+    (``corr_en``; Up uncorrelated). ``axes`` None returns ``record``."""
+    if axes is None or not record.accepted:
+        return record
+    from geofunc.axes import rotate
+
+    s = np.asarray(record.sigma, dtype=float)
+    rho = float(getattr(record, "corr_en", 0.0) or 0.0)
+    cov = np.diag(s**2)
+    if np.isfinite(rho) and np.all(np.isfinite(s[:2])):
+        cov[0, 1] = cov[1, 0] = rho * s[0] * s[1]
+    r = rotate(np.asarray(record.rate, dtype=float), axes, cov=cov)
+    assert r.sigma is not None
+    return dataclasses.replace(
+        record,
+        rate=tuple(float(x) for x in r.values),
+        sigma=tuple(float(x) for x in r.sigma),
+    )
+
+
 def add_rate_lines(
     fig: Figure,
     sta: str,
@@ -129,12 +220,18 @@ def add_rate_lines(
     sigma: Any,
     windows: Sequence[tuple[float, float]],
     settings: Any,
+    *,
+    minus: Any | None = None,
+    axes: Any | None = None,
+    colors: Sequence[str] | None = None,
 ) -> list[Any]:
     """Draw the product rate of each window on the first three axes.
 
     ``t``/``y``/``sigma`` are the plotted series (yearf, (3, N) mm); the
-    lines are anchored on them. Returns the product records, in window
-    order.
+    lines are anchored on them. ``minus``: a ``--rate-ref`` record whose
+    rate is subtracted from each (the plotted series is relative to it too);
+    ``axes``: the ``--along`` frame the rates are rotated into.
+    Returns the product records, in window order.
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -143,9 +240,15 @@ def add_rate_lines(
     yy = np.atleast_2d(np.asarray(y, dtype=float))
     ss = np.atleast_2d(np.asarray(sigma, dtype=float))
     records = []
+    palette = colors or RATE_COLORS
     for i, window in enumerate(windows):
-        color = RATE_COLORS[i % len(RATE_COLORS)]
-        r = estimate_station_velocity(sta, window[0], window[1], settings)
+        color = palette[i % len(palette)]
+        r = rotate_record(
+            relative_record(
+                estimate_station_velocity(sta, window[0], window[1], settings), minus
+            ),
+            axes,
+        )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
         tag = window_label(window) + ": " if len(windows) > 1 else ""
@@ -198,7 +301,7 @@ def rate_note(records: Sequence[Any], *, segments: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 #: --rate-segments sources: the station's declared steps, or the events
-SEGMENT_SOURCES = ("steps", "events")
+SEGMENT_SOURCES = ("steps", "events", "auto")
 #: shortest span between two events that gets a rate [days]
 MIN_SEGMENT_DAYS = 30
 
@@ -282,13 +385,17 @@ def add_segment_rates(
     sigma: Any,
     windows: Sequence[tuple[float, float]],
     settings: Any,
+    *,
+    minus: Any | None = None,
+    axes: Any | None = None,
 ) -> list[Any]:
     """Draw the product rate of each segment on the first three axes.
 
     Like :func:`add_rate_lines`, but for many windows: each line is labelled
     at its own middle (``rate ± σ``, mm/yr), alternating two heights, and a
     refused segment gets a ``×`` there (its reason is in the returned
-    record). Returns the product records, in window order.
+    record). ``minus`` as in :func:`add_rate_lines`. Returns the product
+    records, in window order.
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -300,7 +407,12 @@ def add_segment_rates(
     records = []
     for i, window in enumerate(windows):
         color = RATE_COLORS[i % 2]
-        r = estimate_station_velocity(sta, window[0], window[1], settings)
+        r = rotate_record(
+            relative_record(
+                estimate_station_velocity(sta, window[0], window[1], settings), minus
+            ),
+            axes,
+        )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
         mid = list(gpsr.toDateTime(np.array([0.5 * (window[0] + window[1])])))[0]
@@ -328,9 +440,12 @@ def add_segment_rates(
     return records
 
 
-def segment_table(sta: str, records: Sequence[Any]) -> str:
-    """The segments' rates as text (one line each), for the terminal."""
-    rows = [f"{sta}: rates between events (mm/yr, N E U ± σ)"]
+def segment_table(
+    sta: str, records: Sequence[Any], keys: Sequence[str] = ("N", "E", "U")
+) -> str:
+    """The segments' rates as text (one line each), for the terminal;
+    ``keys`` name the components (``--along``: the axes' keys)."""
+    rows = [f"{sta}: rates between events (mm/yr, {' '.join(keys)} ± σ)"]
     for r in records:
         span = f"{r.window[0]:.3f}–{r.window[1]:.3f}"
         if not r.accepted:
@@ -419,6 +534,84 @@ def segment_gaps(
                 )
             evs = station_events(sta, catalog, areas, kinds=kinds)
             gaps += event_gaps(evs, cut=cut)
+        elif source == "auto":
+            continue  # from the plotted data: auto_break_gaps
         else:
             raise ValueError(f"--rate-segments {source!r}: one of {SEGMENT_SOURCES}")
     return gaps
+
+
+#: colour of the --rate-segments auto break lines
+BREAK_COLOR = "saddlebrown"
+
+
+@dataclasses.dataclass(frozen=True)
+class AutoBreaks:
+    """``--rate-segments auto``: where the rate changes, and on what."""
+
+    breaks: tuple[float, ...]  # fractional years
+    bic_gains: tuple[float, ...]  # BIC drop of each accepted break, in order
+    series: str  # what was searched: "along 284.0°", "motion 284.0°"
+    min_gap: float
+    min_bic_gain: float
+
+
+def break_component(
+    sta: str, t: Any, y: Any, sigma: Any, axes: Any | None
+) -> tuple[Any, str]:
+    """The one series the breaks are looked for in.
+
+    With ``--along`` the plotted first component (motion toward its
+    azimuth); otherwise the horizontals projected on the direction of the
+    plotted motion (``--along opt``'s estimator), so a station gets one set
+    of breaks for all its panels.
+    """
+    yy = np.atleast_2d(np.asarray(y, dtype=float))
+    if axes is not None:
+        return yy[0], str(axes.keys[0])
+    from gps_plot.direction import along_azimuth
+
+    az, _ = along_azimuth(sta, "opt", t, yy, sigma)
+    a = np.radians(az)
+    return yy[0] * np.cos(a) + yy[1] * np.sin(a), f"motion {az:.1f}°"
+
+
+def auto_breaks(
+    sta: str,
+    t: Any,
+    y: Any,
+    sigma: Any,
+    axes: Any | None = None,
+    *,
+    min_bic_gain: float | None = None,
+) -> AutoBreaks:
+    """Rate changes of the plotted series (:func:`gps_analysis.breaks.
+    rate_breaks`, its defaults unless ``min_bic_gain`` is given)."""
+    from gps_analysis.breaks import MIN_BIC_GAIN, rate_breaks
+
+    comp, label = break_component(sta, t, y, sigma, axes)
+    tt = np.asarray(t, dtype=float)
+    ok = np.isfinite(tt) & np.isfinite(comp)
+    gain = MIN_BIC_GAIN if min_bic_gain is None else float(min_bic_gain)
+    rb = rate_breaks(tt[ok], comp[ok], min_bic_gain=gain)
+    gains = tuple(float(a - b) for a, b in zip(rb.bic[:-1], rb.bic[1:], strict=True))
+    return AutoBreaks(tuple(rb.breaks), gains, label, rb.min_gap, gain)
+
+
+def break_gaps(found: AutoBreaks) -> list[tuple[dt.date, dt.date]]:
+    """The breaks as one-day gaps (each break's day splits the series)."""
+    return step_gaps(found.breaks)
+
+
+def break_note(found: AutoBreaks) -> str:
+    """Console line: the breaks, their BIC gains and the settings."""
+    if not found.breaks:
+        return (
+            f"rate breaks ({found.series}): none (BIC gain >= {found.min_bic_gain:g})"
+        )
+    bits = ", ".join(f"{b:.2f}" for b in found.breaks)
+    gains = ", ".join(f"{g:.0f}" for g in found.bic_gains)
+    return (
+        f"rate breaks ({found.series}): {bits}; BIC gains {gains} "
+        f"(>= {found.min_bic_gain:g}, min gap {found.min_gap:.2f} yr)"
+    )

@@ -49,13 +49,13 @@ import warnings
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import matplotlib as mpl
 import matplotlib.figure
 import matplotlib.image as image
 import matplotlib.pyplot as plt
-import matplotlib.style
+from matplotlib import dates as mdates, style as mstyle, ticker as mticker
 import numpy as np
 from gtimes.timefunc import currDate, currDatetime, currTime, currYearfDate, toDatetimel
 
@@ -145,13 +145,21 @@ def init_plot_style(force: bool = False) -> None:
     if _STYLE_INITIALIZED and not force:
         return
 
-    mpl.style.use("classic")
+    mstyle.use("classic")
     mpl.rcParams["legend.handlelength"] = 0
     mpl.rcParams["text.usetex"] = True
     # NOTE: the legacy code called mpl.rc("text.latex", preamble=...) twice,
     # so only the second line (color) was actually active; both are kept here.
+    #
+    # T1 font encoding: Icelandic letters (ð, þ, æ) in titles and labels;
+    # OT1 has no \dh ("Command \dh unavailable in encoding OT1"). cm-super
+    # supplies the T1 fonts as Type 1.
     mpl.rcParams["text.latex.preamble"] = "\n".join(
-        [r"\usepackage[utf8]{inputenc}", r"\usepackage{color}"]
+        [
+            r"\usepackage[T1]{fontenc}",
+            r"\usepackage[utf8]{inputenc}",
+            r"\usepackage{color}",
+        ]
     )
     mpl.rc("font", family="Times New Roman")
 
@@ -408,7 +416,9 @@ def _up_mask(flags: Any, yearf: Any, epochs: tuple[float, ...]) -> Any:
         return mask
     from gps_parser import outlier_catalogs as _oc
 
-    idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(epochs)))
+    idx = list(
+        _oc.match_declared_epochs(np.asarray(yearf, float).tolist(), list(epochs))
+    )
     if idx:
         if mask.ndim == 1:
             mask[idx] = True
@@ -645,7 +655,9 @@ def _mask_outliers(
     if iep:
         from gps_parser import outlier_catalogs as _oc
 
-        idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(iep)))
+        idx = list(
+            _oc.match_declared_epochs(np.asarray(yearf, float).tolist(), list(iep))
+        )
         if idx:
             if imask.ndim == 1:
                 imask[idx] = True
@@ -672,7 +684,9 @@ def _mask_outliers(
     if nep:
         from gps_parser import outlier_catalogs as _oc
 
-        idx = list(_oc.match_declared_epochs(np.asarray(yearf, float), np.asarray(nep)))
+        idx = list(
+            _oc.match_declared_epochs(np.asarray(yearf, float).tolist(), list(nep))
+        )
         if idx:
             if nmask.ndim == 1:
                 nmask[idx] = True
@@ -958,6 +972,8 @@ def station_series(
     )
     if yearf is None or len(yearf) == 0:
         raise NoDataError("no data for station %s" % sta)
+    if data is None:
+        raise NoDataError("no observations for station %s" % sta)
 
     # the network common mode (geo_dataread network_cm list, BGÓ 2026-10-21:
     # estimate and subtract): high-pass by construction, so rates, seasonals
@@ -992,7 +1008,7 @@ def station_series(
             network_mode=network_mode,
         )
 
-    views = dict(
+    views: dict[str, Any] = dict(
         ref=ref,
         view=view,
         tType=tType,
@@ -1046,24 +1062,25 @@ def resolve_period(
     bound the x axis only with ``fix`` or ``special``; otherwise the axis
     spans the data. ``fstart``/``fend`` (fractional years) are what is read.
     """
-    fstart = fend = None
+    fstart: float | None = None
+    fend: float | None = None
     if start:
-        fstart = currYearfDate(refday=start)
+        fstart = cast(float, currYearfDate(refday=start))
     if end:
-        fend = currYearfDate(refday=end)
+        fend = cast(float, currYearfDate(refday=end))
 
     # standard sub-periods for routine plots
     if special:
         if not end:
-            end = currDatetime(-1)
-            fend = currYearfDate(refday=end)
+            end = cast(datetime.datetime, currDatetime(-1))
+            fend = cast(float, currYearfDate(refday=end))
 
         if special == "90d":
-            start = currDatetime(days=-91, refday=end)
-            fstart = currYearfDate(refday=start)
+            start = cast(datetime.datetime, currDatetime(days=-91, refday=end))
+            fstart = cast(float, currYearfDate(refday=start))
         if special == "year":
-            start = currDatetime(days=-366, refday=end)
-            fstart = currYearfDate(refday=start)
+            start = cast(datetime.datetime, currDatetime(days=-366, refday=end))
+            fstart = cast(float, currYearfDate(refday=start))
         if special == "fixedstart":
             pass
         if special == "full":
@@ -1155,14 +1172,22 @@ def plotTime(
     overlay_pos_id: str | None = None,
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
+    open_points: bool = False,
     rate: bool = False,
     rate_windows: Sequence[tuple[float, float]] | None = None,
+    rate_colors: Sequence[str] | None = None,
+    rate_short_tier: bool = True,
     rate_segments: Sequence[str] | None = None,
+    rate_ref: tuple[float, float] | None = None,
+    along: str | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
     segment_min_days: int = 30,
+    break_gain: float | None = None,
+    one_panel: bool = False,
     events_catalog: str | None = None,
     quakes: Sequence[Any] | None = None,
+    quake_request: Any = None,
     legacy_names: bool = False,
 ) -> Figure:
     """Plot a standard GPS North/East/Up time series for one station.
@@ -1261,6 +1286,7 @@ def plotTime(
     # graph title reference-frame string
     if ref is None:  # baselines and the detrended view default to plate
         ref = "plate" if (split_baseline(sta) or view == "detrended") else "itrf2008"
+    plates: list[str] = []
     if ref in ("plate", "detrend"):
         # a detrended series is the plate-removed one minus the record, so it
         # needs the plate just as much: without this check the plate removal
@@ -1395,7 +1421,7 @@ def plotTime(
             f"baseline {sta}: the empirical baseline noise record is fitted on "
             "daily solutions; use --baseline-sigma formal for 8 h sessions"
         )
-    series_kw = dict(
+    series_kw: dict[str, Any] = dict(
         fstart=fstart,
         fend=fend,
         ref=ref,
@@ -1451,6 +1477,67 @@ def plotTime(
         # re-zero a detrended station at its start (vshift again, after the
         # detrend): the model was subtracted after getData's zeroing
         main_series = gps_source.rezero_detrended(sta, request, main_series)
+    ref_record = None
+    if rate_ref is not None:
+        # --rate-ref: the series relative to the product rate of a window
+        # (PLAN-ts-quakes Q-T4), zero kept at the first epoch
+        from gps_plot.layers.rate import (
+            SEASONAL_SAFE_YEARS,
+            rate_settings,
+            reference_rate,
+            seasonal_kept,
+            subtract_rate,
+            window_label,
+        )
+
+        if pair is not None or tType != "POS" or overlay_pos_id is not None:
+            raise ValueError(f"{sta}: --rate-ref reads the daily .pos series only")
+        ref_settings = rate_settings(
+            ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
+            uncert=uncert, Dir=Dir, common_mode=common_mode,
+        )  # fmt: skip
+        ref_record = reference_rate(sta, rate_ref, ref_settings)
+        if seasonal_kept(ref, detrend_terms) and (
+            rate_ref[1] - rate_ref[0] < SEASONAL_SAFE_YEARS
+        ):
+            warnings.warn(
+                f"{sta}: --rate-ref {window_label(rate_ref)} is shorter than a "
+                "year on a series that keeps its seasonal: the reference rate "
+                "takes the seasonal's slope with it (use --ref detrend "
+                "--detrend-terms periodic)",
+                UserWarning,
+                stacklevel=2,
+            )
+        t_zero = float(np.asarray(main_series.t, dtype=float)[0])
+        main_series = dataclasses.replace(
+            main_series,
+            y=subtract_rate(main_series.t, main_series.y, ref_record.rate, t_zero),
+        )
+        v = ref_record.rate
+        refTitle = (
+            f"{refTitle}, miðað við hraða {window_label(rate_ref)} "
+            f"(N {v[0]:.1f}, A {v[1]:.1f}, U {v[2]:.1f} mm/ár)"
+        )
+    along_axes = None
+    if along is not None:
+        # --along: one station's motion/across/up toward an azimuth
+        # (PLAN-ts-quakes Q-T5); after --rate-ref, so "opt" is the direction
+        # of the motion relative to that rate
+        from gps_plot.axes import orient, station_frame
+        from gps_plot.direction import along_azimuth
+        from gps_plot.plot_gps_timeseries import _load_config
+
+        if pair is not None:
+            raise ValueError(
+                f"{sta}: --along is for single stations; a baseline takes --axes motion"
+            )
+        az, along_note = along_azimuth(
+            sta, along, main_series.t, main_series.y, main_series.sigma,
+            _load_config() if along == "motion" else None,
+        )  # fmt: skip
+        along_axes = station_frame(az)
+        main_series = orient(main_series, along_axes)
+        refTitle = f"{refTitle}, {along_note}"
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
@@ -1462,6 +1549,7 @@ def plotTime(
     # the rho the baseline σ used (from the noise record when empirical);
     # None means formal quadrature, which names the file without -empsig
     baseline_rho = main_series.meta.get("rho", baseline_rho)
+    ends_zeroed: list[tuple[Any, ...]] = []
     if show_ends and main_series.ends is not None:
         # the data layer already referenced both ends to the baseline's
         # zero epoch; only the time axis is converted here
@@ -1496,6 +1584,10 @@ def plotTime(
         from gps_plot.axes import figure_labels
 
         ylabels = figure_labels([main_series], "en", "mm")
+    elif along_axes is not None:
+        from gps_plot import labels as _labels
+
+        ylabels = _labels.axis_labels(along_axes.keys, "en", "mm")
     fig = stdTimesPlot(
         x,
         data,
@@ -1508,8 +1600,10 @@ def plotTime(
         warnp=warnp,
         fig=fig,
         highlight_last=highlight_last,
+        open_points=open_points,
     )
 
+    panels = list(fig.axes[:3])  # before any twin axis joins them
     if empty:
         for ax in fig.axes:
             ax.set_ylim(-EMPTY_PERIOD_YLIM, EMPTY_PERIOD_YLIM)
@@ -1732,12 +1826,10 @@ def plotTime(
             directions=directions,
         )
 
+    model_series: Any = None
     if model is not None:
         # after every data overlay: the line goes over the points, and its
         # layer keeps the axis limits the data set
-        from gps_plot.layers.model import add_model_curve, model_note
-
-        model_series: Any = None
         try:
             model_series = gps_source.fetch_model(sta, request, yearf, model_terms)
         except ValueError as exc:
@@ -1745,6 +1837,8 @@ def plotTime(
             # the plot is still worth drawing, without the line
             warnings.warn(f"{sta}: no model line ({exc})", UserWarning, stacklevel=2)
     if model is not None and model_series is not None:
+        from gps_plot.layers.model import add_model_curve, model_note
+
         _shift = main_series.meta.get("zero_shift")
         if _shift is not None:
             # the data were re-zeroed: the line moves with them
@@ -1780,6 +1874,7 @@ def plotTime(
         settings = rate_settings(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
             uncert=uncert, Dir=Dir, common_mode=common_mode,
+            short_tier=rate_short_tier,
         )  # fmt: skip
         if rate_segments is not None:
             from gps_plot.layers.rate import (
@@ -1793,14 +1888,55 @@ def plotTime(
                 sta, rate_segments, kinds=segment_kinds, cut=segment_cut,
                 steps=steps_catalog, events=events_catalog,
             )  # fmt: skip
+            if "auto" in rate_segments:
+                # rate changes found in the plotted series (PLAN-ts-quakes
+                # Q-T3, gps_analysis.breaks), drawn as lines on every panel
+                from gps_plot.layers.rate import (
+                    BREAK_COLOR,
+                    auto_breaks,
+                    break_gaps,
+                    break_note,
+                )
+
+                found = auto_breaks(
+                    sta, yearf, data, Ddata, along_axes, min_bic_gain=break_gain
+                )
+                print(f"{sta}: {break_note(found)}")
+                gaps = [*gaps, *break_gaps(found)]
+                for b in found.breaks:
+                    xb = list(gpsr.toDateTime(np.array([b])))[0]
+                    for ax_ in fig.axes[:3]:
+                        ax_.axvline(xb, color=BREAK_COLOR, lw=1.0, alpha=0.8, zorder=4)
             windows = segment_windows(
                 yearf, fstart, fend, gaps, min_days=segment_min_days
             )
-            records = add_segment_rates(fig, sta, yearf, data, Ddata, windows, settings)
-            print(segment_table(sta, records))
+            records = add_segment_rates(
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
+            )
+            keys = along_axes.keys if along_axes is not None else ("N", "E", "U")
+            print(segment_table(sta, records, keys))
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
-            records = add_rate_lines(fig, sta, yearf, data, Ddata, windows, settings)
+            records = add_rate_lines(
+                fig,
+                sta,
+                yearf,
+                data,
+                Ddata,
+                windows,
+                settings,
+                minus=ref_record,
+                axes=along_axes,
+                colors=rate_colors,
+            )
         # above the "network common mode removed" note when both are drawn
         fig.axes[2].text(
             0.99, 0.08 if cm_days else 0.02,
@@ -1831,6 +1967,8 @@ def plotTime(
             (Pdata8.east - Pdata.east).mean(),
             (Pdata8.up - Pdata.up).mean(),
         ]
+        if data8 is None:
+            raise NoDataError(f"no 8 h observations for station {sta}")
         data8 = np.array([data8[i, :] - shift[i] for i in range(3)])
         x8 = list(gpsr.toDateTime(yearf8))
         fig = addData(x8, data8, Ddata8, fig, markerfacecolor="b", markeredgecolor="b")
@@ -1850,11 +1988,11 @@ def plotTime(
             else None
         )
         pair = split_baseline(sta)
-        for end in pair or (sta,):
+        for end_station in pair or (sta,):
             for epoch, label, color in step_annotations(
-                end, steps_catalog, kinds=kind_filter
+                end_station, steps_catalog, kinds=kind_filter
             ):
-                tag = f"{end}: {label}" if pair else label
+                tag = f"{end_station}: {label}" if pair else label
                 add_event_lines(fig, [(epoch, tag)], color)
 
     if quakes:
@@ -1862,8 +2000,37 @@ def plotTime(
 
         add_quake_marks(fig, quakes, station_points(sta))
 
+    if quake_request is not None:
+        # catalogue quakes + cumulative moment on the top panel's twin axes
+        # (--quakes, PLAN-ts-quakes Q-T6): SIL before the seam, SeisComP after
+        import matplotlib.dates as mdates
+
+        from gps_plot.layers.quakes import add_quake_panel, load_quakes
+
+        top = fig.axes[0]
+        q_lo, q_hi = (
+            mdates.num2date(v).replace(tzinfo=None)  # type: ignore[no-untyped-call]
+            for v in top.get_xlim()
+        )
+        q_df, q_report, q_region = load_quakes(sta, quake_request, q_lo, q_hi)
+        q_info = add_quake_panel(
+            top, q_df, q_report, q_region,
+            star=quake_request.star, label=quake_request.label,
+            moment=quake_request.moment, legend_below=one_panel,
+        )  # fmt: skip
+        print(
+            f"{sta} quakes {q_region}: n = {q_info.n} "
+            f"({q_info.n_automatic} automatic), moment {q_info.moment_nm:.3g} N·m; "
+            f"{q_info.summary}"
+        )
+
+    if one_panel:
+        # the first panel alone (--one-panel, PLAN-ts-quakes Q-T7): with
+        # --along the motion toward the azimuth, its quakes and rates
+        keep_one_panel(fig, panels, quakes=quake_request is not None)
+
     if logo:
-        inpLogo(fig)
+        inpLogo(fig, width=ONE_PANEL_LOGO_WIDTH if one_panel else 0.38)
 
     if save and name:
         # fixed basename: bypass the whole filend construction so repeated
@@ -1908,6 +2075,15 @@ def plotTime(
             filend += "-model" if model == "curve" else "-resid"
             if model_terms:
                 filend += "-line-" + "-".join(model_terms)
+        if rate_ref is not None:
+            filend += "-relrate"  # the window is in the title, not the name
+        if quake_request is not None:
+            filend += "-quakes"  # the region is in the legend, not the name
+        if one_panel:
+            filend += "-1panel"
+        if along is not None:
+            # the mode, not the azimuth (plot names carry no tuning numbers)
+            filend += "-along" + (f"-{along}" if along in ("opt", "motion") else "")
         if rate or rate_windows:
             filend += "-rate"
             if rate_segments is not None:
@@ -1947,9 +2123,52 @@ def plotTime(
     else:
         plt.show()
 
-    fig._gps_ref = ref  # type: ignore[attr-defined]  # the RESOLVED frame, for logs
-    fig._gps_label = _ref_label(ref, tType, pos_id, overlay_pos_id)  # type: ignore[attr-defined]
+    setattr(fig, "_gps_ref", ref)  # the resolved frame, for logs
+    setattr(fig, "_gps_label", _ref_label(ref, tType, pos_id, overlay_pos_id))
     return fig
+
+
+#: --one-panel figure: size [in] and the panel's box (figure fractions)
+ONE_PANEL_SIZE = (13.0, 5.33)
+ONE_PANEL_BOX = (0.08, 0.11, 0.9, 0.80)  # left, bottom, right, top
+#: the right edge with the quake axes (magnitude + moment), and the bottom
+#: with their legend under the date axis
+ONE_PANEL_RIGHT_QUAKES = 0.82
+ONE_PANEL_BOTTOM_QUAKES = 0.26
+#: the logo's share of the panel width in the one-panel figure
+ONE_PANEL_LOGO_WIDTH = 0.18
+#: where the one-panel title breaks: between the name and the reference
+#: (make_title's main is ``\Huge NAME \ \Large REFERENCE``)
+ONE_PANEL_TITLE_SPLIT = r" \ \Large "
+#: the panel top under a two-line title
+ONE_PANEL_TOP_TWO_LINES = 0.74
+
+
+def keep_one_panel(fig: Figure, panels: Sequence[Any], *, quakes: bool = False) -> None:
+    """Drop every panel but the first and reshape the figure around it.
+
+    ``panels`` are the three panels as drawn (twin axes of the first follow
+    it). What only the dropped panels carried goes with them (notes on the
+    Up panel); the rates and the quakes are on the first.
+    """
+    for ax in panels[1:]:
+        fig.delaxes(ax)
+    fig.set_size_inches(*ONE_PANEL_SIZE)
+    left, bottom, right, top = ONE_PANEL_BOX
+    if quakes:  # the magnitude + moment axes right, their legend below
+        right, bottom = ONE_PANEL_RIGHT_QUAKES, ONE_PANEL_BOTTOM_QUAKES
+    title = fig._suptitle  # type: ignore[attr-defined]
+    if title is not None:
+        # the name and the reference on two lines: one line is wider than
+        # the 13 in figure once --rate-ref/--along add to it, and the tight
+        # bounding box then widens the image to the title
+        text = title.get_text()
+        if ONE_PANEL_TITLE_SPLIT in text:
+            title.set_text(text.replace(ONE_PANEL_TITLE_SPLIT, "\n\\Large ", 1))
+            top = ONE_PANEL_TOP_TWO_LINES
+        title.set_y(0.985)
+        title.set_va("top")
+    panels[0].set_position((left, bottom, right - left, top - bottom))
 
 
 def last_flagged(y: Any, dy: Any, n: int) -> tuple[Any, Any]:
@@ -2228,6 +2447,7 @@ def stdTimesPlot(
     label: str | None = None,
     fig: Figure | None = None,
     highlight_last: bool | None = None,
+    open_points: bool = False,
 ) -> Figure:
     """Build a three-component time-series Figure and return it.
 
@@ -2258,9 +2478,19 @@ def stdTimesPlot(
     # values for all-finite data, so the raw path is unchanged
     ymin = [np.nanmin(y[0, :]), np.nanmin(y[1, :]), np.nanmin(y[2, :])]
     ymax = [np.nanmax(y[0, :]), np.nanmax(y[1, :]), np.nanmax(y[2, :])]
+    assert fig is not None  # stdFrame always constructs the plotting figure
     fig = setYlim(fig, ymin=ymin, ymax=ymax, ylim=ylim)
 
-    fig = addData(x, y, Dy, fig, label=label)
+    fig = addData(
+        x,
+        y,
+        Dy,
+        fig,
+        label=label,
+        markerfacecolor="none" if open_points else "r",
+        markeredgecolor="0.4" if open_points else "r",  # grey rims: the rate lines read
+        markeredgewidth=0.6 if open_points else None,
+    )
 
     # Last-point highlight (revived BGÓ 2026-07-27, suppressed 2026-07-11):
     # pairs with the green title fragment -- see the docstring.
@@ -2294,7 +2524,10 @@ def _empirical_pair_inputs(
         cfg = cp.ConfigParser()
         xyz = []
         for s in pair:
-            info = cfg.getStationInfo(s)["station"]
+            station_info = cfg.getStationInfo(s)
+            if not isinstance(station_info, Mapping):
+                raise ValueError(f"no station metadata for {s}")
+            info = station_info["station"]
             xyz.append(
                 local.geodetic_to_ecef(
                     np.radians(float(info["latitude"])),
@@ -2412,7 +2645,7 @@ def addData(
             markerfacecolor=markerfacecolor,
             markeredgecolor=markeredgecolor,
             label=label,
-            **({} if markeredgewidth is None else {"markeredgewidth": markeredgewidth}),
+            markeredgewidth=markeredgewidth,
         )
 
     return fig
@@ -2511,8 +2744,9 @@ def addEvent(
 
     events = eventDict.keys()
     for event in events:
-        if len(eventDict[event]) > 0:
-            color = eventDict[event][0]
+        values = eventDict[event]
+        if len(values) > 0:
+            color = values[0]
         else:
             color = "r"
 
@@ -2520,7 +2754,22 @@ def addEvent(
             event = toDatetimel(event, dstr)
 
         axes = fig.axes
-        [ax.axvline(x=event, color=color, zorder=2, **kwargs) for ax in axes]
+        [ax.axvline(x=cast(Any, event), color=color, zorder=2, **kwargs) for ax in axes]
+        if len(values) > 1 and values[1] and axes:
+            # Optional display-only marker label; not a declared physical event.
+            axes[0].text(
+                cast(Any, event),
+                0.98,
+                str(values[1]),
+                transform=axes[0].get_xaxis_transform(),
+                rotation=90,
+                va="top",
+                ha="right",
+                fontsize=9,
+                color=color,
+                zorder=6,
+                clip_on=True,
+            )
 
     return fig
 
@@ -2560,7 +2809,7 @@ def add_event_lines(
         head, sep, tail = label.partition(" (")
         text = f"{head}\n{tail.rstrip(')')}" if sep else label
         ax.text(
-            TimefromYearf(epoch),
+            cast(Any, TimefromYearf(epoch)),
             mid,
             text,
             rotation=90,
@@ -2632,6 +2881,7 @@ def saveFig(
     # Create it, and say where, so a mistyped path is still noticed.
     out_dir = os.path.dirname(fileName)
     if out_dir and not os.path.isdir(out_dir):
+        # pi-lens-ignore: unchecked-throwing-call-python
         os.makedirs(out_dir, exist_ok=True)
         print(f"created output directory {os.path.abspath(out_dir)}")
 
@@ -2651,7 +2901,7 @@ def saveFig(
             dpi=png_dpi if fmt.lower() == "png" else "figure",
         )
         written.append(path)
-    fig._gps_files = written  # type: ignore[attr-defined]  # for --manifest
+    setattr(fig, "_gps_files", written)  # for --manifest
 
     return fig
 
@@ -2838,7 +3088,7 @@ def tsTickLabels(fig, axes, period=timedelta(90)):
 
         # --- Y axis ---
         yax = ax.get_yaxis()
-        yax.set_minor_locator(mpl.ticker.AutoMinorLocator())
+        yax.set_minor_locator(mticker.AutoMinorLocator())
         yax.set_tick_params(which="minor", direction="in", length=4)
         yax.set_tick_params(which="major", direction="in", length=10)
 
@@ -2852,98 +3102,98 @@ def tslabels(xax, period=timedelta(90), locator=None, formater=None):
 
     if period <= timedelta(hours=36):
         # RTK spans (gpsplot rtk: 6h, 12h, day)
-        minorLoc = mpl.dates.HourLocator(byhour=range(0, 24, 2))
-        minorFmt = mpl.dates.DateFormatter("%H:%M")
+        minorLoc = mdates.HourLocator(byhour=range(0, 24, 2))
+        minorFmt = mdates.DateFormatter("%H:%M")
 
-        majorLoc = mpl.dates.DayLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
+        majorLoc = mdates.DayLocator()
+        majorFmt = mdates.DateFormatter("%d %b %y")
 
     elif period <= timedelta(6):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 8, 16])
-        minorFmt = mpl.dates.DateFormatter("%H:%M")
+        minorLoc = mdates.HourLocator(byhour=[0, 8, 16])
+        minorFmt = mdates.DateFormatter("%H:%M")
 
-        majorLoc = mpl.dates.DayLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
+        majorLoc = mdates.DayLocator()
+        majorFmt = mdates.DateFormatter("%d %b %y")
 
     elif period <= timedelta(12):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 8, 16])
-        minorFmt = mpl.dates.DateFormatter("%H")
+        minorLoc = mdates.HourLocator(byhour=[0, 8, 16])
+        minorFmt = mdates.DateFormatter("%H")
 
-        majorLoc = mpl.dates.AutoDateLocator(maxticks=8)
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
+        majorLoc = mdates.AutoDateLocator(maxticks=8)
+        majorFmt = mdates.DateFormatter("%d %b %y")
 
     elif period <= timedelta(18):
-        minorLoc = mpl.dates.HourLocator(byhour=[0, 12])
-        minorFmt = mpl.dates.DateFormatter("%H")
+        minorLoc = mdates.HourLocator(byhour=[0, 12])
+        minorFmt = mdates.DateFormatter("%H")
 
-        majorLoc = mpl.dates.AutoDateLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %y")
+        majorLoc = mdates.AutoDateLocator()
+        majorFmt = mdates.DateFormatter("%d %b %y")
 
     elif period <= timedelta(30):
-        minorLoc = mpl.dates.DayLocator()
-        minorFmt = mpl.dates.DateFormatter("%d")
+        minorLoc = mdates.DayLocator()
+        minorFmt = mdates.DateFormatter("%d")
         for label in xax.get_ticklabels("major")[1::2]:
             label.set_visible(False)
 
-        majorLoc = mpl.dates.MonthLocator()
-        majorFmt = mpl.dates.DateFormatter("%d %b %Y")
+        majorLoc = mdates.MonthLocator()
+        majorFmt = mdates.DateFormatter("%d %b %Y")
 
     elif period <= timedelta(193):
-        minorLoc = mpl.dates.DayLocator(bymonthday=[1, 7, 14, 21, 28])
-        minorFmt = mpl.dates.DateFormatter("%d")
+        minorLoc = mdates.DayLocator(bymonthday=[1, 7, 14, 21, 28])
+        minorFmt = mdates.DateFormatter("%d")
 
-        majorLoc = mpl.dates.MonthLocator(interval=1)
-        majorFmt = mpl.dates.DateFormatter("%b %Y")
+        majorLoc = mdates.MonthLocator(interval=1)
+        majorFmt = mdates.DateFormatter("%b %Y")
 
     elif period <= timedelta(500):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter("%b")
+        minorLoc = mdates.MonthLocator()
+        minorFmt = mdates.DateFormatter("%b")
 
-        majorLoc = mpl.dates.YearLocator(1, month=1)
-        majorFmt = mpl.dates.DateFormatter("%Y")
+        majorLoc = mdates.YearLocator(1, month=1)
+        majorFmt = mdates.DateFormatter("%Y")
 
     elif period <= timedelta(1200):
-        minorLoc = mpl.dates.MonthLocator()
-        minorFmt = mpl.dates.DateFormatter("%b")
+        minorLoc = mdates.MonthLocator()
+        minorFmt = mdates.DateFormatter("%b")
         for label in xax.get_ticklabels("major")[1::2]:
             label.set_visible(False)
 
-        majorLoc = mpl.dates.YearLocator(1)
-        majorFmt = mpl.dates.DateFormatter("%Y")
+        majorLoc = mdates.YearLocator(1)
+        majorFmt = mdates.DateFormatter("%Y")
 
     elif period <= timedelta(2300):
-        minorLoc = mpl.dates.MonthLocator(bymonth=[1, 4, 7, 10])
-        minorFmt = mpl.dates.DateFormatter("%b")
+        minorLoc = mdates.MonthLocator(bymonth=[1, 4, 7, 10])
+        minorFmt = mdates.DateFormatter("%b")
 
-        majorLoc = mpl.dates.YearLocator(1)
-        majorFmt = mpl.dates.DateFormatter("%Y")
+        majorLoc = mdates.YearLocator(1)
+        majorFmt = mdates.DateFormatter("%Y")
 
     elif period <= timedelta(5000):
-        minorLoc = mpl.dates.MonthLocator(bymonth=[1, 4, 7, 10])
-        minorFmt = mpl.dates.DateFormatter("%b")
+        minorLoc = mdates.MonthLocator(bymonth=[1, 4, 7, 10])
+        minorFmt = mdates.DateFormatter("%b")
         for label in xax.get_ticklabels("minor")[1::2]:
             label.set_visible(False)
 
-        majorLoc = mpl.dates.YearLocator()
-        majorFmt = mpl.dates.DateFormatter("%Y")
+        majorLoc = mdates.YearLocator()
+        majorFmt = mdates.DateFormatter("%Y")
         for label in xax.get_ticklabels()[1::2]:
             label.set_visible(False)
 
     elif period <= timedelta(10000):
-        minorLoc = mpl.dates.YearLocator(base=1)
-        minorFmt = mpl.dates.DateFormatter("")
+        minorLoc = mdates.YearLocator(base=1)
+        minorFmt = mdates.DateFormatter("")
         for label in xax.get_ticklabels("minor")[:]:
             label.set_visible(False)
 
-        majorLoc = mpl.dates.YearLocator(base=3)
-        majorFmt = mpl.dates.DateFormatter("%Y")
+        majorLoc = mdates.YearLocator(base=3)
+        majorFmt = mdates.DateFormatter("%Y")
 
     else:
-        minorLoc = mpl.dates.YearLocator(1)
-        minorFmt = mpl.dates.DateFormatter("")
+        minorLoc = mdates.YearLocator(1)
+        minorFmt = mdates.DateFormatter("")
 
-        majorLoc = mpl.dates.AutoDateLocator()
-        majorFmt = mpl.dates.AutoDateFormatter(majorLoc)
+        majorLoc = mdates.AutoDateLocator()
+        majorFmt = mdates.AutoDateFormatter(majorLoc)
 
     if locator:
         if locator == "minor":
@@ -3001,8 +3251,8 @@ def fancytitle(x, y, titlestr, font, ax, **kw):
     t = ax.transData
     canvas = ax.figure.canvas
 
-    textlist = [None, None, None, None]
-    ex = [None, None, None, None]
+    textlist: list[Any] = [None, None, None, None]
+    ex: list[Any] = [None, None, None, None]
 
     axex = ax.get_window_extent()
     axwidth = axex.width
