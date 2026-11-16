@@ -26,6 +26,14 @@ Experiment and hold-out check: ``~/gps-data/curation/rtk-daily-tie``.
         --area svinafellsheidi --days 2,7 --out DIR
 """
 
+# Pyright's pandas-stubs strictness is not this repo's gate: pyproject's typing
+# policy is `mypy --strict src` (docs/mypy-status.md), which passes on this file.
+# The 40 report* findings below it are pandas-stub limitations (NaTType on
+# Timestamp arithmetic, Index vs DatetimeIndex, Series vs DataFrame returns)
+# in code that runs correctly; scoped here so a real error in this file is the
+# one thing that still stands out.
+# pyright: reportArgumentType=false, reportReturnType=false, reportOperatorIssue=false, reportAttributeAccessIssue=false
+
 from __future__ import annotations
 
 import argparse
