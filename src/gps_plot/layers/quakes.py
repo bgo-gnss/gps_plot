@@ -578,11 +578,10 @@ MAP_LEGEND_ROW_CM = 0.32
 MAP_LEGEND_PAD_CM = 0.16
 MAP_LEGEND_FONT = "7p,Helvetica"
 MAP_LABEL_FONT = "6p,Helvetica-Bold,black"
-#: how far the number sits from its event [cm], and the leader that ties them
-MAP_LABEL_OFFSET_CM = 0.34
-MAP_LEADER_PEN = "0.2p,black"
-#: the leader stops this far short of the number, so the text stays clean
-MAP_LEADER_STOP = 0.78
+#: the written values sit at the map's margin, tied to the star by a leader
+MAP_LABEL_MARGIN_CM = 0.55
+MAP_LEADER_PEN = "0.12p,gray30"
+MAP_LEADER_STOP = 1.0
 #: a white underprint, four passes, so a black number stays readable on the
 #: grey swarm (GMT's text pen draws a box, not a glyph outline)
 MAP_LABEL_HALO = "6p,Helvetica-Bold,white"
@@ -626,8 +625,11 @@ def _map_cm_grid(region: Any, size_cm: tuple[float, float]) -> tuple[Any, Any, A
 #: the last year red, since 2023 blue, older grey (BGÓ 2026-11-16)
 PERIOD_FILLS = ("red", "blue", "gray50")
 PERIOD_LABELS = ("síðustu 12 mán", "2023–2025", "eldri en 2023")
-#: a detection below the map's class floor: dust, no rim, one small size
-DUST_CM = 0.022
+#: a detection below the map's class floor: dust, no rim. Two tiers, because one
+#: size lost the M1-2.5 events inside the M<1 haze (BGÓ 2026-11-16)
+DUST_CM = 0.018
+DUST_CM_BIG = 0.032
+DUST_SPLIT = 1.0
 DUST_COLOR = "gray70"
 
 
@@ -662,8 +664,11 @@ def add_quake_map_points(
     star: float = MAG_STAR,
     label: float = MAG_LABEL,
     colour_by: str = "period",
+    labels_max: int = 5,
     legend: bool = True,
-    legend_from: tuple[float, float] = (0.35, 2.55),
+    legend_corner: str = "TL",
+    legend_clear_cm: float = 2.55,
+    legend_at: tuple[float, float] | None = None,
     font: str = MAP_LEGEND_FONT,
 ) -> MapQuakeInfo:
     """The catalogue on a GMT map: dust, then the circles, then the stars.
@@ -736,7 +741,10 @@ def add_quake_map_points(
         for k in (2, 1, 0):
             here = period == k
             fill = PERIOD_FILLS[k]
-            draw(here & (mag < min_mag), fill, "c", None, dust=DUST_CM)
+            small = mag < DUST_SPLIT
+            draw(here & small, fill, "c", None, dust=DUST_CM)
+            draw(here & ~small & (mag < min_mag), fill, "c", None,
+                 dust=DUST_CM_BIG)  # fmt: skip
             draw(here & automatic, MAP_AUTO_FILL, "c", None, dust=DUST_CM)
             body = here & reviewed & (mag >= min_mag) & (mag < star)
             draw(body, fill, "c", MAP_CIRCLE_PEN)
@@ -754,47 +762,52 @@ def add_quake_map_points(
             pen = MAP_STAR_PEN if big else MAP_CIRCLE_PEN
             draw(sel, colour, "a" if big else "c", pen, big=big)  # fmt: skip
 
-    # the value next to each big event: biggest first, right of the star, then
-    # left, above, below; skipped when every slot is taken by a label already
+    # The N largest, written at the map's margin with their date and joined to
+    # the star by a leader: inside the caldera the swarm leaves no room, and
+    # five values out at the edge read better than twelve squeezed into it
+    # (BGÓ 2026-11-16).
     placed: list[tuple[float, float, float, float]] = []
-    labelled = np.flatnonzero(np.asarray(cls["label"], dtype=bool))
-    for i in labelled[np.argsort(-mag[labelled])]:  # biggest first
-        text = f"{mag[i]:.1f}"
+    width_cm, height_cm = size_cm
+    times = pd.to_datetime(df.index, utc=True)
+    all_stars = np.flatnonzero(np.asarray(cls["star"], dtype=bool))
+    labels_max = int(labels_max)
+    order: Any = (
+        all_stars[np.argsort(-lat[all_stars])] if labels_max else np.zeros(0, int)
+    )
+    # biggest first decides WHICH; top-to-bottom decides the ORDER of the rows,
+    # so the leaders do not cross
+    keep = set(order[np.argsort(-mag[order])][:labels_max]) if len(order) else set()
+    for i in [j for j in order if j in keep]:
+        text = f"{mag[i]:.1f}   {times[i]:%d.%m.%Y}"
         w = maps.text_width_cm(text, MAP_LABEL_FONT)
         x0, y0 = cm_of(float(lon[i]), float(lat[i]))
-        off = MAP_LABEL_OFFSET_CM
-        for dx, dy, just in (
-            (off, 0.0, "LM"), (-off, 0.0, "RM"),
-            (0.0, off * 0.8, "CB"), (0.0, -off * 0.8, "CT"),
+        # out to the nearer margin: the swarm is in the middle, the edges free
+        if x0 > width_cm / 2:
+            left = width_cm - MAP_LABEL_MARGIN_CM - w
+        else:
+            left = MAP_LABEL_MARGIN_CM
+        top = min(
+            max(y0 + MAP_LABEL_ROW_CM / 2, MAP_LABEL_MARGIN_CM + 0.2),
+            height_cm - MAP_LABEL_MARGIN_CM - 0.2,
+        )
+        for pbox in placed:  # step down clear of the label placed above it
+            if abs(top - pbox[1]) < MAP_LABEL_ROW_CM and pbox[0] < left + w and pbox[2] > left:
+                top = pbox[1] - MAP_LABEL_ROW_CM
+        placed.append((left, top, left + w, top))
+        # the leader runs from the star out to the start of the text
+        tip = left - 0.06 if x0 > width_cm / 2 else left + w + 0.06
+        fig.plot(
+            x=[lon_of(x0), lon_of(tip)], y=[lat_of(y0), lat_of(top)],
+            pen=MAP_LEADER_PEN,
+        )  # fmt: skip
+        for hx, hy in (
+            (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
+            (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
         ):  # fmt: skip
-            left = x0 + dx if just == "LM" else x0 + dx - w
-            if just in ("CB", "CT"):
-                left = x0 - w / 2
-            box = (left, y0 + dy - MAP_LABEL_ROW_CM / 2,
-                   left + w, y0 + dy + MAP_LABEL_ROW_CM / 2)  # fmt: skip
-            if any(
-                box[0] < p[2] and box[2] > p[0] and box[1] < p[3] and box[3] > p[1]
-                for p in placed
-            ):
-                continue
-            placed.append(box)
-            # a leader from the event to its number: the value does not sit on
-            # the symbol, and a short line says which one it belongs to
-            fig.plot(
-                x=[lon_of(x0), lon_of(x0 + dx * MAP_LEADER_STOP)],
-                y=[lat_of(y0), lat_of(y0 + dy * MAP_LEADER_STOP)],
-                pen=MAP_LEADER_PEN,
-            )  # fmt: skip
-            tx, ty = x0 + dx, y0 + dy
-            for hx, hy in (
-                (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
-                (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
-            ):  # fmt: skip
-                fig.text(x=lon_of(tx + hx), y=lat_of(ty + hy), text=text,
-                         font=MAP_LABEL_HALO, justify=just)  # fmt: skip
-            fig.text(x=lon_of(tx), y=lat_of(ty), text=text,
-                     font=MAP_LABEL_FONT, justify=just)  # fmt: skip
-            break
+            fig.text(x=lon_of(left + hx), y=lat_of(top + hy), text=text,
+                     font=MAP_LABEL_HALO, justify="LM")  # fmt: skip
+        fig.text(x=lon_of(left), y=lat_of(top), text=text,
+                 font=MAP_LABEL_FONT, justify="LM")  # fmt: skip
 
     if legend:
         n_auto = int(automatic.sum())
@@ -825,10 +838,33 @@ def add_quake_map_points(
         )
         wide = text_cm + 2 * MAP_LEGEND_PAD_CM
         tall = (2 + len(items)) * MAP_LEGEND_ROW_CM + 2 * MAP_LEGEND_PAD_CM
-        x0, down = legend_from
         width, height = size_cm
-        top = height - down
-        y0 = top - tall
+        gap = MAP_LEGEND_PAD_CM + 0.19
+        corner = legend_corner.upper()
+        note_box = getattr(fig, "gpsplot_note_box", None)
+        if legend_at is not None:
+            # an explicit lower-left: no corner logic, no layout engine
+            x0, y0 = float(legend_at[0]), float(legend_at[1])
+            top = y0 + tall
+        elif corner.startswith("BELOW") and note_box is not None:
+            # under the missing-data box, which is itself under the logo
+            x0 = float(note_box[0])
+            top = float(note_box[2]) - gap
+            y0 = top - tall
+        elif corner == "BL":
+            x0, y0 = gap, gap
+            top = y0 + tall
+        elif corner == "TR":
+            x0 = width - wide - gap
+            top = height - legend_clear_cm
+            y0 = top - tall
+        else:  # TL, below the logo
+            x0 = gap
+            top = height - legend_clear_cm
+            y0 = top - tall
+        x0 = max(0.0, min(x0, width - wide))  # never off the frame
+        y0 = max(0.0, y0)
+        top = y0 + tall
         edge = [(x0, y0), (x0 + wide, y0), (x0 + wide, top), (x0, top), (x0, y0)]
         fig.plot(x=[lon_of(cx) for cx, _ in edge], y=[lat_of(cy) for _, cy in edge],
                  fill="white", pen="0.4p,gray40", close=True)  # fmt: skip
