@@ -2954,6 +2954,9 @@ def velocity_map(
     notes: Sequence[tuple[str, str]] = (),
     corner_note: tuple[str, str] | None = None,
     gap_note: str | None = None,
+    gap_note_corners: tuple[str, ...] = ("BL", "BR", "TL", "TR"),
+    gap_note_reserve: tuple[tuple[float, float, float, float], ...] = (),
+    gap_note_at: tuple[float, float] | None = None,
     scale_vertical: bool = False,
     dem_grid: Any | None = None,
     dem_cmap: str = DEFAULT_DEM_CMAP,
@@ -3189,8 +3192,10 @@ def velocity_map(
                     (max(ys) - s) / (n - s) * height_cm,
                 )
             )
+        for rect in gap_note_reserve:  # boxes placed by other layers
+            sea.reserve(rect)
         sea.block_points(lons.tolist(), lats.tolist(), radius=MAP_NOTE_BLOCK_CM)
-        spot = sea.place((wide, tall), ("BL", "BR", "TL", "TR"), on_land=True)
+        spot = gap_note_at or sea.place((wide, tall), gap_note_corners, on_land=True)
         if spot is not None:
             x0, y0 = spot
         else:  # nothing free anywhere: the map's own bottom margin
@@ -3202,6 +3207,8 @@ def velocity_map(
                lat_of(y0)],
             fill=LEGEND_BOX_FILL, pen="0.6p,red", close=True,
         )  # fmt: skip
+        # publish the box: the quake legend stacks under it (BGÓ 2026-11-16)
+        setattr(fig, "gpsplot_note_box", (x0, x0 + wide, y0, y0 + tall))
         for i, line in enumerate(reversed(lines)):  # first line on top
             fig.text(
                 x=lon_of(x0 + pad), y=lat_of(y0 + pad + (i + 0.5) * line_cm),

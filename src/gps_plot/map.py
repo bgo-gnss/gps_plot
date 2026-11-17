@@ -517,6 +517,23 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         help="magnitude a red star starts at (default 4.5)",
     )  # fmt: skip
     q.add_argument(
+        "--quake-legend-at", default=None, metavar="X,Y",
+        help="the quake legend's lower-left corner in cm from the map's SW "
+        "corner; overrides --quake-legend-corner, and does not consult the "
+        "layout engine",
+    )  # fmt: skip
+    q.add_argument(
+        "--quake-legend-corner", default="tl",
+        choices=("tl", "tr", "bl", "below-note"),
+        help="where the quake legend sits when --quake-legend-at is not "
+        "given: under the logo (default), a plain corner, or below the red box",
+    )  # fmt: skip
+    q.add_argument(
+        "--quake-labels", type=int, default=5, metavar="N",
+        help="write the N largest events' magnitude and date out at the map "
+        "margin (default 5; 0 draws none)",
+    )  # fmt: skip
+    q.add_argument(
         "--quake-colour-by", default="period", choices=("period", "mag"),
         help="colour the events by WHEN they happened, in the map's own arrow "
         "periods, with the magnitude carried by the size (period, default), or "
@@ -532,6 +549,17 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         add_quake_args = None
     if add_quake_args is not None:
         add_quake_args(p, prefix="quake-")
+
+    g.add_argument(
+        "--note-at", default=None, metavar="X,Y",
+        help="the missing-data box's lower-left corner in cm from the map's SW "
+        "corner; overrides --note-corner and skips the layout engine",
+    )  # fmt: skip
+    g.add_argument(
+        "--note-corner", default=None, metavar="TL,BR,...",
+        help="the missing-data box's preferred corners, tried in order "
+        "(default BL,BR,TL,TR: the lower left first); TL puts it under the logo",
+    )  # fmt: skip
 
     out = p.add_argument_group("output")
     out.add_argument(
@@ -1790,9 +1818,20 @@ def _insets(
         corner = getattr(args, "locator_corner", None)
         beside_gap = getattr(args, "locator_beside_legend", None)
         if beside_gap is not None and legend_box is not None:
-            # right of the legend, top-aligned, a small gap (BGÓ: inset beside legend)
+            # right of the legend, top-aligned, a small gap (BGÓ: inset beside
+            # legend). With the legend itself in the upper right there is no
+            # room to its right, so the inset drops BELOW it instead, sharing
+            # its right edge (BGÓ 2026-11-16).
             gap_cm = beside_gap / 10.0
-            spot = insets.Spot(legend_box[1] + gap_cm, legend_box[3] - size[1], *size)
+            room_right = width - (legend_box[1] + gap_cm + size[0])
+            if room_right >= 0:
+                spot = insets.Spot(
+                    legend_box[1] + gap_cm, legend_box[3] - size[1], *size
+                )
+            else:
+                spot = insets.Spot(
+                    legend_box[1] - size[0], legend_box[2] - gap_cm - size[1], *size
+                )
         elif corner is not None:
             # on a box map clear of the latitude annotations inside the frame
             # on a legend (a vector or track map's): at the left edge, as
@@ -2599,6 +2638,21 @@ class _Rate:
     sigma: Any
 
 
+def _legend_cm(spec: Any) -> tuple[float, float] | None:
+    """``--quake-legend-at 0.35,17.2`` -> the (x, y) cm pair, or None."""
+    if not spec:
+        return None
+    x, _, y = str(spec).partition(",")
+    return float(x), float(y)
+
+
+def _note_corners(spec: Any) -> tuple[str, ...]:
+    """``--note-corner TL,BR`` -> the order the missing-data box tries."""
+    if not spec:
+        return ("BL", "BR", "TL", "TR")
+    return tuple(c.strip().upper() for c in str(spec).split(",") if c.strip())
+
+
 def _draw_map_quakes(
     fig: Any,
     args: Any,
@@ -2892,6 +2946,15 @@ def _run_velocity(
 
         day = dt.date.fromordinal(int(track.day_key(np.array([newest]))[0]))
         corner = track.newest_text(day, today=now.date())
+    note_reserve: tuple[tuple[float, float, float, float], ...] = ()
+    if getattr(args, "quake_catalogue", None) is not None:
+        # the quake legend sits at the top left, under the logo; keep that
+        # strip free so the red missing-data box lands BELOW it instead of on it
+        map_w, map_h = maps._map_size_cm(
+            args.region or _region_of(stations, args.margin, maps),
+            args.projection or maps.DEFAULT_PROJECTION,
+        )
+        note_reserve = ((0.0, map_w * 0.62, map_h - 2.55 - 4.4, map_h - 2.55),)
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
@@ -2908,6 +2971,9 @@ def _run_velocity(
         notes=nothing,
         corner_note=corner,
         gap_note=gap_note,
+        gap_note_corners=_note_corners(getattr(args, "note_corner", None)),
+        gap_note_reserve=note_reserve,
+        gap_note_at=_legend_cm(getattr(args, "note_at", None)),
         **zoom_style,
     )
 
