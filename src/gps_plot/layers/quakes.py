@@ -577,7 +577,16 @@ MAP_LEGEND_CM = 0.24  # swatch
 MAP_LEGEND_ROW_CM = 0.32
 MAP_LEGEND_PAD_CM = 0.16
 MAP_LEGEND_FONT = "7p,Helvetica"
-MAP_LABEL_FONT = "5.5p,Helvetica-Bold,red"
+MAP_LABEL_FONT = "6p,Helvetica-Bold,black"
+#: how far the number sits from its event [cm], and the leader that ties them
+MAP_LABEL_OFFSET_CM = 0.34
+MAP_LEADER_PEN = "0.2p,black"
+#: the leader stops this far short of the number, so the text stays clean
+MAP_LEADER_STOP = 0.78
+#: a white underprint, four passes, so a black number stays readable on the
+#: grey swarm (GMT's text pen draws a box, not a glyph outline)
+MAP_LABEL_HALO = "6p,Helvetica-Bold,white"
+MAP_HALO_CM = 0.045
 
 
 def _map_cm_grid(region: Any, size_cm: tuple[float, float]) -> tuple[Any, Any, Any]:
@@ -690,9 +699,10 @@ def add_quake_map_points(
         text = f"{mag[i]:.1f}"
         w = maps.text_width_cm(text, MAP_LABEL_FONT)
         x0, y0 = cm_of(float(lon[i]), float(lat[i]))
+        off = MAP_LABEL_OFFSET_CM
         for dx, dy, just in (
-            (0.22, 0.0, "LM"), (-0.22, 0.0, "RM"),
-            (0.0, 0.20, "CB"), (0.0, -0.20, "CT"),
+            (off, 0.0, "LM"), (-off, 0.0, "RM"),
+            (0.0, off * 0.8, "CB"), (0.0, -off * 0.8, "CT"),
         ):  # fmt: skip
             left = x0 + dx if just == "LM" else x0 + dx - w
             if just in ("CB", "CT"):
@@ -705,7 +715,21 @@ def add_quake_map_points(
             ):
                 continue
             placed.append(box)
-            fig.text(x=lon_of(x0 + dx), y=lat_of(y0 + dy), text=text,
+            # a leader from the event to its number: the value does not sit on
+            # the symbol, and a short line says which one it belongs to
+            fig.plot(
+                x=[lon_of(x0), lon_of(x0 + dx * MAP_LEADER_STOP)],
+                y=[lat_of(y0), lat_of(y0 + dy * MAP_LEADER_STOP)],
+                pen=MAP_LEADER_PEN,
+            )  # fmt: skip
+            tx, ty = x0 + dx, y0 + dy
+            for hx, hy in (
+                (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
+                (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
+            ):  # fmt: skip
+                fig.text(x=lon_of(tx + hx), y=lat_of(ty + hy), text=text,
+                         font=MAP_LABEL_HALO, justify=just)  # fmt: skip
+            fig.text(x=lon_of(tx), y=lat_of(ty), text=text,
                      font=MAP_LABEL_FONT, justify=just)  # fmt: skip
             break
 
@@ -716,7 +740,7 @@ def add_quake_map_points(
             ("c", "gray55", f"M < {MAG_MID:g}"),
             ("c", "blue", f"{MAG_MID:g} ≤ M < {star:g}"),
             ("a", "red", f"M ≥ {star:g}"),
-            ("c", MAP_AUTO_FILL, f"sjálfvirk, engin stærð ({n_auto})"),
+            ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})"),
         ]
         text_cm = max(
             [maps.text_width_cm(title, font)]
