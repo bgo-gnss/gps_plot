@@ -312,3 +312,11 @@ def test_daily_uses_the_title_rule(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_no_stations_no_note() -> None:
     assert rt.silent_stations({}, NOW, rtk=True) == []
+
+
+def test_rtk_since_takes_a_rolling_span() -> None:
+    from gps_plot import rtk_tie
+
+    assert rtk_tie.rolling_days("13d") == 13.0
+    assert rtk_tie.rolling_days("2.5d") == 2.5
+    assert rtk_tie.rolling_days("2026-11-01") is None
