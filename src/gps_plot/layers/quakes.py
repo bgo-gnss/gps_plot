@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 from dataclasses import dataclass
 
 from matplotlib.figure import Figure
@@ -276,7 +276,7 @@ def load_quakes(
     end: dt.datetime,
     *,
     readers: Mapping[str, object] | None = None,
-) -> tuple[object, object, str]:
+) -> tuple[Any, Any, str]:
     """``(frame, report, region name)``: the catalogue of the request over
     ``[start, end)`` (naive times are UTC), with the moment estimate when
     ``req.moment``."""
@@ -317,6 +317,20 @@ def _seam(report: object) -> dt.datetime | None:
     return t.tz_convert("UTC").tz_localize(None).to_pydatetime()  # type: ignore[no-any-return]
 
 
+def _numbers(column: Any) -> Any:
+    """A column as a float array, NaN where missing.
+
+    ``pd.to_numeric`` is typed as Scalar | Series | ndarray (and its
+    ``to_numpy`` as absent on most of those), so the two steps are cast once
+    here instead of at every call site.
+    """
+    import numpy as np
+    import pandas as pd  # type: ignore[import-untyped]
+
+    got = cast(Any, pd.to_numeric(column, errors="coerce"))
+    return got.to_numpy(dtype=float, na_value=np.nan)
+
+
 def quake_classes(
     df: object, *, star: float = MAG_STAR, label: float = MAG_LABEL
 ) -> dict[str, Any]:
@@ -335,11 +349,11 @@ def quake_classes(
     ``label`` as boolean arrays over ``df``'s rows.
     """
     import numpy as np
-    import pandas as pd  # type: ignore[import-untyped]
+    import pandas as pd
 
     assert isinstance(df, pd.DataFrame)
     mag = (
-        pd.to_numeric(df["magnitude"]).to_numpy(dtype=float, na_value=np.nan)
+        _numbers(df["magnitude"])
         if len(df)
         else np.zeros(0)
     )
@@ -391,18 +405,14 @@ def add_quake_panel(
     fig = ax.figure
     lo, hi = ax.get_xlim()
     t = (
-        df.index.tz_convert("UTC").tz_localize(None)
+        cast(Any, df.index).tz_convert("UTC").tz_localize(None)
         if len(df)
         else pd.DatetimeIndex([])
     )
     x = np.zeros(0)
     if len(t):
         x = np.array(mdates.date2num(t.to_pydatetime()), dtype=np.float64)  # type: ignore[no-untyped-call]
-    mag = (
-        pd.to_numeric(df["magnitude"]).to_numpy(dtype=float, na_value=np.nan)
-        if len(df)
-        else np.zeros(0)
-    )
+    mag = _numbers(df["magnitude"]) if len(df) else np.zeros(0)
     auto = (
         (df["evaluation_mode"].astype(object) == "automatic").to_numpy(dtype=bool)
         if len(df)
@@ -435,6 +445,7 @@ def add_quake_panel(
          rf"M $\geq$ {star:g}"),
     )  # fmt: skip
     for sel, style, text in classes:
+        sel = np.asarray(sel, dtype=bool)
         if not sel.any():
             continue
         (h,) = axm.plot(x[sel], mag[sel], ls="none", zorder=3, **style)
@@ -455,7 +466,7 @@ def add_quake_panel(
 
     m0 = np.zeros(0)
     if moment and len(df) and "moment_nm" in df:
-        m0 = pd.to_numeric(df["moment_nm"]).to_numpy(dtype=float, na_value=np.nan)
+        m0 = _numbers(df["moment_nm"])
     total = float(np.nansum(m0)) if len(m0) else 0.0
     total_auto = float(np.nansum(m0[auto])) if len(m0) else 0.0
     if total > 0:
@@ -630,9 +641,11 @@ def add_quake_map_points(
         size_cm = maps._map_size_cm(region, projection or maps.DEFAULT_PROJECTION)
     lon_of, lat_of, cm_of = _map_cm_grid(region, size_cm)
     cls = quake_classes(df, star=star, label=label)
-    lon = df["longitude"].to_numpy(dtype=float)
-    lat = df["latitude"].to_numpy(dtype=float)
-    mag = pd.to_numeric(df["magnitude"]).to_numpy(dtype=float, na_value=np.nan)
+    # plain arrays: a class mask comes back as Any, and np.clip/argsort want
+    # something it can index without pandas' unions
+    lon = np.asarray(df["longitude"], dtype=float)
+    lat = np.asarray(df["latitude"], dtype=float)
+    mag = np.asarray(_numbers(df["magnitude"]), dtype=float)
 
     for sel, colour, big in (
         (cls["grey"], "gray55", False),
@@ -664,11 +677,11 @@ def add_quake_map_points(
     # the value next to each big event: biggest first, right of the star, then
     # left, above, below; skipped when every slot is taken by a label already
     placed: list[tuple[float, float, float, float]] = []
-    rows = df[cls["label"]].sort_values("magnitude", ascending=False)
-    for _, row in rows.iterrows():
-        text = f"{row['magnitude']:.1f}"
+    labelled = np.flatnonzero(np.asarray(cls["label"], dtype=bool))
+    for i in labelled[np.argsort(-mag[labelled])]:  # biggest first
+        text = f"{mag[i]:.1f}"
         w = maps.text_width_cm(text, MAP_LABEL_FONT)
-        x0, y0 = cm_of(float(row["longitude"]), float(row["latitude"]))
+        x0, y0 = cm_of(float(lon[i]), float(lat[i]))
         for dx, dy, just in (
             (0.22, 0.0, "LM"), (-0.22, 0.0, "RM"),
             (0.0, 0.20, "CB"), (0.0, -0.20, "CT"),

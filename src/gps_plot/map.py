@@ -2616,7 +2616,8 @@ def _draw_map_quakes(
     # a map needs a magnitude floor: without one the catalogue is every
     # detection in the box (22 981 in the Bárðarbunga map against 568 at M2.5)
     min_mag = (
-        float(args.quake_min_mag) if getattr(args, "quake_min_mag", None) is not None
+        float(args.quake_min_mag)
+        if getattr(args, "quake_min_mag", None) is not None
         else 2.5
     )
     ns = argparse.Namespace(**{k: getattr(args, k, None) for k in ql.QUAKE_ARG_KEYS})

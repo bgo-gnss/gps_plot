@@ -95,15 +95,13 @@ testpaths = ["tests"]
 # dated snapshots do not even parse as Python 3 (DO NOT delete, per CLAUDE.md).
 [tool.ruff]
 extend-exclude = [
-    "src/gps_plot/gasmatplt.py",                   # legacy GAS plots (maintenance only)
-    "src/gps_plot/gasmatplt_bgo_15May17.py",       # Python-2 snapshot (unparseable)
-    "src/gps_plot/gasmatplt_workingon15May17.py",  # Python-2 snapshot (unparseable)
-    "src/gps_plot/gmtplot.py",                     # legacy velomap recipe (maintenance)
+    "archive",                                     # legacy code kept for reference, not built
     "bin/timesmatplt-test.py",                     # legacy smoke script
 ]
 
 # Typing policy: `mypy --strict src/` is the gate, scoped to the SAME modern
-# lane as the ruff excludes above — the pre-typing plotting modules are
+# lane as the ruff excludes above (the Python-2-era gasmatplt files and the
+# legacy gmtplot recipe moved to archive/ on 2026-11-16) — the pre-typing plotting modules are
 # per-module ignore_errors rather than rewritten, because they are
 # golden-pinned (a changed figure is a changed scientific product) and two of
 # them are Python-2 snapshots that do not parse. Widening this scope means
@@ -114,16 +112,28 @@ extend-exclude = [
 # `tests/` is deliberately NOT in the gate: the Qt picker tests poke widget
 # attributes that are `Any` all the way down, so strict typing there would
 # measure pyqtgraph's missing stubs rather than this package's correctness.
+[tool.pyright]
+# One typing policy for the project, so two tools cannot disagree: mypy
+# --strict src/ is the gate, and the two modules it is told to skip are skipped
+# here too. archive/ holds the Python-2-era files moved out of src/ (see
+# archive/README.md); tools/ vendors third-party helpers. Everything else in
+# src/ is in scope.
+include = ["src"]
+# the venv's editable install points at another checkout; src/ is what we mean
+extraPaths = ["src"]
+exclude = [
+  "archive",
+  "tools",
+  "src/gps_plot/timesmatplt.py",
+  "src/gps_plot/plot_gps_timeseries.py",
+]
+
 [tool.mypy]
 strict = true
 
-# The two dated snapshots need EXCLUDE, not the ignore_errors below: they are
-# Python-2 source, so mypy fails at the parser and stops before any per-module
-# setting applies ("Missing parentheses in call to 'print'" aborts the run).
-exclude = [
-    "src/gps_plot/gasmatplt_bgo_15May17\\.py$",
-    "src/gps_plot/gasmatplt_workingon15May17\\.py$",
-]
+# The Python-2-era gasmatplt files moved to archive/ (2026-11-16), which no
+# longer needs the parser-EXCLUDE they required inside src/.
+exclude = ["archive"]
 
 # None of these ship a py.typed marker or stubs, so mypy can check nothing
 # inside them either way. Suppressing the import error is not a loss of
@@ -144,8 +154,6 @@ ignore_missing_imports = true
 # that are in ruff scope but were never typed.
 [[tool.mypy.overrides]]
 module = [
-    "gps_plot.gasmatplt",
-    "gps_plot.gmtplot",
     "gps_plot.timesmatplt",
     "gps_plot.plot_gps_timeseries",
 ]
