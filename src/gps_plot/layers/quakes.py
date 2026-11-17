@@ -577,8 +577,9 @@ MAP_LEGEND_CM = 0.24  # swatch
 MAP_LEGEND_ROW_CM = 0.32
 MAP_LEGEND_PAD_CM = 0.16
 MAP_LEGEND_FONT = "7p,Helvetica"
-#: a top corner keeps this far off the frame
-MAP_LEGEND_EDGE_CM = 0.45
+#: a top corner keeps this far off the frame's top, and its right
+MAP_LEGEND_EDGE_CM = 0.28
+MAP_LEGEND_RIGHT_CM = 0.18
 MAP_LABEL_FONT = "6p,Helvetica-Bold,black"
 #: the written values sit just outside the swarm, on the ray out of its centre
 MAP_LABEL_REACH_CM = 1.45
@@ -846,13 +847,12 @@ def add_quake_map_points(
     if legend:
         n_auto = int(automatic.sum())
         if colour_by == "period":
-            title = f"Skjálftar eftir tímabili: stærð = M, M < {min_mag:g} sem duft"
+            title = f"Skjálftar eftir tímabili: stærð = M_L, M < {min_mag:g} sem duft"
             items: list[tuple[str, str, str, float, bool]] = [
                 ("c", PERIOD_FILLS[0], PERIOD_LABELS[0], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[1], PERIOD_LABELS[1], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[2], PERIOD_LABELS[2], MAP_LEGEND_CM, True),
-                ("a", "red", f"M ≥ {star:g} (tala við M ≥ {label:g})",
-                 MAP_LEGEND_CM, True),
+                ("a", "red", f"M ≥ {star:g}", MAP_LEGEND_CM, True),
                 ("c", DUST_COLOR, f"M < {min_mag:g} (duft)", 0.10, False),
                 ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
                  0.10, False),
@@ -889,7 +889,7 @@ def add_quake_map_points(
             x0, y0 = gap, gap
             top = y0 + tall
         elif corner == "TR":
-            x0 = width - wide - gap
+            x0 = width - wide - MAP_LEGEND_RIGHT_CM
             top = height - MAP_LEGEND_EDGE_CM  # close to the frame
             y0 = top - tall
         else:  # TL, below the logo
