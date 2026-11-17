@@ -62,7 +62,9 @@ BOTH = report(
 
 def panel() -> Any:
     fig, ax = plt.subplots()
-    ax.plot([dt.datetime(2025, 1, 1), dt.datetime(2026, 6, 1)], [0, 10], "o")
+    # date2num: matplotlib's stubs do not accept datetime objects directly
+    x = mdates.date2num([dt.datetime(2025, 1, 1), dt.datetime(2026, 6, 1)])
+    ax.plot(x, [0, 10], "o")
     return fig, ax
 
 
@@ -125,7 +127,10 @@ def test_automatic_never_gets_a_class_star_or_label() -> None:
     assert "5.7" not in texts  # automatic: no label, whatever it claims
     # no outline on any quake (BGÓ 2026-11-16)
     for ln in mag_ax.get_lines():
-        assert ln.get_markeredgewidth() == 0.0 or ln.get_markeredgecolor() == ln.get_color()
+        assert (
+            ln.get_markeredgewidth() == 0.0
+            or ln.get_markeredgecolor() == ln.get_color()
+        )
     assert info.n_automatic == 1
     plt.close(fig)
 
