@@ -112,6 +112,10 @@ ALIGN_DAYS = 14.0
 #: window rate, bins over this fraction of its window
 MIN_DAY_FRAC = 0.5
 MIN_WINDOW_FRAC = 0.5
+#: a window rate's bins must also reach into its first and its last
+#: EDGE_FRAC (BGÓ 2026-11-17: after a gap, bins at one end only passed
+#: MIN_WINDOW_FRAC and their line was noise; as rtk_rate.EDGE_FRAC)
+EDGE_FRAC = 0.2
 #: a median bin needs at least this fraction of the median bin's epochs
 MIN_BIN_FRAC = 0.25
 #: the RTK rate's arrow is drawn above this many σ (as the 14-day arrow)
@@ -401,7 +405,7 @@ def window_rates(
     (t in (end − window, end]) with its end on the ``step`` grid from the
     first full window to the newest bin (or at the given ``ends``); NaN for
     a span with bins over less than ``min_frac`` of it (``step`` the bin
-    length). Running sums, so 10 000 minute windows cost no more than one."""
+    length) or none in its first or last :data:`EDGE_FRAC`. Running sums, so 10 000 minute windows cost no more than one."""
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
     ok = np.isfinite(t) & np.isfinite(y)
@@ -429,7 +433,11 @@ def window_rates(
     with np.errstate(invalid="ignore", divide="ignore"):
         sxx = stt - st * st / n
         slope = (sty - st * sy / n) / sxx
-    good = (n >= need) & (sxx > 0)
+    first = t[np.minimum(lo, t.size - 1)]
+    last = t[np.maximum(hi - 1, 0)]
+    edge = EDGE_FRAC * window
+    reach = (first <= ends - window + edge + 1e-9) & (last >= ends - edge - 1e-9)
+    good = (n >= need) & (sxx > 0) & reach
     rates[good] = slope[good]
     return ends, rates
 
@@ -458,7 +466,8 @@ def estimate_rate(
     at ``t`` [days], each component's σ the larger of the in-window
     white × k and the repeatability over ``history`` days (default
     :func:`history_days`; the module's docstring); None when the window holds bins over less than
-    :data:`MIN_WINDOW_FRAC` of it."""
+    :data:`MIN_WINDOW_FRAC` of it, or none in its first :data:`EDGE_FRAC`
+    (it ends at the newest bin)."""
     from gps_analysis.shared_tau import block_mean_scale
 
     t = np.asarray(t, dtype=float)
@@ -476,6 +485,8 @@ def estimate_rate(
         ok = inside & np.isfinite(y[c])
         n = max(n, int(np.count_nonzero(ok)))
         if np.count_nonzero(ok) < max(MIN_WINDOW_FRAC * window / step, 3):
+            return None
+        if t[ok].min() > newest - window + EDGE_FRAC * window + 1e-9:
             return None
         v, sw, res = line_fit(t[ok], y[c, ok])
         sd = float(np.std(res))
@@ -567,18 +578,39 @@ def clean_minutes(t: Any, y: Any) -> tuple[Any, Any]:
     )
     lim = np.maximum(SPIKE_K * sig.to_numpy(), SPIKE_FLOOR)
     y = np.where(dev.to_numpy() > lim, np.nan, df.to_numpy()).T
+    return t, sidereal_off(t, y, INTERVALS["1min"])
+
+
+def sidereal_off(t: Any, y: Any, step: float) -> Any:
+    """``y`` (3, N) at ``t`` [days] minus the sidereal multipath model: the
+    median of the high-passed (24 h centred median off) values one, two, …
+    :data:`SIDEREAL_DAYS` sidereal days before, matched within half a
+    ``step`` (the bin length); where under :data:`SIDEREAL_MIN` days have
+    a value, nothing is taken off. The minute values' filter
+    (:func:`clean_minutes`), and since 2026-11-17 the bins' under every
+    rate (BGÓ: a 24 h rate on the raw hourly SVIE-SKFC, ±10 mm of daily
+    multipath, gave 29 mm/d; the daily solutions 0.8)."""
+    import pandas as pd
+
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if t.size == 0:
+        return y.copy()
+    idx = pd.to_datetime(np.round(t * 86400.0), unit="s")
     hp = pd.DataFrame(y.T, index=idx)
+    min_periods = max(int(round(0.25 / step)), 1)  # 6 h of the 24
     hp = (
-        (hp - hp.rolling(pd.Timedelta(hours=24), center=True, min_periods=360).median())
+        (hp - hp.rolling(pd.Timedelta(hours=24), center=True,
+                         min_periods=min_periods).median())
         .to_numpy()
         .T
-    )
+    )  # fmt: skip
     sid = SIDEREAL_S / 86400.0
-    half = 0.5 / 1440.0
+    half = step / 2.0
     shifted = []
     for k in range(1, SIDEREAL_DAYS + 1):
         want = t - k * sid
-        j = np.clip(np.searchsorted(t, want), 1, t.size - 1)
+        j = np.clip(np.searchsorted(t, want), 1, max(t.size - 1, 1))
         j = np.where(np.abs(t[j - 1] - want) < np.abs(t[j] - want), j - 1, j)
         near = np.abs(t[j] - want) <= half + 1e-9
         shifted.append(np.where(near, hp[:, j], np.nan))
@@ -588,7 +620,7 @@ def clean_minutes(t: Any, y: Any) -> tuple[Any, Any]:
         warnings.simplefilter("ignore", RuntimeWarning)
         model = np.nanmedian(stack, axis=0)
     model = np.where(enough & np.isfinite(model), model, 0.0)
-    return t, y - model
+    return y - model
 
 
 def windows_of(window: float | Sequence[float]) -> tuple[float, ...]:
@@ -659,7 +691,8 @@ def overlay(
     """The RTK tail of ``(t, y)`` (:func:`read_rtk`) on the daily
     displacement ``d_day`` at ``t_day``: shifted onto it
     (:func:`align_shift`), the newest ``days`` kept (and none before
-    ``after``, the onset), the rate over each of the newest ``window``
+    ``after``, the onset), the rate over each of the newest ``window`` (on the bins less
+    their sidereal multipath, :func:`sidereal_off`)
     (one or several, :func:`pick_rate`): windows under
     :data:`MINUTE_BELOW` on ``minutes`` (the 1-minute ``(t, y)``; none:
     those windows are skipped), every window but the longest with its
@@ -679,14 +712,19 @@ def overlay(
     if after is not None:
         keep &= t >= after
     windows = windows_of(window)
+    # the rates on the bins less their sidereal multipath (the drawn path
+    # keeps the bins as they are)
+    y_rate = sidereal_off(t, y, step)
     rates = tuple(
-        _window_rate(t, y, step, w, minutes, change=w < windows[-1]) for w in windows
+        _window_rate(t, y_rate, step, w, minutes, change=w < windows[-1])
+        for w in windows
     )
     rate = pick_rate(rates)
     d = y[:, keep] + al.shift[:, None]
     since_rate = moved = None
     if since is not None and since < t.max():
-        since_rate = estimate_rate(t, y, window=float(t.max()) - since, step=step)
+        since_rate = estimate_rate(t, y_rate, window=float(t.max()) - since,
+                                   step=step)  # fmt: skip
         moved = level_change(t, y, since)
         if moved is not None:  # nor below the RTK's day-level error: its
             # day medians' scatter about the daily solutions, at both ends
