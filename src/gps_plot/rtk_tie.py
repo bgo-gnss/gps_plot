@@ -392,10 +392,55 @@ def line_sigma(df: pd.DataFrame, azimuth: float | None, sub_day: bool) -> np.nda
     return np.asarray(out)
 
 
+#: the σ bars' region [axes fraction from the left]: the bars and labels
+SIGMA_X0 = 0.55
+
+
+def crowding(ax: Any, y0: float, y1: float, x0: float = SIGMA_X0) -> int:
+    """How many plotted points (every line's vertices, the error bars'
+    too) lie in the box x0..1 × y0..y1 of ``ax`` (data y)."""
+    n = 0
+    lo, hi = sorted((y0, y1))
+    for line in ax.get_lines():
+        xy = np.column_stack(line.get_data(orig=False)).astype(float, copy=False)
+        if not xy.size:
+            continue
+        try:
+            fx = ax.transAxes.inverted().transform(ax.transData.transform(xy))[:, 0]
+        except (TypeError, ValueError):
+            continue
+        y = xy[:, 1]
+        n += int(np.count_nonzero((fx >= x0) & (fx <= 1.0) & (y >= lo) & (y <= hi)))
+    return n
+
+
+def legend_room(ax: Any, x0: float = SIGMA_X0) -> tuple[float, float]:
+    """(floor, ceiling) [data y] left free by a legend of ``ax`` reaching
+    right of ``x0``: a legend in the lower half raises the floor to its
+    top, one in the upper half lowers the ceiling to its bottom."""
+    lo, hi = ax.get_ylim()
+    legend = ax.get_legend()
+    if legend is None:
+        return lo, hi
+    box = legend.get_window_extent(ax.figure.canvas.get_renderer())
+    (lx0, ly0), (lx1, ly1) = ax.transAxes.inverted().transform(box)
+    if lx1 < x0:
+        return lo, hi
+    to_data = ax.transData.inverted()
+    y_bottom = float(to_data.transform(ax.transAxes.transform((0.0, ly0)))[1])
+    y_top = float(to_data.transform(ax.transAxes.transform((0.0, ly1)))[1])
+    if (ly0 + ly1) / 2.0 < 0.5:
+        return y_top, hi
+    return lo, y_bottom
+
+
 def sigma_bars(fig: Any, bars: Sequence[tuple[str, np.ndarray]]) -> None:
-    """A ±2σ bar per series in the top-right corner of each data panel, in
+    """A ±2σ bar per series in a right-hand corner of each data panel, in
     the series' colour, "2σ = ±X mm" beside it; all centred on one line
-    (BGÓ 2026-11-12: 2σ, the significance the warning asks for)."""
+    (BGÓ 2026-11-12: 2σ, the significance the warning asks for). The top
+    or the bottom corner, whichever holds fewer plotted points (BGÓ
+    2026-11-17: at the top they drowned in the newest data), clear of a
+    legend there (:func:`legend_room`), the labels on a light box."""
     for k, ax in enumerate(fig.axes[:3]):
         lo, hi = ax.get_ylim()
         sizes = [2.0 * float(sig[k]) for _, sig in bars]
@@ -403,8 +448,16 @@ def sigma_bars(fig: Any, bars: Sequence[tuple[str, np.ndarray]]) -> None:
         if not ok:
             continue
         # one centre line for every bar, so the labels share a line (BGÓ
-        # 2026-11-12); the longest bar's top 5 % below the frame
-        y = hi - 0.05 * (hi - lo) - max(ok)
+        # 2026-11-12); the longest bar's end 5 % inside the frame
+        pad = 0.05 * (hi - lo)
+        floor, ceiling = legend_room(ax)  # beside a legend, not on it
+        top = ceiling - pad - max(ok)
+        bottom = floor + pad + max(ok)
+        y = top
+        if crowding(ax, bottom - max(ok), bottom + max(ok)) < crowding(
+            ax, top - max(ok), top + max(ok)
+        ):
+            y = bottom
         for i, ((colour, _), s) in enumerate(zip(bars, sizes, strict=True)):
             if not np.isfinite(s) or s <= 0:
                 continue
@@ -412,10 +465,11 @@ def sigma_bars(fig: Any, bars: Sequence[tuple[str, np.ndarray]]) -> None:
             tr = ax.get_yaxis_transform()
             ax.errorbar([x], [y], yerr=[[s], [s]], fmt="none", ecolor=colour,
                         elinewidth=2.0, capsize=4, capthick=1.5, transform=tr,
-                        zorder=6, clip_on=False)  # fmt: skip
+                        zorder=7, clip_on=False)  # fmt: skip
             ax.text(x - 0.012, y, rf"$2\sigma = \pm${_num_mm(s)}", transform=tr,
                     ha="right", va="center", fontsize="small", color=colour,
-                    zorder=6)  # fmt: skip
+                    zorder=7, bbox={"facecolor": "white", "alpha": 0.8,
+                                    "edgecolor": "none", "pad": 1.5})  # fmt: skip
         ax.set_ylim(lo, hi)
 
 
@@ -1102,12 +1156,14 @@ def run(prog: str, argv: list[str]) -> int:
                          note=note)  # fmt: skip
             if fig is None:
                 continue
-            sigma_bars(fig, [(colors[sta], line_sigma(main[main.index >= start],
-                                                      azim[sta], days < 1))])  # fmt: skip
             kinds = [k for k in ("rtk_since", "rtk") if k in rates.get(sta, {})]
             rate_lines(fig, [(tied_values(sta, rates[sta][k], zero), rates[sta][k],
                               colors[sta] if k == "rtk" else "k", sta) for k in kinds],
                        start, [azim[sta]] * len(kinds))  # fmt: skip
+            # after the rate lines and their legend: the bars take the emptier
+            # corner (sigma_bars)
+            sigma_bars(fig, [(colors[sta], line_sigma(main[main.index >= start],
+                                                      azim[sta], days < 1))])  # fmt: skip
             _save(fig, out / f"{sta}-tied-{span_name(days)}{tail}.png", prog)
         if len(made) < 2:
             continue
@@ -1145,9 +1201,6 @@ def run(prog: str, argv: list[str]) -> int:
                      missing=missing_since(tied_frame, names, True))  # fmt: skip
         if fig is None:
             continue
-        sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
-                                                   azim[m[0]], days < 1))
-                         for m in made])  # fmt: skip
         # the RTK arrow's window in the station's colour, the average since
         # the newest episode's onset black (BGÓ 2026-11-12)
         got_lines = [(m, k) for k in ("rtk_since", "rtk") for m in made
@@ -1156,6 +1209,9 @@ def run(prog: str, argv: list[str]) -> int:
                           colors[m[0]] if k == "rtk" else "k", m[0])
                          for m, k in got_lines], start,
                    [azim[m[0]] for m, _ in got_lines])  # fmt: skip
+        sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
+                                                   azim[m[0]], days < 1))
+                         for m in made])  # fmt: skip
         _save(fig, out / f"{'_'.join(names)}-tied-{span_name(days)}{tail}.png", prog)
 
     ylabels = _ylabels([azim[s] for s in stations]) if along else None
