@@ -40,6 +40,9 @@ class GisLayer:
     label: str | None = None
     font: str | None = None
     symbol: str | None = None  # points: a GMT style
+    #: PyGMT keywords of the LABEL call only (``label_gmt``): an ``offset``
+    #: with ``+v`` draws GMT's own leader back to the feature
+    label_gmt: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     #: the script that builds the file, for the missing-file hint
     build: str = "vector/build_08_reykjanes.sh"
     #: further PyGMT arguments of its drawing call (``transparency``, a
@@ -138,7 +141,7 @@ PRESETS: dict[str, tuple[str, ...]] = {
 #: ``map_layers.yaml`` keys of a layer (``file`` is its path under the GIS
 #: directory, or an absolute one)
 LAYER_KEYS = ("file", "help", "pen", "fill", "label", "font", "symbol", "build",
-              "gmt")  # fmt: skip
+              "gmt", "label_gmt")  # fmt: skip
 #: the catalogue file in the gpsconfig directory
 CATALOGUE_FILE = "map_layers.yaml"
 
@@ -191,6 +194,8 @@ def catalogue_from(doc: Mapping[str, Any], source: str = "") -> Catalogue:
                 change["path"] = str(value)
             elif key == "gmt":
                 change["gmt"] = dict(value or {})
+            elif key == "label_gmt":
+                change["label_gmt"] = dict(value or {})
             elif key in ("pen", "fill", "symbol", "label", "font"):
                 change[key] = _none(value)
             else:
@@ -314,6 +319,7 @@ def overlays(
                 path, pen=layer.pen, fill=layer.fill, label=layer.label,
                 font=layer.font or DEFAULT_PLACE_FONT, symbol=layer.symbol,
                 step=layer.step, gmt=dict(layer.gmt),
+                label_gmt=dict(layer.label_gmt),
             )
         )  # fmt: skip
     return tuple(out)
@@ -344,5 +350,7 @@ def dump(cat: Catalogue = BUILTIN) -> dict[str, Any]:
         entry["build"] = layer.build
         if layer.gmt:
             entry["gmt"] = dict(layer.gmt)
+        if layer.label_gmt:
+            entry["label_gmt"] = dict(layer.label_gmt)
         layers[name] = entry
     return {"layers": layers, "presets": {n: list(m) for n, m in cat.presets.items()}}
