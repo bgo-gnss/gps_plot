@@ -847,10 +847,18 @@ def _draw_overlays(
             fig.plot(**layer_kw(ov.step, x=list(lon), y=list(lat), **{**kw, **ov.gmt}))
         if ov.label:
             labels = overlay_labels(geojson, ov.label)
-            _draw_labels(
-                fig, fit(_outside(labels, ov.unlabelled_box), ov.font), ov.font,
-                ov.label_gmt,
-            )  # fmt: skip
+            # a layer that offsets its labels (label_gmt: offset) draws the text
+            # AWAY from the anchor, so the anchor-based de-collision would see
+            # neighbours as colliding that do not (the two Skaftárkatlar rings,
+            # 1 cm apart at their centres, one of them dropped); only the
+            # frame cut stays for those (BGÓ 2026-11-16)
+            if (ov.label_gmt or {}).get("offset") and frame is not None:
+                kept = inside_frame(
+                    _outside(labels, ov.unlabelled_box), ov.font, *frame
+                )
+            else:
+                kept = fit(_outside(labels, ov.unlabelled_box), ov.font)
+            _draw_labels(fig, kept, ov.font, ov.label_gmt)  # fmt: skip
 
 
 def overlay_label_points(
