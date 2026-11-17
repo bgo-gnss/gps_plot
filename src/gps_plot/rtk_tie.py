@@ -1007,6 +1007,17 @@ def run(prog: str, argv: list[str]) -> int:
                  for n in names]  # fmt: skip
         return "\nmotion axis = the movement since the onset: " + ", ".join(parts)
 
+    def figure_or_none(*a: Any, **k: Any) -> Any:
+        """:func:`figure`, or None (a line on stderr) when the span holds
+        nothing to draw: one empty figure must not stop the others (BGÓ
+        2026-11-17: SVIN's 12 h figure stopped the 2 d, 7 d and since
+        figures for a morning)."""
+        try:
+            return figure(*a, **k)
+        except ValueError as err:
+            print(f"{prog}: {err}, figure skipped", file=sys.stderr)
+            return None
+
     def piece(
         sta: str, days: float
     ) -> tuple[pd.DataFrame, pd.Series, pd.Timestamp] | None:
@@ -1026,7 +1037,19 @@ def run(prog: str, argv: list[str]) -> int:
         # set it; or no RTK there, older than the archive) or no RTK at the
         # span's start: the daily figure's zero, so the two agree
         d0 = daily[sta].loc[start - pd.Timedelta(days=1) : end]
-        return main, (d0 - _zeroed(d0, start)).median(), newest
+        zero = (d0 - _zeroed(d0, start)).median()
+        if zero.notna().any():
+            return main, zero, newest
+        # no daily day in the span either (just after midnight, the newest
+        # daily two days old, SVIN quiet at the span's start: 2026-11-17 a
+        # NaN zero emptied the figure and the ValueError stopped the run):
+        # the first RTK hour(s) the span has
+        inside = main.loc[start:].dropna(how="all")
+        if inside.empty:
+            return None
+        t0 = inside.index[0]
+        first = inside[inside.index < t0 + pd.Timedelta(hours=1 if days < 1 else 6)]
+        return main, first.median(), newest
 
     def plotted(df: pd.DataFrame, azimuth: float | None) -> pd.DataFrame:
         """``df`` on the figure's axes (rotated with ``--axes motion``)."""
@@ -1080,11 +1103,13 @@ def run(prog: str, argv: list[str]) -> int:
                 f"{newest:%d %b}: provisional{motion_note([sta])}"
             )
             last = min(span_last.to_pydatetime(), now)
-            fig = figure(ser, sty, col, main=f"{sta}: RTK + daily",
+            fig = figure_or_none(ser, sty, col, main=f"{sta}: RTK + daily",
                          sub=f"frame: {frame_name}", start=start, end=end, last=last,
                          now=now, rtk=True,
                          ylabels=_ylabels([azim[sta]]) if along else None,
                          note=note)  # fmt: skip
+            if fig is None:
+                continue
             sigma_bars(fig, [(colors[sta], line_sigma(main[main.index >= start],
                                                       azim[sta], days < 1))])  # fmt: skip
             kinds = [k for k in ("rtk_since", "rtk") if k in rates.get(sta, {})]
@@ -1120,12 +1145,14 @@ def run(prog: str, argv: list[str]) -> int:
         if not lasts:  # nothing finite anywhere in this span
             continue
         last = min(max(lasts).to_pydatetime(), now)
-        fig = figure(ser, sty, col, main=f"{', '.join(names)}: RTK + daily",
+        fig = figure_or_none(ser, sty, col, main=f"{', '.join(names)}: RTK + daily",
                      sub=f"frame: {frame_name}", start=start, end=end, last=last,
                      now=now, rtk=True,
                      ylabels=_ylabels([azim[s] for s in names]) if along else None,
                      note=note,
                      missing=missing_since(tied_frame, names, True))  # fmt: skip
+        if fig is None:
+            continue
         sigma_bars(fig, [(colors[m[0]], line_sigma(m[1][m[1].index >= start],
                                                    azim[m[0]], days < 1))
                          for m in made])  # fmt: skip
@@ -1157,7 +1184,7 @@ def run(prog: str, argv: list[str]) -> int:
                   "figure skipped", file=sys.stderr)  # fmt: skip
             continue
         last_day = max(last_days)
-        fig = figure(ser, ["points"] * len(ser), [colors[s] for s in stations],
+        fig = figure_or_none(ser, ["points"] * len(ser), [colors[s] for s in stations],
                      main=f"{', '.join(stations)}",
                      sub=f"frame: {frame_name}, plate removed",
                      start=start, end=end, last=last_day.to_pydatetime(), now=now,
@@ -1168,6 +1195,8 @@ def run(prog: str, argv: list[str]) -> int:
                      f"{', '.join(refs)} (trend + seasonal removed); empirical "
                      f"$\\sigma$"
                      f"{motion_note(stations)}")  # fmt: skip
+        if fig is None:
+            continue
         # on the three data panels only (addEvent would draw on the logo's
         # axes too)
         for day, (colour, *_rest) in event_lines.items():
