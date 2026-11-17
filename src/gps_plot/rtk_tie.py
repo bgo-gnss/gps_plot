@@ -785,7 +785,8 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     p.add_argument("--rtk-since", default=None,
                    help="the RTK figures' --since instead (BGÓ 2026-11-12: from "
                    "1 Aug the RTK figure was too long), e.g. 2026-11-01; or a "
-                   "rolling span, e.g. 13d (BGÓ 2026-11-17: named -13d)")  # fmt: skip
+                   "rolling span, e.g. 13d (BGÓ 2026-11-17: named -13d); "
+                   "several comma separated, e.g. 2026-11-01,13d")  # fmt: skip
     p.add_argument("--since", default=None,
                    help="also RTK and daily figures from this date, YYYY-MM-DD "
                    "(named -since<YYYYMMDD>), e.g. 2026-08-01")  # fmt: skip
@@ -937,7 +938,10 @@ def run(prog: str, argv: list[str]) -> int:
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp(now)
     #: span [days] -> its file name part, for --since
     names_of: dict[float, str] = {}
-    for when, rtk in ((args.since, False), (args.rtk_since or args.since, True)):
+    rtk_whens = [
+        w.strip() for w in (args.rtk_since or args.since or "").split(",") if w.strip()
+    ]
+    for when, rtk in ((args.since, False), *((w, True) for w in rtk_whens)):
         if not when:
             continue
         rolling = rolling_days(when) if rtk else None
