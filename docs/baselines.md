@@ -196,6 +196,14 @@ arrow); `--rtk` adds per pair (BGÓ 2026-11-12):
   every end over max(7 d, 4 windows), its robust scatter (1.4826·MAD)
   about a line through them in time. (b) catches the sidereal multipath
   and day-to-day atmosphere, which (a) cannot see in one window.
+  Since 2026-11-17 (BGÓ) every window from 6 h up is fitted on the hourly
+  bins less the same sidereal multipath model (`sidereal_off`, matched
+  within half a bin; the drawn path keeps the raw bins): a 24 h line on
+  SVIE-SKFC's raw bins, ±10 mm of daily multipath, gave 29 mm/d against
+  0.8 from the daily solutions. And a window has a rate only when its
+  bins reach into its first and its last fifth (`EDGE_FRAC`, as the RTK
+  rate rule's): after a gap, bins at one end passed the 50 % rule and
+  their line was noise.
   Measured 2026-11-12 (hourly replays over 4 days, 8–12 Nov): the minute
   and 6 h windows never fired; 24 h on SVIN-SVIE 3 times (5 mm/d against
   ~2 on 8 Nov, the new movement); 12 h on SVIE-SKFC once (70 mm/d, noise:

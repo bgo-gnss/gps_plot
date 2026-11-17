@@ -14,7 +14,10 @@ medians of the fixed one-minute solutions, coarse despike, minus the
 sidereal multipath model; then 1-h medians. Per window W and end time:
 
 - the rate: a least-squares line over (end − W, end] [mm/d], with at least
-  :data:`MIN_FRAC` of the hours present;
+  :data:`MIN_FRAC` of the hours present, some of them in the first and some
+  in the last :data:`EDGE_FRAC` of the window (a window that holds only its
+  newest hours, after a gap, has no rate: its line is noise, and its σ is
+  not the full window's);
 - its σ per component, the larger of (a) the line's white-noise σ and (b)
   the repeatability: the W-rates at every hour over the
   max(:data:`HISTORY_DAYS`, 4 W) before, their robust scatter (1.4826·MAD)
@@ -55,6 +58,10 @@ UP_MM_PER_DAY = (2.0, 5.0, 7.0)
 HISTORY_DAYS = 7.0
 #: hours present a window needs
 MIN_FRAC = 0.6
+#: and the hours present must reach into the first and the last EDGE_FRAC
+#: of the window (BGÓ 2026-11-17: after a 2.5-day gap, 15 h at the end of a
+#: 24 h window passed MIN_FRAC and gave 3.8 ± 1.2 mm/d of noise, orange)
+EDGE_FRAC = 0.2
 #: the sidereal filter's warm-up (rtk_accel: 7 sidereal days) and a margin
 WARMUP = pd.Timedelta(days=8)
 SIGNIFICANCE = 2.0
@@ -116,7 +123,8 @@ def hourly(t: Any, y: Any) -> pd.DataFrame:
 
 def window_rates(h: pd.DataFrame, hours: float, ends: pd.DatetimeIndex) -> np.ndarray:
     """(len(ends), 3) rate [mm/d] and (len(ends), 3) white σ over (end −
-    hours, end] at each end, NaN with too few hours; stacked (2, n, 3)."""
+    hours, end] at each end, NaN with too few hours or none near either
+    end of the window (:data:`EDGE_FRAC`); stacked (2, n, 3)."""
     x_all = (h.index - h.index[0]) / pd.Timedelta(days=1)
     x_all = np.asarray(x_all, float)
     y_all = h.to_numpy(float)
@@ -125,11 +133,15 @@ def window_rates(h: pd.DataFrame, hours: float, ends: pd.DatetimeIndex) -> np.nd
     lo_idx = np.searchsorted(h.index.values, (ends - pd.Timedelta(hours=hours)).values,
                              side="right")  # fmt: skip
     hi_idx = np.searchsorted(h.index.values, ends.values, side="right")
+    x_end = np.asarray((ends - h.index[0]) / pd.Timedelta(days=1), float)
+    edge = EDGE_FRAC * hours / 24.0
     for i, (a, b) in enumerate(zip(lo_idx, hi_idx, strict=True)):
         x, y = x_all[a:b], y_all[a:b]
         for c in range(3):
             ok = np.isfinite(y[:, c])
             if ok.sum() < max(need, 3):
+                continue
+            if not spans(x[ok], x_end[i] - hours / 24.0, x_end[i], edge):
                 continue
             xx = x[ok] - x[ok].mean()
             sxx = float(np.sum(xx**2))
@@ -141,6 +153,12 @@ def window_rates(h: pd.DataFrame, hours: float, ends: pd.DatetimeIndex) -> np.nd
             out[0, i, c] = slope
             out[1, i, c] = float(np.sqrt(np.sum(res**2) / dof / sxx))
     return out
+
+
+def spans(x: np.ndarray, start: float, end: float, edge: float) -> bool:
+    """``x`` (sorted) reaches into the first and the last ``edge`` of
+    (start, end]."""
+    return bool(x.size) and x[0] <= start + edge + 1e-9 and x[-1] >= end - edge - 1e-9
 
 
 def repeat_sigma(rates: np.ndarray, t_days: np.ndarray) -> np.ndarray:
@@ -240,6 +258,11 @@ def live(
             continue
         windows = pair_rates(hourly(t, y), spec, end, significance)
         row["windows"] = windows
+        if not any(np.isfinite(r["horizontal_mm_per_day"])
+                   or np.isfinite(r["up_mm_per_day"]) for r in windows):  # fmt: skip
+            row["no_rate"] = True  # no window spans its data: no say
+            rows.append(row)
+            continue
         top = max(windows, key=lambda r: (r["level"], -r["window_h"]))
         row["level"] = top["level"]
         rows.append(row)
