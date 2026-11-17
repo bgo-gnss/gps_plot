@@ -529,9 +529,10 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         "given: under the logo (default), a plain corner, or below the red box",
     )  # fmt: skip
     q.add_argument(
-        "--quake-labels", type=int, default=5, metavar="N",
-        help="write the N largest events' magnitude and date out at the map "
-        "margin (default 5; 0 draws none)",
+        "--quake-labels", default="1,2", metavar="LARGEST[,RECENT]",
+        help="write the values of the LARGEST events and of the RECENT ones "
+        "(most recent first, default 1,2); 0,0 draws none. The full timing "
+        "belongs in the VONC time series, not on the map",
     )  # fmt: skip
     q.add_argument(
         "--quake-colour-by", default="period", choices=("period", "mag"),
@@ -2638,6 +2639,19 @@ class _Rate:
     sigma: Any
 
 
+def _label_picks(spec: Any) -> dict[str, int]:
+    """``--quake-labels 1,2`` -> {"labels_largest": 1, "labels_recent": 2}."""
+    if not spec:
+        return {"labels_largest": 1, "labels_recent": 2}
+    parts = [p.strip() for p in str(spec).split(",")]
+    try:
+        largest = int(parts[0]) if parts[0] else 1
+        recent = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    except ValueError:
+        largest, recent = 1, 2
+    return {"labels_largest": largest, "labels_recent": recent}
+
+
 def _legend_cm(spec: Any) -> tuple[float, float] | None:
     """``--quake-legend-at 0.35,17.2`` -> the (x, y) cm pair, or None."""
     if not spec:
@@ -2703,6 +2717,7 @@ def _draw_map_quakes(
     if not len(frame):
         print(f"no quakes in {sel.name}", file=sys.stderr)
         return
+    picks = _label_picks(getattr(args, "quake_labels", None))
     info = ql.add_quake_map_points(
         fig,
         moment_estimate(frame),
@@ -2712,7 +2727,8 @@ def _draw_map_quakes(
         star=getattr(args, "quake_star", None) or ql.MAG_STAR,
         label=getattr(args, "quake_label", None) or ql.MAG_LABEL,
         colour_by=getattr(args, "quake_colour_by", None) or "period",
-        labels_max=int(getattr(args, "quake_labels", 5) or 0),
+        labels_largest=int(picks["labels_largest"]),
+        labels_recent=int(picks["labels_recent"]),
         legend_corner=getattr(args, "quake_legend_corner", None) or "tl",
         legend_at=_legend_cm(getattr(args, "quake_legend_at", None)),
     )

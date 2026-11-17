@@ -655,6 +655,9 @@ class MapOverlay:
     symbol: str | None = None
     #: further PyGMT arguments of its drawing calls (a layer's ``gmt:``)
     gmt: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    #: further PyGMT arguments of its LABEL call only (``label_gmt:``): an
+    #: ``offset`` with ``+v`` draws GMT's own leader back to the feature
+    label_gmt: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     #: a lon/lat box (W, E, S, N) whose labels are left out: a zoom
     #: inset's, which names them itself
     unlabelled_box: tuple[float, float, float, float] | None = None
@@ -812,7 +815,7 @@ def _draw_overlays(
         if str(ov.path).endswith(".txt"):
             _draw_labels(
                 fig, fit(_outside(place_names(ov.path), ov.unlabelled_box), ov.font),
-                ov.font,
+                ov.font, ov.label_gmt,
             )  # fmt: skip
             continue
         if ov.geojson is not None:
@@ -845,8 +848,9 @@ def _draw_overlays(
         if ov.label:
             labels = overlay_labels(geojson, ov.label)
             _draw_labels(
-                fig, fit(_outside(labels, ov.unlabelled_box), ov.font), ov.font
-            )
+                fig, fit(_outside(labels, ov.unlabelled_box), ov.font), ov.font,
+                ov.label_gmt,
+            )  # fmt: skip
 
 
 def overlay_label_points(
@@ -887,17 +891,24 @@ def _outside(
 
 
 def _draw_labels(
-    fig: Any, labels: Sequence[tuple[float, float, str]], font: str
+    fig: Any,
+    labels: Sequence[tuple[float, float, str]],
+    font: str,
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
-    """Text at points, centred (the ``place-labels`` step)."""
+    """Text at points, centred (the ``place-labels`` step).
+
+    ``extra`` is a layer's own ``gmt:`` for this step: with GMT's
+    ``offset="jDXc/DYc+vPEN"`` the text moves off its feature and a leader
+    is drawn back to it, which is how a name leaves a crowded swarm.
+    """
     if labels:
         lon, lat, text = zip(*labels, strict=True)
-        fig.text(
-            **layer_kw(
-                "place-labels", x=list(lon), y=list(lat), text=list(text),
-                font=font, justify="CM",
-            )
-        )  # fmt: skip
+        kw: dict[str, Any] = dict(
+            x=list(lon), y=list(lat), text=list(text), font=font, justify="CM"
+        )
+        kw.update(extra or {})
+        fig.text(**layer_kw("place-labels", **kw))  # fmt: skip
 
 
 def map_width_cm(projection: str) -> float | None:
