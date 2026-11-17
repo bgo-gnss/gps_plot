@@ -24,6 +24,7 @@ jobs:
     what: SVIN, SVIE in the reference frame, RTK tied to daily solutions, 6 h-7 d, 90 d/1 yr, since 1 Aug (RTK 1 Nov) with the polar rate lines (every 10 min)
     outputs:
       - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-tied-13d-motion.png, max_age: 30m}
+      - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-tied-since20261101-motion.png, max_age: 30m}
       - {path: /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-frame-since20260801-motion.png, max_age: 30m}
   gpsplot-rtk-long:
     group: gps

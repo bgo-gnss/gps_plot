@@ -9,5 +9,5 @@ Nice=10
 EnvironmentFile=%h/src/gps_plot/deployment/yang/yang.env
 Environment=MPLBACKEND=Agg
 WorkingDirectory=/mnt/data/gpsops
-ExecStart=/mnt/data/gpsops/venv/bin/gpsplot rtk-tie SVIN SVIE --via SVIN-SVIE --via SVIE-SKFC --compare SVIN-SKFC --refs SKFC,SLEC,FAGC,KVSK --event svinafellsheidi-2026-09-landslide --area svinafellsheidi --days 0.25,0.5,2,7 --daily-days 90,365 --colors SVIN=red,SVIE=#2ca02c --axes motion --since 2026-08-01 --rtk-since 13d --rates /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-polar-since20260923-frame-rtk-rates.json --out /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
+ExecStart=/mnt/data/gpsops/venv/bin/gpsplot rtk-tie SVIN SVIE --via SVIN-SVIE --via SVIE-SKFC --compare SVIN-SKFC --refs SKFC,SLEC,FAGC,KVSK --event svinafellsheidi-2026-09-landslide --area svinafellsheidi --days 0.25,0.5,2,7 --daily-days 90,365 --colors SVIN=red,SVIE=#2ca02c --axes motion --since 2026-08-01 --rtk-since 2026-11-01,13d --rates /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk/SVIN_SVIE-polar-since20260923-frame-rtk-rates.json --out /mnt/data/gpsops/plots/locations/skridurogflod/svinafellsheidi/graphs/rtk
 TimeoutStartSec=15min
