@@ -125,12 +125,20 @@ def test_automatic_never_gets_a_class_star_or_label() -> None:
     texts = [c.get_text() for a in fig.axes for c in a.texts]
     assert "5.1" in texts  # reviewed M >= 5: labelled
     assert "5.7" not in texts  # automatic: no label, whatever it claims
-    # no outline on any quake (BGÓ 2026-11-16)
-    for ln in mag_ax.get_lines():
-        assert (
-            ln.get_markeredgewidth() == 0.0
-            or ln.get_markeredgecolor() == ln.get_color()
-        )
+    # the outline IS the reviewed mark (BGÓ 2026-11-16): every reviewed class
+    # is edged, an automatic row is not
+    reviewed_lines = [
+        ln
+        for ln in mag_ax.get_lines()
+        if ln.get_label() and not ln.get_label().startswith("_")
+        and "automatic" not in ln.get_label()
+    ]
+    assert reviewed_lines
+    assert all(ln.get_markeredgecolor() == ql.REVIEWED_EDGE for ln in reviewed_lines)
+    auto_line = next(
+        ln for ln in mag_ax.get_lines() if "automatic" in str(ln.get_label())
+    )
+    assert auto_line.get_markeredgecolor() == "none"
     assert info.n_automatic == 1
     plt.close(fig)
 

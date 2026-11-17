@@ -160,8 +160,15 @@ MAG_MID = 4.0
 MAG_STAR = 4.5
 MAG_LABEL = 5.0
 #: fill of an automatic solution: it has a location, not a class (no
-#: magnitude is claimed for it, see :func:`quake_classes`)
+#: magnitude is claimed for it, see :func:`quake_classes`). Automatic rows have
+#: NO outline; a reviewed event is outlined, which is what marks it as reviewed
+#: (BGÓ 2026-11-16).
 AUTO_COLOR = "0.72"
+#: reviewed outlines, matplotlib and GMT
+REVIEWED_EDGE = "k"
+REVIEWED_EDGE_W = 0.5
+MAP_CIRCLE_PEN = "0.3p,black"
+MAP_STAR_PEN = "0.4p,black"
 
 SEAM_COLOR = "tab:red"
 MOMENT_FILL = "0.85"
@@ -436,12 +443,13 @@ def add_quake_panel(
     cls = quake_classes(df, star=star, label=label)
     axm.vlines(x[ok], 0, mag[ok], color="0.8", lw=0.25, zorder=1)
     # no outline on a quake (BGÓ 2026-11-16): the fill carries the class
+    edge = dict(mec=REVIEWED_EDGE, mew=REVIEWED_EDGE_W)
     classes: tuple[tuple[Any, dict[str, Any], str], ...] = (
-        (cls["grey"], dict(marker="o", color="0.55", ms=2.0, alpha=0.7),
+        (cls["grey"], dict(marker="o", color="0.55", ms=2.0, alpha=0.7, **edge),
          rf"M $<$ {MAG_MID:g}"),
-        (cls["blue"], dict(marker="o", color="tab:blue", ms=3.5),
+        (cls["blue"], dict(marker="o", color="tab:blue", ms=3.5, **edge),
          rf"{MAG_MID:g} $\leq$ M $<$ {star:g}"),
-        (cls["star"], dict(marker="*", color="tab:red", ms=11),
+        (cls["star"], dict(marker="*", color="tab:red", ms=11, **edge),
          rf"M $\geq$ {star:g}"),
     )  # fmt: skip
     for sel, style, text in classes:
@@ -455,7 +463,7 @@ def add_quake_panel(
         # one size, the palest fill: an automatic row claims no magnitude
         (h,) = axm.plot(x[cls["automatic"]], mag[cls["automatic"]], ls="none",
                         marker="o", color=AUTO_COLOR, ms=2.0, zorder=2,
-                        label="automatic (no class)")  # fmt: skip
+                        mec="none", label="automatic (no class)")  # fmt: skip
         handles.append(h)
     for xi, mi in zip(x[cls["label"]], mag[cls["label"]]):
         axm.annotate(f"{mi:.1f}", (xi, mi), xytext=(4, 4), textcoords="offset points",
@@ -667,9 +675,9 @@ def add_quake_map_points(
                 0.45,
             )
         )
-        # no pen: the fill carries the class (BGÓ 2026-11-16)
+        # the outline is the reviewed mark; an automatic row below has none
         fig.plot(x=lon[sel], y=lat[sel], style="a" if big else "c", size=size,
-                 fill=colour)  # fmt: skip
+                 fill=colour, pen=MAP_STAR_PEN if big else MAP_CIRCLE_PEN)  # fmt: skip
     if cls["automatic"].any():
         auto = cls["automatic"]
         fig.plot(x=lon[auto], y=lat[auto], style=f"c{MAP_AUTO_CM}c", fill=MAP_AUTO_FILL)
@@ -728,8 +736,11 @@ def add_quake_map_points(
                  text=title, font=font, justify="LM")  # fmt: skip
         for k, (style, colour, text) in enumerate(items):
             y = top - MAP_LEGEND_PAD_CM - (k + 1.5) * MAP_LEGEND_ROW_CM
+            swatch: dict[str, Any] = {"fill": colour}
+            if colour != MAP_AUTO_FILL:  # the automatic row is the edge-free one
+                swatch["pen"] = MAP_STAR_PEN if style == "a" else MAP_CIRCLE_PEN
             fig.plot(x=[lon_of(x0 + MAP_LEGEND_PAD_CM + 0.5 * MAP_LEGEND_CM)],
-                     y=[lat_of(y)], style=f"{style}{MAP_LEGEND_CM}c", fill=colour)  # fmt: skip
+                     y=[lat_of(y)], style=f"{style}{MAP_LEGEND_CM}c", **swatch)  # fmt: skip
             fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + MAP_LEGEND_CM + 0.15),
                      y=lat_of(y), text=text, font=font, justify="LM")  # fmt: skip
     return MapQuakeInfo(
