@@ -517,6 +517,12 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         help="magnitude a red star starts at (default 4.5)",
     )  # fmt: skip
     q.add_argument(
+        "--quake-colour-by", default="period", choices=("period", "mag"),
+        help="colour the events by WHEN they happened, in the map's own arrow "
+        "periods, with the magnitude carried by the size (period, default), or "
+        "by magnitude class (mag)",
+    )  # fmt: skip
+    q.add_argument(
         "--quake-label", type=float, default=None, metavar="M",
         help="magnitude its value is written from (default 5)",
     )  # fmt: skip
@@ -2631,7 +2637,10 @@ def _draw_map_quakes(
         else 2.5
     )
     ns = argparse.Namespace(**{k: getattr(args, k, None) for k in ql.QUAKE_ARG_KEYS})
-    ns.quake_min_mag = min_mag  # the selection, not only the circle sizes
+    # the selection has no magnitude floor: --quake-min-mag is the DUST line,
+    # above which a circle is drawn, not a cut (all magnitudes are wanted, and
+    # the layer sizes what it draws)
+    ns.quake_min_mag = None
     sel = gq.quake_selection(ns, region, prefix="quake-")
     start = min((s for s, _e in windows), default=now - dt.timedelta(days=365))
     frame, _report = catalogue_for(
