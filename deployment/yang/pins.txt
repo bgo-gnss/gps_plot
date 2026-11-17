@@ -4,5 +4,5 @@
 gtimes       https://github.com/bgo-gnss/gtimes.git       b0bc417f2136cb6063bef900ee54fdcd7736db03
 geofunc      https://github.com/bgo-gnss/geofunc.git      5e66ee903fdd7ecab5c2c1e8d112778c28a98a35
 gps_parser   https://github.com/bgo-gnss/gps_parser.git   fb306f1f1b41ca22f55cdaf3b1edde11d68d8a2e
-geo_dataread https://github.com/bgo-gnss/geo_dataread.git 9089eac2498c14d5bf6c41b67cc274ffa282f5cd
+geo_dataread https://github.com/bgo-gnss/geo_dataread.git 5bec9acb0357b853a99ac1b48b5b6f6fbceb8c11
 gps_analysis https://github.com/bgo-gnss/gps_analysis.git 232a01f49c6053bb8d0739899f9b1c1a737de4f5
