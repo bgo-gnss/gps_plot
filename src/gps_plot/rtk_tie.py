@@ -32,6 +32,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import os
+import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -775,7 +776,8 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
                    help="daily figures: ± this many mm around the data at least")  # fmt: skip
     p.add_argument("--rtk-since", default=None,
                    help="the RTK figures' --since instead (BGÓ 2026-11-12: from "
-                   "1 Aug the RTK figure was too long), e.g. 2026-11-01")  # fmt: skip
+                   "1 Aug the RTK figure was too long), e.g. 2026-11-01; or a "
+                   "rolling span, e.g. 13d (BGÓ 2026-11-17: named -13d)")  # fmt: skip
     p.add_argument("--since", default=None,
                    help="also RTK and daily figures from this date, YYYY-MM-DD "
                    "(named -since<YYYYMMDD>), e.g. 2026-08-01")  # fmt: skip
@@ -786,6 +788,13 @@ def build_parser(prog: str) -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="directory of the figures")
     p.add_argument("--end", default=None, help="UTC 'YYYY-MM-DD HH:MM' (default now)")
     return p
+
+
+def rolling_days(text: str) -> float | None:
+    """``13d`` -> 13.0: a rolling span [days] for --rtk-since; None for a
+    date."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*d\s*", text)
+    return float(m.group(1)) if m else None
 
 
 def _onset(args: argparse.Namespace, config: Any) -> dt.date:
@@ -922,6 +931,10 @@ def run(prog: str, argv: list[str]) -> int:
     names_of: dict[float, str] = {}
     for when, rtk in ((args.since, False), (args.rtk_since or args.since, True)):
         if not when:
+            continue
+        rolling = rolling_days(when) if rtk else None
+        if rolling is not None:  # a span back from the end, not a date
+            rtk_spans = sorted({*rtk_spans, rolling})
             continue
         since = pd.Timestamp(when)
         sd = (end - since) / pd.Timedelta(days=1)
