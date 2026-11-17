@@ -667,7 +667,8 @@ def add_quake_map_points(
     star: float = MAG_STAR,
     label: float = MAG_LABEL,
     colour_by: str = "period",
-    labels_max: int = 5,
+    labels_largest: int = 1,
+    labels_recent: int = 2,
     legend: bool = True,
     legend_corner: str = "TL",
     legend_clear_cm: float = 2.55,
@@ -774,16 +775,30 @@ def add_quake_map_points(
     width_cm, height_cm = size_cm
     times = pd.to_datetime(df.index, utc=True)
     all_stars = np.flatnonzero(np.asarray(cls["star"], dtype=bool))
+    times_order = np.asarray(
+        [t.value for t in pd.to_datetime(df.index, utc=True)], dtype="int64"
+    )
     body = np.flatnonzero(reviewed & (mag >= min_mag))
     if len(body):
         pts = np.array([cm_of(float(lon[i]), float(lat[i])) for i in body])
         centre = (float(np.median(pts[:, 0])), float(np.median(pts[:, 1])))
     else:
         centre = (width_cm / 2, height_cm / 2)
-    labels_max = int(labels_max)
-    order: Any = (
-        all_stars[np.argsort(-mag[all_stars])][:labels_max] if labels_max else np.zeros(0, int)
-    )  # fmt: skip
+    # WHICH events get a value: the largest few and the most recent few, which
+    # is what a reader asks the map ("how big was the big one? what is going on
+    # now?"); the full timing belongs in the VONC time series, not here
+    # (BGÓ 2026-11-16)
+    picked: list[int] = list(
+        all_stars[np.argsort(-mag[all_stars])][: max(0, int(labels_largest))]
+    )
+    if labels_recent:
+        newest = all_stars[np.argsort(-times_order[all_stars])]
+        for i in newest:
+            if len(picked) >= int(labels_largest) + int(labels_recent):
+                break
+            if int(i) not in picked:
+                picked.append(int(i))
+    order: Any = np.asarray(picked, dtype=int)
     for i in order:
         text = f"{mag[i]:.1f}  {times[i]:%d.%m.%Y}"
         w = maps.text_width_cm(text, MAP_LABEL_FONT)
