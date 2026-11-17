@@ -1454,8 +1454,12 @@ def resolve_palettes(args: argparse.Namespace, pygmt_mod: Any, user_dir: str) ->
 
 
 #: the track legend's foot above the bottom annotations [cm] (BGÓ
-#: 2026-10-31: on them it crowded the labels)
-TRACK_LEGEND_GAP_CM = 0.5
+#: 2026-10-31: on them it crowded the labels; 2026-11-17: closer, 0.5 left
+#: a band of map under it)
+TRACK_LEGEND_GAP_CM = 0.1
+#: a zoom inset on a track legend sits this far above it [cm] (BGÓ
+#: 2026-11-17: down onto the legend)
+TRACK_ZOOM_GAP_CM = 0.05
 
 
 def map_zones(args: Any) -> list[Any]:
@@ -1698,6 +1702,7 @@ def _insets(
     legend_width_cm: float = LEGEND_WIDTH_CM,
     arrows: float | None = None,
     locator_floor: float | None = None,
+    zoom_gap_cm: float | None = None,
     reserve: Sequence[tuple[float, float, float, float]] = (),
     block: tuple[Any, Any] | None = None,
 ) -> None:
@@ -1706,8 +1711,9 @@ def _insets(
     a vector legend of ``legend_lines`` rows ``legend_width_cm`` wide, the
     station symbols and, with ``arrows`` (the vectors' scale [cm per
     unit]; ``points`` are then the vectors), the arrows. ``locator_floor``
-    [cm]: a bottom ``--locator-corner`` locator sits on it (a legend's top).
-    ``reserve``: more boxes (x0, x1, y0, y1) [cm] to keep free and
+    [cm]: a bottom ``--locator-corner`` locator sits on it (a legend's top);
+    a bottom ``--inset-corner`` zoom inset too, ``zoom_gap_cm`` above it
+    when given (else the layout margin). ``reserve``: more boxes (x0, x1, y0, y1) [cm] to keep free and
     ``block``: more points (lons, lats) to keep off (a track map's legend,
     colour bar and dots)."""
     from gps_plot import insets, layout, maps
@@ -1751,8 +1757,11 @@ def _insets(
         zoom_corner = getattr(args, "inset_corner", None)
         spot: insets.Spot | None
         if zoom_corner is not None:
+            zfloor = (locator_floor - layout.MARGIN_CM + zoom_gap_cm
+                      if locator_floor is not None and zoom_gap_cm is not None
+                      else locator_floor)  # fmt: skip
             spot = insets.corner_spot(size, (width, height), zoom_corner,
-                                      floor=locator_floor)  # fmt: skip
+                                      floor=zfloor)  # fmt: skip
             sea.reserve((spot.x, spot.x + spot.width, spot.y, spot.y + spot.height))
         else:
             spot = insets.place(sea, size, insets.ZOOM_CORNERS_PREF, outside=True,
@@ -2526,6 +2535,7 @@ def _run_station(
         fig, args, config, style, stations,
         zoom_draw if drawn is not None else zoom_symbols,
         locator_floor=drawn.legend_top if drawn else None,
+        zoom_gap_cm=TRACK_ZOOM_GAP_CM if drawn else None,
         reserve=drawn.boxes if drawn else (),
         block=(drawn.lons, drawn.lats) if drawn else None,
     )  # fmt: skip
