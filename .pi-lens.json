@@ -1,0 +1,17 @@
+{
+  "$comment": "pi-lens rule policy for gps_plot (BG\u00d3 2026-11-16). Three advisory rules are wrong for this project and produced 17 standing findings in live code, which is how a diagnostics bar stops being read. The real gates are .github/workflows/ci.yml: ruff check, ruff format --check, mypy --strict src -- untouched by this file. `rules.<key>.disable` is a project-wide union of ids (docs/globalconfig.md), and both the bare and server-prefixed spellings are listed because either may be what the runner reports.",
+  "rules": {
+    "gps_plot-policy": {
+      "$comment": "unchecked-throwing-call: open()/json.load() without try/except is deliberate at these sites -- a CLI that cannot write its output or read its config must fail loudly, not swallow the error and exit 0 (maps.py GIS reads, cli/run.py job files, polar.py --manifest, changed.py state, track*.py). python37-compatibility-importlib2: flags importlib.resources as <3.7; this package requires >=3.13. no-identity-operator-on-literals: matches the token `is` inside the string literal \"is\", which here is the Icelandic language code (labels.py: lang == \"is\").",
+      "disable": [
+        "unchecked-throwing-call-python",
+        "ast-grep:unchecked-throwing-call-python",
+        "python37-compatibility-importlib2",
+        "semgrep:python37-compatibility-importlib2",
+        "no-identity-operator-on-literals",
+        "ast-grep:no-identity-operator-on-literals",
+        "python.lang.compatibility.python37.python37-compatibility-importlib2"
+      ]
+    }
+  }
+}
