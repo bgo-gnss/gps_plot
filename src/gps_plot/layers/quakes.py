@@ -847,7 +847,7 @@ def add_quake_map_points(
     if legend:
         n_auto = int(automatic.sum())
         if colour_by == "period":
-            title = f"Skjálftar eftir tímabili: stærð = M_L, M < {min_mag:g} sem duft"
+            title = f"Skjálftar eftir tímabili: stærð = M@-L@-, M < {min_mag:g} sem duft"
             items: list[tuple[str, str, str, float, bool]] = [
                 ("c", PERIOD_FILLS[0], PERIOD_LABELS[0], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[1], PERIOD_LABELS[1], MAP_LEGEND_CM, True),
