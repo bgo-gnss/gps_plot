@@ -1842,8 +1842,11 @@ def _insets(
             )
             left = (None if isinstance(region, maps.CornerRegion) or on_legend
                     else layout.BOX_LEFT_LABELS_CM)  # fmt: skip
+            floor = locator_floor
+            if "R" in corner:  # bottom right: just above the scale bar
+                floor = max(floor or 0.0, SCALE_BOX_CM[1])
             spot = insets.corner_spot(
-                size, (width, height), corner, floor=locator_floor, left=left
+                size, (width, height), corner, floor=floor, left=left
             )
         else:
             spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
