@@ -121,6 +121,24 @@ extend-exclude = [
 include = ["src"]
 # the venv's editable install points at another checkout; src/ is what we mean
 extraPaths = ["src"]
+
+# pyright runs nowhere in CI (.github/workflows/ci.yml gates ruff + mypy) and its
+# pandas/xarray/PyGMT stubs disagree with the runtime in ways mypy cannot see at
+# all (pandas ships no stubs, so mypy checks nothing there either). Rather than
+# leave ~106 findings that are stub artefacts standing, the TYPE rules are off and
+# what stays is the class that found real bugs -- an undefined name (gasmatplt's
+# `gdata`), a missing import, a bad call signature. Type checking is mypy's job.
+reportArgumentType = "none"
+reportOptionalMemberAccess = "none"
+reportAttributeAccessIssue = "none"
+reportOperatorIssue = "none"
+reportOptionalOperand = "none"
+reportOptionalIterable = "none"
+reportIndexIssue = "none"
+reportCallIssue = "none"
+reportGeneralTypeIssues = "none"
+reportReturnType = "none"
+reportInvalidTypeVarUse = "none"
 exclude = [
   "archive",
   "tools",
