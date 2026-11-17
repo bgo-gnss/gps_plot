@@ -2711,6 +2711,10 @@ def _draw_map_quakes(
         min_mag=min_mag,
         star=getattr(args, "quake_star", None) or ql.MAG_STAR,
         label=getattr(args, "quake_label", None) or ql.MAG_LABEL,
+        colour_by=getattr(args, "quake_colour_by", None) or "period",
+        labels_max=int(getattr(args, "quake_labels", 5) or 0),
+        legend_corner=getattr(args, "quake_legend_corner", None) or "tl",
+        legend_at=_legend_cm(getattr(args, "quake_legend_at", None)),
     )
     print(
         f"quakes {sel.name}: {info.n} events, {info.n_automatic} automatic, "
