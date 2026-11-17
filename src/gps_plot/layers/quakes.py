@@ -577,8 +577,11 @@ MAP_LEGEND_CM = 0.24  # swatch
 MAP_LEGEND_ROW_CM = 0.32
 MAP_LEGEND_PAD_CM = 0.16
 MAP_LEGEND_FONT = "7p,Helvetica"
+#: a top corner keeps this far off the frame
+MAP_LEGEND_EDGE_CM = 0.45
 MAP_LABEL_FONT = "6p,Helvetica-Bold,black"
-#: the written values sit at the map's margin, tied to the star by a leader
+#: the written values sit just outside the swarm, on the ray out of its centre
+MAP_LABEL_REACH_CM = 1.45
 MAP_LABEL_MARGIN_CM = 0.55
 MAP_LEADER_PEN = "0.12p,gray30"
 MAP_LEADER_STOP = 1.0
@@ -762,52 +765,68 @@ def add_quake_map_points(
             pen = MAP_STAR_PEN if big else MAP_CIRCLE_PEN
             draw(sel, colour, "a" if big else "c", pen, big=big)  # fmt: skip
 
-    # The N largest, written at the map's margin with their date and joined to
-    # the star by a leader: inside the caldera the swarm leaves no room, and
-    # five values out at the edge read better than twelve squeezed into it
+    # The N largest, written just OUTSIDE the cluster and on the shortest way
+    # out of it: each label sits on the ray from the swarm's centre through its
+    # own event, so the leader is as short as the geometry allows and the
+    # numbers distribute around the caldera instead of stacking at one edge
     # (BGÓ 2026-11-16).
     placed: list[tuple[float, float, float, float]] = []
     width_cm, height_cm = size_cm
     times = pd.to_datetime(df.index, utc=True)
     all_stars = np.flatnonzero(np.asarray(cls["star"], dtype=bool))
+    body = np.flatnonzero(reviewed & (mag >= min_mag))
+    if len(body):
+        pts = np.array([cm_of(float(lon[i]), float(lat[i])) for i in body])
+        centre = (float(np.median(pts[:, 0])), float(np.median(pts[:, 1])))
+    else:
+        centre = (width_cm / 2, height_cm / 2)
     labels_max = int(labels_max)
     order: Any = (
-        all_stars[np.argsort(-lat[all_stars])] if labels_max else np.zeros(0, int)
-    )
-    # biggest first decides WHICH; top-to-bottom decides the ORDER of the rows,
-    # so the leaders do not cross
-    keep = set(order[np.argsort(-mag[order])][:labels_max]) if len(order) else set()
-    for i in [j for j in order if j in keep]:
-        text = f"{mag[i]:.1f}   {times[i]:%d.%m.%Y}"
+        all_stars[np.argsort(-mag[all_stars])][:labels_max] if labels_max else np.zeros(0, int)
+    )  # fmt: skip
+    for i in order:
+        text = f"{mag[i]:.1f}  {times[i]:%d.%m.%Y}"
         w = maps.text_width_cm(text, MAP_LABEL_FONT)
         x0, y0 = cm_of(float(lon[i]), float(lat[i]))
-        # out to the nearer margin: the swarm is in the middle, the edges free
-        if x0 > width_cm / 2:
-            left = width_cm - MAP_LABEL_MARGIN_CM - w
-        else:
-            left = MAP_LABEL_MARGIN_CM
-        top = min(
-            max(y0 + MAP_LABEL_ROW_CM / 2, MAP_LABEL_MARGIN_CM + 0.2),
-            height_cm - MAP_LABEL_MARGIN_CM - 0.2,
-        )
-        for pbox in placed:  # step down clear of the label placed above it
-            if abs(top - pbox[1]) < MAP_LABEL_ROW_CM and pbox[0] < left + w and pbox[2] > left:
-                top = pbox[1] - MAP_LABEL_ROW_CM
-        placed.append((left, top, left + w, top))
-        # the leader runs from the star out to the start of the text
-        tip = left - 0.06 if x0 > width_cm / 2 else left + w + 0.06
-        fig.plot(
-            x=[lon_of(x0), lon_of(tip)], y=[lat_of(y0), lat_of(top)],
-            pen=MAP_LEADER_PEN,
-        )  # fmt: skip
-        for hx, hy in (
-            (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
-            (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
-        ):  # fmt: skip
-            fig.text(x=lon_of(left + hx), y=lat_of(top + hy), text=text,
-                     font=MAP_LABEL_HALO, justify="LM")  # fmt: skip
-        fig.text(x=lon_of(left), y=lat_of(top), text=text,
-                 font=MAP_LABEL_FONT, justify="LM")  # fmt: skip
+        vx, vy = x0 - centre[0], y0 - centre[1]
+        norm = float(np.hypot(vx, vy)) or 1.0
+        ux, uy = vx / norm, vy / norm
+        if abs(ux) < 0.25:  # straight up or down from the centre: centre it
+            ux = 0.0
+        for extra in (0.0, 0.32, 0.64, 0.96, 1.28):
+            reach = MAP_LABEL_REACH_CM + extra
+            tx, ty = x0 + ux * reach, y0 + uy * reach
+            tx = min(max(tx, MAP_LABEL_MARGIN_CM), width_cm - MAP_LABEL_MARGIN_CM)
+            ty = min(max(ty, MAP_LABEL_MARGIN_CM), height_cm - MAP_LABEL_MARGIN_CM)
+            if abs(ux) < 0.25:
+                just, left = "CM", tx - w / 2
+            elif ux > 0:
+                just, left = "LM", tx
+            else:
+                just, left = "RM", tx - w
+            box = (left, ty - MAP_LABEL_ROW_CM / 2, left + w,
+                   ty + MAP_LABEL_ROW_CM / 2)  # fmt: skip
+            if any(
+                box[0] < p[2] and box[2] > p[0] and box[1] < p[3] and box[3] > p[1]
+                for p in placed
+            ):
+                continue
+            placed.append(box)
+            # the leader leaves the star for the nearest edge of its number
+            tipx = left - 0.05 if just == "LM" else left + w + 0.05
+            fig.plot(
+                x=[lon_of(x0), lon_of(tipx)], y=[lat_of(y0), lat_of(ty)],
+                pen=MAP_LEADER_PEN,
+            )  # fmt: skip
+            for hx, hy in (
+                (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
+                (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
+            ):  # fmt: skip
+                fig.text(x=lon_of(left + hx), y=lat_of(ty + hy), text=text,
+                         font=MAP_LABEL_HALO, justify=just)  # fmt: skip
+            fig.text(x=lon_of(left), y=lat_of(ty), text=text,
+                     font=MAP_LABEL_FONT, justify=just)  # fmt: skip
+            break
 
     if legend:
         n_auto = int(automatic.sum())
@@ -856,7 +875,7 @@ def add_quake_map_points(
             top = y0 + tall
         elif corner == "TR":
             x0 = width - wide - gap
-            top = height - legend_clear_cm
+            top = height - MAP_LEGEND_EDGE_CM  # close to the frame
             y0 = top - tall
         else:  # TL, below the logo
             x0 = gap
