@@ -1441,6 +1441,27 @@ def draw_track_marks(
             confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
             ellipse_pen=f"0.6p,{BEFORE_COLOR}", markers=False, labels=False,
         )  # fmt: skip
+    # recent mode: the mean velocity since the onset, black, on the grey
+    # T line (BGÓ 2026-11-17)
+    mean = [maps.VelocityVector(
+        tr.marker, tr.lon, tr.lat, east=tr.since.east, north=tr.since.north,
+        sigma_east=tr.since.sigma_east, sigma_north=tr.since.sigma_north,
+        method="since-mean") for tr in moved
+        if tr.since_shown and tr.since is not None]  # fmt: skip
+    if arrows and mean:
+        maps.draw_velocity_vectors(
+            fig, mean, colors={"since-mean": SINCE_MEAN_COLOR}, scale=arrow_scale,
+            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+            ellipse_pen=None, markers=False, labels=False,
+        )  # fmt: skip
+        if region is not None and width_cm:
+            deg_per_cm = (region[1] - region[0]) / width_cm
+            for v in mean:
+                tips_x.append(v.lon + v.east * arrow_scale * deg_per_cm)
+                tips_y.append(v.lat + v.north * arrow_scale * deg_per_cm
+                              * math.cos(math.radians(v.lat)))  # fmt: skip
+    # the rates on top (BGÓ 2026-11-17): the 14-day arrow over the black
+    # mean, which shows through when the motion slows below the mean
     if arrows and moved:
         vecs = []
         for tr in moved:
@@ -1495,25 +1516,6 @@ def draw_track_marks(
             for v in disp:
                 tips_x.append(v.lon + v.east * cm_per_mm * deg_per_cm)
                 tips_y.append(v.lat + v.north * cm_per_mm * deg_per_cm
-                              * math.cos(math.radians(v.lat)))  # fmt: skip
-    # recent mode: the mean velocity since the onset, black, on the grey
-    # T line (BGÓ 2026-11-17)
-    mean = [maps.VelocityVector(
-        tr.marker, tr.lon, tr.lat, east=tr.since.east, north=tr.since.north,
-        sigma_east=tr.since.sigma_east, sigma_north=tr.since.sigma_north,
-        method="since-mean") for tr in moved
-        if tr.since_shown and tr.since is not None]  # fmt: skip
-    if arrows and mean:
-        maps.draw_velocity_vectors(
-            fig, mean, colors={"since-mean": SINCE_MEAN_COLOR}, scale=arrow_scale,
-            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
-            ellipse_pen=None, markers=False, labels=False,
-        )  # fmt: skip
-        if region is not None and width_cm:
-            deg_per_cm = (region[1] - region[0]) / width_cm
-            for v in mean:
-                tips_x.append(v.lon + v.east * arrow_scale * deg_per_cm)
-                tips_y.append(v.lat + v.north * arrow_scale * deg_per_cm
                               * math.cos(math.radians(v.lat)))  # fmt: skip
     few = [tr for tr in tracks if tr.shown and tr.since is None and tr.n_after > 0]
     if arrows and few and cm_per_mm:
