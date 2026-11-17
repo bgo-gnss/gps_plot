@@ -307,8 +307,11 @@ def test_inset_helpers() -> None:
     assert lo == pytest.approx(-track.BEFORE_DAYS, abs=1) and hi > 30
     scale, ref = track.arrow_scale_of([tr], 1.5)
     assert tr.since is not None
-    assert scale * tr.since.speed == pytest.approx(1.5)
-    assert ref == track.nice(tr.since.speed / 2)
+    # the longest drawn arrow (here: since, recent, before or the vertical) 1.5 cm
+    fastest = max(math.hypot(e, n) for *_, e, n, _s in track.drawn_rates([tr]))
+    assert fastest >= tr.since.speed
+    assert scale * fastest == pytest.approx(1.5)
+    assert ref == track.nice(fastest / 2)
     still = track.station_track("SKFC", -17.0, 64.0, *_series(seed=3), ONSET, PRE)
     assert track.arrow_scale_of([still]) == (0.01, 100.0)
 
@@ -460,6 +463,53 @@ def test_recent_mode_legend_order_and_gate() -> None:
     colours = [c for _, c in lines]
     assert colours[0] == "blue" and "SVIE last" in lines[0][0]
     assert not any("SVIN last" in t for t, _ in lines)
-    assert colours[1:] == [track.SINCE_GREY, track.SINCE_GREY]
-    assert [t.split()[0] for t, _ in lines[1:]] == ["SVIE", "SVIN"]
+    # then the mean velocities since the onset (black arrows, BGÓ
+    # 2026-11-17), then the grey displacement lines
+    means = [t for t, c in lines if c == track.SINCE_MEAN_COLOR]
+    assert means and all(" since " in t and t.endswith("°") for t in means)
+    assert all("mm/d" in t for t in means)
+    rest = lines[1 + len(means) :]
+    assert [c for _, c in rest] == [track.SINCE_GREY, track.SINCE_GREY]
+    assert [t.split()[0] for t, _ in rest] == ["SVIE", "SVIN"]
     assert not any(t.startswith("SKFC") for t, _ in lines)
+
+
+def test_arrow_scale_fits_the_frame() -> None:
+    """An arrow (and its 1-σ ellipse) that would leave the map is shortened
+    (BGÓ 2026-11-17: SVIE's 14-day arrow ran off the top), the monitoring
+    look's reference is a round number of mm/d."""
+    t, y = _series(move=(200.0, -120.0))
+    tr = track.station_track("SVIE", -16.8, 64.0, t, y, ONSET, PRE)
+    tr = dataclasses.replace(tr, colour_recent=True)
+    rates = track.drawn_rates([tr])
+    assert rates
+    free, _ = track.arrow_scale_of([tr], 2.0)
+    # the station 0.5 cm under the top edge of a 10 cm wide map
+    w, e, s = -16.9, -16.7, 63.95
+    width = 10.0
+    k = width / math.radians(e - w)
+    top = math.degrees(
+        2 * math.atan(math.exp(track._mercator_y(64.0) + 0.5 / k)) - math.pi / 2
+    )
+    region = (w, e, s, top)
+    fit, ref = track.arrow_scale_of([tr], 2.0, region=region, width_cm=width)
+    assert fit < free
+    for lon, lat, de, dn, sig in rates:
+        room = track.frame_room_cm(lon, lat, de, dn, region, width)
+        reach = (math.hypot(de, dn) + sig) * fit
+        assert reach <= room - track.FRAME_MARGIN_CM + 1e-9 or (
+            fit * max(math.hypot(r[2], r[3]) for r in rates)
+            == pytest.approx(track.MIN_ARROW_CM)
+        )
+    assert track.per_day([tr])
+    daily = ref / track.YEAR
+    assert daily == pytest.approx(track.nice(daily))
+    assert track.ref_label(ref, True).endswith(" mm/d")
+
+
+def test_rate_text_units() -> None:
+    assert track.rate_text(742.0, 95.0, daily=False) == "742 ± 95 mm/yr"
+    assert track.rate_text(742.0, 95.0, daily=True) == "2.03 ± 0.26 mm/d"
+    assert track.rate_text(-876.0, 212.0, daily=True, sign=True) == "-2.40 ± 0.58 mm/d"
+    assert track.ref_label(365.25, True) == "1 mm/d"
+    assert track.ref_label(100.0, False) == "100 mm/yr"

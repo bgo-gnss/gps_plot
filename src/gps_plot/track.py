@@ -88,6 +88,8 @@ SINCE_GREY_STYLE = ""
 #: the end (BGÓ 2026-11-08)
 SINCE_GREY_END = "+et"
 SINCE_GREY_PEN = "1.4p"
+#: recent mode: the mean velocity since the onset, an arrow under the T line
+SINCE_MEAN_COLOR = "black"
 #: recent mode: a recent rate's arrow only above this many σ (its numbers
 #: are in the legend either way)
 RECENT_SIGMA = 2.0
@@ -124,6 +126,11 @@ CBAR_OPEN_Y_CM = 0.95
 CBAR_NOTE_FONT = "2.8p,Helvetica,black"
 #: a zoom inset's longest arrow [cm] and the font of its scales
 ZOOM_ARROW_CM = 1.5
+#: arrows and their ellipses stay this far inside the map frame [cm]
+#: (BGÓ 2026-11-17: SVIE's 14-day arrow ran off the top) ...
+FRAME_MARGIN_CM = 0.3
+#: ... but the longest is never shorter than this [cm]
+MIN_ARROW_CM = 0.6
 INSET_FONT = "6p,Helvetica-Bold"
 #: days before the onset a station's series (track_series) shows
 SERIES_BEFORE_DAYS = 90
@@ -261,6 +268,15 @@ class Track:
         if r is None:
             return False
         return not self.colour_recent or r.speed > RECENT_SIGMA * r.sigma_speed
+
+    @property
+    def since_shown(self) -> bool:
+        """Recent mode: its mean velocity since the onset drawn, a black
+        arrow under the grey T line, above ``RECENT_SIGMA`` σ (BGÓ
+        2026-11-17, as the polar map's black arrow)."""
+        s = self.since
+        return (self.colour_recent and self.moved and s is not None
+                and s.speed > RECENT_SIGMA * s.sigma_speed)  # fmt: skip
 
     @property
     def up_recent_shown(self) -> bool:
@@ -950,8 +966,9 @@ def up_text(
     if recent_days is not None:
         line = f"{marker} up {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm"
         if vt.recent is not None:
-            line += (f"; {recent_days:.0f} d: {vt.recent[0]:+.0f} {pm} "
-                     f"{vt.recent[1]:.0f} mm/yr")  # fmt: skip
+            line += f"; {recent_days:.0f} d: " + rate_text(
+                *vt.recent, daily=True, sign=True
+            )
         return line
     if vt.since is None:
         gap = ", none just before" if vt.zero_extrapolated else ""
@@ -973,6 +990,7 @@ def legend_entries(
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
     greys: list[tuple[str, str]] = []  # recent mode: the displacements, last
+    means: list[tuple[str, str]] = []  # ... the mean velocities, before them
     for tr in tracks:
         if not tr.shown:  # --track-stations: its dots only
             continue
@@ -990,10 +1008,10 @@ def legend_entries(
             parts = []
             if tr.recent_shown and tr.recent is not None:
                 r = tr.recent
-                parts.append(f"{r.speed:.0f} {pm} {r.sigma_speed:.0f} mm/yr "
+                parts.append(f"{rate_text(r.speed, r.sigma_speed, daily=True)} "
                              f"toward {r.azimuth:.0f}{deg}")  # fmt: skip
             if vt is not None and vt.recent is not None and tr.up_recent_shown:
-                parts.append(f"up {vt.recent[0]:+.0f} {pm} {vt.recent[1]:.0f} mm/yr")
+                parts.append("up " + rate_text(*vt.recent, daily=True, sign=True))
             if parts:
                 out.append((f"{tr.marker} last {tr.recent_window:.0f} days "
                             + ", ".join(parts), tr.colour))  # fmt: skip
@@ -1004,6 +1022,11 @@ def legend_entries(
             if vt is not None and vt.n_after:
                 line += f", up {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm"
             greys.append((line, SINCE_GREY))
+            if tr.since_shown:
+                s = tr.since
+                means.append((f"{tr.marker} since {onset:%d.%m.%Y} "
+                              f"{rate_text(s.speed, s.sigma_speed, daily=True)} "
+                              f"toward {s.azimuth:.0f}{deg}", SINCE_MEAN_COLOR))  # fmt: skip
             continue
         elif tr.since is not None:
             s = tr.since
@@ -1029,7 +1052,7 @@ def legend_entries(
                         tr.colour))  # fmt: skip
         if vt is not None and vt.n_after:
             out.append((up_text(tr.marker, vt, onset, recent), tr.colour))
-    return [*out, *greys]
+    return [*out, *means, *greys]
 
 
 def newest_day(tracks: Sequence[Track]) -> dt.date | None:
@@ -1095,6 +1118,7 @@ def before_text(marker: str, rate: Rate, up: tuple[float, float] | None = None) 
 
 def nice(x: float) -> float:
     """The 1-2-5 number at or below ``x`` (> 0)."""
+    x *= 1 + 1e-9  # 0.2 from 73.05 / 365.25 is 0.19999…
     k = math.floor(math.log10(x))
     for m in (5, 2, 1):
         if m * 10**k <= x:
@@ -1140,15 +1164,119 @@ def km_per_cm(region: Sequence[float], width_cm: float) -> float:
     return (e - w) * 111.32 * math.cos(math.radians((s + n) / 2)) / width_cm
 
 
-def arrow_scale_of(tracks: Sequence[Track], length_cm: float = ARROW_CM
-                   ) -> tuple[float, float]:  # fmt: skip
-    """``(cm per mm/yr, round reference [mm/yr])``: the fastest moved
-    station's rate since the onset drawn ``length_cm`` long."""
-    speeds = [tr.since.speed for tr in tracks
-              if tr.shown and tr.moved and tr.since is not None]  # fmt: skip
-    if not speeds:
+def per_day(tracks: Sequence[Track]) -> bool:
+    """The monitoring look (``--track-colours recent``) states its rates in
+    mm/d, not mm/yr (BGÓ 2026-11-17: a landslide's days, not years)."""
+    return any(tr.colour_recent for tr in tracks)
+
+
+def rate_text(v: float, sigma: float, *, daily: bool, sign: bool = False) -> str:
+    """``742 ± 95 mm/yr`` or, ``daily``, ``2.03 ± 0.26 mm/d`` (from mm/yr)."""
+    f = "+" if sign else ""
+    if daily:
+        return f"{v / YEAR:{f}.2f} ± {sigma / YEAR:.2f} mm/d"
+    return f"{v:{f}.0f} ± {sigma:.0f} mm/yr"
+
+
+def ref_label(ref_mm_yr: float, daily: bool) -> str:
+    """The reference arrow's text: ``100 mm/yr`` or ``1 mm/d``."""
+    if daily:
+        return f"{round(ref_mm_yr / YEAR, 6):g} mm/d"
+    return f"{ref_mm_yr:g} mm/yr"
+
+
+def drawn_rates(
+    tracks: Sequence[Track],
+) -> list[tuple[float, float, float, float, float]]:
+    """``(lon, lat, east, north, σ)`` [mm/yr] of every rate arrow
+    :func:`draw_track_marks` draws, the vertical drawn north (up) or south:
+    in recent mode the recent rates above :data:`RECENT_SIGMA`, else the
+    rates since the onset, the recent ones and those before it."""
+    out = []
+    for tr in tracks:
+        if not (tr.shown and tr.moved and tr.since is not None):
+            continue
+        if tr.colour_recent:
+            rates = [tr.recent] if tr.recent_shown else []
+            rates += [tr.since] if tr.since_shown else []
+        else:
+            rates = [tr.since, tr.recent, tr.before]
+        for r in rates:
+            if r is not None:
+                out.append((tr.lon, tr.lat, r.east, r.north,
+                            max(r.sigma_east, r.sigma_north)))  # fmt: skip
+    for tr in tracks:  # the vertical (draw_up_arrows), rates only
+        vt = tr.vertical
+        got = up_vector(tr)
+        if got is None or vt is None:
+            continue
+        ups = []
+        if got[2] and not tr.colour_recent:
+            ups.append((got[0], got[1]))
+        if vt.recent is not None and tr.recent is not None and tr.up_recent_shown:
+            ups.append(vt.recent)
+        out += [(tr.lon, tr.lat, 0.0, u, s) for u, s in ups]
+    return out
+
+
+def _mercator_y(lat: float) -> float:
+    return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+
+
+def frame_room_cm(
+    lon: float, lat: float, east: float, north: float,
+    region: Sequence[float], width_cm: float,
+) -> float:  # fmt: skip
+    """How far [cm] a line from (lon, lat) toward (east, north) runs inside
+    a Mercator map of ``region`` ``width_cm`` wide before it leaves it."""
+    w, e, s, n = (float(v) for v in region[:4])
+    k = width_cm / math.radians(e - w)  # cm per radian of Mercator
+    x, y = math.radians(lon - w) * k, (_mercator_y(lat) - _mercator_y(s)) * k
+    height = (_mercator_y(n) - _mercator_y(s)) * k
+    d = math.hypot(east, north)
+    if d == 0:
+        return math.inf
+    ux, uy = east / d, north / d
+    room = math.inf
+    for u, p, hi in ((ux, x, width_cm), (uy, y, height)):
+        if u > 0:
+            room = min(room, (hi - p) / u)
+        elif u < 0:
+            room = min(room, -p / u)
+    return max(room, 0.0)
+
+
+def arrow_scale_of(
+    tracks: Sequence[Track],
+    length_cm: float = ARROW_CM,
+    *,
+    region: Sequence[float] | None = None,
+    width_cm: float | None = None,
+) -> tuple[float, float]:
+    """``(cm per mm/yr, round reference [mm/yr])``: the longest drawn arrow
+    (:func:`drawn_rates`) ``length_cm`` long; with the map's ``region`` and
+    ``width_cm``, shorter when an arrow and its 1-σ ellipse would leave the
+    frame (:data:`FRAME_MARGIN_CM` inside it; never under
+    :data:`MIN_ARROW_CM` for the longest). The reference is a 1-2-5
+    number, in mm/d in the monitoring look (:func:`per_day`), here
+    returned in mm/yr."""
+    rates = drawn_rates(tracks)
+    if not rates:
         return 0.01, 100.0
-    return length_cm / max(speeds), nice(max(speeds) / 2)
+    fastest = max(math.hypot(e, n) for _, _, e, n, _ in rates)
+    if fastest <= 0:
+        return 0.01, 100.0
+    scale = length_cm / fastest
+    if region is not None and width_cm and not hasattr(region, "at"):
+        for lon, lat, e, n, sig in rates:
+            reach = math.hypot(e, n) + sig  # the tip and its ellipse beyond
+            room = frame_room_cm(lon, lat, e, n, region, width_cm) - FRAME_MARGIN_CM
+            if reach > 0:
+                scale = min(scale, max(room, 0.0) / reach)
+        scale = max(scale, MIN_ARROW_CM / fastest)
+    if per_day(tracks):
+        return scale, nice(fastest / YEAR / 2) * YEAR
+    return scale, nice(fastest / 2)
 
 
 def up_vector(tr: Track) -> tuple[float, float, bool] | None:
@@ -1368,6 +1496,25 @@ def draw_track_marks(
                 tips_x.append(v.lon + v.east * cm_per_mm * deg_per_cm)
                 tips_y.append(v.lat + v.north * cm_per_mm * deg_per_cm
                               * math.cos(math.radians(v.lat)))  # fmt: skip
+    # recent mode: the mean velocity since the onset, black, on the grey
+    # T line (BGÓ 2026-11-17)
+    mean = [maps.VelocityVector(
+        tr.marker, tr.lon, tr.lat, east=tr.since.east, north=tr.since.north,
+        sigma_east=tr.since.sigma_east, sigma_north=tr.since.sigma_north,
+        method="since-mean") for tr in moved
+        if tr.since_shown and tr.since is not None]  # fmt: skip
+    if arrows and mean:
+        maps.draw_velocity_vectors(
+            fig, mean, colors={"since-mean": SINCE_MEAN_COLOR}, scale=arrow_scale,
+            confidence=0.39, vector_head=ARROW_HEAD, pen_width=ARROW_PEN,
+            ellipse_pen=None, markers=False, labels=False,
+        )  # fmt: skip
+        if region is not None and width_cm:
+            deg_per_cm = (region[1] - region[0]) / width_cm
+            for v in mean:
+                tips_x.append(v.lon + v.east * arrow_scale * deg_per_cm)
+                tips_y.append(v.lat + v.north * arrow_scale * deg_per_cm
+                              * math.cos(math.radians(v.lat)))  # fmt: skip
     few = [tr for tr in tracks if tr.shown and tr.since is None and tr.n_after > 0]
     if arrows and few and cm_per_mm:
         disp = []
@@ -1441,7 +1588,7 @@ def draw_tracks(
     if m_per_mm != auto_m:
         far = TRACK_CM * km_per_cm(region, width) * 1000.0 / m_per_mm
         dot_ref = nice(max(far / 2, 0.5))
-    auto_scale, ref = arrow_scale_of(tracks)
+    auto_scale, ref = arrow_scale_of(tracks, region=region, width_cm=width)
     scale = arrow_scale or auto_scale
 
     boxes: list[tuple[float, float, float, float]] = []
@@ -1525,7 +1672,7 @@ def draw_tracks(
         projection=projection, arrow_ref=ref if arrows and moved else None,
         arrow_scale=scale, dot_ref=dot_ref, m_per_mm=m_per_mm,
         floor_cm=legend_floor_cm, t_key=t_key, arrow_note=arrow_note,
-        newest=None if recent_mode else newest_day(tracks),
+        newest=None if recent_mode else newest_day(tracks), daily=per_day(tracks),
     )  # fmt: skip
     boxes.append((0.0, right, 0.0, top))
     newest = newest_day(tracks)
@@ -1567,9 +1714,11 @@ def draw_inset_scales(
     m_per_mm: float,
     arrow_ref: float | None,
     arrow_scale: float,
+    daily: bool = False,
 ) -> None:
     """A zoom inset's own scales, lower left: the dot bar and, when arrows
-    are drawn, the reference arrow (the vertical arrows share them)."""
+    are drawn, the reference arrow (the vertical arrows share them;
+    ``arrow_ref`` [mm/yr], written in mm/d when ``daily``)."""
     from gps_plot import maps
 
     font = f"{INSET_FONT},black"
@@ -1588,7 +1737,7 @@ def draw_inset_scales(
         head=ARROW_HEAD, pen_width=ARROW_PEN,
     )  # fmt: skip
     xl, yl = maps.region_point(box, 0.04, 0.28)
-    fig.text(x=xl, y=yl, text=f"{arrow_ref:g} mm/yr", font=font, justify="LM",
+    fig.text(x=xl, y=yl, text=ref_label(arrow_ref, daily), font=font, justify="LM",
              fill="white")  # fmt: skip
 
 
@@ -1613,7 +1762,7 @@ def draw_zoom_tracks(
     if not inside:
         return
     m_per_mm, dot_ref = dot_scale(inside, km_per_cm(box, width_cm))
-    scale, ref = arrow_scale_of(inside, ZOOM_ARROW_CM)
+    scale, ref = arrow_scale_of(inside, ZOOM_ARROW_CM, region=box, width_cm=width_cm)
     draw_track_marks(fig, inside, m_per_mm=m_per_mm, arrow_scale=scale,
                      arrows=arrows, path_days=path_days, cpt=cpt,
                      cm_per_mm=m_per_mm / (km_per_cm(box, width_cm) * 1000.0),
@@ -1622,7 +1771,7 @@ def draw_zoom_tracks(
     moved = any(tr.shown and tr.moved and tr.since is not None for tr in inside)
     draw_inset_scales(fig, box, dot_ref=dot_ref, m_per_mm=m_per_mm,
                       arrow_ref=ref if arrows and moved else None,
-                      arrow_scale=scale)  # fmt: skip
+                      arrow_scale=scale, daily=per_day(inside))  # fmt: skip
 
 
 def _draw_legend(
@@ -1639,6 +1788,7 @@ def _draw_legend(
     newest: dt.date | None = None,
     t_key: str | None = None,
     arrow_note: str | None = None,
+    daily: bool = False,
 ) -> tuple[float, float]:
     """The lower-left legend box: on top the arrow reference (when arrows are
     drawn), the dot scale and the ``newest`` day side by side, under them
@@ -1656,7 +1806,7 @@ def _draw_legend(
     def at(fx: float, line: float) -> tuple[float, float]:
         return maps.region_point(region, anchor[0] + fx / width, anchor[1] + line * sp)
 
-    ref_text = f"{arrow_ref:g} mm/yr" if arrow_ref is not None else ""
+    ref_text = ref_label(arrow_ref, daily) if arrow_ref is not None else ""
     if ref_text and arrow_note:
         ref_text += f", {arrow_note}"
     dot_text = f"{dot_ref:g} mm (dots)"
