@@ -89,3 +89,42 @@ def test_up_has_its_own_sigma_factor() -> None:
     assert spec is not None and spec["up_significance_sigma"] == 1e6
     assert max(r["level"] for r in rtk_rate.pair_rates(h, spec, h.index[-1], 3.0)) == 0
     assert rtk_rate.spec_of({})["up_significance_sigma"] is None  # type: ignore[index]
+
+
+def test_a_window_holding_only_its_newest_hours_has_no_rate() -> None:
+    """BGÓ 2026-11-17: after a 2.5-day gap, 15 h at the end of the 24 h
+    window passed the 60 % rule; their line was noise and set orange."""
+    spec = rtk_rate.spec_of({"components": ["horizontal"]})
+    assert spec is not None
+    h = _hourly(20.0, 19.0, 4.0)  # a steep last day: it must not count
+    gap = (h.index > h.index[-1] - pd.Timedelta(hours=70)) & (
+        h.index <= h.index[-1] - pd.Timedelta(hours=15)
+    )
+    h.loc[gap] = np.nan  # 15 h left, 62 % of 24 h, none in its first 9 h
+    rows = rtk_rate.pair_rates(h, spec, h.index[-1], 3.0)
+    assert all(np.isnan(r["horizontal_mm_per_day"]) for r in rows)
+    assert max(r["level"] for r in rows) == 0
+    # a window with a hole in the middle but both ends keeps its rate
+    h2 = _hourly(20.0, None, 0.0)
+    mid = (h2.index > h2.index[-1] - pd.Timedelta(hours=16)) & (
+        h2.index <= h2.index[-1] - pd.Timedelta(hours=8)
+    )
+    h2.loc[mid] = np.nan
+    got = rtk_rate.window_rates(h2, 24.0, pd.DatetimeIndex([h2.index[-1]]))
+    assert np.isfinite(got[0, 0, 0])
+
+
+def test_live_gives_no_level_when_no_window_spans_its_data() -> None:
+    import datetime as dt
+
+    spec = rtk_rate.spec_of({"components": ["horizontal"]})
+    assert spec is not None
+    now = dt.datetime(2026, 11, 20, 0, 0)
+    t = pd.date_range(now - dt.timedelta(hours=15), now, freq="1min")
+
+    def read(pair: str, start: dt.datetime, end: dt.datetime):  # type: ignore[no-untyped-def]
+        return t.to_pydatetime(), np.zeros((3, t.size))
+
+    got = rtk_rate.live(read, ["A-B"], spec, now)
+    assert got["level"] is None
+    assert got["pairs"][0].get("no_rate") is True

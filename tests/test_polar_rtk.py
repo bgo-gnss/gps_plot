@@ -276,3 +276,26 @@ def test_change_limits_per_window() -> None:
     assert polar_rtk.change_limit(0.25) == (3.0, 0.99)
     assert polar_rtk.change_limit(0.5)[0] == 3.5
     assert polar_rtk.change_limit(1.0)[0] == 4.0
+
+
+def test_window_rates_need_both_ends_of_the_window() -> None:
+    t, y = _series(4.0, (2.0, 0.0, 0.0), noise=0.5)
+    keep = (t < t.max() - 3.0) | (t > t.max() - 0.6)  # 60 % of the last day
+    ends, rates = polar_rtk.window_rates(t[keep], y[0, keep], 1.0, HOUR,
+                                         ends=[t.max()])  # fmt: skip
+    assert np.isnan(rates[0])
+    assert polar_rtk.estimate_rate(t[keep], y[:, keep], window=1.0) is None
+    # the full series has its rate
+    assert polar_rtk.estimate_rate(t, y, window=1.0) is not None
+
+
+def test_sidereal_off_on_hourly_bins_takes_off_the_daily_multipath() -> None:
+    """BGÓ 2026-11-17: SVIE-SKFC's raw hourly bins, ±10 mm of daily
+    multipath, gave a 24 h rate of 29 mm/d; the daily solutions 0.8."""
+    t, y = _series(12.0, (0.5, 0.0, 0.0), noise=0.3, diurnal=10.0)
+    raw = polar_rtk.estimate_rate(t, y, window=1.0)
+    yf = polar_rtk.sidereal_off(t, y, HOUR)
+    got = polar_rtk.estimate_rate(t, yf, window=1.0)
+    assert raw is not None and got is not None
+    assert abs(raw.north - 0.5) > 5.0  # the multipath biases the raw 24 h line
+    assert got.north == pytest.approx(0.5, abs=1.0)
