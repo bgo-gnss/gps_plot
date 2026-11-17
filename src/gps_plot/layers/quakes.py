@@ -622,6 +622,35 @@ def _map_cm_grid(region: Any, size_cm: tuple[float, float]) -> tuple[Any, Any, A
     return lon_of, lat_of, cm_of
 
 
+#: the three periods, NEWEST FIRST, in the arrow colours the map already uses;
+#: the last year red, since 2023 blue, older grey (BGÓ 2026-11-16)
+PERIOD_FILLS = ("red", "blue", "gray50")
+PERIOD_LABELS = ("síðustu 12 mán", "2023–2025", "eldri en 2023")
+#: a detection below the map's class floor: dust, no rim, one small size
+DUST_CM = 0.022
+DUST_COLOR = "gray70"
+
+
+def periods_of(df: object, now: dt.datetime | None = None) -> Any:
+    """0 = the last 12 months, 1 = since 2023-01-01, 2 = older than 2023.
+
+    The clock is the catalogue's newest event when ``now`` is not given, so a
+    re-run of an old catalogue reproduces the same picture.
+    """
+    import numpy as np
+    import pandas as pd
+
+    assert isinstance(df, pd.DataFrame)
+    if not len(df):
+        return np.zeros(0, dtype=int)
+    t = pd.DatetimeIndex(pd.to_datetime(df.index, utc=True))
+    if now is None:
+        now = t.max().to_pydatetime().replace(tzinfo=None)
+    year_ago = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=365)
+    since = pd.Timestamp("2023-01-01", tz="UTC")
+    return np.where(t >= year_ago, 0, np.where(t >= since, 1, 2))
+
+
 def add_quake_map_points(
     fig: Any,
     df: object,
@@ -632,21 +661,25 @@ def add_quake_map_points(
     projection: str | None = None,
     star: float = MAG_STAR,
     label: float = MAG_LABEL,
+    colour_by: str = "period",
     legend: bool = True,
     legend_from: tuple[float, float] = (0.35, 2.55),
     font: str = MAP_LEGEND_FONT,
 ) -> MapQuakeInfo:
-    """The catalogue on a GMT map: the classes, then the labels, then a legend.
+    """The catalogue on a GMT map: dust, then the circles, then the stars.
 
-    The same rule as :func:`add_quake_panel`: grey dots below 4, blue 4-``star``,
-    a red star from ``star``, the value written from ``label`` — all from
-    REVIEWED rows, no outlines anywhere, an automatic row a pale dot of one size
-    with no class. Not used by matplotlib, so ``fig`` is a
-    :class:`pygmt.Figure` (``.plot`` and ``.text`` only).
+    ``colour_by="period"`` (the default) colours every event by WHEN it
+    happened, in the map's own three arrow colours, and leaves the SIZE to the
+    magnitude: dust below ``min_mag``, a circle that grows with M, a star from
+    ``star``. A reviewed event is outlined and an automatic one is not, but an
+    automatic row is sized as dust whatever ``aut.mag`` claims (eight of them
+    in this box claim M>=4.5 at the fixed default depth 5.2 km).
+    ``colour_by="mag"`` is the older look: grey < 4, blue 4-``star``, red star.
 
-    ``size_cm`` is the map size, which GMT reports (``insets.size_cm``); pass it
-    to avoid a GMT call in a test. ``legend_from`` is the legend's top-left, in
-    cm from the map's west edge and down from its north edge (under the logo).
+    The value of a reviewed M >= ``label`` is written beside its star with a
+    short leader. ``size_cm`` is the map size (pass it to skip the GMT call).
+    ``legend_from`` is the legend's top-left in cm from the map's west and
+    north edges, under the logo.
     """
     import numpy as np
     import pandas as pd
@@ -658,38 +691,68 @@ def add_quake_map_points(
         size_cm = maps._map_size_cm(region, projection or maps.DEFAULT_PROJECTION)
     lon_of, lat_of, cm_of = _map_cm_grid(region, size_cm)
     cls = quake_classes(df, star=star, label=label)
-    # plain arrays: a class mask comes back as Any, and np.clip/argsort want
-    # something it can index without pandas' unions
     lon = np.asarray(df["longitude"], dtype=float)
     lat = np.asarray(df["latitude"], dtype=float)
     mag = np.asarray(_numbers(df["magnitude"]), dtype=float)
+    reviewed = np.asarray(cls["reviewed"], dtype=bool)
+    automatic = np.asarray(cls["automatic"], dtype=bool)
+    period = periods_of(df)
 
-    for sel, colour, big in (
-        (cls["grey"], "gray55", False),
-        (cls["blue"], "blue", False),
-        (cls["star"], "red", True),
-    ):
-        if not sel.any():
-            continue
-        size = (
-            np.clip(
-                MAP_STAR_BASE_CM + MAP_STAR_SCALE_CM * (mag[sel] - star),
-                MAP_STAR_BASE_CM,
-                MAP_STAR_MAX_CM,
-            )
-            if big
-            else np.clip(
-                MAP_CIRCLE_BASE_CM + MAP_CIRCLE_SCALE_CM * (mag[sel] - min_mag),
-                0.04,
-                0.45,
-            )
+    def circle_cm(m: Any) -> Any:
+        return np.clip(
+            MAP_CIRCLE_BASE_CM + MAP_CIRCLE_SCALE_CM * (m - min_mag), 0.04, 0.45
         )
-        # the outline is the reviewed mark; an automatic row below has none
-        fig.plot(x=lon[sel], y=lat[sel], style="a" if big else "c", size=size,
-                 fill=colour, pen=MAP_STAR_PEN if big else MAP_CIRCLE_PEN)  # fmt: skip
-    if cls["automatic"].any():
-        auto = cls["automatic"]
-        fig.plot(x=lon[auto], y=lat[auto], style=f"c{MAP_AUTO_CM}c", fill=MAP_AUTO_FILL)
+
+    def star_cm(m: Any) -> Any:
+        return np.clip(
+            MAP_STAR_BASE_CM + MAP_STAR_SCALE_CM * (m - star),
+            MAP_STAR_BASE_CM,
+            MAP_STAR_MAX_CM,
+        )
+
+    def draw(
+        mask: Any,
+        colour: str,
+        style: str,
+        pen: str | None,
+        *,
+        dust: float | None = None,
+        big: bool = False,
+    ) -> None:
+        """One GMT call for a subset: the size is computed FROM the subset, or
+        the arrays disagree on length (a masked x with an unmasked size)."""
+        mask = np.asarray(mask, dtype=bool)
+        if not mask.any():
+            return
+        m = mag[mask]
+        size = dust if dust is not None else (star_cm(m) if big else circle_cm(m))
+        kw: dict[str, Any] = {"style": style, "size": size, "fill": colour}
+        if pen:
+            kw["pen"] = pen
+        fig.plot(x=lon[mask], y=lat[mask], **kw)
+
+    if colour_by == "period":
+        # oldest first, so the newest period ends up on top
+        for k in (2, 1, 0):
+            here = period == k
+            fill = PERIOD_FILLS[k]
+            draw(here & (mag < min_mag), fill, "c", None, dust=DUST_CM)
+            draw(here & automatic, MAP_AUTO_FILL, "c", None, dust=DUST_CM)
+            body = here & reviewed & (mag >= min_mag) & (mag < star)
+            draw(body, fill, "c", MAP_CIRCLE_PEN)
+            draw(here & reviewed & (mag >= star), fill, "a", MAP_STAR_PEN,
+                 big=True)  # fmt: skip
+    else:
+        draw(mag < min_mag, DUST_COLOR, "c", None, dust=DUST_CM)
+        draw(automatic, MAP_AUTO_FILL, "c", None, dust=DUST_CM)
+        for sel, colour, big in (
+            (cls["grey"], "gray55", False),
+            (cls["blue"], "blue", False),
+            (cls["star"], "red", True),
+        ):  # fmt: skip
+            sel = np.asarray(sel, dtype=bool) & reviewed
+            pen = MAP_STAR_PEN if big else MAP_CIRCLE_PEN
+            draw(sel, colour, "a" if big else "c", pen, big=big)  # fmt: skip
 
     # the value next to each big event: biggest first, right of the star, then
     # left, above, below; skipped when every slot is taken by a label already
@@ -734,17 +797,31 @@ def add_quake_map_points(
             break
 
     if legend:
-        title = f"Skjálftar M≥{min_mag:g}"
-        n_auto = int(cls["automatic"].sum())
-        items: list[tuple[str, str, str]] = [
-            ("c", "gray55", f"M < {MAG_MID:g}"),
-            ("c", "blue", f"{MAG_MID:g} ≤ M < {star:g}"),
-            ("a", "red", f"M ≥ {star:g}"),
-            ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})"),
-        ]
+        n_auto = int(automatic.sum())
+        if colour_by == "period":
+            title = f"Skjálftar eftir tímabili: stærð = M, M < {min_mag:g} sem duft"
+            items: list[tuple[str, str, str, float, bool]] = [
+                ("c", PERIOD_FILLS[0], PERIOD_LABELS[0], MAP_LEGEND_CM, True),
+                ("c", PERIOD_FILLS[1], PERIOD_LABELS[1], MAP_LEGEND_CM, True),
+                ("c", PERIOD_FILLS[2], PERIOD_LABELS[2], MAP_LEGEND_CM, True),
+                ("a", "red", f"M ≥ {star:g} (tala við M ≥ {label:g})",
+                 MAP_LEGEND_CM, True),
+                ("c", DUST_COLOR, f"M < {min_mag:g} (duft)", 0.10, False),
+                ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
+                 0.10, False),
+            ]  # fmt: skip
+        else:
+            title = f"Skjálftar M≥{min_mag:g}"
+            items = [
+                ("c", "gray55", f"M < {MAG_MID:g}", MAP_LEGEND_CM, True),
+                ("c", "blue", f"{MAG_MID:g} ≤ M < {star:g}", MAP_LEGEND_CM, True),
+                ("a", "red", f"M ≥ {star:g}", MAP_LEGEND_CM, True),
+                ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
+                 0.10, False),
+            ]  # fmt: skip
         text_cm = max(
             [maps.text_width_cm(title, font)]
-            + [maps.text_width_cm(t, font) + MAP_LEGEND_CM for _s, _c, t in items]
+            + [maps.text_width_cm(t, font) + c for _s, _f, t, c, _o in items]
         )
         wide = text_cm + 2 * MAP_LEGEND_PAD_CM
         tall = (2 + len(items)) * MAP_LEGEND_ROW_CM + 2 * MAP_LEGEND_PAD_CM
@@ -758,15 +835,15 @@ def add_quake_map_points(
         fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM),
                  y=lat_of(top - MAP_LEGEND_PAD_CM - 0.5 * MAP_LEGEND_ROW_CM),
                  text=title, font=font, justify="LM")  # fmt: skip
-        for k, (style, colour, text) in enumerate(items):
+        for k, (style, colour, text, size, outlined) in enumerate(items):
             y = top - MAP_LEGEND_PAD_CM - (k + 1.5) * MAP_LEGEND_ROW_CM
             swatch: dict[str, Any] = {"fill": colour}
-            if colour != MAP_AUTO_FILL:  # the automatic row is the edge-free one
+            if outlined:
                 swatch["pen"] = MAP_STAR_PEN if style == "a" else MAP_CIRCLE_PEN
-            fig.plot(x=[lon_of(x0 + MAP_LEGEND_PAD_CM + 0.5 * MAP_LEGEND_CM)],
-                     y=[lat_of(y)], style=f"{style}{MAP_LEGEND_CM}c", **swatch)  # fmt: skip
-            fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + MAP_LEGEND_CM + 0.15),
+            fig.plot(x=[lon_of(x0 + MAP_LEGEND_PAD_CM + 0.5 * size)],
+                     y=[lat_of(y)], style=f"{style}{size}c", **swatch)  # fmt: skip
+            fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + size + 0.15),
                      y=lat_of(y), text=text, font=font, justify="LM")  # fmt: skip
     return MapQuakeInfo(
-        n=len(df), n_automatic=int(cls["automatic"].sum()), n_labelled=len(placed)
+        n=len(df), n_automatic=int(automatic.sum()), n_labelled=len(placed)
     )
