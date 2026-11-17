@@ -84,6 +84,15 @@ dots' scale (a T icon "10 mm movement since …", the numbers in grey);
 `--track-colour-days 14` colours the dots of the last 14 days only (the
 colour bar −14 … 0 days before the newest), older ones open black ("since
 <onset> until 14 days ago"), as `gpsplot polar`.
+BGÓ 2026-11-17: in that look the rates are in mm/d (the status file stays
+mm/yr); the mean velocity since the onset is a black arrow (above 2 σ) over
+the grey T line and under the station-coloured 14-day arrow, so it shows past
+that arrow's tip when the motion slows below the mean; its numbers are one
+black legend line ("since 23.09.: SVIE … mm/d to 329°, SVIN …"). The arrow
+scale follows the arrows drawn (the longest, Up included, `ARROW_CM` / 1.5 cm
+in the zoom inset) and shrinks where an arrow with its 1-σ ellipse would leave
+the map or the inset (`track.arrow_scale_of`, as polar). The legend sits 0.1 cm
+above the bottom annotations, a bottom zoom inset 0.05 cm on it.
 Area layers for any map: `--layers volcanic` (FutureVolc swarms, central
 volcanoes named, caldera rims) and `rural` (IS 50V main + local roads,
 building points, farm names; `vector/build_09_is50v.sh`); overlapping

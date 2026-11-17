@@ -466,8 +466,8 @@ def test_recent_mode_legend_order_and_gate() -> None:
     # then the mean velocities since the onset (black arrows, BGÓ
     # 2026-11-17), then the grey displacement lines
     means = [t for t, c in lines if c == track.SINCE_MEAN_COLOR]
-    assert means and all(" since " in t and t.endswith("°") for t in means)
-    assert all("mm/d" in t for t in means)
+    assert len(means) == 1  # one line for every station (BGÓ 2026-11-17)
+    assert means[0].startswith("since ") and "SVIE" in means[0] and "mm/d" in means[0]
     rest = lines[1 + len(means) :]
     assert [c for _, c in rest] == [track.SINCE_GREY, track.SINCE_GREY]
     assert [t.split()[0] for t, _ in rest] == ["SVIE", "SVIN"]

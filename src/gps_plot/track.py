@@ -101,7 +101,7 @@ STALE_COLOR = "red"
 DOT_PAIR_PEN = "0.8p,black"
 DOT_PAIR_FILL = "gray70"
 #: the track legend's box: a little less see-through than the vector maps'
-TRACK_LEGEND_FILL = "white@8"
+TRACK_LEGEND_FILL = "white@3"
 LEGEND_FONT = "7p,Helvetica-Bold"
 #: the legend's line spacing [cm] (0.04 of the first 8.25 cm high map):
 #: the same on a tall map as on a wide one
@@ -990,7 +990,7 @@ def legend_entries(
     pm, deg = "±", "°"
     out: list[tuple[str, str]] = []
     greys: list[tuple[str, str]] = []  # recent mode: the displacements, last
-    means: list[tuple[str, str]] = []  # ... the mean velocities, before them
+    means: list[str] = []  # ... the mean velocities (one line), before them
     for tr in tracks:
         if not tr.shown:  # --track-stations: its dots only
             continue
@@ -1022,11 +1022,10 @@ def legend_entries(
             if vt is not None and vt.n_after:
                 line += f", up {vt.end:+.0f} {pm} {vt.end_sigma:.0f} mm"
             greys.append((line, SINCE_GREY))
-            if tr.since_shown:
+            if tr.since_shown and tr.since is not None:
                 s = tr.since
-                means.append((f"{tr.marker} since {onset:%d.%m.%Y} "
-                              f"{rate_text(s.speed, s.sigma_speed, daily=True)} "
-                              f"toward {s.azimuth:.0f}{deg}", SINCE_MEAN_COLOR))  # fmt: skip
+                means.append(f"{tr.marker} {rate_text(s.speed, s.sigma_speed, daily=True)} "
+                             f"to {s.azimuth:.0f}{deg}")  # fmt: skip
             continue
         elif tr.since is not None:
             s = tr.since
@@ -1052,7 +1051,10 @@ def legend_entries(
                         tr.colour))  # fmt: skip
         if vt is not None and vt.n_after:
             out.append((up_text(tr.marker, vt, onset, recent), tr.colour))
-    return [*out, *means, *greys]
+    if means:  # one black line (BGÓ 2026-11-17)
+        # short (BGÓ 2026-11-17: clear of the km scale): day.month., "to"
+        out.append((f"since {onset:%d.%m.}: " + ", ".join(means), SINCE_MEAN_COLOR))
+    return [*out, *greys]
 
 
 def newest_day(tracks: Sequence[Track]) -> dt.date | None:
