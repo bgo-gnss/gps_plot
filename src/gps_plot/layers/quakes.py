@@ -834,13 +834,13 @@ def add_quake_map_points(
             ):
                 continue
             placed.append(box)
-            # the ring names WHICH star; the leader starts at its edge
-            fig.plot(x=[lon[i]], y=[lat[i]],
-                     style=f"c{MAP_LABEL_RING_CM}c", pen=MAP_LABEL_RING_PEN)  # fmt: skip
-            tipx = left - 0.05 if just == "LM" else left + w + 0.05
-            sx, sy = x0 + ux * MAP_LABEL_RING_CM, y0 + uy * MAP_LABEL_RING_CM
+            # the leader meets the text EXACTLY at its edge, on the side the
+            # line arrives from: LM text extends right of its anchor, so the
+            # line meets its LEFT edge; RM text extends left, meet the RIGHT
+            # edge; CM centred, meet it dead centre (BGÓ 2026-11-17)
+            tipx = left if just == "LM" else (left + w if just == "RM" else left + w / 2)
             fig.plot(
-                x=[lon_of(sx), lon_of(tipx)], y=[lat_of(sy), lat_of(ty)],
+                x=[lon_of(x0), lon_of(tipx)], y=[lat_of(y0), lat_of(ty)],
                 pen=MAP_LEADER_PEN,
             )  # fmt: skip
             for hx, hy in (
@@ -861,17 +861,17 @@ def add_quake_map_points(
                 ("c", PERIOD_FILLS[0], PERIOD_LABELS[0], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[1], PERIOD_LABELS[1], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[2], PERIOD_LABELS[2], MAP_LEGEND_CM, True),
-                ("a", "red", f"M ≥ {star:g}", MAP_LEGEND_CM, True),
-                ("c", DUST_COLOR, f"M < {min_mag:g} (duft)", 0.10, False),
+                ("a", "red", f"M@-L@- ≥ {star:g}", MAP_LEGEND_CM, True),
+                ("c", DUST_COLOR, f"M@-L@- < {min_mag:g} (duft)", 0.10, False),
                 ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
                  0.10, False),
             ]  # fmt: skip
         else:
             title = f"Skjálftar M≥{min_mag:g}"
             items = [
-                ("c", "gray55", f"M < {MAG_MID:g}", MAP_LEGEND_CM, True),
-                ("c", "blue", f"{MAG_MID:g} ≤ M < {star:g}", MAP_LEGEND_CM, True),
-                ("a", "red", f"M ≥ {star:g}", MAP_LEGEND_CM, True),
+                ("c", "gray55", f"M@-L@- < {MAG_MID:g}", MAP_LEGEND_CM, True),
+                ("c", "blue", f"{MAG_MID:g} ≤ M@-L@- < {star:g}", MAP_LEGEND_CM, True),
+                ("a", "red", f"M@-L@- ≥ {star:g}", MAP_LEGEND_CM, True),
                 ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
                  0.10, False),
             ]  # fmt: skip
@@ -880,7 +880,7 @@ def add_quake_map_points(
             + [maps.text_width_cm(t, font) + c for _s, _f, t, c, _o in items]
         )
         wide = text_cm + 2 * MAP_LEGEND_PAD_CM
-        tall = (2 + len(items)) * MAP_LEGEND_ROW_CM + 2 * MAP_LEGEND_PAD_CM
+        tall = (3 + len(items)) * MAP_LEGEND_ROW_CM + 2 * MAP_LEGEND_PAD_CM
         width, height = size_cm
         gap = MAP_LEGEND_PAD_CM + 0.19
         corner = legend_corner.upper()
@@ -923,6 +923,19 @@ def add_quake_map_points(
                      y=[lat_of(y)], style=f"{style}{size}c", **swatch)  # fmt: skip
             fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + size + 0.15),
                      y=lat_of(y), text=text, font=font, justify="LM")  # fmt: skip
+        # the size scale: reference circles for M3/M4/M5, at the legend's own
+        # circle sizes, so the swarm's fat and thin dots have a key
+        # (BGÓ 2026-11-17)
+        y = top - MAP_LEGEND_PAD_CM - (len(items) + 1.5) * MAP_LEGEND_ROW_CM
+        x = x0 + MAP_LEGEND_PAD_CM
+        for m in (3.0, 4.0, 5.0):
+            d = float(circle_cm(np.array([m]))[0])
+            fig.plot(x=[lon_of(x + d / 2)], y=[lat_of(y)],
+                     style=f"c{d}c", fill="white", pen=MAP_CIRCLE_PEN)  # fmt: skip
+            tag = f"M@-L@- {m:.0f}"
+            fig.text(x=lon_of(x + d + 0.06), y=lat_of(y), text=tag,
+                     font=font, justify="LM")  # fmt: skip
+            x += d + maps.text_width_cm(tag, font) + 0.22
     return MapQuakeInfo(
         n=len(df), n_automatic=int(automatic.sum()), n_labelled=len(placed)
     )
