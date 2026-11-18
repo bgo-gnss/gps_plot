@@ -856,15 +856,15 @@ def add_quake_map_points(
     if legend:
         n_auto = int(automatic.sum())
         if colour_by == "period":
-            title = f"Skjálftar eftir tímabili: stærð = M@-L@-, M < {min_mag:g} sem duft"
+            # BGÓ 2026-11-17: no "duft" word and no automatic row -- the swarm
+            # itself is the explanation, and the size scale below shows <M2.5
+            # as the actual cluster of tiny points it is
+            title = "Skjálftar eftir tímabili: stærð = M@-L@-"
             items: list[tuple[str, str, str, float, bool]] = [
                 ("c", PERIOD_FILLS[0], PERIOD_LABELS[0], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[1], PERIOD_LABELS[1], MAP_LEGEND_CM, True),
                 ("c", PERIOD_FILLS[2], PERIOD_LABELS[2], MAP_LEGEND_CM, True),
                 ("a", "red", f"M@-L@- ≥ {star:g}", MAP_LEGEND_CM, True),
-                ("c", DUST_COLOR, f"M@-L@- < {min_mag:g} (duft)", 0.10, False),
-                ("c", MAP_AUTO_FILL, f"sjálfvirk, stærð óyfirfarin ({n_auto})",
-                 0.10, False),
             ]  # fmt: skip
         else:
             title = f"Skjálftar M≥{min_mag:g}"
@@ -923,19 +923,29 @@ def add_quake_map_points(
                      y=[lat_of(y)], style=f"{style}{size}c", **swatch)  # fmt: skip
             fig.text(x=lon_of(x0 + MAP_LEGEND_PAD_CM + size + 0.15),
                      y=lat_of(y), text=text, font=font, justify="LM")  # fmt: skip
-        # the size scale: reference circles for M3/M4/M5, at the legend's own
-        # circle sizes, so the swarm's fat and thin dots have a key
-        # (BGÓ 2026-11-17)
+        # The size scale, at the legend's own drawing sizes (BGÓ 2026-11-17):
+        # <min_mag as a CLUSTER of the actual dust points (a single one is
+        # invisible at these sizes), the two circle classes, then the stars.
         y = top - MAP_LEGEND_PAD_CM - (len(items) + 1.5) * MAP_LEGEND_ROW_CM
         x = x0 + MAP_LEGEND_PAD_CM
-        for m in (3.0, 4.0, 5.0):
-            d = float(circle_cm(np.array([m]))[0])
+        # < min_mag: a scatter of the two dust tiers in the period colours
+        spots = ((0.00, 0.05, DUST_CM_BIG, 0), (0.11, 0.02, DUST_CM, 1),
+                 (-0.09, -0.03, DUST_CM, 2), (0.04, -0.08, DUST_CM_BIG, 0),
+                 (-0.05, 0.10, DUST_CM, 1), (0.13, -0.07, DUST_CM, 2))
+        for dx, dy, d, k in spots:  # one call per dot: pygmt takes one fill
+            fig.plot(x=[lon_of(x + 0.08 + dx)], y=[lat_of(y + dy)],
+                     style=f"c{d}c", fill=PERIOD_FILLS[k])  # fmt: skip
+        fig.text(x=lon_of(x + 0.28), y=lat_of(y), text=f"< {min_mag:g}",
+                 font=font, justify="LM")  # fmt: skip
+        x += 0.28 + maps.text_width_cm(f"< {min_mag:g}", font) + 0.18
+        for m, big in ((min_mag, False), (3.5, False), (star, True), (5.5, True)):
+            d = float(star_cm(np.array([m]))[0] if big else circle_cm(np.array([m]))[0])
             fig.plot(x=[lon_of(x + d / 2)], y=[lat_of(y)],
-                     style=f"c{d}c", fill="white", pen=MAP_CIRCLE_PEN)  # fmt: skip
-            tag = f"M@-L@- {m:.0f}"
-            fig.text(x=lon_of(x + d + 0.06), y=lat_of(y), text=tag,
+                     style="a" if big else "c", size=[d],
+                     fill="white", pen=MAP_CIRCLE_PEN)  # fmt: skip
+            fig.text(x=lon_of(x + d + 0.06), y=lat_of(y), text=f"{m:g}",
                      font=font, justify="LM")  # fmt: skip
-            x += d + maps.text_width_cm(tag, font) + 0.22
+            x += d + maps.text_width_cm(f"{m:g}", font) + 0.18
     return MapQuakeInfo(
         n=len(df), n_automatic=int(automatic.sum()), n_labelled=len(placed)
     )
