@@ -583,6 +583,12 @@ MAP_LEGEND_RIGHT_CM = 0.18
 MAP_LABEL_FONT = "6p,Helvetica-Bold,black"
 #: the written values sit just outside the swarm, on the ray out of its centre
 MAP_LABEL_REACH_CM = 1.45
+#: a labelled star is ringed, and its leader starts outside the ring: the
+#: caldera rim is paved with stars 0.1-0.5 cm apart, and a bare leader there
+#: was ambiguous to the eye -- the "wrong star" was a right star next door
+#: (BGÓ 2026-11-17)
+MAP_LABEL_RING_CM = 0.30
+MAP_LABEL_RING_PEN = "0.5p,black"
 MAP_LABEL_MARGIN_CM = 0.55
 MAP_LEADER_PEN = "0.12p,gray30"
 MAP_LEADER_STOP = 1.0
@@ -828,10 +834,13 @@ def add_quake_map_points(
             ):
                 continue
             placed.append(box)
-            # the leader leaves the star for the nearest edge of its number
+            # the ring names WHICH star; the leader starts at its edge
+            fig.plot(x=[lon[i]], y=[lat[i]],
+                     style=f"c{MAP_LABEL_RING_CM}c", pen=MAP_LABEL_RING_PEN)  # fmt: skip
             tipx = left - 0.05 if just == "LM" else left + w + 0.05
+            sx, sy = x0 + ux * MAP_LABEL_RING_CM, y0 + uy * MAP_LABEL_RING_CM
             fig.plot(
-                x=[lon_of(x0), lon_of(tipx)], y=[lat_of(y0), lat_of(ty)],
+                x=[lon_of(sx), lon_of(tipx)], y=[lat_of(sy), lat_of(ty)],
                 pen=MAP_LEADER_PEN,
             )  # fmt: skip
             for hx, hy in (
