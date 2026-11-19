@@ -2729,6 +2729,11 @@ def _draw_map_quakes(
         print(f"no quakes in {sel.name}", file=sys.stderr)
         return
     picks = _label_picks(getattr(args, "quake_labels", None))
+    # the quake periods ARE the arrow windows: blue trails 3 years and stops
+    # only at the red window's start (BGÓ 2026-11-19)
+    bounds: tuple[dt.datetime, dt.datetime] | None = None
+    if len(windows) >= 2:
+        bounds = (windows[-2][0], windows[-1][0])
     info = ql.add_quake_map_points(
         fig,
         moment_estimate(frame),
@@ -2742,6 +2747,7 @@ def _draw_map_quakes(
         labels_recent=int(picks["labels_recent"]),
         legend_corner=getattr(args, "quake_legend_corner", None) or "tl",
         legend_at=_legend_cm(getattr(args, "quake_legend_at", None)),
+        boundaries=bounds,
     )
     print(
         f"quakes {sel.name}: {info.n} events, {info.n_automatic} automatic, "

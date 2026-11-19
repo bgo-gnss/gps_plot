@@ -643,11 +643,18 @@ DUST_SPLIT = 1.0
 DUST_COLOR = "gray70"
 
 
-def periods_of(df: object, now: dt.datetime | None = None) -> Any:
-    """0 = the last 12 months, 1 = since 2023-01-01, 2 = older than 2023.
+def periods_of(
+    df: object,
+    now: dt.datetime | None = None,
+    boundaries: tuple[dt.datetime, dt.datetime] | None = None,
+) -> Any:
+    """0 = the last 12 months, 1 = the two years before it, 2 = older.
 
-    The clock is the catalogue's newest event when ``now`` is not given, so a
-    re-run of an old catalogue reproduces the same picture.
+    ``boundaries`` = (blue_start, red_start) makes the quake periods the map's
+    own ARROW windows: blue runs WITH the red window, stopping only at the red
+    window's start, so a red quake and a red arrow always describe the same
+    time (BGÓ 2026-11-19). Without it, the clock is the catalogue's newest
+    event and the periods are trailing 365/1095 days from there.
     """
     import numpy as np
     import pandas as pd
@@ -656,11 +663,15 @@ def periods_of(df: object, now: dt.datetime | None = None) -> Any:
     if not len(df):
         return np.zeros(0, dtype=int)
     t = pd.DatetimeIndex(pd.to_datetime(df.index, utc=True))
-    if now is None:
-        now = t.max().to_pydatetime().replace(tzinfo=None)
-    year_ago = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=365)
-    since = pd.Timestamp("2023-01-01", tz="UTC")
-    return np.where(t >= year_ago, 0, np.where(t >= since, 1, 2))
+    if boundaries is not None:
+        blue_start = pd.Timestamp(boundaries[0], tz="UTC")
+        red_start = pd.Timestamp(boundaries[1], tz="UTC")
+    else:
+        if now is None:
+            now = t.max().to_pydatetime().replace(tzinfo=None)
+        red_start = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=365)
+        blue_start = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=1095)
+    return np.where(t >= red_start, 0, np.where(t >= blue_start, 1, 2))
 
 
 def add_quake_map_points(
@@ -674,6 +685,7 @@ def add_quake_map_points(
     star: float = MAG_STAR,
     label: float = MAG_LABEL,
     colour_by: str = "period",
+    boundaries: tuple[dt.datetime, dt.datetime] | None = None,
     labels_largest: int = 1,
     labels_recent: int = 2,
     legend: bool = True,
@@ -712,7 +724,7 @@ def add_quake_map_points(
     mag = np.asarray(_numbers(df["magnitude"]), dtype=float)
     reviewed = np.asarray(cls["reviewed"], dtype=bool)
     automatic = np.asarray(cls["automatic"], dtype=bool)
-    period = periods_of(df)
+    period = periods_of(df, boundaries=boundaries)
 
     def circle_cm(m: Any) -> Any:
         return np.clip(
