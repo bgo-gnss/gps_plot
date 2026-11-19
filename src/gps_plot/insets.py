@@ -160,11 +160,19 @@ def _position(spot: Spot) -> Any:
                     anchor="BL")  # fmt: skip
 
 
-def draw_locator(fig: Any, region: Sequence[float], spot: Spot, gis_dir: str) -> None:
+def draw_locator(
+    fig: Any, region: Sequence[float], spot: Spot, gis_dir: str,
+    background: bool = False,
+) -> None:
     """The Iceland locator at ``spot``, as fig1b: no frame and no sea (the
     map shows through), white land with a black coast, the fissure swarms
     slate and outlined, the glaciers near-white and outlined, the central
-    volcanoes outlined, the lon/lat box ``region`` in red."""
+    volcanoes outlined, the lon/lat box ``region`` in red.
+
+    ``background`` paints an opaque white box (thin grey frame) under the
+    inset first: for a locator pinned over map content, where the see-through
+    sea would let the swarm print through the Iceland shape (BGÓ 2026-11-17).
+    """
     from gps_plot.maps import corner_region
 
     projection = locator_projection(spot.width)
@@ -185,6 +193,10 @@ def draw_locator(fig: Any, region: Sequence[float], spot: Spot, gis_dir: str) ->
             projection=projection,
         )
     ):
+        if background:  # opaque box under the whole inset (its own region)
+            lw, le, ls, ln = LOCATOR_CORNERS
+            fig.plot(x=[lw, le, le, lw, lw], y=[ls, ls, ln, ln, lw],
+                     fill="white", pen="0.4p,gray40")  # fmt: skip
         if coast:
             fig.plot(**layer_kw("locator", data=coast, fill=LOCATOR_LAND))
         else:  # GSHHG when the GIS coast is not built
