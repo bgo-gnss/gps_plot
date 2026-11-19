@@ -938,7 +938,7 @@ def add_quake_map_points(
         fig.text(x=lon_of(x + 0.28), y=lat_of(y), text=f"< {min_mag:g}",
                  font=font, justify="LM")  # fmt: skip
         x += 0.28 + maps.text_width_cm(f"< {min_mag:g}", font) + 0.18
-        for m, big in ((min_mag, False), (3.5, False), (star, True), (5.5, True)):
+        for m, big in ((min_mag, False), (3.0, False), (3.5, False), (4.0, False), (star, True), (5.0, True), (5.5, True)):
             d = float(star_cm(np.array([m]))[0] if big else circle_cm(np.array([m]))[0])
             fig.plot(x=[lon_of(x + d / 2)], y=[lat_of(y)],
                      style="a" if big else "c", size=[d],
