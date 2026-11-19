@@ -1227,12 +1227,13 @@ def resolve_windows(
 ) -> list[tuple[dt.datetime, dt.datetime]]:
     """``--window`` and ``--last`` as concrete (start, end) pairs, in order."""
     out = [(s, e or now) for s, e in windows or ()]
-    # --last 7: seven whole days, today included (the product's windows
-    # are whole days, both ends in); --last 14:7 = the seven days before
-    # those, so --last 182:91 and --last 91 follow each other with no gap
+    # --last N: N whole days ending YESTERDAY -- today is never in the data
+    # yet, so a window that ends today claims a day it does not have (BGÓ
+    # 2026-11-19); --last 14:7 = the seven days before those, still no gap
+    end = now - dt.timedelta(days=1)
     for d in last or ():
         first, to = (d, 0) if isinstance(d, int) else d
-        out.append((now - dt.timedelta(days=first - 1), now - dt.timedelta(days=to)))
+        out.append((end - dt.timedelta(days=first - 1), end - dt.timedelta(days=to)))
     return out
 
 

@@ -106,7 +106,8 @@ def test_windows_and_last_days() -> None:
     assert gmap.resolve_windows(w, [7], now) == [
         (dt.datetime(2023, 10, 27), dt.datetime(2023, 11, 9)),
         (dt.datetime(2023, 11, 23), now),
-        (now - dt.timedelta(days=6), now),  # seven whole days
+        # seven whole days ending yesterday: today is never in the data yet
+        (now - dt.timedelta(days=7), now - dt.timedelta(days=1)),
     ]
     start, end = w[0]
     assert end is not None
@@ -124,10 +125,11 @@ def test_last_from_to_days() -> None:
     (a0, a1), (b0, b1), (c0, c1) = gmap.resolve_windows(
         None, [(182, 91), (91, 0), (365, 0)], now
     )
-    assert b1 == c1 == now and a1 + day == b0  # 3 + 3 months, no gap
+    end = now - day  # windows end yesterday: today has no data yet
+    assert b1 == c1 == end and a1 + day == b0  # 3 + 3 months, no gap
     assert (a1 - a0).days + 1 == (b1 - b0).days + 1 == 91
     assert c0 < a0  # the year overlaps both
-    assert gmap.resolve_windows(None, [7], now) == [(now - 6 * day, now)]
+    assert gmap.resolve_windows(None, [7], now) == [(now - 7 * day, end)]
     p = gmap.build_parser(config=None)
     args = p.parse_args(["velocity", "SENG", "--last", "182:91", "--last", "91"])
     assert args.last == [(182, 91), (91, 0)]
