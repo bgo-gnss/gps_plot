@@ -855,13 +855,15 @@ def add_quake_map_points(
                 x=[lon_of(x0), lon_of(tipx)], y=[lat_of(y0), lat_of(ty)],
                 pen=MAP_LEADER_PEN,
             )  # fmt: skip
+            anchor = (left if just == "LM"
+                      else left + w if just == "RM" else left + w / 2)
             for hx, hy in (
                 (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
                 (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
             ):  # fmt: skip
-                fig.text(x=lon_of(left + hx), y=lat_of(ty + hy), text=text,
+                fig.text(x=lon_of(anchor + hx), y=lat_of(ty + hy), text=text,
                          font=MAP_LABEL_HALO, justify=just)  # fmt: skip
-            fig.text(x=lon_of(left), y=lat_of(ty), text=text,
+            fig.text(x=lon_of(anchor), y=lat_of(ty), text=text,
                      font=MAP_LABEL_FONT, justify=just)  # fmt: skip
             break
 
