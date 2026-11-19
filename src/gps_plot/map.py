@@ -1860,8 +1860,7 @@ def _insets(
             spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
         if spot is None:  # beside the map: under a zoom inset there, else top
             spot = insets.beside(size, (width, height), below=zoom_spot)
-        insets.draw_locator(fig, region, spot, gis_dir(config),
-                        background=getattr(args, "locator_at", None) is not None)
+        insets.draw_locator(fig, region, spot, gis_dir(config))
 
 
 def _projection_width_cm(rj: str) -> float:
