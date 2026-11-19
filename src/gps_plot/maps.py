@@ -2939,6 +2939,7 @@ def velocity_map(
     vectors: Sequence[VelocityVector],
     *,
     region: tuple[float, float, float, float] | None = None,
+    title_colour: str | None = None,
     margin: float = DEFAULT_MARGIN_DEG,
     projection: str = DEFAULT_PROJECTION,
     resolution: str = DEFAULT_RESOLUTION,
@@ -3234,7 +3235,13 @@ def velocity_map(
                 text=line, font=font, justify="LM",
             )  # fmt: skip
 
-    _draw_frame(fig, _frame_args(frame, title))
+    if title_colour:  # a stale-data title says so in red (BGÓ 2026-11-17)
+        import pygmt
+
+        with pygmt.config(FONT_TITLE=f"16p,Helvetica,{title_colour}"):
+            _draw_frame(fig, _frame_args(frame, title))
+    else:
+        _draw_frame(fig, _frame_args(frame, title))
 
     if outfile is not None:
         fig.savefig(os.fspath(outfile), show=show)

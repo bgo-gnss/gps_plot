@@ -552,6 +552,11 @@ def _add_map_options(p: argparse.ArgumentParser, config: Any) -> None:
         add_quake_args(p, prefix="quake-")
 
     g.add_argument(
+        "--locator-at", default=None, metavar="X,Y",
+        help="the Iceland inset's lower-left corner in cm from the map's SW "
+        "corner; overrides --locator-corner and skips the layout engine",
+    )  # fmt: skip
+    g.add_argument(
         "--note-at", default=None, metavar="X,Y",
         help="the missing-data box's lower-left corner in cm from the map's SW "
         "corner; overrides --note-corner and skips the layout engine",
@@ -1818,7 +1823,10 @@ def _insets(
         size = insets.locator_size()
         corner = getattr(args, "locator_corner", None)
         beside_gap = getattr(args, "locator_beside_legend", None)
-        if beside_gap is not None and legend_box is not None:
+        pinned = _legend_cm(getattr(args, "locator_at", None))
+        if pinned is not None:
+            spot = insets.Spot(pinned[0], pinned[1], *size)
+        elif beside_gap is not None and legend_box is not None:
             # right of the legend, top-aligned, a small gap (BGÓ: inset beside
             # legend). With the legend itself in the upper right there is no
             # room to its right, so the inset drops BELOW it instead, sharing
@@ -1852,7 +1860,8 @@ def _insets(
             spot = insets.place(sea, size, insets.LOCATOR_CORNERS_PREF)
         if spot is None:  # beside the map: under a zoom inset there, else top
             spot = insets.beside(size, (width, height), below=zoom_spot)
-        insets.draw_locator(fig, region, spot, gis_dir(config))
+        insets.draw_locator(fig, region, spot, gis_dir(config),
+                        background=getattr(args, "locator_at", None) is not None)
 
 
 def _projection_width_cm(rj: str) -> float:
@@ -2978,6 +2987,16 @@ def _run_velocity(
             args.projection or maps.DEFAULT_PROJECTION,
         )
         note_reserve = ((0.0, map_w * 0.62, map_h - 2.55 - 4.4, map_h - 2.55),)
+    # the freshest day on the map, in the title; red when it is older than
+    # yesterday (a day of processing lag is normal, more is a stall) -- BGÓ
+    # 2026-11-17
+    title_colour = None
+    if ends:
+        newest_day = _date_of(max(ends.values())).date()
+        style["title"] = f"{style.get('title') or ''} ({newest_day:%d.%m.%Y})"
+        if newest_day < now.date() - dt.timedelta(days=1):
+            title_colour = "red"
+
     fig = maps.velocity_map(
         kept,
         scale=args.scale or scale,
@@ -2995,6 +3014,7 @@ def _run_velocity(
         corner_note=corner,
         gap_note=gap_note,
         gap_note_corners=_note_corners(getattr(args, "note_corner", None)),
+        title_colour=title_colour,
         gap_note_reserve=note_reserve,
         gap_note_at=_legend_cm(getattr(args, "note_at", None)),
         **zoom_style,
