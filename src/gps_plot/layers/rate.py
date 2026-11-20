@@ -227,9 +227,9 @@ def rotate_record(record: Any, axes: Any | None) -> Any:
     )
 
 
-#: a label sits on the data, so it needs its own ground: black text on a
-#: half-transparent plate reads over dots, curves and fill alike (BGÓ 2026-11-20)
-LABEL_COLOR = "black"
+#: a label sits on the data, so it needs its own ground; its TEXT carries the
+#: line's own colour, so a value and the line it describes are one object
+#: (BGÓ 2026-11-20)
 LABEL_BOX = dict(boxstyle="round,pad=0.18", facecolor=(1.0, 1.0, 1.0, 0.62),
                  edgecolor="none")  # fmt: skip
 
@@ -305,15 +305,18 @@ def add_rate_lines(
             # keeps the top-left spot it has always had
             ax.text(
                 0.01, 0.04 + 0.075 * i if multi else 0.97, text,
-                transform=ax.transAxes, fontsize="x-small", color=LABEL_COLOR,
+                transform=ax.transAxes, fontsize="x-small", color=color,
                 va="bottom" if multi else "top", bbox=LABEL_BOX, zorder=8,
             )  # fmt: skip
     return records
 
 
-def rate_note(records: Sequence[Any], *, segments: bool = False) -> str:
+def rate_note(
+    records: Sequence[Any], *, segments: bool = False, no_lines: bool = False
+) -> str:
     """One line for the figure: what the rates are relative to and their σ
-    (``segments``: also what the bare segment labels are)."""
+    (``segments``: also what the bare segment labels are; ``no_lines``: say
+    that a vertical mark is itself the break in velocity)."""
     if not records:
         return ""
     r = records[0]
@@ -321,6 +324,8 @@ def rate_note(records: Sequence[Any], *, segments: bool = False) -> str:
     ref = ", ".join(sorted(refs))
     sig = {x.sigma_method for x in records}
     seg = "; labels rate ± sigma mm/yr between events, x refused" if segments else ""
+    if segments and no_lines:
+        seg = "; values = velocity per period, a vertical line = a break in it"
     return _tex(
         f"rates: velocity product, ref {ref}, {r.view}, sigma {'/'.join(sorted(sig))}"
         + seg
@@ -419,6 +424,8 @@ def add_segment_rates(
     *,
     minus: Any | None = None,
     axes: Any | None = None,
+    lines: bool = True,
+    color: str | None = None,
 ) -> list[Any]:
     """Draw the product rate of each segment on the first three axes.
 
@@ -427,6 +434,11 @@ def add_segment_rates(
     refused segment gets a ``×`` there (its reason is in the returned
     record). ``minus`` as in :func:`add_rate_lines`. Returns the product
     records, in window order.
+
+    ``lines=False`` draws the values only: the vertical break marks already
+    say WHERE the velocity changes, so the sloped segments are redundant
+    clutter over the measurements -- and the values then stand on their own
+    in ``color`` (the break tone), one per period (BGÓ 2026-11-20).
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -437,7 +449,7 @@ def add_segment_rates(
     ss = np.atleast_2d(np.asarray(sigma, dtype=float))
     records = []
     for i, window in enumerate(windows):
-        color = RATE_COLORS[i % 2]
+        tone = color or RATE_COLORS[i % 2]
         r = rotate_record(
             relative_record(
                 estimate_station_velocity(sta, window[0], window[1], settings), minus
@@ -452,13 +464,13 @@ def add_segment_rates(
             text = "$\\times$"
             if r.accepted and np.isfinite(r.rate[c]):
                 ok = inside & np.isfinite(yy[c]) & np.isfinite(ss[c]) & (ss[c] > 0)
-                if ok.sum() >= 2:
+                if ok.sum() >= 2 and lines:
                     w = 1.0 / ss[c, ok] ** 2
                     tm = float(np.sum(w * tt[ok]) / np.sum(w))
                     ym = float(np.sum(w * yy[c, ok]) / np.sum(w))
                     ends = np.array([tt[ok].min(), tt[ok].max()])
                     line = ym + r.rate[c] * (ends - tm)
-                    ax.plot(list(gpsr.toDateTime(ends)), line, color=color,
+                    ax.plot(list(gpsr.toDateTime(ends)), line, color=tone,
                             linewidth=RATE_LINEWIDTH, zorder=7)  # fmt: skip
                 text = f"${r.rate[c]:.0f}\\pm{r.sigma[c]:.0f}$"
             ax.set_xlim(xlim)
@@ -466,7 +478,7 @@ def add_segment_rates(
             trans = blended_transform_factory(ax.transData, ax.transAxes)
             ax.text(
                 mid, 0.97 - 0.06 * (i % 2), text, transform=trans,
-                fontsize="x-small", color=LABEL_COLOR, va="top", ha="center",
+                fontsize="x-small", color=tone, va="top", ha="center",
                 bbox=LABEL_BOX, zorder=8,
             )  # fmt: skip
     return records
