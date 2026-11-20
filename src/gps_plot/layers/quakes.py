@@ -159,6 +159,9 @@ def station_points(sta: str) -> dict[str, tuple[float, float]]:
 MAG_MID = 4.0
 MAG_STAR = 4.5
 MAG_LABEL = 5.0
+#: the value sits on a field of stars, so it carries its own ground
+MAG_LABEL_BOX = dict(boxstyle="round,pad=0.12", facecolor=(1.0, 1.0, 1.0, 0.6),
+                     edgecolor="none")  # fmt: skip
 #: fill of an automatic solution: it has a location, not a class (no
 #: magnitude is claimed for it, see :func:`quake_classes`). Automatic rows have
 #: NO outline; a reviewed event is outlined, which is what marks it as reviewed
@@ -487,7 +490,8 @@ def add_quake_panel(
         handles.append(h)
     for xi, mi in zip(x[cls["label"]], mag[cls["label"]]):
         axt.annotate(f"{mi:.1f}", (xi, mi), xytext=(4, 4), textcoords="offset points",
-                     fontsize=8, fontweight="bold", color="tab:red", zorder=10)  # fmt: skip
+                     fontsize=8, fontweight="bold", color="tab:red", zorder=10,
+                     bbox=MAG_LABEL_BOX)  # fmt: skip
 
     m0 = np.zeros(0)
     if moment and len(df) and "moment_nm" in df:
