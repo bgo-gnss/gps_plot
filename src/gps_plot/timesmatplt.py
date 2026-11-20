@@ -227,6 +227,36 @@ def baseline_file_stem(sta: str) -> str:
     return f"{pair[0]}_{pair[1]}-baseline" if pair else sta
 
 
+REF_WRAP_CHARS = 60
+
+
+def wrap_ref_frame(text: str, limit: int = REF_WRAP_CHARS) -> str:
+    """Break a long reference-frame line in two at a comma boundary.
+
+    Once ``--rate-ref``/``--along`` add their clauses the subtitle runs the
+    figure's full width and the title no longer fits inside the image (BGÓ
+    2026-11-20, VONC). The comma nearest the middle keeps both halves well
+    inside it; a comma inside parentheses is not a boundary, so the
+    ``(N 5.5, A 10.8, U 26.0 mm/ár)`` clause always stays whole.
+    """
+    if len(text) <= limit or "\n" in text:
+        return text
+    cuts = []
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0 and i + 1 < len(text):
+            cuts.append(i + 1)
+    if not cuts:
+        return text
+    mid = len(text) / 2
+    cut = min(cuts, key=lambda c: abs(c - mid))
+    return text[:cut].rstrip() + "\n" + text[cut:].lstrip()
+
+
 def make_title(
     sta: str,
     lastData: datetime.datetime,
@@ -260,10 +290,10 @@ def make_title(
         # a baseline names both ends by MARKER only: two full station names
         # overflow the title line (BGÓ 2026-10-08, VFLN–VFLS)
         NameStr = "%s -- %s" % pair
-        refFr = "Baseline, reference frame: %s" % ref
+        refFr = wrap_ref_frame("Baseline, reference frame: %s" % ref)
     else:
         NameStr = full_name(sta)
-        refFr = "Reference frame: %s" % ref
+        refFr = wrap_ref_frame("Reference frame: %s" % ref)
     if sta == "hekla":
         NameStr = "Hekla (Summit)"
     if ref == "Multigas":
@@ -1173,6 +1203,7 @@ def plotTime(
     model: str | None = None,
     model_terms: Sequence[str] | None = None,
     open_points: bool = False,
+    data_color: str = "r",
     rate: bool = False,
     rate_windows: Sequence[tuple[float, float]] | None = None,
     rate_colors: Sequence[str] | None = None,
@@ -1601,6 +1632,7 @@ def plotTime(
         fig=fig,
         highlight_last=highlight_last,
         open_points=open_points,
+        data_color=data_color,
     )
 
     panels = list(fig.axes[:3])  # before any twin axis joins them
@@ -1923,6 +1955,24 @@ def plotTime(
             )
             keys = along_axes.keys if along_axes is not None else ("N", "E", "U")
             print(segment_table(sta, records, keys))
+            if rate_windows:
+                # the MAP's own periods on top of the break structure: the
+                # same windows, so an arrow and a line here state one number
+                records = [
+                    *records,
+                    *add_rate_lines(
+                        fig,
+                        sta,
+                        yearf,
+                        data,
+                        Ddata,
+                        list(rate_windows),
+                        settings,
+                        minus=ref_record,
+                        axes=along_axes,
+                        colors=rate_colors,
+                    ),
+                ]
         else:
             windows = list(rate_windows or [default_window(yearf, fstart, fend)])
             records = add_rate_lines(
@@ -2448,6 +2498,7 @@ def stdTimesPlot(
     fig: Figure | None = None,
     highlight_last: bool | None = None,
     open_points: bool = False,
+    data_color: str = "r",
 ) -> Figure:
     """Build a three-component time-series Figure and return it.
 
@@ -2467,6 +2518,11 @@ def stdTimesPlot(
     epoch is NaN in that component, so no marker is drawn on that axis
     while the title stays green -- the EPOCH is current, the value was set
     aside.  The other two components still get their dot.
+
+    ``data_color`` is the observation colour (default red).  A product that
+    draws velocity lines over the observations sets a muted one, so the
+    measurements stop competing with the rates drawn on top of them (BGÓ
+    2026-11-20).
     """
     x = _as_datetime_list(x)
 
@@ -2487,8 +2543,8 @@ def stdTimesPlot(
         Dy,
         fig,
         label=label,
-        markerfacecolor="none" if open_points else "r",
-        markeredgecolor="0.4" if open_points else "r",  # grey rims: the rate lines read
+        markerfacecolor="none" if open_points else data_color,
+        markeredgecolor="0.4" if open_points else data_color,
         markeredgewidth=0.6 if open_points else None,
     )
 

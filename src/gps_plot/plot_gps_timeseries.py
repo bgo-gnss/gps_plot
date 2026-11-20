@@ -883,6 +883,14 @@ def build_parser(
         help="unfilled observation circles with a black outline; rate lines retain their colours",
     )
     parser.add_argument(
+        "--data-color",
+        default="r",
+        metavar="COLOR",
+        help="colour of the observations (default r). Mute it when velocity "
+        "lines are drawn over the observations and should read instead of "
+        "them, e.g. --data-color '#c8a99a'",
+    )
+    parser.add_argument(
         "--rate-window",
         action="append",
         default=None,
@@ -1513,8 +1521,10 @@ def run(
             *(window_bounds(a.date(), b.date()) for a, b in spans),
         ]
     if kwargs["rate_segments"] is not None:
-        if kwargs["rate_windows"]:
-            parser.error("--rate-segments and --rate-window: give one")
+        # --rate-window may still be given: the segments show the fine break
+        # structure, the windows carry the MAP's own periods, and a product
+        # that wants both (bardarbunga_vonc_skjalftar) draws the windows on
+        # top of the segments in their own colours (BGÓ 2026-11-20)
         try:
             from gps_plot.layers.rate import parse_segment_sources
 
