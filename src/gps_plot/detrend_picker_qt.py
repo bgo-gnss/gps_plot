@@ -207,6 +207,7 @@ def _require_qt() -> tuple[Any, Any]:
     try:
         # pi-lens-ignore: reportMissingImports
         import pyqtgraph as pg
+        # pi-lens-ignore: reportMissingImports
         from pyqtgraph.Qt import QtWidgets
     except Exception as exc:  # pragma: no cover - import guard
         raise RuntimeError(

@@ -444,33 +444,50 @@ def add_quake_panel(
     axm.vlines(x[ok], 0, mag[ok], color="0.8", lw=0.25, zorder=1)
     # no outline on a quake (BGÓ 2026-11-16): the fill carries the class
     edge = dict(mec=REVIEWED_EDGE, mew=REVIEWED_EDGE_W)
+    star_style: dict[str, Any] = dict(marker="*", color="tab:red", ms=11, **edge)
     classes: tuple[tuple[Any, dict[str, Any], str], ...] = (
-        (cls["grey"], dict(marker="o", color="0.55", ms=2.0, alpha=0.7, **edge),
+        # the many small ones are DOTS, not blocks (BGÓ 2026-11-20): at the
+        # published width an edged 2 pt marker prints as a dark square, and
+        # the panel reads as a solid field instead of a swarm
+        (cls["grey"], dict(marker="o", color="0.55", ms=1.3, alpha=0.45,
+                           mec="none"),
          rf"M $<$ {MAG_MID:g}"),
-        (cls["blue"], dict(marker="o", color="tab:blue", ms=3.5, **edge),
+        (cls["blue"], dict(marker="o", color="tab:blue", ms=3.0, alpha=0.9, **edge),
          rf"{MAG_MID:g} $\leq$ M $<$ {star:g}"),
-        (cls["star"], dict(marker="*", color="tab:red", ms=11, **edge),
-         rf"M $\geq$ {star:g}"),
+        (cls["star"], star_style, rf"M $\geq$ {star:g}"),
     )  # fmt: skip
     for sel, style, text in classes:
         sel = np.asarray(sel, dtype=bool)
-        if not sel.any():
-            continue
+        if not sel.any() or style is star_style:
+            continue  # the stars wait for the top overlay (below)
         (h,) = axm.plot(x[sel], mag[sel], ls="none", zorder=3, **style)
         h.set_label(text)
         handles.append(h)
     if cls["automatic"].any():
         # one size, the palest fill: an automatic row claims no magnitude
         (h,) = axm.plot(x[cls["automatic"]], mag[cls["automatic"]], ls="none",
-                        marker="o", color=AUTO_COLOR, ms=2.0, zorder=2,
+                        marker="o", color=AUTO_COLOR, ms=1.3, alpha=0.55, zorder=2,
                         mec="none", label="automatic (no class)")  # fmt: skip
         handles.append(h)
-    for xi, mi in zip(x[cls["label"]], mag[cls["label"]]):
-        axm.annotate(f"{mi:.1f}", (xi, mi), xytext=(4, 4), textcoords="offset points",
-                     fontsize=8, fontweight="bold", color="tab:red")  # fmt: skip
     top = float(np.nanmax(mag[ok])) if ok.any() else 0.0
     axm.set_ylim(0, max(5.5, top + 0.5))
     axm.set_ylabel("Magnitude")
+    # the large events belong in FRONT (BGÓ 2026-11-20): ``ax`` sits above both
+    # twins, so a star parked on ``axm`` disappeared under the co-eruption
+    # cloud exactly where it carried the most information
+    axt = ax.twinx()
+    axt.set_zorder(base_z + 3)
+    axt.patch.set_visible(False)
+    axt.set_ylim(axm.get_ylim())
+    axt.axis("off")
+    stars = np.asarray(cls["star"], dtype=bool)
+    if stars.any():
+        (h,) = axt.plot(x[stars], mag[stars], ls="none", zorder=9, **star_style)
+        h.set_label(rf"M $\geq$ {star:g}")
+        handles.append(h)
+    for xi, mi in zip(x[cls["label"]], mag[cls["label"]]):
+        axt.annotate(f"{mi:.1f}", (xi, mi), xytext=(4, 4), textcoords="offset points",
+                     fontsize=8, fontweight="bold", color="tab:red", zorder=10)  # fmt: skip
 
     m0 = np.zeros(0)
     if moment and len(df) and "moment_nm" in df:
@@ -668,7 +685,10 @@ def periods_of(
         red_start = pd.Timestamp(boundaries[1], tz="UTC")
     else:
         if now is None:
-            now = t.max().to_pydatetime().replace(tzinfo=None)
+            newest = pd.Timestamp(t.max())
+            if pd.isna(newest):
+                return np.zeros(len(t), dtype=int)
+            now = newest.to_pydatetime().replace(tzinfo=None)
         red_start = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=365)
         blue_start = pd.Timestamp(now, tz="UTC") - pd.Timedelta(days=1095)
     return np.where(t >= red_start, 0, np.where(t >= blue_start, 1, 2))

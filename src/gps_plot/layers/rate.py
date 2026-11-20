@@ -117,6 +117,21 @@ def window_label(window: tuple[float, float]) -> str:
     return f"{window[0]:.2f}--{window[1]:.2f}"
 
 
+def window_day(year: float, *, start: bool = False) -> dt.date:
+    """The calendar day a fractional-year window bound denotes.
+
+    ``toDateTime`` inverts both bounds to 23:59, so a window START (a whole
+    day at 00:00) printed one day early -- the map's 2018-03-01 window read
+    ``2018-02`` -- while an END is exact as it stands (BGÓ 2026-11-20).
+    """
+    import geo_dataread.gps_read as gpsr
+
+    d: dt.datetime = list(gpsr.toDateTime(np.array([year])))[0]
+    if start:
+        d = d + dt.timedelta(minutes=1)
+    return dt.date(d.year, d.month, d.day)
+
+
 def default_window(
     t: Any, fstart: float | None, fend: float | None
 ) -> tuple[float, float]:
@@ -212,6 +227,13 @@ def rotate_record(record: Any, axes: Any | None) -> Any:
     )
 
 
+#: a label sits on the data, so it needs its own ground: black text on a
+#: half-transparent plate reads over dots, curves and fill alike (BGÓ 2026-11-20)
+LABEL_COLOR = "black"
+LABEL_BOX = dict(boxstyle="round,pad=0.18", facecolor=(1.0, 1.0, 1.0, 0.62),
+                 edgecolor="none")  # fmt: skip
+
+
 def add_rate_lines(
     fig: Figure,
     sta: str,
@@ -232,6 +254,10 @@ def add_rate_lines(
     rate is subtracted from each (the plotted series is relative to it too);
     ``axes``: the ``--along`` frame the rates are rotated into.
     Returns the product records, in window order.
+
+    With several windows the values go in the LOWER left corner as a short
+    stack (window dates + rate): the upper corner carries the station logo,
+    and a label drawn there was unreadable over it (BGÓ 2026-11-20).
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -241,6 +267,7 @@ def add_rate_lines(
     ss = np.atleast_2d(np.asarray(sigma, dtype=float))
     records = []
     palette = colors or RATE_COLORS
+    multi = len(windows) > 1
     for i, window in enumerate(windows):
         color = palette[i % len(palette)]
         r = rotate_record(
@@ -251,7 +278,8 @@ def add_rate_lines(
         )
         records.append(r)
         inside = (tt >= window[0]) & (tt < window[1])
-        tag = window_label(window) + ": " if len(windows) > 1 else ""
+        d0, d1 = window_day(window[0], start=True), window_day(window[1])
+        tag = f"{d0:%Y-%m}–{d1:%Y-%m}: " if multi else ""
         for c, ax in enumerate(fig.axes[:3]):
             xlim, ylim = ax.get_xlim(), ax.get_ylim()
             if not r.accepted:
@@ -266,16 +294,19 @@ def add_rate_lines(
                     line = ym + r.rate[c] * (ends - tm)
                     ax.plot(list(gpsr.toDateTime(ends)), line, color=color,
                             linewidth=RATE_LINEWIDTH, zorder=7)  # fmt: skip
-                text = f"{tag}$v = {r.rate[c]:.1f} \\pm {r.sigma[c]:.1f}$ mm/yr"
+                text = f"{tag}${r.rate[c]:.1f} \\pm {r.sigma[c]:.1f}$ mm/ár"
                 if not np.isfinite(r.rate[c]):  # a short-tier part refused
                     part = "up" if c == 2 else "horizontal"
                     why = r.parts_refused.get(part, "not estimated")
                     text = f"{tag}rate refused: {_tex(part + ' ' + why)}"
             ax.set_xlim(xlim)
             ax.set_ylim(ylim)
+            # several windows stack UP from the bottom corner; a single one
+            # keeps the top-left spot it has always had
             ax.text(
-                0.01, 0.97 - 0.09 * i, text, transform=ax.transAxes,
-                fontsize="small", color=color, va="top",
+                0.01, 0.04 + 0.075 * i if multi else 0.97, text,
+                transform=ax.transAxes, fontsize="x-small", color=LABEL_COLOR,
+                va="bottom" if multi else "top", bbox=LABEL_BOX, zorder=8,
             )  # fmt: skip
     return records
 
@@ -435,7 +466,8 @@ def add_segment_rates(
             trans = blended_transform_factory(ax.transData, ax.transAxes)
             ax.text(
                 mid, 0.97 - 0.06 * (i % 2), text, transform=trans,
-                fontsize="x-small", color=color, va="top", ha="center",
+                fontsize="x-small", color=LABEL_COLOR, va="top", ha="center",
+                bbox=LABEL_BOX, zorder=8,
             )  # fmt: skip
     return records
 
