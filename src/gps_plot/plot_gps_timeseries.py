@@ -950,6 +950,23 @@ def build_parser(
         "(default gps_analysis.breaks' 25)",
     )
     parser.add_argument(
+        "--segment-no-lines",
+        dest="segment_lines",
+        action="store_false",
+        help="--rate-segments: keep each period's velocity value and the "
+        "vertical break marks, but drop the sloped segment lines: the break "
+        "marks already say where the velocity changes, so the values carry "
+        "the story and the measurements stay readable underneath",
+    )
+    parser.add_argument(
+        "--png-dpi",
+        type=float,
+        default=None,
+        metavar="DPI",
+        help="PNG resolution (default " + repr(int(90)) + "); raise it when the "
+        "published image looks soft beside the maps",
+    )
+    parser.add_argument(
         "--rate-no-short-tier",
         dest="rate_short_tier",
         action="store_false",

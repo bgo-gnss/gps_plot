@@ -362,11 +362,7 @@ def quake_classes(
     import pandas as pd
 
     assert isinstance(df, pd.DataFrame)
-    mag = (
-        _numbers(df["magnitude"])
-        if len(df)
-        else np.zeros(0)
-    )
+    mag = _numbers(df["magnitude"]) if len(df) else np.zeros(0)
     auto = (
         (df["evaluation_mode"].astype(object) == "automatic").to_numpy(dtype=bool)
         if len(df)
@@ -874,13 +870,16 @@ def add_quake_map_points(
             # line arrives from: LM text extends right of its anchor, so the
             # line meets its LEFT edge; RM text extends left, meet the RIGHT
             # edge; CM centred, meet it dead centre (BGÓ 2026-11-17)
-            tipx = left if just == "LM" else (left + w if just == "RM" else left + w / 2)
+            tipx = (
+                left if just == "LM" else (left + w if just == "RM" else left + w / 2)
+            )
             fig.plot(
                 x=[lon_of(x0), lon_of(tipx)], y=[lat_of(y0), lat_of(ty)],
                 pen=MAP_LEADER_PEN,
             )  # fmt: skip
-            anchor = (left if just == "LM"
-                      else left + w if just == "RM" else left + w / 2)
+            anchor = (
+                left if just == "LM" else left + w if just == "RM" else left + w / 2
+            )
             for hx, hy in (
                 (-MAP_HALO_CM, 0.0), (MAP_HALO_CM, 0.0),
                 (0.0, -MAP_HALO_CM), (0.0, MAP_HALO_CM),
@@ -967,16 +966,29 @@ def add_quake_map_points(
         y = top - MAP_LEGEND_PAD_CM - (len(items) + 1.5) * MAP_LEGEND_ROW_CM
         x = x0 + MAP_LEGEND_PAD_CM
         # < min_mag: a scatter of the two dust tiers in the period colours
-        spots = ((0.00, 0.05, DUST_CM_BIG, 0), (0.11, 0.02, DUST_CM, 1),
-                 (-0.09, -0.03, DUST_CM, 2), (0.04, -0.08, DUST_CM_BIG, 0),
-                 (-0.05, 0.10, DUST_CM, 1), (0.13, -0.07, DUST_CM, 2))
+        spots = (
+            (0.00, 0.05, DUST_CM_BIG, 0),
+            (0.11, 0.02, DUST_CM, 1),
+            (-0.09, -0.03, DUST_CM, 2),
+            (0.04, -0.08, DUST_CM_BIG, 0),
+            (-0.05, 0.10, DUST_CM, 1),
+            (0.13, -0.07, DUST_CM, 2),
+        )
         for dx, dy, d, k in spots:  # one call per dot: pygmt takes one fill
             fig.plot(x=[lon_of(x + 0.08 + dx)], y=[lat_of(y + dy)],
                      style=f"c{d}c", fill=PERIOD_FILLS[k])  # fmt: skip
         fig.text(x=lon_of(x + 0.28), y=lat_of(y), text=f"< {min_mag:g}",
                  font=font, justify="LM")  # fmt: skip
         x += 0.28 + maps.text_width_cm(f"< {min_mag:g}", font) + 0.18
-        for m, big in ((min_mag, False), (3.0, False), (3.5, False), (4.0, False), (star, True), (5.0, True), (5.5, True)):
+        for m, big in (
+            (min_mag, False),
+            (3.0, False),
+            (3.5, False),
+            (4.0, False),
+            (star, True),
+            (5.0, True),
+            (5.5, True),
+        ):
             d = float(star_cm(np.array([m]))[0] if big else circle_cm(np.array([m]))[0])
             fig.plot(x=[lon_of(x + d / 2)], y=[lat_of(y)],
                      style="a" if big else "c", size=[d],

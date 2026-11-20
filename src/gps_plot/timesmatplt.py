@@ -1210,6 +1210,8 @@ def plotTime(
     rate_short_tier: bool = True,
     rate_segments: Sequence[str] | None = None,
     rate_ref: tuple[float, float] | None = None,
+    segment_lines: bool = True,
+    png_dpi: float = PNG_DPI,
     along: str | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
     segment_cut: str = "span",
@@ -1910,6 +1912,7 @@ def plotTime(
         )  # fmt: skip
         if rate_segments is not None:
             from gps_plot.layers.rate import (
+                BREAK_COLOR,
                 add_segment_rates,
                 segment_gaps,
                 segment_table,
@@ -1952,6 +1955,8 @@ def plotTime(
                 settings,
                 minus=ref_record,
                 axes=along_axes,
+                lines=segment_lines,
+                color=None if segment_lines else BREAK_COLOR,
             )
             keys = along_axes.keys if along_axes is not None else ("N", "E", "U")
             print(segment_table(sta, records, keys))
@@ -1988,12 +1993,22 @@ def plotTime(
                 colors=rate_colors,
             )
         # above the "network common mode removed" note when both are drawn
-        fig.axes[2].text(
-            0.99, 0.08 if cm_days else 0.02,
-            rate_note(records, segments=rate_segments is not None),
-            transform=fig.axes[2].transAxes,
-            fontsize="small", color="0.3", va="bottom", ha="right",
-        )  # fmt: skip
+        note = rate_note(
+            records, segments=rate_segments is not None, no_lines=not segment_lines
+        )
+        if one_panel:
+            # a one-panel figure keeps only one axes: a note anchored to the
+            # third one lands outside the rendered area and is never seen
+            # (BGÓ 2026-11-20), so it goes on the figure itself, under the
+            # legend row
+            fig.text(0.08, 0.012, note, fontsize="small", color="0.3",
+                     va="bottom", ha="left")  # fmt: skip
+        else:
+            fig.axes[2].text(
+                0.99, 0.08 if cm_days else 0.02, note,
+                transform=fig.axes[2].transAxes,
+                fontsize="small", color="0.3", va="bottom", ha="right",
+            )  # fmt: skip
 
     if aborted is not None and any(aborted):
         # after the overlays so the badge is never painted under them
@@ -2085,7 +2100,7 @@ def plotTime(
     if save and name:
         # fixed basename: bypass the whole filend construction so repeated
         # renders land on exactly the same path
-        saveFig(os.path.join(figDir, name), save, fig)
+        saveFig(os.path.join(figDir, name), save, fig, png_dpi=png_dpi)
     elif save:
         # .pos series name their frame below; "itrf2008" (= nothing removed)
         # would read as a second frame there
@@ -2169,7 +2184,7 @@ def plotTime(
             )
 
         fileName = os.path.join(figDir, baseline_file_stem(sta) + filend)
-        saveFig(fileName, save, fig)
+        saveFig(fileName, save, fig, png_dpi=png_dpi)
     else:
         plt.show()
 
