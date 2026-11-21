@@ -425,6 +425,7 @@ def add_segment_rates(
     minus: Any | None = None,
     axes: Any | None = None,
     lines: bool = True,
+    values: bool = True,
     color: str | None = None,
 ) -> list[Any]:
     """Draw the product rate of each segment on the first three axes.
@@ -439,6 +440,10 @@ def add_segment_rates(
     say WHERE the velocity changes, so the sloped segments are redundant
     clutter over the measurements -- and the values then stand on their own
     in ``color`` (the break tone), one per period (BGÓ 2026-11-20).
+
+    ``values=False`` drops the per-period numbers as well: the records are
+    still computed and returned, so the caller keeps the table, but the
+    figure carries only the vertical break marks (BGÓ 2026-11-20).
     """
     import geo_dataread.gps_read as gpsr
     from geo_dataread.velocity import estimate_station_velocity
@@ -475,6 +480,8 @@ def add_segment_rates(
                 text = f"${r.rate[c]:.0f}\\pm{r.sigma[c]:.0f}$"
             ax.set_xlim(xlim)
             ax.set_ylim(ylim)
+            if not values:
+                continue
             trans = blended_transform_factory(ax.transData, ax.transAxes)
             ax.text(
                 mid, 0.97 - 0.06 * (i % 2), text, transform=trans,

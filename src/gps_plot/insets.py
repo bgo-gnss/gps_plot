@@ -161,7 +161,10 @@ def _position(spot: Spot) -> Any:
 
 
 def draw_locator(
-    fig: Any, region: Sequence[float], spot: Spot, gis_dir: str,
+    fig: Any,
+    region: Sequence[float],
+    spot: Spot,
+    gis_dir: str,
     background: bool = False,
 ) -> None:
     """The Iceland locator at ``spot``, as fig1b: no frame and no sea (the

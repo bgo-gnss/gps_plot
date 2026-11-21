@@ -959,6 +959,19 @@ def build_parser(
         "the story and the measurements stay readable underneath",
     )
     parser.add_argument(
+        "--segment-no-values",
+        dest="segment_values",
+        action="store_false",
+        help="--rate-segments: draw only the vertical break marks and the "
+        "lines, no per-period numbers (the table is still printed)",
+    )
+    parser.add_argument(
+        "--no-rate-note",
+        dest="rate_note_shown",
+        action="store_false",
+        help="drop the 'rates: velocity product, ref ...' line under the figure",
+    )
+    parser.add_argument(
         "--png-dpi",
         type=float,
         default=None,
