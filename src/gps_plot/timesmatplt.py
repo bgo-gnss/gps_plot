@@ -1211,6 +1211,8 @@ def plotTime(
     rate_segments: Sequence[str] | None = None,
     rate_ref: tuple[float, float] | None = None,
     segment_lines: bool = True,
+    segment_values: bool = True,
+    rate_note_shown: bool = True,
     png_dpi: float = PNG_DPI,
     along: str | None = None,
     segment_kinds: Sequence[str] = ("dike", "eruption"),
@@ -1957,6 +1959,7 @@ def plotTime(
                 axes=along_axes,
                 lines=segment_lines,
                 color=None if segment_lines else BREAK_COLOR,
+                values=segment_values,
             )
             keys = along_axes.keys if along_axes is not None else ("N", "E", "U")
             print(segment_table(sta, records, keys))
@@ -1993,22 +1996,24 @@ def plotTime(
                 colors=rate_colors,
             )
         # above the "network common mode removed" note when both are drawn
-        note = rate_note(
-            records, segments=rate_segments is not None, no_lines=not segment_lines
-        )
-        if one_panel:
-            # a one-panel figure keeps only one axes: a note anchored to the
-            # third one lands outside the rendered area and is never seen
-            # (BGÓ 2026-11-20), so it goes on the figure itself, under the
-            # legend row
-            fig.text(0.08, 0.012, note, fontsize="small", color="0.3",
-                     va="bottom", ha="left")  # fmt: skip
-        else:
-            fig.axes[2].text(
-                0.99, 0.08 if cm_days else 0.02, note,
-                transform=fig.axes[2].transAxes,
-                fontsize="small", color="0.3", va="bottom", ha="right",
+        if rate_note_shown:
+            note = rate_note(
+                records, segments=rate_segments is not None,
+                no_lines=not segment_lines,
             )  # fmt: skip
+            if one_panel:
+                # a one-panel figure keeps only one axes: a note anchored to
+                # the third one lands outside the rendered area and is never
+                # seen (BGÓ 2026-11-20), so it goes on the figure itself,
+                # under the legend row
+                fig.text(0.08, 0.012, note, fontsize="small", color="0.3",
+                         va="bottom", ha="left")  # fmt: skip
+            else:
+                fig.axes[2].text(
+                    0.99, 0.08 if cm_days else 0.02, note,
+                    transform=fig.axes[2].transAxes,
+                    fontsize="small", color="0.3", va="bottom", ha="right",
+                )  # fmt: skip
 
     if aborted is not None and any(aborted):
         # after the overlays so the badge is never painted under them
