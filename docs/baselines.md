@@ -90,6 +90,11 @@ the first `--window` after it. Panels (`--panels`, default `sector,map,profile`)
 - **sector** — compass azimuth and size; motion direction (red), across
   (blue), DEM downslope. Its limits come from points ≥ 15 % of the largest;
   smaller points outside are drawn at the centre and counted, never hidden.
+  Its radius holds the points and the 14-day arrows' tips (up to 1.5× the
+  largest point, an arrow past that stops at the rim). Beside its first edge
+  a T bar per pair, at the sector's radius scale, shows the horizontal
+  movement since the onset (the newest level), the size ± 1σ written at its
+  end; dashed below 2σ (BGÓ 2026-11-22).
 - **map** — the paths on the terrain around the rovers (grey hillshade lit
   from 315°/45°, ground steeper than 30° tinted orange, contours), each
   epoch a dot coloured by days since the onset (turbo, as the track maps),
