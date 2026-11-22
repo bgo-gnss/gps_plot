@@ -301,3 +301,20 @@ def test_room_to_edge_toward_an_azimuth() -> None:
     assert polar.room_to_edge(-90.0, 0.0, 270.0, 100.0) == pytest.approx(10.0)
     # north-west from near the west edge: the west edge comes first
     assert polar.room_to_edge(-80.0, 0.0, 315.0, 100.0) == pytest.approx(20 * 2**0.5)
+
+
+def test_sector_writes_each_horizontal_total_beside_its_edge() -> None:
+    """BGÓ 2026-11-22: a T bar per pair with its horizontal movement since
+    the onset written beside it."""
+    import matplotlib.pyplot as plt
+
+    pp = _pair("SVIN-SKFC", 333.0)
+    total, sigma = polar.horizontal_total(pp) or (0.0, 0.0)
+    assert total == pytest.approx(np.hypot(10.0, 5.0), rel=0.05)
+    assert sigma > 0
+    fig = plt.figure()
+    ax = fig.add_subplot(projection="polar")
+    polar._sector(ax, [pp], {"cmap": "viridis"})
+    texts = [t.get_text() for t in ax.texts]
+    assert any("horizontal 11 ± " in t for t in texts)
+    plt.close(fig)

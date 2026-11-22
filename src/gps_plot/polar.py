@@ -395,6 +395,71 @@ def _label(pp: PairPlot, many: bool, text: str) -> str:
     return f"{pp.rover}: {text}" if many else text
 
 
+#: the sector grows to hold the 14-day arrows' tips, up to this many times
+#: the largest displacement (BGÓ 2026-11-22)
+SECTOR_ARROW_ROOM = 1.5
+#: the total-movement T bars beside the sector's first edge: the first this
+#: far out from the edge (past its radius labels), each next one this much
+#: further [pt]; their texts beyond the last bar, at each bar's end
+TOTAL_BAR_GAP_PT = (24.0, 10.0)
+
+
+def horizontal_total(pp: PairPlot) -> tuple[float, float] | None:
+    """The horizontal movement since the onset [mm] and its 1-σ: the size
+    of the newest level (:func:`end_of`, the end of the grey line)."""
+    if not np.asarray(pp.since).size or not pp.d.shape[1]:
+        return None
+    lvl, lsig, n = end_of(pp.since, pp.d, pp.sig)
+    if n == 0 or not np.isfinite(lvl).all():
+        return None
+    from gps_plot.profile import _norm_sigma
+
+    return _norm_sigma(lvl[:2], lsig[:2])
+
+
+def _total_bars(ax: Any, pairs: Sequence[PairPlot], lo: float, many: bool) -> None:
+    """Each pair's horizontal movement since the onset (:func:`horizontal_total`)
+    as a T bar beside the sector's first edge, at the sector's radial scale,
+    the size written beside it (BGÓ 2026-11-22: like the profile's T bar)."""
+    from matplotlib.transforms import offset_copy
+
+    from gps_plot.profile import MOVE_SIGMA, _day_text, _mm
+
+    th = np.radians(lo)
+    # outward from the first edge on the screen: against the (clockwise)
+    # azimuth, from north
+    nx, ny = -np.cos(th), np.sin(th)
+    fig = ax.figure
+    bars = [(pp, got) for pp in pairs if (got := horizontal_total(pp)) is not None]
+    outer = TOTAL_BAR_GAP_PT[0] + (len(bars) - 1) * TOTAL_BAR_GAP_PT[1]
+    for k, (pp, (total, s_total)) in enumerate(bars):
+        gap = TOTAL_BAR_GAP_PT[0] + k * TOTAL_BAR_GAP_PT[1]
+
+        def at(off: float) -> Any:
+            return offset_copy(ax.transData, fig=fig, units="points",
+                               x=off * nx, y=off * ny)  # fmt: skip
+
+        kw = {"color": pp.colour, "lw": 2.0, "clip_on": False, "zorder": 6,
+              "solid_capstyle": "butt"}  # fmt: skip
+        ok = total > MOVE_SIGMA * s_total
+        ax.plot([th, th], [0.0, total], transform=at(gap), ls="-" if ok else "--",
+                **kw)  # fmt: skip
+        # the T ends: a short line across the bar (a 2-sided marker, turned
+        # from upright to the outward direction)
+        turn = float(np.degrees(np.arctan2(ny, nx))) - 90.0
+        ax.plot([th, th], [0.0, total], transform=at(gap), ls="none",
+                marker=(2, 0, turn), ms=7, mew=2.0, mec=pp.colour, clip_on=False,
+                zorder=6)  # fmt: skip
+        text = (f"{pp.rover + ' ' if many else ''}since {_day_text(pp.t_on)}:\n"
+                f"{_mm('horizontal ', total, s_total)}")  # fmt: skip
+        ax.annotate(text, (th, total), xycoords=at(outer + 6.0),
+                    ha="left" if nx >= 0 else "right", va="center",
+                    fontsize="x-small", color=pp.colour, zorder=8,
+                    annotation_clip=False,
+                    bbox={"boxstyle": "round", "fc": "w", "alpha": 0.8,
+                          "ec": "none"})  # fmt: skip
+
+
 def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             legend_inside: bool = False) -> int:  # fmt: skip
     """The polar sector; returns how many points were drawn at the centre.
@@ -426,6 +491,23 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
     ax.set_thetamin(lo)
     ax.set_thetamax(hi)
     rmax = rtop * 1.1 if rtop > 0 else 1.0
+    # the 14-day arrows: (pair, start, tip) [mm N, E]; the sector grows to
+    # hold their tips, up to SECTOR_ARROW_ROOM × the dots (BGÓ 2026-11-22:
+    # SVIN's arrow stopped at the rim and looked cut off; 2026-11-13: one
+    # RTK arrow of 49 mm/d must not make it 700 mm)
+    arrows: list[tuple[PairPlot, tuple[float, float], tuple[float, float]]] = []
+    for pp in pairs:
+        step = rate_step(pp)
+        if step is None or not pp.d.shape[1] or (step[0], step[1]) == (0.0, 0.0):
+            continue
+        lvl, _, n = end_of(pp.since, pp.d, pp.sig)
+        if n == 0:
+            continue
+        start = (float(lvl[0]), float(lvl[1]))
+        arrows.append((pp, start, (start[0] + step[0], start[1] + step[1])))
+    if arrows and rtop > 0:
+        reach = max(float(np.hypot(*tip)) for _, _, tip in arrows) * 1.05
+        rmax = max(rmax, min(reach, SECTOR_ARROW_ROOM * rtop))
     centred = 0
     for pp, az, r in zip(pairs, azs, rs, strict=True):
         # into the sector's own range (a sector across north starts below 0)
@@ -461,30 +543,24 @@ def _sector(ax: Any, pairs: Sequence[PairPlot], style: dict[str, Any],
             _rtk_dots(ax, np.radians(ra[ins]), rr[ins], pp.rtk_since[ins], style,
                       pp.marker, 5, (np.radians(pa), pr), pp.rtk_colour)  # fmt: skip
     # the 14-day rate: ARROW_DAYS of it from the newest position (no ellipse);
-    # the sector's size is the dots' (BGÓ 2026-11-13: one RTK arrow of 49
-    # mm/d made it 700 mm), an arrow longer than that stops at the edge
-    r_dots = rmax
-    for pp in pairs:
-        step = rate_step(pp)
-        if step is None or not pp.d.shape[1] or (step[0], step[1]) == (0.0, 0.0):
-            continue
-        lvl, _, n = end_of(pp.since, pp.d, pp.sig)
-        if n == 0:
-            continue
-        tip = (lvl[0] + step[0], lvl[1] + step[1])
-        if float(np.hypot(*tip)) > r_dots:
-            f = to_circle(lvl[0], lvl[1], step[0], step[1], r_dots)
-            tip = (lvl[0] + f * step[0], lvl[1] + f * step[1])
+    # an arrow longer than the sector stops at its edge
+    for pp, start, tip in arrows:
+        if float(np.hypot(*tip)) > rmax:
+            dn, de = tip[0] - start[0], tip[1] - start[1]
+            f = to_circle(start[0], start[1], dn, de, rmax)
+            tip = (start[0] + f * dn, start[1] + f * de)
 
         def polar_of(nn: float, ee: float) -> tuple[float, float]:
             az = np.degrees(np.arctan2(ee, nn)) % 360.0
             return float(np.radians((az - lo) % 360.0 + lo)), float(np.hypot(nn, ee))
 
-        ax.annotate("", xy=polar_of(*tip), xytext=polar_of(lvl[0], lvl[1]),
+        ax.annotate("", xy=polar_of(*tip), xytext=polar_of(*start),
                     zorder=6, arrowprops={"arrowstyle": "-|>", "color": pp.colour,
                                           "lw": 1.8})  # fmt: skip
         ax.plot([], [], color=pp.colour, lw=1.8,
                 label=_label(pp, many, rate_step_label(pp)))  # fmt: skip
+    if hi - lo < 359.0:
+        _total_bars(ax, pairs, lo, many)
     ax.xaxis.set_major_formatter(
         FuncFormatter(lambda x, _p: f"{np.degrees(x) % 360:.0f}°")
     )
