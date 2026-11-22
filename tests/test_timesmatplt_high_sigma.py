@@ -46,3 +46,11 @@ def test_old_high_sigma_days_are_dropped_recent_kept() -> None:
     assert np.isfinite(got[:, :10]).all()
     assert np.isfinite(tplt.drop_old_high_sigma(t, y, dy, -1.0)).all()
     assert np.isnan(tplt.drop_old_high_sigma(t, y, dy, 0.0)[:, 95]).all()
+
+
+def test_rate_lines_keep_the_products_sigma_screen() -> None:
+    """BGÓ 2026-11-22: the plot's --uncert (15) is not the rates' (10)."""
+    from geo_dataread.products.velocity_core import DEFAULT_UNCERT
+
+    assert tplt._rate_uncert(None) == DEFAULT_UNCERT == 10.0
+    assert tplt._rate_uncert(15) == 15.0

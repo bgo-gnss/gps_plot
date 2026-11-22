@@ -1309,6 +1309,14 @@ def build_parser(
         "Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--rate-uncert",
+        type=float,
+        default=None,
+        metavar="MM",
+        help="σ screen of the --rate / --rate-ref numbers [mm]; default the "
+        "velocity product's (10, the map's), independent of --uncert",
+    )
+    parser.add_argument(
         "--high-sigma-days",
         type=float,
         default=30.0,
