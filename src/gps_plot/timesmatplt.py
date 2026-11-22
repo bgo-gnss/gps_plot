@@ -1170,6 +1170,7 @@ def plotTime(
     hide_outliers: bool = False,
     outlier_tail: int | None = None,
     high_sigma_days: float = 30.0,
+    rate_uncert: float | None = None,
     provisional_days: float | None = None,
     icing: bool = True,
     icing_ratio: float | None = None,
@@ -1530,7 +1531,7 @@ def plotTime(
             raise ValueError(f"{sta}: --rate-ref reads the daily .pos series only")
         ref_settings = rate_settings(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
-            uncert=uncert, Dir=Dir, common_mode=common_mode,
+            uncert=_rate_uncert(rate_uncert), Dir=Dir, common_mode=common_mode,
         )  # fmt: skip
         ref_record = reference_rate(sta, rate_ref, ref_settings)
         if seasonal_kept(ref, detrend_terms) and (
@@ -1911,7 +1912,7 @@ def plotTime(
             raise ValueError(f"{sta}: --rate reads the daily .pos series only")
         settings = rate_settings(
             ref=ref, detrend_terms=detrend_terms, view=view, pos_id=pos_id,
-            uncert=uncert, Dir=Dir, common_mode=common_mode,
+            uncert=_rate_uncert(rate_uncert), Dir=Dir, common_mode=common_mode,
             short_tier=rate_short_tier,
         )  # fmt: skip
         if rate_segments is not None:
@@ -2512,6 +2513,19 @@ def _as_datetime_list(x: Any) -> list[datetime.datetime]:
 #: older than --high-sigma-days they are removed, drop_old_high_sigma)
 HIGH_SIGMA_MM = 10.0
 HIGH_SIGMA_COLOR = "#e66100"
+
+
+def _rate_uncert(value: float | None) -> float:
+    """The σ screen of the ``--rate`` / ``--rate-ref`` numbers [mm]: the
+    velocity product's (:data:`geo_dataread.products.velocity_core.DEFAULT_UNCERT`,
+    the map's) unless ``--rate-uncert`` names one, never the plot's
+    ``--uncert`` (BGÓ 2026-11-22: the plot screen went to 15 mm, the rates
+    stay the map's numbers)."""
+    if value is not None:
+        return float(value)
+    from geo_dataread.products.velocity_core import DEFAULT_UNCERT
+
+    return float(DEFAULT_UNCERT)
 
 
 def drop_old_high_sigma(t: Any, y: Any, Dy: Any, days: float) -> Any:
