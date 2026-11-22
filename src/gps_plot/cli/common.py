@@ -293,11 +293,12 @@ def add_series_options(
         "-u",
         "--uncert",
         type=int,
-        default=10,
+        default=15,
         help="formal-uncertainty screen at read time [mm] — epochs with σ above "
-        "this threshold are excluded from the series. Default 10 (the "
-        "same screen as the detrend workbench; the batch estimator and "
-        "geo_dataread.gps_read.getData default is 15)",
+        "this threshold are excluded from the series. Default 15 (BGÓ "
+        "2026-11-22, was 10: VONC's snowy days went missing; the batch "
+        "estimator and geo_dataread.gps_read.getData use 15 too); epochs "
+        "kept with a σ above 10 mm get bold orange error bars",
     )
     parser.add_argument(
         "-i",
