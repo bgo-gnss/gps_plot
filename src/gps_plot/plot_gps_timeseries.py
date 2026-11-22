@@ -1309,6 +1309,16 @@ def build_parser(
         "Ignored unless --view cleaned",
     )
     parser.add_argument(
+        "--high-sigma-days",
+        type=float,
+        default=30.0,
+        metavar="N",
+        help="days with a formal σ above 10 mm (let in by --uncert, drawn "
+        "with orange error bars) are kept only among the last N days of the "
+        "series, older ones removed like the 10 mm screen did (default 30; "
+        "0 = always remove, a negative number = keep them all)",
+    )
+    parser.add_argument(
         "--show-outliers",
         type=int,
         nargs="?",

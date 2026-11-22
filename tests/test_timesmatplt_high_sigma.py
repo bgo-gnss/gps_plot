@@ -32,3 +32,17 @@ def test_high_sigma_days_get_orange_bars_and_a_note() -> None:
         )  # fmt: skip
     quiet = tplt.stdTimesPlot(x, y, np.ones((3, 10)))
     assert not quiet.axes[1].texts
+
+
+def test_old_high_sigma_days_are_dropped_recent_kept() -> None:
+    """BGÓ 2026-11-22: the noisy days of the last N days are shown, older
+    ones removed as the 10 mm screen did."""
+    t = 2026.0 + np.arange(100) / 365.25
+    y = np.ones((3, 100))
+    dy = np.ones((3, 100))
+    dy[2, [10, 95]] = 12.0  # one old, one recent noisy day
+    got = tplt.drop_old_high_sigma(t, y, dy, 30.0)
+    assert np.isnan(got[:, 10]).all() and np.isfinite(got[:, 95]).all()
+    assert np.isfinite(got[:, :10]).all()
+    assert np.isfinite(tplt.drop_old_high_sigma(t, y, dy, -1.0)).all()
+    assert np.isnan(tplt.drop_old_high_sigma(t, y, dy, 0.0)[:, 95]).all()

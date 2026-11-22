@@ -1169,6 +1169,7 @@ def plotTime(
     outlier_overrides: str | None = None,
     hide_outliers: bool = False,
     outlier_tail: int | None = None,
+    high_sigma_days: float = 30.0,
     provisional_days: float | None = None,
     icing: bool = True,
     icing_ratio: float | None = None,
@@ -1574,6 +1575,7 @@ def plotTime(
         main_series = orient(main_series, along_axes)
         refTitle = f"{refTitle}, {along_note}"
     yearf, data, Ddata = main_series.t, main_series.y, main_series.sigma
+    data = drop_old_high_sigma(yearf, data, Ddata, high_sigma_days)
     outliers, provisional = main_series.outliers, main_series.provisional
     aborted = main_series.aborted
     iced = main_series.iced
@@ -2506,9 +2508,32 @@ def _as_datetime_list(x: Any) -> list[datetime.datetime]:
 
 #: an epoch whose formal σ in any component is above this [mm] is marked:
 #: its error bars bold and orange on all three panels (BGÓ 2026-11-22: the
-#: --uncert screen went from 10 to 15 mm, the days between must stand out)
+#: --uncert screen went from 10 to 15 mm, the days between must stand out;
+#: older than --high-sigma-days they are removed, drop_old_high_sigma)
 HIGH_SIGMA_MM = 10.0
 HIGH_SIGMA_COLOR = "#e66100"
+
+
+def drop_old_high_sigma(t: Any, y: Any, Dy: Any, days: float) -> Any:
+    """``y`` with the days of σ above :data:`HIGH_SIGMA_MM` (any component)
+    set NaN unless they are among the last ``days`` days of the series
+    (fractional-year ``t``): a recent noisy day is shown (orange bars, it
+    may be the start of something), an old one goes as the 10 mm screen
+    took it (BGÓ 2026-11-22: "the newest, not shown forever"). ``days``
+    negative keeps them all."""
+    if days < 0:
+        return y
+    t = np.asarray(t, dtype=float)
+    sig = np.asarray(Dy, dtype=float)
+    if sig.ndim != 2 or not t.size:
+        return y
+    high = np.nanmax(np.where(np.isfinite(sig), sig, 0.0), axis=0) > HIGH_SIGMA_MM
+    old = high & (t < np.nanmax(t) - days / 365.25)
+    if not old.any():
+        return y
+    out = np.array(y, dtype=float, copy=True)
+    out[:, old] = np.nan
+    return out
 
 
 def mark_high_sigma(x: Any, y: Any, Dy: Any, fig: Figure) -> Figure:
