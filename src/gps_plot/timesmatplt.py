@@ -2504,6 +2504,43 @@ def _as_datetime_list(x: Any) -> list[datetime.datetime]:
     return [v.to_pydatetime() if hasattr(v, "to_pydatetime") else v for v in x]
 
 
+#: an epoch whose formal σ in any component is above this [mm] is marked:
+#: its error bars bold and orange on all three panels (BGÓ 2026-11-22: the
+#: --uncert screen went from 10 to 15 mm, the days between must stand out)
+HIGH_SIGMA_MM = 10.0
+HIGH_SIGMA_COLOR = "#e66100"
+
+
+def mark_high_sigma(x: Any, y: Any, Dy: Any, fig: Figure) -> Figure:
+    """Bold orange error bars on the epochs with a σ above
+    :data:`HIGH_SIGMA_MM` in any component (drawn on all three panels, so
+    the day is marked where its σ is small too), and a note counting them
+    (East panel, low right: the North panel's corners hold other notes);
+    nothing when there are none."""
+    sig = np.asarray(Dy, dtype=float)
+    vals = np.asarray(y, dtype=float)
+    if sig.ndim != 2 or sig.shape[0] < 3 or not sig.size:
+        return fig
+    high = np.nanmax(np.where(np.isfinite(sig), sig, 0.0), axis=0) > HIGH_SIGMA_MM
+    high &= np.isfinite(vals).any(axis=0)
+    n = int(np.count_nonzero(high))
+    if n == 0:
+        return fig
+    xs = np.asarray(x, dtype=object)[high]
+    for i in range(3):
+        fig.axes[i].errorbar(xs, vals[i, high], yerr=sig[i, high], fmt="none",
+                             ecolor=HIGH_SIGMA_COLOR, elinewidth=1.6, capsize=2.5,
+                             capthick=1.2, zorder=2.6)  # fmt: skip
+    east = fig.axes[1]
+    east.text(
+        0.99, 0.02,
+        f"$\\sigma$ above {HIGH_SIGMA_MM:g} mm: {n} day{'' if n == 1 else 's'} (orange bars)",
+        transform=east.transAxes, fontsize="small", color=HIGH_SIGMA_COLOR,
+        ha="right", va="bottom",
+    )  # fmt: skip
+    return fig
+
+
 def stdTimesPlot(
     x: Any,
     y: Any,
@@ -2567,6 +2604,8 @@ def stdTimesPlot(
         markeredgecolor="0.4" if open_points else data_color,
         markeredgewidth=0.6 if open_points else None,
     )
+
+    fig = mark_high_sigma(x, y, Dy, fig)
 
     # Last-point highlight (revived BGÓ 2026-07-27, suppressed 2026-07-11):
     # pairs with the green title fragment -- see the docstring.
