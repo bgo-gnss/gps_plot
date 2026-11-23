@@ -128,3 +128,40 @@ def test_live_gives_no_level_when_no_window_spans_its_data() -> None:
     got = rtk_rate.live(read, ["A-B"], spec, now)
     assert got["level"] is None
     assert got["pairs"][0].get("no_rate") is True
+
+
+def test_confirm_drops_a_short_window_the_long_one_does_not_follow() -> None:
+    """BGÓ 2026-11-23: 24 h orange to the south while the 72 h went west."""
+    base = rtk_rate.spec_of({"components": ["horizontal"]})
+    spec = rtk_rate.spec_of({"components": ["horizontal"], "confirm_sigma": 2})
+    assert base is not None and spec is not None
+    assert base["confirm_sigma"] is None and spec["confirm_sigma"] == 2.0
+    # 3.5 mm/d east for the last day only
+    h = _hourly(20.0, None, 0.0)
+    h["E"] += 3.5 * np.clip((np.arange(len(h)) / 24.0) - 19.0, 0, None)
+    plain = {r["window_h"]: r for r in rtk_rate.pair_rates(h, base, h.index[-1], 3.0)}
+    assert plain[24.0]["level"] == 2
+    got = {r["window_h"]: r for r in rtk_rate.pair_rates(h, spec, h.index[-1], 3.0)}
+    # the 72 h sees about a third of it, still the same way: confirmed
+    assert got[24.0]["level"] == plain[24.0]["level"]
+    assert got[24.0]["confirm_z"] >= 2.0
+    # now the 72 h goes west at 1 mm/d before the last day turns east
+    h2 = _hourly(20.0, None, 0.0)
+    days = np.arange(len(h2)) / 24.0
+    h2["E"] += -1.5 * np.clip(days - 17.0, 0, 2.0) + 3.5 * np.clip(days - 19.0, 0, None)
+    got2 = {r["window_h"]: r for r in rtk_rate.pair_rates(h2, spec, h2.index[-1], 3.0)}
+    assert got2[24.0]["level"] == 0
+    assert got2[24.0]["unconfirmed_level"] >= 1
+    assert got2[24.0]["confirm_z"] < 2.0
+    assert "_v" not in got2[24.0]
+
+
+def test_confirm_leaves_the_level_without_a_long_rate() -> None:
+    rows = [
+        {"window_h": 24.0, "level": 2, "component": "horizontal",
+         "_v": np.array([3.0, 0.0, 0.0]), "_sig": np.array([0.5, 0.5, 2.0])},
+        {"window_h": 72.0, "level": 0, "component": "horizontal",
+         "_v": np.full(3, np.nan), "_sig": np.full(3, np.nan)},
+    ]  # fmt: skip
+    rtk_rate.confirm(rows, 2.0)
+    assert rows[0]["level"] == 2 and rows[0]["confirm_z"] is None

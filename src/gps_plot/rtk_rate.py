@@ -38,6 +38,10 @@ none at either; Up far too noisy for the 2/5/7 mm/d edges (24 h σ ≈ 4.4,
 episode at 3 σ, horizontal: yellow + orange 8 Nov 17:00 (24 h, 3.6 mm/d),
 the 72 h yellow 9 Nov 02:00. Hence Svínafellsheiði's rate: horizontal,
 24 h and 72 h, 3 σ. Eleven quiet days only: provisional.
+
+``confirm_sigma`` (BGÓ 2026-11-23, :func:`confirm`): a shorter window's
+level only when the longest window moves the same way. The 23 Nov 24 h
+orange (3.7 mm/d to the south) had the 72 h at −0.7 σ along it.
 """
 
 from __future__ import annotations
@@ -96,6 +100,10 @@ def spec_of(raw: Any) -> dict[str, Any] | None:
         "horizontal_mm_per_day": [float(x) for x in
                                   raw.get("horizontal_mm_per_day", HORIZONTAL_MM_PER_DAY)],
         "up_mm_per_day": [float(x) for x in raw.get("up_mm_per_day", UP_MM_PER_DAY)],
+        # BGÓ 2026-11-23: a shorter window's level only when the longest
+        # window moves the same way, CONFIRM_SIGMA σ or more (None: off)
+        "confirm_sigma": (float(raw["confirm_sigma"])
+                          if raw.get("confirm_sigma") is not None else None),
     }  # fmt: skip
     if not out["components"] or set(out["components"]) - set(COMPONENTS):
         raise ValueError(
@@ -223,8 +231,53 @@ def pair_rates(
             "azimuth": round(float(np.degrees(np.arctan2(v[1], v[0])) % 360.0), 0),
             "up_mm_per_day": round(float(v[2]), 2),
             "up_sigma": round(float(sig[2]), 2),
+            "_v": v,
+            "_sig": sig,
         })  # fmt: skip
+    k_conf = spec.get("confirm_sigma")
+    if k_conf is not None and len(rows) > 1:
+        confirm(rows, float(k_conf))
+    for r in rows:
+        del r["_v"], r["_sig"]
     return rows
+
+
+def confirm(rows: list[dict[str, Any]], k: float) -> None:
+    """BGÓ 2026-11-23: a shorter window's level stands only when the
+    longest window moves the same way. Horizontal: the longest window's
+    rate along the shorter one's direction ≥ ``k`` of its σ there; Up: the
+    same sign and |rate| ≥ ``k`` σ. Otherwise the row's level drops to 0,
+    kept as ``unconfirmed_level`` with ``confirm_z`` (the longest window's
+    rate along, in its σ). The longest window without a rate (a gap)
+    has no say: the shorter level stands, as before the rule.
+
+    Bench SVIN-SVIE 5–23 Nov: the 8 Nov episode's 24 h orange (17:00)
+    had the 72 h at 2.9 σ along it, 21–22 Nov at 3.3–4.6 σ; the 23 Nov
+    03–07 orange (24 h 3.4–3.7 mm/d to 170–210°) at −0.7–0.4 σ.
+    """
+    long = max(rows, key=lambda r: r["window_h"])
+    lv, ls = long["_v"], long["_sig"]
+    for r in rows:
+        if r is long or r["level"] == 0:
+            continue
+        v = r["_v"]
+        if r["component"] == "horizontal":
+            speed = float(np.hypot(v[0], v[1]))
+            un, ue = (v[0] / speed, v[1] / speed) if speed > 0 else (1.0, 0.0)
+            along = float(un * lv[0] + ue * lv[1])
+            sig = float(np.hypot(un * ls[0], ue * ls[1]))
+        else:
+            along = float(np.sign(v[2]) * lv[2])
+            sig = float(ls[2])
+        z = (
+            along / sig
+            if np.isfinite(along) and np.isfinite(sig) and sig > 0
+            else np.nan
+        )
+        r["confirm_z"] = round(z, 1) if np.isfinite(z) else None
+        if np.isfinite(z) and z < k:
+            r["unconfirmed_level"] = r["level"]
+            r["level"] = 0
 
 
 def live(
@@ -281,6 +334,7 @@ def live(
             if spec.get("up_significance_sigma") is None
             else float(spec["up_significance_sigma"])
         ),
+        "confirm_sigma": spec.get("confirm_sigma"),
         "pairs": rows,
     }
     if best is None:
